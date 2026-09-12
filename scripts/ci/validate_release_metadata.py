@@ -17,6 +17,9 @@ from urllib.parse import urlparse
 
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){2}")
+DEVELOPMENT_AURAFACE_PUBLIC_KEY = base64.b64decode(
+    "1A0bQ1ZA4sVlGfHc3/jnRz9On108K+v/0xjnqMGGDDs=", validate=True
+)
 
 
 @dataclass(frozen=True)
@@ -64,7 +67,7 @@ def decoded_base64(value: str, field: str, expected_bytes: int) -> bytes:
     return decoded
 
 
-def validate_info_plist(root: Path) -> None:
+def validate_info_plist(root: Path, *, require_production_model_key: bool = False) -> None:
     path = root / "Aagedal Photo Agent/Info.plist"
     with path.open("rb") as handle:
         info = plistlib.load(handle)
@@ -78,7 +81,17 @@ def validate_info_plist(root: Path) -> None:
     parsed_feed = urlparse(feed_url)
     require(parsed_feed.scheme == "https" and parsed_feed.netloc and parsed_feed.path.endswith(".xml"),
             "SUFeedURL must be an absolute HTTPS XML URL")
-    decoded_base64(str(info.get("SUPublicEDKey", "")), "SUPublicEDKey", 32)
+    sparkle_key = decoded_base64(str(info.get("SUPublicEDKey", "")), "SUPublicEDKey", 32)
+    model_key = decoded_base64(str(info.get("AuraFaceDistributionPublicEd25519Key", "")),
+                               "AuraFaceDistributionPublicEd25519Key", 32)
+    require(model_key != sparkle_key,
+            "AuraFaceDistributionPublicEd25519Key must differ from SUPublicEDKey")
+    if require_production_model_key:
+        require(
+            model_key != DEVELOPMENT_AURAFACE_PUBLIC_KEY,
+            "AuraFaceDistributionPublicEd25519Key is the development trust anchor; "
+            "configure the reviewed production model key before releasing",
+        )
 
 
 def validate_changelog(root: Path, settings: ReleaseSettings) -> None:
@@ -185,9 +198,9 @@ def validate_appcast(root: Path, settings: ReleaseSettings) -> int:
     return len(items)
 
 
-def validate(root: Path) -> tuple[ReleaseSettings, int]:
+def validate(root: Path, *, require_production_model_key: bool = False) -> tuple[ReleaseSettings, int]:
     settings = read_release_settings(root)
-    validate_info_plist(root)
+    validate_info_plist(root, require_production_model_key=require_production_model_key)
     validate_changelog(root, settings)
     validate_security_policy(root, settings)
     item_count = validate_appcast(root, settings)
@@ -197,9 +210,17 @@ def validate(root: Path) -> tuple[ReleaseSettings, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="repository root")
+    parser.add_argument(
+        "--require-production-model-key",
+        action="store_true",
+        help="reject the checked-in AuraFace development trust anchor",
+    )
     arguments = parser.parse_args()
     try:
-        settings, item_count = validate(arguments.root.resolve())
+        settings, item_count = validate(
+            arguments.root.resolve(),
+            require_production_model_key=arguments.require_production_model_key,
+        )
     except (OSError, ValueError, plistlib.InvalidFileException) as error:
         print(f"release metadata validation failed: {error}", file=sys.stderr)
         return 1

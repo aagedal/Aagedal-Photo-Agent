@@ -49,6 +49,8 @@ die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 # packaging work. Remote CI validates committed declarations, but it cannot
 # prove that a required local binary is still present and unmodified here.
 say "Verifying bundled release artifacts"
+[ -d 'Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage' ] \
+  || die "The release-only AuraFace model package is missing; reproduce and review it before releasing."
 python3 -B scripts/ci/validate_bundled_components.py \
   || die "Bundled component validation failed; restore or rebuild the declared artifacts before releasing."
 ok "Bundled release artifacts match their pinned manifest"
@@ -56,9 +58,20 @@ ok "Bundled release artifacts match their pinned manifest"
 # Catch version/build, changelog, security-policy, Sparkle, and appcast drift
 # before consulting CI, credentials, or the keychain.
 say "Verifying release metadata"
-python3 -B scripts/ci/validate_release_metadata.py \
+python3 -B scripts/ci/validate_release_metadata.py --require-production-model-key \
   || die "Release metadata validation failed; reconcile the project, changelog, security policy, Info.plist, and appcast."
 ok "Release metadata is internally consistent"
+
+# The optional model is present and hash-validated above. Exercise the app's exact
+# CGImage preprocessing and embed path against its pinned RGB/BGR reference before
+# any credentials, signing, notarization, or packaging work.
+say "Verifying AuraFace app preprocessing and embedding"
+xcodebuild test -project 'Aagedal Photo Agent.xcodeproj' \
+  -scheme 'Aagedal Photo Agent Tests' -configuration Debug \
+  -destination 'platform=macOS' -parallel-testing-enabled NO \
+  -only-testing:'Aagedal Photo Agent Tests/AuraFaceChannelReferenceTests' \
+  || die "AuraFace app-level model compatibility validation failed."
+ok "AuraFace app preprocessing and embedding match the pinned reference"
 
 # Verify this exact committed source before doing any keychain, signing,
 # notarization, archive, or appcast work. The verifier also records the accepted

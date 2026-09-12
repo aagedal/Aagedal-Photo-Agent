@@ -244,10 +244,10 @@ name collision and a nested test macro; each was corrected without weakening pro
 admission or assertions. The directory writer remains a service boundary; archive extraction,
 managed-store replacement, user-facing export/import adapters and App Group publication remain.
 
-Production recognition compatibility is separately blocked by contradictory pinned model evidence.
-The admitted `AuraFaceR100.mlpackage` metadata declares BGR and Torch 2.12.0, while the manifest,
-locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0. Artifact hashes are internally
-consistent, but no color-asymmetric image-to-reference-vector fixture proves the intended channel
-order or binds these bytes to the checked-in recipe. Do not change the interchange contract or
-publish recognition based on metadata alone. Regenerate from the pinned ONNX source in the locked
-environment, record a build receipt, and require an RGB/BGR negative control before compatibility.
+The contradictory older local AuraFace package has been replaced by the reviewed deterministic build.
+The manifest, locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0; a checked-in
+color-asymmetric fixture proves RGB through Torch and Core ML, its swapped-BGR negative differs materially,
+and two independent locked builds produce identical packages and canonical receipts whose artifact hashes
+match the manifest. A compact checked-in reference also passes the app's actual `CGImage` preprocessing and
+model-backed embed path with the BGR-negative separation. Published recognition still requires hardened
+download/archive installation plus the production distribution trust key and signature.

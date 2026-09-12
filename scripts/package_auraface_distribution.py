@@ -6,7 +6,7 @@ artifact; it never downloads ONNX or performs model conversion on a user's Mac.
 The generated descriptor binds the archive bytes, every package file, the model
 version, and the persisted embedding-space version to one HTTPS download URL.
 Outputs are unsigned schema-2 candidates. Production signing with a dedicated
-model key and migration of the schema-1 Photo Agent consumer remain separate gates.
+model key and publication/lifecycle validation remain separate gates.
 """
 
 from __future__ import annotations
@@ -168,6 +168,7 @@ def validate_download_url(value: str) -> str:
         or parsed.password is not None
         or not parsed.path
         or parsed.path.endswith("/")
+        or parsed.path.rsplit("/", 1)[-1] != ARCHIVE_FILENAME
         or parsed.query
         or parsed.fragment
         or parsed.params
@@ -509,7 +510,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             verify_distribution(archive, descriptor, contract)
             print(f"AuraFace unsigned schema-2 distribution integrity verified: {archive}")
-        print("Publication requires dedicated model signing and schema-2 consumer support; neither is performed here.")
+        print("Publication requires dedicated model signing and lifecycle validation; neither is performed here.")
     except (DistributionError, OSError, json.JSONDecodeError, zipfile.BadZipFile) as error:
         print(f"AuraFace distribution failed: {error}", file=os.sys.stderr)
         return 1

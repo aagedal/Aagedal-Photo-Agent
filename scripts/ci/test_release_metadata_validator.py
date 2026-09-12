@@ -47,6 +47,7 @@ class ReleaseMetadataValidatorTests(unittest.TestCase):
             "LSMinimumSystemVersion": "$(MACOSX_DEPLOYMENT_TARGET)",
             "SUFeedURL": "https://example.invalid/appcast.xml",
             "SUPublicEDKey": base64.b64encode(bytes(32)).decode(),
+            "AuraFaceDistributionPublicEd25519Key": base64.b64encode(bytes(range(32))).decode(),
         }
         with (self.root / "Aagedal Photo Agent/Info.plist").open("wb") as handle:
             plistlib.dump(info, handle)
@@ -119,6 +120,38 @@ sparkle:edSignature="{signature}" length="123" type="application/octet-stream" /
             plistlib.dump(info, handle)
         with self.assertRaisesRegex(ValueError, "CFBundleVersion"):
             validator.validate(self.root)
+
+    def test_model_key_is_required_sized_and_separate(self) -> None:
+        path = self.root / "Aagedal Photo Agent/Info.plist"
+        for value in (None, "invalid", "Zm9v", base64.b64encode(bytes(32)).decode()):
+            with self.subTest(value=value):
+                self.write_info_plist()
+                info = plistlib.loads(path.read_bytes())
+                if value is None:
+                    del info["AuraFaceDistributionPublicEd25519Key"]
+                else:
+                    info["AuraFaceDistributionPublicEd25519Key"] = value
+                path.write_bytes(plistlib.dumps(info))
+                with self.assertRaisesRegex(ValueError, "AuraFaceDistributionPublicEd25519Key"):
+                    validator.validate(self.root)
+
+    def test_release_gate_rejects_known_development_model_key(self) -> None:
+        path = self.root / "Aagedal Photo Agent/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        info["AuraFaceDistributionPublicEd25519Key"] = base64.b64encode(
+            validator.DEVELOPMENT_AURAFACE_PUBLIC_KEY
+        ).decode()
+        path.write_bytes(plistlib.dumps(info))
+
+        # Credential-free repository validation can inspect a development checkout,
+        # while the release entry point must reject this public trust anchor.
+        validator.validate(self.root)
+        with self.assertRaisesRegex(ValueError, "development trust anchor"):
+            validator.validate(self.root, require_production_model_key=True)
+
+        info["AuraFaceDistributionPublicEd25519Key"] = base64.b64encode(bytes(range(31, -1, -1))).decode()
+        path.write_bytes(plistlib.dumps(info))
+        validator.validate(self.root, require_production_model_key=True)
 
     def test_inconsistent_project_versions_fail_closed(self) -> None:
         project = self.root / "Aagedal Photo Agent.xcodeproj/project.pbxproj"

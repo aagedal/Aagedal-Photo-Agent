@@ -52,6 +52,9 @@
 	<string>Use your current location to set GPS coordinates on selected photos.</string>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/aagedal/Aagedal-Photo-Agent/main/appcast.xml</string>
+	<!-- Development-only model trust anchor; production model signing remains a release gate. -->
+	<key>AuraFaceDistributionPublicEd25519Key</key>
+	<string>1A0bQ1ZA4sVlGfHc3/jnRz9On108K+v/0xjnqMGGDDs=</string>
 	<key>SUPublicEDKey</key>
 	<string>i3xudeqe+09I7n+FVFHmPxBa8cEWc3/ljLk3Y9bTEkY=</string>
 	<key>SUEnableAutomaticChecks</key>

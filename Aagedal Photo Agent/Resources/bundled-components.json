@@ -57,9 +57,9 @@
       "id": "auraface-r100-coreml",
       "artifactPath": "Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage",
       "artifactFiles": {
-        "Data/com.apple.CoreML/model.mlmodel": "57f18ebea842b59b9da16b50fac274cb7499ce846880cc0486b01d4df4d02355",
+        "Data/com.apple.CoreML/model.mlmodel": "b60588562fd76717d0d6ddcfcb8a4bf2d2bda3d61b356721b379318adf366f85",
         "Data/com.apple.CoreML/weights/weight.bin": "c189aaf7d6758dafb1603b4ea7f7c2161b69639434ddbce800e0cc632b26d7e0",
-        "Manifest.json": "702d1f4a0a71cf78de4d5380e10eccd8f9e054c86c8a1f87c5bb31a27e23b25d"
+        "Manifest.json": "d2d7d38c9b21464299e620f0b87bf8037fde9d776174b9fc871508c4eb92be0a"
       },
       "required": false,
       "version": "AuraFace-v1/glintr100",
@@ -73,13 +73,14 @@
       "licensePath": "Aagedal Photo Agent/Resources/Models/AuraFace-LICENSE.md",
       "buildRecipe": {
         "repositoryPath": "scripts/build_auraface_coreml.py",
-        "revision": "sha256:a57ecb9e837312a60dd0f11c73b7dbc45385c4cae2fd9065c371667da90c92a7",
+        "revision": "sha256:00986eb3d27ad8566921aa887bcee80f98a3f1815785e1936234fcee4cc9019a",
         "supportingFiles": {
           "scripts/auraface/.python-version": "sha256:43fd694bd564dd2215f51a6b23f6a3712834850225e629d7781c81c71076092d",
+          "scripts/auraface/fixtures/channel-asymmetric-112x112.ppm.base64": "sha256:617b8047bfc9d1322500ecd1c76d76b3ad0ea7f956cef19f9f232b130ae7a104",
           "scripts/auraface/pyproject.toml": "sha256:31a32e6d9ab18f47b3a41dd8e691b43d53fb543f7e35f5ae0385d266f7f1dc3b",
           "scripts/auraface/uv.lock": "sha256:fefc9d0fb967f7588c0fe864101805afd6908634296882d69397af4f78190355",
           "scripts/fetch_auraface_source.py": "sha256:9c9be0fa8992eabb134f6d1a421299bb3f7c3d536f6791dc915b7e5a559cfce4",
-          "scripts/package_auraface_distribution.py": "sha256:3fb222d10a86f976ab5542ec05b1d106e08fbc80133d8e4b07d576b01d30a375"
+          "scripts/package_auraface_distribution.py": "sha256:9f01aed85359ae39b03b62b56bf1e564b48d44f3e155b86de78b3661bcad879b"
         }
       },
       "buildContract": {

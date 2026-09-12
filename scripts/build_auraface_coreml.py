@@ -9,6 +9,7 @@ uv lock so the conversion imports exactly the reviewed dependency graph.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.metadata
 import json
@@ -23,12 +24,14 @@ import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 DEFAULT_MANIFEST = Path("Aagedal Photo Agent/Resources/bundled-components.json")
 DEFAULT_SOURCE = Path("build/model-sources/auraface/glintr100.onnx")
 DEFAULT_OUTPUT = Path("build/auraface/AuraFaceR100.mlpackage")
+DEFAULT_RECEIPT = Path("build/auraface/AuraFaceR100.build-receipt.json")
+CHANNEL_FIXTURE = Path("scripts/auraface/fixtures/channel-asymmetric-112x112.ppm.base64")
 COMPONENT_ID = "auraface-r100-coreml"
 PACKAGE_FILES = (
     "Data/com.apple.CoreML/model.mlmodel",
@@ -36,6 +39,9 @@ PACKAGE_FILES = (
     "Manifest.json",
 )
 PACKAGE_NAMESPACE = uuid.UUID("de036ddf-a840-58e7-92c7-e42de6a05bbf")
+MINIMUM_CHANNEL_COSINE_DISTANCE = 0.001
+PYTHON_HASH_SEED = "0"
+RECEIPT_FLOAT_DIGITS = 9
 
 
 class BuildError(ValueError):
@@ -44,7 +50,12 @@ class BuildError(ValueError):
 
 @dataclass(frozen=True)
 class Contract:
+    source_url: str
+    source_revision: str
+    source_file: str
     source_sha256: str
+    component_version: str
+    embedding_version: int
     artifact_path: Path
     artifact_files: dict[str, str]
     python_version: str
@@ -61,6 +72,19 @@ class Contract:
     output_length: int
     metadata: dict[str, str]
     recipe_files: dict[Path, str]
+
+
+@dataclass(frozen=True)
+class ChannelVerification:
+    fixture_sha256: str
+    width: int
+    height: int
+    torch_coreml_rgb_cosine: float
+    torch_coreml_bgr_cosine: float
+    torch_rgb_bgr_cosine: float
+    coreml_rgb_bgr_cosine: float
+    normalized_torch_reference: tuple[float, ...]
+    normalized_coreml_reference: tuple[float, ...]
 
 
 def sha256(path: Path) -> str:
@@ -119,7 +143,7 @@ def load_contract(manifest_path: Path) -> Contract:
         require_digest(digest, f"artifactFiles[{name!r}]")
 
     shape = interface.get("inputShape")
-    if not isinstance(shape, list) or not shape or not all(isinstance(item, int) and item > 0 for item in shape):
+    if not isinstance(shape, list) or not shape or not all(type(item) is int and item > 0 for item in shape):
         raise BuildError("AuraFace inputShape must contain positive integers")
     if interface.get("inputType") != "float32" or interface.get("layout") != "NCHW":
         raise BuildError("AuraFace conversion supports only float32 NCHW input")
@@ -133,20 +157,20 @@ def load_contract(manifest_path: Path) -> Contract:
         raise BuildError("AuraFace inputName must be a non-empty string")
     if not isinstance(interface.get("outputName"), str) or not interface["outputName"]:
         raise BuildError("AuraFace outputName must be a non-empty string")
-    if not isinstance(interface.get("outputLength"), int) or interface["outputLength"] <= 0:
+    if type(interface.get("outputLength")) is not int or interface["outputLength"] <= 0:
         raise BuildError("AuraFace outputLength must be a positive integer")
 
     clean_builds = determinism.get("cleanBuilds")
     seed = determinism.get("seed")
     samples = semantic.get("samples")
     minimum_cosine = semantic.get("minimumCosineSimilarity")
-    if not isinstance(clean_builds, int) or clean_builds < 2:
+    if type(clean_builds) is not int or clean_builds < 2:
         raise BuildError("AuraFace determinism requires at least two clean builds")
-    if not isinstance(seed, int) or seed < 0:
+    if type(seed) is not int or seed < 0:
         raise BuildError("AuraFace determinism seed must be a non-negative integer")
-    if not isinstance(samples, int) or samples < 2:
+    if type(samples) is not int or samples < 2:
         raise BuildError("AuraFace semantic verification requires at least two samples")
-    if not isinstance(minimum_cosine, (int, float)) or not 0.99 <= minimum_cosine <= 1.0:
+    if type(minimum_cosine) not in (int, float) or not 0.99 <= minimum_cosine <= 1.0:
         raise BuildError("AuraFace minimum cosine similarity must be between 0.99 and 1.0")
 
     recipe_files: dict[Path, str] = {}
@@ -162,6 +186,8 @@ def load_contract(manifest_path: Path) -> Contract:
         if not isinstance(name, str) or not isinstance(digest, str) or not digest.startswith("sha256:"):
             raise BuildError("AuraFace supportingFiles must map paths to sha256: revisions")
         recipe_files[Path(name)] = require_digest(digest.removeprefix("sha256:"), f"supportingFiles[{name!r}]")
+    if CHANNEL_FIXTURE not in recipe_files:
+        raise BuildError(f"AuraFace buildRecipe must content-pin {CHANNEL_FIXTURE}")
 
     python_version = build.get("pythonVersion")
     uv_version = build.get("uvVersion")
@@ -169,9 +195,31 @@ def load_contract(manifest_path: Path) -> Contract:
         raise BuildError("AuraFace pythonVersion must pin one Python 3.12 patch release")
     if not isinstance(uv_version, str) or re.fullmatch(r"\d+\.\d+\.\d+", uv_version) is None:
         raise BuildError("AuraFace uvVersion must pin one exact release")
+    source_url = upstream.get("url")
+    source_revision = upstream.get("revision")
+    source_file = upstream.get("sourceFile")
+    if not isinstance(source_url, str) or not source_url.startswith("https://"):
+        raise BuildError("AuraFace upstream URL must use HTTPS")
+    if not isinstance(source_revision, str) or re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
+        raise BuildError("AuraFace upstream revision must be one full Git commit")
+    if not isinstance(source_file, str) or not source_file or Path(source_file).name != source_file:
+        raise BuildError("AuraFace upstream sourceFile must be one filename")
+    if metadata["sourceRevision"] != source_revision:
+        raise BuildError("AuraFace metadata sourceRevision must match the upstream revision")
+    component_version = component.get("version")
+    embedding_version = build.get("embeddingVersion")
+    if not isinstance(component_version, str) or not component_version:
+        raise BuildError("AuraFace component version must be a non-empty string")
+    if type(embedding_version) is not int or embedding_version <= 0:
+        raise BuildError("AuraFace embeddingVersion must be a positive integer")
 
     return Contract(
+        source_url=source_url,
+        source_revision=source_revision,
+        source_file=source_file,
         source_sha256=require_digest(upstream.get("sourceSHA256"), "AuraFace sourceSHA256"),
+        component_version=component_version,
+        embedding_version=embedding_version,
         artifact_path=Path(component["artifactPath"]),
         artifact_files=dict(artifact_files),
         python_version=python_version,
@@ -270,6 +318,12 @@ def verify_runtime(contract: Contract) -> None:
         raise BuildError(f"AuraFace conversion requires Python {contract.python_version}, got {actual_python}")
     if sys.platform != "darwin" or platform.machine() != "arm64":
         raise BuildError("AuraFace conversion requires arm64 macOS")
+    if os.environ.get("PYTHONHASHSEED") != PYTHON_HASH_SEED:
+        raise BuildError(
+            f"AuraFace conversion requires PYTHONHASHSEED={PYTHON_HASH_SEED}; rerun as: "
+            "PYTHONHASHSEED=0 uv run --frozen --project scripts/auraface python "
+            "scripts/build_auraface_coreml.py reproduce"
+        )
     for name, expected in sorted(contract.dependencies.items()):
         try:
             actual = importlib.metadata.version(name)
@@ -319,6 +373,14 @@ def normalize_package_manifest(package: Path) -> None:
     )
 
 
+def normalize_model_spec(package: Path) -> None:
+    import coremltools as ct
+
+    model_path = package / "Data/com.apple.CoreML/model.mlmodel"
+    spec = ct.utils.load_spec(str(model_path))
+    model_path.write_bytes(spec.SerializeToString(deterministic=True))
+
+
 def package_hashes(package: Path) -> dict[str, str]:
     if not package.is_dir():
         raise BuildError(f"Core ML package is missing: {package}")
@@ -350,12 +412,96 @@ def verify_declared_package(package: Path, contract: Contract) -> None:
 def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right) or not left:
         raise BuildError("semantic outputs must have the same non-zero length")
-    dot = sum(float(a) * float(b) for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
-    right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
+    left_values = tuple(float(value) for value in left)
+    right_values = tuple(float(value) for value in right)
+    if not all(math.isfinite(value) for value in left_values + right_values):
+        raise BuildError("semantic output contains non-finite values")
+    dot = sum(a * b for a, b in zip(left_values, right_values))
+    left_norm = math.sqrt(sum(value ** 2 for value in left_values))
+    right_norm = math.sqrt(sum(value ** 2 for value in right_values))
     if left_norm == 0 or right_norm == 0:
         raise BuildError("semantic output has zero norm")
     return dot / (left_norm * right_norm)
+
+
+def normalized_vector(values: Sequence[float], expected_length: int) -> tuple[float, ...]:
+    if len(values) != expected_length:
+        raise BuildError(f"AuraFace reference embedding must contain {expected_length} values")
+    norm = math.sqrt(sum(float(value) ** 2 for value in values))
+    if norm == 0 or not math.isfinite(norm):
+        raise BuildError("AuraFace reference embedding has an invalid norm")
+    result = tuple(float(value) / norm for value in values)
+    if not all(math.isfinite(value) for value in result):
+        raise BuildError("AuraFace reference embedding contains non-finite values")
+    return result
+
+
+def decode_ppm_fixture(path: Path) -> tuple[bytes, int, int, bytes]:
+    try:
+        encoded = b"".join(path.read_bytes().split())
+        document = base64.b64decode(encoded, validate=True)
+    except (OSError, ValueError) as error:
+        raise BuildError(f"AuraFace channel fixture is not valid base64: {path}") from error
+    match = re.match(rb"\AP6\n([1-9][0-9]*) ([1-9][0-9]*)\n255\n", document)
+    if match is None:
+        raise BuildError("AuraFace channel fixture must be a canonical RGB8 P6 PPM")
+    width = int(match.group(1))
+    height = int(match.group(2))
+    pixels = document[match.end():]
+    if (width, height) != (112, 112) or len(pixels) != width * height * 3:
+        raise BuildError("AuraFace channel fixture must contain exactly one 112x112 RGB8 image")
+    return document, width, height, pixels
+
+
+def preprocess_rgb_pixels(pixels: bytes, width: int, height: int, channel_order: str) -> tuple[float, ...]:
+    if channel_order not in {"RGB", "BGR"}:
+        raise BuildError("AuraFace fixture channel order must be RGB or BGR")
+    if len(pixels) != width * height * 3:
+        raise BuildError("AuraFace fixture pixel count does not match its dimensions")
+    indices = (0, 1, 2) if channel_order == "RGB" else (2, 1, 0)
+    return tuple(
+        (pixels[pixel_offset + channel] - 127.5) / 127.5
+        for channel in indices
+        for pixel_offset in range(0, len(pixels), 3)
+    )
+
+
+def validate_channel_outputs(
+    torch_rgb: Sequence[float],
+    coreml_rgb: Sequence[float],
+    torch_bgr: Sequence[float],
+    coreml_bgr: Sequence[float],
+    contract: Contract,
+    fixture_sha256: str,
+    width: int,
+    height: int,
+) -> ChannelVerification:
+    outputs = (torch_rgb, coreml_rgb, torch_bgr, coreml_bgr)
+    if any(len(output) != contract.output_length for output in outputs):
+        raise BuildError(f"AuraFace fixture output must contain {contract.output_length} values")
+    torch_coreml_rgb = cosine_similarity(torch_rgb, coreml_rgb)
+    torch_coreml_bgr = cosine_similarity(torch_bgr, coreml_bgr)
+    if min(torch_coreml_rgb, torch_coreml_bgr) < contract.minimum_cosine:
+        raise BuildError("AuraFace fixture Torch/Core ML similarity is below the build contract")
+    torch_rgb_bgr = cosine_similarity(torch_rgb, torch_bgr)
+    coreml_rgb_bgr = cosine_similarity(coreml_rgb, coreml_bgr)
+    maximum_negative_similarity = 1.0 - MINIMUM_CHANNEL_COSINE_DISTANCE
+    if max(torch_rgb_bgr, coreml_rgb_bgr) > maximum_negative_similarity:
+        raise BuildError(
+            "AuraFace RGB/BGR negative control is not materially different "
+            f"(required cosine <= {maximum_negative_similarity:.9f})"
+        )
+    return ChannelVerification(
+        fixture_sha256=fixture_sha256,
+        width=width,
+        height=height,
+        torch_coreml_rgb_cosine=torch_coreml_rgb,
+        torch_coreml_bgr_cosine=torch_coreml_bgr,
+        torch_rgb_bgr_cosine=torch_rgb_bgr,
+        coreml_rgb_bgr_cosine=coreml_rgb_bgr,
+        normalized_torch_reference=normalized_vector(torch_rgb, contract.output_length),
+        normalized_coreml_reference=normalized_vector(coreml_rgb, contract.output_length),
+    )
 
 
 def convert_once(source: Path, output: Path, contract: Contract) -> object:
@@ -391,6 +537,7 @@ def convert_once(source: Path, output: Path, contract: Contract) -> object:
     for key, value in sorted(contract.metadata.items()):
         metadata.userDefined[f"com.aagedal.auraface.{key}"] = value
     ct.models.MLModel(spec, weights_dir=converted.weights_dir).save(str(output))
+    normalize_model_spec(output)
     normalize_package_manifest(output)
     return model
 
@@ -421,50 +568,285 @@ def semantic_verify(torch_model: object, package: Path, contract: Contract) -> l
     return similarities
 
 
-def install_package(source: Path, destination: Path, replace: bool) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and not replace:
-        raise BuildError(f"destination exists: {destination}; pass --replace after reviewing it")
-    staging = destination.parent / f".{destination.name}.new-{uuid.uuid4().hex}"
-    backup = destination.parent / f".{destination.name}.old-{uuid.uuid4().hex}"
-    shutil.copytree(source, staging)
-    moved_existing = False
+def channel_verify(
+    torch_model: object,
+    package: Path,
+    contract: Contract,
+    fixture_path: Path,
+) -> ChannelVerification:
+    import coremltools as ct
+    import numpy as np
+    import torch
+
+    if contract.channel_order != "RGB":
+        raise BuildError("AuraFace provenance fixture currently proves only the declared RGB contract")
+    document, width, height, pixels = decode_ppm_fixture(fixture_path)
+    coreml_model = ct.models.MLModel(str(package), compute_units=ct.ComputeUnit.CPU_ONLY)
+
+    def evaluate(channel_order: str) -> tuple[list[float], list[float]]:
+        values = preprocess_rgb_pixels(pixels, width, height, channel_order)
+        sample = np.asarray(values, dtype=np.float32).reshape(contract.input_shape)
+        with torch.no_grad():
+            torch_output = torch_model(torch.from_numpy(sample)).detach().cpu().numpy().reshape(-1)
+        prediction = coreml_model.predict({contract.input_name: sample})
+        coreml_output = np.asarray(prediction[contract.output_name]).reshape(-1)
+        return torch_output.tolist(), coreml_output.tolist()
+
+    torch_rgb, coreml_rgb = evaluate("RGB")
+    torch_bgr, coreml_bgr = evaluate("BGR")
+    return validate_channel_outputs(
+        torch_rgb,
+        coreml_rgb,
+        torch_bgr,
+        coreml_bgr,
+        contract,
+        hashlib.sha256(document).hexdigest(),
+        width,
+        height,
+    )
+
+
+def receipt_float(value: float) -> float:
+    if not math.isfinite(value):
+        raise BuildError("AuraFace build receipt cannot contain non-finite numbers")
+    return round(float(value), RECEIPT_FLOAT_DIGITS)
+
+
+def canonical_json_bytes(document: object) -> bytes:
+    encoded = json.dumps(
+        document,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return encoded.encode("utf-8")
+
+
+def build_receipt(
+    contract: Contract,
+    artifact_hashes: dict[str, str],
+    semantic_similarities: Sequence[float],
+    channel: ChannelVerification,
+) -> dict:
+    def reference(values: Sequence[float]) -> dict:
+        rounded = [receipt_float(value) for value in values]
+        return {
+            "encoding": f"canonical JSON float array rounded to {RECEIPT_FLOAT_DIGITS} decimal places",
+            "sha256": hashlib.sha256(canonical_json_bytes(rounded)).hexdigest(),
+            "values": rounded,
+        }
+
+    maximum_negative_similarity = 1.0 - MINIMUM_CHANNEL_COSINE_DISTANCE
+    return {
+        "schemaVersion": 1,
+        "componentID": COMPONENT_ID,
+        "source": {
+            "repository": contract.source_url,
+            "revision": contract.source_revision,
+            "file": contract.source_file,
+            "sha256": contract.source_sha256,
+        },
+        "model": {
+            "componentVersion": contract.component_version,
+            "embeddingVersion": contract.embedding_version,
+            "metadata": dict(sorted(contract.metadata.items())),
+        },
+        "recipeFiles": {
+            str(path): {"sha256": digest}
+            for path, digest in sorted(contract.recipe_files.items(), key=lambda item: str(item[0]))
+        },
+        "runtimeContract": {
+            "platform": {"operatingSystem": "macOS", "architecture": "arm64"},
+            "pythonVersion": contract.python_version,
+            "pythonHashSeed": PYTHON_HASH_SEED,
+            "uvVersion": contract.uv_version,
+            "dependencies": dict(sorted(contract.dependencies.items())),
+        },
+        "modelInterface": {
+            "inputName": contract.input_name,
+            "inputShape": list(contract.input_shape),
+            "inputType": "float32",
+            "layout": "NCHW",
+            "channelOrder": contract.channel_order,
+            "normalization": "(x - 127.5) / 127.5",
+            "outputName": contract.output_name,
+            "outputLength": contract.output_length,
+        },
+        "artifactFiles": {
+            path: {"sha256": digest}
+            for path, digest in sorted(artifact_hashes.items())
+        },
+        "declaredArtifactFiles": {
+            path: {"sha256": digest}
+            for path, digest in sorted(contract.artifact_files.items())
+        },
+        "matchesDeclaredArtifactFiles": artifact_hashes == contract.artifact_files,
+        "determinism": {
+            "seed": contract.seed,
+            "cleanBuilds": contract.clean_builds,
+            "packagesByteIdentical": True,
+        },
+        "semanticVerification": {
+            "minimumCosineSimilarity": contract.minimum_cosine,
+            "randomTensorCosineSimilarities": [receipt_float(value) for value in semantic_similarities],
+        },
+        "channelVerification": {
+            "fixture": {
+                "path": str(CHANNEL_FIXTURE),
+                "encoding": "base64(P6 PPM RGB8)",
+                "decodedSHA256": channel.fixture_sha256,
+                "width": channel.width,
+                "height": channel.height,
+            },
+            "intendedChannelOrder": "RGB",
+            "normalization": "(x - 127.5) / 127.5",
+            "torchCoreMLCosineSimilarity": receipt_float(channel.torch_coreml_rgb_cosine),
+            "normalizedCoreMLReference": reference(channel.normalized_coreml_reference),
+            "normalizedTorchReference": reference(channel.normalized_torch_reference),
+            "bgrNegativeControl": {
+                "channelOrder": "BGR",
+                "maximumCosineSimilarityToRGB": receipt_float(maximum_negative_similarity),
+                "torchCoreMLCosineSimilarity": receipt_float(channel.torch_coreml_bgr_cosine),
+                "torchCosineSimilarityToRGB": receipt_float(channel.torch_rgb_bgr_cosine),
+                "coreMLCosineSimilarityToRGB": receipt_float(channel.coreml_rgb_bgr_cosine),
+            },
+        },
+    }
+
+
+def verify_receipt_bytes(data: bytes, expected: dict) -> None:
     try:
-        if destination.exists():
-            os.replace(destination, backup)
-            moved_existing = True
-        os.replace(staging, destination)
-    except BaseException:
-        if moved_existing and not destination.exists():
-            os.replace(backup, destination)
+        document = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BuildError("AuraFace build receipt is not valid UTF-8 JSON") from error
+    canonical = canonical_json_bytes(document)
+    if data != canonical:
+        raise BuildError("AuraFace build receipt is not canonical JSON")
+    if document != expected:
+        raise BuildError("AuraFace build receipt does not match the verified build")
+
+
+def remove_item(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def install_reproduction(
+    package_source: Path,
+    receipt_document: dict,
+    package_destination: Path,
+    receipt_destination: Path,
+    replace: bool,
+    replace_item: Callable[[Path, Path], None] = os.replace,
+) -> None:
+    for destination in (package_destination, receipt_destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and not replace:
+            raise BuildError(f"destination exists: {destination}; pass --replace after reviewing it")
+
+    transaction_id = uuid.uuid4().hex
+    package_staging = package_destination.parent / f".{package_destination.name}.new-{transaction_id}"
+    receipt_staging = receipt_destination.parent / f".{receipt_destination.name}.new-{transaction_id}"
+    package_backup = package_destination.parent / f".{package_destination.name}.old-{transaction_id}"
+    receipt_backup = receipt_destination.parent / f".{receipt_destination.name}.old-{transaction_id}"
+    committed = False
+    package_installed = False
+    receipt_installed = False
+    try:
+        shutil.copytree(package_source, package_staging)
+        receipt_staging.write_bytes(canonical_json_bytes(receipt_document))
+        verify_receipt_bytes(receipt_staging.read_bytes(), receipt_document)
+        receipt_hashes = {
+            path: declaration["sha256"]
+            for path, declaration in receipt_document["artifactFiles"].items()
+        }
+        if package_hashes(package_staging) != receipt_hashes:
+            raise BuildError("staged AuraFace package does not match its build receipt")
+
+        if package_destination.exists():
+            replace_item(package_destination, package_backup)
+        if receipt_destination.exists():
+            replace_item(receipt_destination, receipt_backup)
+        replace_item(package_staging, package_destination)
+        package_installed = True
+        replace_item(receipt_staging, receipt_destination)
+        receipt_installed = True
+        verify_receipt_bytes(receipt_destination.read_bytes(), receipt_document)
+        committed = True
+    except BaseException as error:
+        rollback_errors = []
+        try:
+            if receipt_installed:
+                remove_item(receipt_destination)
+            if receipt_backup.exists():
+                replace_item(receipt_backup, receipt_destination)
+        except BaseException as rollback_error:
+            rollback_errors.append(rollback_error)
+        try:
+            if package_installed:
+                remove_item(package_destination)
+            if package_backup.exists():
+                replace_item(package_backup, package_destination)
+        except BaseException as rollback_error:
+            rollback_errors.append(rollback_error)
+        if rollback_errors:
+            raise BuildError("AuraFace package/receipt install failed and rollback was incomplete") from error
         raise
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
-        if backup.exists():
-            shutil.rmtree(backup)
+        remove_item(package_staging)
+        remove_item(receipt_staging)
+        if committed:
+            remove_item(package_backup)
+            remove_item(receipt_backup)
 
 
-def reproduce(source: Path, output: Path, contract: Contract, replace: bool) -> tuple[dict[str, str], list[float]]:
+def reproduce(
+    source: Path,
+    output: Path,
+    receipt_path: Path,
+    fixture_path: Path,
+    contract: Contract,
+    replace: bool,
+) -> tuple[dict[str, str], list[float], dict]:
     verify_runtime(contract)
     verify_source(source, contract)
+    if receipt_path == output or output in receipt_path.parents:
+        raise BuildError("AuraFace receipt must be a sibling of, rather than inside, the model package")
+    if (output.exists() or receipt_path.exists()) and not replace:
+        existing = output if output.exists() else receipt_path
+        raise BuildError(f"destination exists: {existing}; pass --replace after reviewing it")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="auraface-builds-", dir=output.parent) as temporary:
         build_root = Path(temporary)
         packages = []
-        torch_model = None
+        torch_models = []
         for index in range(contract.clean_builds):
             package = build_root / f"clean-{index + 1}.mlpackage"
-            torch_model = convert_once(source, package, contract)
+            torch_models.append(convert_once(source, package, contract))
             packages.append(package)
         first_hashes = package_hashes(packages[0])
         for index, package in enumerate(packages[1:], start=2):
             if package_hashes(package) != first_hashes:
                 raise BuildError(f"AuraFace clean build {index} is not byte-identical to clean build 1")
-        assert torch_model is not None
-        similarities = semantic_verify(torch_model, packages[0], contract)
-        install_package(packages[0], output, replace)
-    return first_hashes, similarities
+        similarities = semantic_verify(torch_models[0], packages[0], contract)
+        receipts = [
+            build_receipt(
+                contract,
+                first_hashes,
+                similarities,
+                channel_verify(torch_model, package, contract, fixture_path),
+            )
+            for torch_model, package in zip(torch_models, packages)
+        ]
+        first_receipt_bytes = canonical_json_bytes(receipts[0])
+        for index, receipt in enumerate(receipts[1:], start=2):
+            if canonical_json_bytes(receipt) != first_receipt_bytes:
+                raise BuildError(f"AuraFace clean build {index} provenance receipt differs from clean build 1")
+        install_reproduction(packages[0], receipts[0], output, receipt_path, replace)
+    return first_hashes, similarities, receipts[0]
 
 
 def parser() -> argparse.ArgumentParser:
@@ -479,6 +861,7 @@ def parser() -> argparse.ArgumentParser:
     reproduce_command = commands.add_parser("reproduce", help="build twice, compare bytes, and verify semantics")
     reproduce_command.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     reproduce_command.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    reproduce_command.add_argument("--receipt", type=Path, default=DEFAULT_RECEIPT)
     reproduce_command.add_argument("--replace", action="store_true")
     return result
 
@@ -507,10 +890,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             source = arguments.source if arguments.source.is_absolute() else root / arguments.source
             output = arguments.output if arguments.output.is_absolute() else root / arguments.output
-            hashes, similarities = reproduce(source, output, contract, arguments.replace)
+            receipt = arguments.receipt if arguments.receipt.is_absolute() else root / arguments.receipt
+            fixture = root / CHANNEL_FIXTURE
+            hashes, similarities, receipt_document = reproduce(
+                source,
+                output,
+                receipt,
+                fixture,
+                contract,
+                arguments.replace,
+            )
             print(json.dumps({"artifactFiles": hashes}, indent=2, sort_keys=True))
             print("AuraFace semantic cosine similarities: " + ", ".join(f"{value:.9f}" for value in similarities))
             print(f"AuraFace reproducible package installed: {output}")
+            print(f"AuraFace canonical build receipt installed: {receipt} ({hashlib.sha256(canonical_json_bytes(receipt_document)).hexdigest()})")
     except (BuildError, OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         print(f"AuraFace Core ML build failed: {error}", file=sys.stderr)
         return 1

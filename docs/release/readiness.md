@@ -26,9 +26,13 @@ including 37 writer fault, alias, cancellation, retargeting, mutation and cooper
 cases. The writer's retained parent descriptor and advisory lock cover cooperating writers;
 non-cooperating same-user mutation remains outside the whole transaction guarantee, with observed
 boundary changes rejected while recovery evidence is retained. Managed-store replacement and archive/UI
-adapters remain gated. Production recognition is also blocked by contradictory BGR/Torch 2.12
-artifact metadata versus the RGB/Torch 2.8 manifest and recipe; a pinned color-asymmetric
-reference-vector proof and reproducible build receipt are required before compatibility.
+adapters remain gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
+and Core ML with a BGR negative control, and two independent locked builds produce identical bytes
+and receipts. The reviewed deterministic model now replaces the contradictory local artifact and all
+declared hashes match. The checked-in compact reference now passes the app's exact `CGImage` preprocessing
+and model-backed embed path with the BGR-negative separation, and a clean-source driver makes the two-process
+evidence repeatable. Hardened streaming/archive installation and a production distribution key/signature
+remain open recognition gates.
 
 [Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
@@ -187,8 +191,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    committed compatible editor-payload contract at `2dc18e9` and strengthened golden directory
    at `da3579e`; Photo Agent's strict directory admission and atomic exact-byte directory writer
    now pass that fixture. Managed-store replacement and both archive/UI adapters remain pending.
-   Resolve the pinned model's BGR/RGB and build-provenance contradiction with a non-skipping
-   image-to-reference-vector test before enabling production companion recognition.
+   Review and replace the pinned model with the independently reproduced RGB artifact before enabling
+   production companion recognition; the image-to-reference proof and deterministic receipt now pass.
    Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
    Resolve those gates before claiming compatible or lossless exchange. Automatic local sync
    remains a separate opt-in App Group phase after both signed targets share one entitlement.

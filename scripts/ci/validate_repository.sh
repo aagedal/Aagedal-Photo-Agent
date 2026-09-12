@@ -40,6 +40,7 @@ python3 -B scripts/ci/test_bundled_component_validator.py
 python3 -B scripts/ci/test_auraface_source_fetch.py
 python3 -B scripts/ci/test_auraface_coreml_build.py
 python3 -B scripts/ci/test_auraface_distribution.py
+python3 -B scripts/ci/test_verify_auraface_reproduction.py
 python3 -B scripts/build_auraface_coreml.py contract
 python3 -B scripts/ci/validate_bundled_components.py
 

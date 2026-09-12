@@ -56,17 +56,23 @@ python3 -B scripts/build_auraface_coreml.py verify
 
 # Materialize only the locked environment, then build twice and verify semantics:
 uv sync --frozen --project scripts/auraface
-uv run --frozen --project scripts/auraface \
+PYTHONHASHSEED=0 uv run --frozen --project scripts/auraface \
   python scripts/build_auraface_coreml.py reproduce
 ```
 
-`reproduce` defaults to `build/auraface/AuraFaceR100.mlpackage`, prints the three file hashes for review,
-and does not overwrite an existing output without `--replace`. To semantically recheck the manifest-declared
+`reproduce` defaults to `build/auraface/AuraFaceR100.mlpackage` and a sibling canonical build receipt. It
+prints the three file hashes, verifies the checked-in asymmetric RGB image against Torch and Core ML, requires
+the swapped-BGR output to differ materially, and does not overwrite an existing output without `--replace`.
+To semantically recheck the manifest-declared
 package against the pinned ONNX source, run `verify --source build/model-sources/auraface/glintr100.onnx`
 through the same `uv run --frozen` command. A reviewed artifact update must copy the generated package into
 this folder, update all three `artifactFiles` hashes in `bundled-components.json`, and rerun repository
 validation. Keep the declared RGB channel order aligned with `CoreMLFaceEmbedder.inputIsRGB`; changing it
 changes the embedding space and requires a migration/version bump.
+
+The 2026-09-12 reviewed local package is that deterministic output. Its model, weights and manifest hashes
+are pinned in `bundled-components.json`; independent receipts are byte-identical and record
+`matchesDeclaredArtifactFiles: true`.
 
 ## Prepare the pre-converted on-demand artifact
 
@@ -86,11 +92,14 @@ to one credential-free HTTPS URL on `aagedal.me`. Packaging refuses undeclared f
 embedding-version drift, mutable/query URLs, and overwrite unless `--replace` is explicitly supplied. This
 produces release candidates only.
 
-Before publishing, sign the descriptor bytes with Sparkle's `sign_update` tool and the same keychain private
-key used for app updates. Extract only the `edSignature` base64 value into
-`AuraFaceR100.distribution.json.sig` (with an optional trailing newline). The app verifies that detached
-Ed25519 signature against `SUPublicEDKey` before it parses any descriptor field, then verifies the declared
-archive and package hashes before compiling or installing the model. Publish the descriptor and signature at
+Before publishing, replace the checked-in development-only model trust anchor with the reviewed public half
+of a dedicated AuraFace distribution Ed25519 key and validate that it differs from `SUPublicEDKey`. Keep its
+private key in a separate release Keychain identity; do not use Sparkle's app-update signing key or
+`sign_update`. Sign the exact compact schema-2 descriptor bytes and store only the canonical 88-byte base64
+signature in `AuraFaceR100.distribution.json.sig` (one trailing LF is accepted). The release signing command
+and private-key identity are still an open gate. The app verifies the detached signature against
+`AuraFaceDistributionPublicEd25519Key`, then verifies the declared archive and package hashes before compiling
+or installing the model. Publish the descriptor and signature at
 the fixed URLs below, and the archive at the descriptor's immutable `downloadURL`:
 
 ```text

@@ -362,13 +362,13 @@ struct FaceEmbeddingTests {
             "Manifest.json": Data("{\"version\":\"\(version)\"}\n".utf8),
         ]
         let descriptor = AuraFaceDistributionDescriptor(
-            schemaVersion: 1,
+            schemaVersion: 2,
             componentID: AuraFaceComponentStore.componentID,
             modelVersion: version,
             embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
             packageDirectory: AuraFaceComponentStore.packageDirectory,
             packageFiles: packageFiles.mapValues {
-                Data(SHA256.hash(data: $0)).lowercaseHexString
+                .init(byteCount: Int64($0.count), sha256: Data(SHA256.hash(data: $0)).lowercaseHexString)
             },
             archive: .init(
                 fileName: "AuraFaceR100.mlpackage.zip",
@@ -379,9 +379,7 @@ struct FaceEmbeddingTests {
                 string: "https://aagedal.me/models/auraface/AuraFaceR100.mlpackage.zip"
             )!
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let descriptorData = try encoder.encode(descriptor)
+        let descriptorData = try descriptor.canonicalData()
         let signature = try privateKey.signature(for: descriptorData)
         return AuraFaceFixture(
             descriptor: descriptor,
@@ -911,6 +909,157 @@ struct FaceEmbeddingTests {
         #expect(!AuraFaceComponentStore.isAllowedDownloadURL(
             URL(string: "https://aagedal.me/models/auraface.zip?latest=1")!
         ))
+    }
+
+    @Test("Schema 2 rejects signed noncanonical, malformed and out-of-bounds descriptors", arguments: [
+        "schema1", "newline", "pretty", "duplicate", "nestedDuplicate", "unknown", "archiveUnknown",
+        "fileUnknown", "escapedKey", "boolean", "fractionalSpelling", "fileZero", "fileOversize",
+        "totalOversize", "archiveZero", "archiveOversize", "modelOversize", "modelEmpty", "unicodeHash",
+        "uppercaseHash", "descriptorOversize", "negativeVersion", "wrongVersion", "missingFile"
+    ])
+    func auraFaceStrictSchema2(kind: String) throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+        var graph = try #require(JSONSerialization.jsonObject(with: fixture.descriptorData) as? [String: Any])
+        var archive = try #require(graph["archive"] as? [String: Any])
+        var files = try #require(graph["packageFiles"] as? [String: [String: Any]])
+        let path = "Manifest.json"
+        switch kind {
+        case "schema1": graph["schemaVersion"] = 1
+        case "unknown": graph["unknown"] = 1
+        case "archiveUnknown": archive["unknown"] = 1
+        case "fileUnknown": files[path]?["unknown"] = 1
+        case "boolean": graph["schemaVersion"] = true
+        case "fileZero": files[path]?["byteCount"] = 0
+        case "fileOversize": files[path]?["byteCount"] = AuraFaceComponentStore.maximumPackageFileBytes + 1
+        case "totalOversize":
+            for name in files.keys { files[name]?["byteCount"] = AuraFaceComponentStore.maximumPackageFileBytes }
+        case "archiveZero": archive["byteCount"] = 0
+        case "archiveOversize": archive["byteCount"] = AuraFaceComponentStore.maximumArchiveBytes + 1
+        case "modelOversize": graph["modelVersion"] = String(repeating: "Å", count: 65)
+        case "modelEmpty": graph["modelVersion"] = ""
+        case "unicodeHash": files[path]?["sha256"] = String(repeating: "١", count: 64)
+        case "uppercaseHash": files[path]?["sha256"] = String(repeating: "A", count: 64)
+        case "negativeVersion": graph["embeddingVersion"] = -1
+        case "wrongVersion": graph["embeddingVersion"] = FaceRecognitionDefaults.embeddingVersion + 1
+        case "missingFile": files.removeValue(forKey: path)
+        default: break
+        }
+        graph["archive"] = archive; graph["packageFiles"] = files
+        var data = try JSONSerialization.data(withJSONObject: graph, options: [.sortedKeys, .withoutEscapingSlashes])
+        var text = String(decoding: data, as: UTF8.self)
+        switch kind {
+        case "newline": text += "\n"
+        case "pretty": text = " " + text
+        case "duplicate": text = "{\"schemaVersion\":2," + text.dropFirst()
+        case "nestedDuplicate": text = text.replacingOccurrences(of: "\"archive\":{", with: "\"archive\":{\"byteCount\":1,")
+        case "escapedKey": text = text.replacingOccurrences(of: "\"schemaVersion\"", with: "\"\\u0073chemaVersion\"")
+        case "fractionalSpelling": text = text.replacingOccurrences(of: "\"schemaVersion\":2", with: "\"schemaVersion\":2.0")
+        case "descriptorOversize": text += String(repeating: " ", count: AuraFaceComponentStore.maximumDescriptorBytes)
+        default: break
+        }
+        data = Data(text.utf8)
+        let signature = try key.signature(for: data).base64EncodedData()
+        #expect(throws: (any Error).self) {
+            try AuraFaceComponentStore.verifySignedDescriptor(data, signatureData: signature,
+                publicKeyData: key.publicKey.rawRepresentation)
+        }
+    }
+
+    @Test("Schema 2 accepts Python compact sorted UTF-8 bytes including unescaped Unicode")
+    func auraFaceCanonicalInteroperability() throws {
+        // Independent wire string follows Python json.dumps(sort_keys=True,
+        // separators=(",", ":"), ensure_ascii=False), not the Swift encoder under test.
+        let zero = String(repeating: "0", count: 64)
+        let text = "{\"archive\":{\"byteCount\":268435456,\"fileName\":\"AuraFaceR100.mlpackage.zip\",\"sha256\":\"\(zero)\"},\"componentID\":\"auraface-r100-coreml\",\"downloadURL\":\"https://aagedal.me/models/AuraFaceR100.mlpackage.zip\",\"embeddingVersion\":3,\"modelVersion\":\"Å😀/v1\",\"packageDirectory\":\"AuraFaceR100.mlpackage\",\"packageFiles\":{\"Data/com.apple.CoreML/model.mlmodel\":{\"byteCount\":201326592,\"sha256\":\"\(zero)\"},\"Data/com.apple.CoreML/weights/weight.bin\":{\"byteCount\":1,\"sha256\":\"\(zero)\"},\"Manifest.json\":{\"byteCount\":1,\"sha256\":\"\(zero)\"}},\"schemaVersion\":2}"
+        let data = Data(text.utf8)
+        let key = Curve25519.Signing.PrivateKey()
+        let descriptor = try AuraFaceComponentStore.verifySignedDescriptor(data,
+            signatureData: key.signature(for: data).base64EncodedData(), publicKeyData: key.publicKey.rawRepresentation)
+        #expect(try descriptor.canonicalData() == data)
+        #expect(descriptor.modelVersion == "Å😀/v1")
+        #expect(descriptor.archive.byteCount == AuraFaceComponentStore.maximumArchiveBytes)
+    }
+
+    @Test("Download URL policy rejects alternate origins, syntax and parameters", arguments: [
+        "https://aagedal.me:443/AuraFaceR100.mlpackage.zip", "https://AAGEDAL.ME/AuraFaceR100.mlpackage.zip", "HTTPS://aagedal.me/AuraFaceR100.mlpackage.zip",
+        "https://user@aagedal.me/AuraFaceR100.mlpackage.zip", "https://aagedal.me/AuraFaceR100.mlpackage.zip?", "https://aagedal.me/AuraFaceR100.mlpackage.zip#",
+        "https://aagedal.me/AuraFaceR100.mlpackage.zip;x", "https://aagedal.me/", "https://aagedal.me.evil/AuraFaceR100.mlpackage.zip",
+        "https://aagedal.me./AuraFaceR100.mlpackage.zip", "http://aagedal.me/AuraFaceR100.mlpackage.zip",
+        "https://aagedal.me/models/other.zip", "https://aagedal.me/models/%41uraFaceR100.mlpackage.zip",
+        "https://aagedal.me/models/AuraFaceR100.mlpackage.zip;parameter"
+    ])
+    func auraFaceStrictDownloadURL(value: String) throws {
+        let url = try #require(URL(string: value))
+        #expect(!AuraFaceComponentStore.isAllowedDownloadURL(url))
+    }
+
+    @Test("Download URL policy accepts exact artifact names on both declared origins", arguments: [
+        "https://aagedal.me/AuraFaceR100.mlpackage.zip",
+        "https://www.aagedal.me/models/2026-09/AuraFaceR100.mlpackage.zip",
+        "https://aagedal.me/models/v%201/AuraFaceR100.mlpackage.zip"
+    ])
+    func auraFaceExactDownloadURL(value: String) throws {
+        #expect(AuraFaceComponentStore.isAllowedDownloadURL(try #require(URL(string: value))))
+    }
+
+    @Test("Dedicated model key never falls back to the app update key")
+    func auraFaceModelKeySeparation() throws {
+        let model = Curve25519.Signing.PrivateKey()
+        let sparkle = Curve25519.Signing.PrivateKey()
+        let sparkleOnly: [String: Any] = ["SUPublicEDKey": sparkle.publicKey.rawRepresentation.base64EncodedString()]
+        #expect(AuraFaceComponentStore.publicKeyData(infoDictionary: sparkleOnly) == nil)
+        var info = sparkleOnly
+        info["AuraFaceDistributionPublicEd25519Key"] = "Zm9v"
+        #expect(AuraFaceComponentStore.publicKeyData(infoDictionary: info) == nil)
+        info["AuraFaceDistributionPublicEd25519Key"] = model.publicKey.rawRepresentation.base64EncodedString()
+        let modelKey = try #require(AuraFaceComponentStore.publicKeyData(infoDictionary: info))
+        #expect(modelKey == model.publicKey.rawRepresentation)
+        let fixture = try makeAuraFaceFixture(privateKey: sparkle)
+        #expect(throws: AuraFaceComponentError.invalidDescriptorSignature) {
+            try AuraFaceComponentStore.verifySignedDescriptor(fixture.descriptorData,
+                signatureData: fixture.signatureData, publicKeyData: modelKey)
+        }
+    }
+
+    @Test("Detached signatures permit only canonical base64 with one optional LF", arguments: [
+        "", "\n", "\r", "\r\n", "\n\n", " ", "leadingSpace"
+    ])
+    func auraFaceSignatureWireFormat(suffix: String) throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+        let bytes = suffix == "leadingSpace" ? Data(" ".utf8) + fixture.signatureData
+            : fixture.signatureData + Data(suffix.utf8)
+        if suffix == "" || suffix == "\n" {
+            #expect(try AuraFaceComponentStore.verifySignedDescriptor(fixture.descriptorData,
+                signatureData: bytes, publicKeyData: key.publicKey.rawRepresentation) == fixture.descriptor)
+        } else {
+            #expect(throws: AuraFaceComponentError.invalidDescriptorSignature) {
+                try AuraFaceComponentStore.verifySignedDescriptor(fixture.descriptorData,
+                    signatureData: bytes, publicKeyData: key.publicKey.rawRepresentation)
+            }
+        }
+    }
+
+    @Test("Package admission checks signed lengths even when hashes match")
+    func auraFacePackageLengthMismatch() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        let fixture = try makeAuraFaceFixture(privateKey: key)
+        var graph = try #require(JSONSerialization.jsonObject(with: fixture.descriptorData) as? [String: Any])
+        var files = try #require(graph["packageFiles"] as? [String: [String: Any]])
+        files["Manifest.json"]?["byteCount"] = 1
+        graph["packageFiles"] = files
+        let bytes = try JSONSerialization.data(withJSONObject: graph, options: [.sortedKeys, .withoutEscapingSlashes])
+        let descriptor = try AuraFaceComponentStore.verifySignedDescriptor(bytes,
+            signatureData: key.signature(for: bytes).base64EncodedData(), publicKeyData: key.publicKey.rawRepresentation)
+        let root = try temporaryAuraFaceRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let io = makeAuraFaceIO(packageFiles: fixture.packageFiles)
+        try io.extractArchive(root.appendingPathComponent("unused.zip"), root)
+        #expect(throws: AuraFaceComponentError.packageHashMismatch("Manifest.json")) {
+            try AuraFaceComponentStore.verifyPackage(at: root.appendingPathComponent(AuraFaceComponentStore.packageDirectory),
+                descriptor: descriptor, io: io)
+        }
     }
 
     @Test func auraFaceCleanInstallVerifiesAndPersistsSignedReceipt() async throws {

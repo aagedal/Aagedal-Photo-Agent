@@ -193,7 +193,9 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
 
     /// Draw the face into a deterministic 112×112 sRGB buffer (top-left origin) and pack
     /// it into a normalized NCHW float32 MLMultiArray.
-    private static func makeInput(from image: CGImage) -> MLMultiArray? {
+    /// Internal visibility lets the release contract test exercise the exact production
+    /// preprocessing path even when the optional model is absent from a clean checkout.
+    static func makeInput(from image: CGImage) -> MLMultiArray? {
         let n = inputSize
         let bytesPerRow = n * 4
         var pixels = [UInt8](repeating: 0, count: n * n * 4)

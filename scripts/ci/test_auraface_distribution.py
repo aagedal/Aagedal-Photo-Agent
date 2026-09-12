@@ -124,6 +124,7 @@ class AuraFaceDistributionTests(unittest.TestCase):
         for url in (
             "http://aagedal.me/models/model.zip",
             "https://example.com/model.zip",
+            "https://aagedal.me/models/model.zip",
             "https://aagedal.me/models/model.zip?latest=1",
             "https://aagedal.me:443/models/model.zip",
             "https://aagedal.me:8443/models/model.zip",
@@ -165,7 +166,7 @@ class AuraFaceDistributionTests(unittest.TestCase):
                 archive,
                 descriptor,
                 self.contract,
-                "https://aagedal.me/models/existing.zip",
+                "https://aagedal.me/models/AuraFaceR100.mlpackage.zip",
                 False,
             )
         self.assertEqual(archive.read_bytes(), b"old archive")

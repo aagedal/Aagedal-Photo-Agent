@@ -4,6 +4,11 @@ import CoreML
 import CryptoKit
 
 nonisolated struct AuraFaceDistributionDescriptor: Codable, Equatable, Sendable {
+    struct PackageFile: Codable, Equatable, Sendable {
+        let byteCount: Int64
+        let sha256: String
+    }
+
     struct Archive: Codable, Equatable, Sendable {
         let fileName: String
         let byteCount: Int64
@@ -15,9 +20,16 @@ nonisolated struct AuraFaceDistributionDescriptor: Codable, Equatable, Sendable 
     let modelVersion: String
     let embeddingVersion: Int
     let packageDirectory: String
-    let packageFiles: [String: String]
+    let packageFiles: [String: PackageFile]
     let archive: Archive
     let downloadURL: URL
+
+    /// Schema 2 signs precisely these compact UTF-8 bytes, with no trailing newline.
+    func canonicalData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(self)
+    }
 }
 
 nonisolated struct AuraFaceHTTPPayload: Sendable {
@@ -27,6 +39,8 @@ nonisolated struct AuraFaceHTTPPayload: Sendable {
 
 nonisolated enum AuraFaceComponentError: LocalizedError, Equatable {
     case invalidServerResponse
+    case redirectedResponse
+    case responseTooLarge
     case invalidDescriptorSignature
     case invalidDescriptor(String)
     case incompatibleEmbeddingVersion(required: Int, supported: Int)
@@ -34,12 +48,19 @@ nonisolated enum AuraFaceComponentError: LocalizedError, Equatable {
     case archiveHashMismatch
     case packageFileSetMismatch
     case packageHashMismatch(String)
+    case invalidArchive
+    case unsafeArchive
+    case io
     case installationFailed
 
     var errorDescription: String? {
         switch self {
         case .invalidServerResponse:
             "The AuraFace download server returned an invalid response."
+        case .redirectedResponse:
+            "The AuraFace server redirected a fixed download URL."
+        case .responseTooLarge:
+            "The AuraFace response exceeded its allowed size."
         case .invalidDescriptorSignature:
             "The AuraFace manifest signature is invalid. The model was not installed."
         case .invalidDescriptor(let reason):
@@ -54,6 +75,12 @@ nonisolated enum AuraFaceComponentError: LocalizedError, Equatable {
             "The AuraFace package contains an unexpected file set."
         case .packageHashMismatch(let path):
             "The AuraFace package hash did not match for \(path)."
+        case .invalidArchive:
+            "The AuraFace archive is not a valid bounded ZIP32 package."
+        case .unsafeArchive:
+            "The AuraFace archive contains an unsafe entry or destination."
+        case .io:
+            "The AuraFace archive could not be accessed safely."
         case .installationFailed:
             "AuraFace could not be installed. The previous version was restored."
         }
@@ -77,11 +104,7 @@ nonisolated struct AuraFaceComponentIO: @unchecked Sendable {
 
     static let live = AuraFaceComponentIO(
         fetch: { url in
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse else {
-                throw AuraFaceComponentError.invalidServerResponse
-            }
-            return AuraFaceHTTPPayload(data: data, statusCode: http.statusCode)
+            try await AuraFaceBoundedHTTP.fetch(url)
         },
         createDirectory: { url in
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -95,7 +118,7 @@ nonisolated struct AuraFaceComponentIO: @unchecked Sendable {
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                options: [.skipsHiddenFiles]
+                options: []
             ) else { return [] }
             var files: [URL] = []
             for case let url as URL in enumerator {
@@ -108,17 +131,8 @@ nonisolated struct AuraFaceComponentIO: @unchecked Sendable {
             return files
         },
         extractArchive: { archive, destination in
-            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-            process.arguments = ["-x", "-k", "--noqtn", archive.path, destination.path]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw AuraFaceComponentError.packageFileSetMismatch
-            }
+            let admitted = try AuraFaceZIPArchive(url: archive)
+            try admitted.extract(to: destination)
         },
         compileModel: { package, destination in
             let compiled = try MLModel.compileModel(at: package)
@@ -128,6 +142,9 @@ nonisolated struct AuraFaceComponentIO: @unchecked Sendable {
 }
 
 nonisolated enum AuraFaceComponentStore {
+    static let maximumDescriptorBytes = 16_384
+    static let maximumPackageFileBytes: Int64 = 192 * 1_048_576
+    static let maximumArchiveBytes: Int64 = 256 * 1_048_576
     static let componentID = "auraface-r100-coreml"
     static let packageDirectory = "AuraFaceR100.mlpackage"
     static let compiledDirectory = "AuraFaceR100.mlmodelc"
@@ -156,10 +173,13 @@ nonisolated enum AuraFaceComponentStore {
     static var rollback: URL { root.appendingPathComponent("rollback", isDirectory: true) }
 
     static func productionPublicKeyData(bundle: Bundle = .main) -> Data? {
-        guard let encoded = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
-            return nil
-        }
-        return Data(base64Encoded: encoded)
+        publicKeyData(infoDictionary: bundle.infoDictionary ?? [:])
+    }
+
+    static func publicKeyData(infoDictionary: [String: Any]) -> Data? {
+        guard let encoded = infoDictionary["AuraFaceDistributionPublicEd25519Key"] as? String,
+              let data = Data(base64Encoded: encoded), data.count == 32 else { return nil }
+        return data
     }
 
     static func verifySignedDescriptor(
@@ -167,47 +187,57 @@ nonisolated enum AuraFaceComponentStore {
         signatureData: Data,
         publicKeyData: Data
     ) throws -> AuraFaceDistributionDescriptor {
-        let signatureText = String(decoding: signatureData, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let signature = Data(base64Encoded: signatureText), signature.count == 64,
+        guard !descriptorData.isEmpty, descriptorData.count <= maximumDescriptorBytes else {
+            throw AuraFaceComponentError.invalidDescriptor("descriptor exceeds size limit")
+        }
+        var encodedSignature = signatureData
+        if encodedSignature.last == 10 { encodedSignature.removeLast() }
+        guard encodedSignature.count == 88,
+              let signature = Data(base64Encoded: encodedSignature), signature.count == 64,
+              signature.base64EncodedData() == encodedSignature,
               publicKeyData.count == 32,
               let publicKey = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKeyData),
               publicKey.isValidSignature(signature, for: descriptorData) else {
             throw AuraFaceComponentError.invalidDescriptorSignature
         }
 
-        let object = try JSONSerialization.jsonObject(with: descriptorData)
-        guard let document = object as? [String: Any],
-              Set(document.keys) == [
-                "schemaVersion", "componentID", "modelVersion", "embeddingVersion",
-                "packageDirectory", "packageFiles", "archive", "downloadURL",
-              ] else {
-            throw AuraFaceComponentError.invalidDescriptor("unexpected schema")
-        }
         let descriptor: AuraFaceDistributionDescriptor
         do {
             descriptor = try JSONDecoder().decode(AuraFaceDistributionDescriptor.self, from: descriptorData)
         } catch {
             throw AuraFaceComponentError.invalidDescriptor("values could not be decoded")
         }
+        // Typed re-encoding rejects unknown/duplicate keys at every nesting level,
+        // alternate escapes/numeric spellings, whitespace and URL normalization.
+        guard try descriptor.canonicalData() == descriptorData else {
+            throw AuraFaceComponentError.invalidDescriptor("descriptor must use exact canonical JSON")
+        }
         try validate(descriptor)
         return descriptor
     }
 
     static func validate(_ descriptor: AuraFaceDistributionDescriptor) throws {
-        guard descriptor.schemaVersion == 1,
+        guard descriptor.schemaVersion == 2,
               descriptor.componentID == componentID,
               !descriptor.modelVersion.isEmpty,
+              descriptor.modelVersion.utf8.count <= 128,
               descriptor.embeddingVersion > 0,
               descriptor.packageDirectory == packageDirectory,
               Set(descriptor.packageFiles.keys) == expectedPackageFiles,
-              descriptor.packageFiles.values.allSatisfy(isLowercaseSHA256),
+              descriptor.packageFiles.values.allSatisfy({
+                  $0.byteCount > 0 && $0.byteCount <= maximumPackageFileBytes
+                      && isLowercaseSHA256($0.sha256)
+              }),
               descriptor.archive.fileName == "AuraFaceR100.mlpackage.zip",
               descriptor.archive.byteCount > 0,
-              descriptor.archive.byteCount <= 500_000_000,
+              descriptor.archive.byteCount <= maximumArchiveBytes,
               isLowercaseSHA256(descriptor.archive.sha256),
               isAllowedDownloadURL(descriptor.downloadURL) else {
             throw AuraFaceComponentError.invalidDescriptor("identity, hashes, size, or HTTPS URL is invalid")
+        }
+        // Per-file bounds above make this sum safe from overflow.
+        guard descriptor.packageFiles.values.reduce(Int64(0), { $0 + $1.byteCount }) <= maximumArchiveBytes else {
+            throw AuraFaceComponentError.invalidDescriptor("package exceeds size limit")
         }
         guard descriptor.embeddingVersion == FaceRecognitionDefaults.embeddingVersion else {
             throw AuraFaceComponentError.incompatibleEmbeddingVersion(
@@ -218,13 +248,17 @@ nonisolated enum AuraFaceComponentStore {
     }
 
     static func isAllowedDownloadURL(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "https",
-              let host = url.host?.lowercased(),
-              host == "aagedal.me" || host == "www.aagedal.me",
-              url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil,
-              !url.path.isEmpty, !url.path.hasSuffix("/") else { return false }
-        return true
+        let value = url.absoluteString
+        guard let prefix = ["https://aagedal.me/", "https://www.aagedal.me/"]
+            .first(where: { value.hasPrefix($0) }) else { return false }
+        let path = "/" + String(value.dropFirst(prefix.count))
+        guard !path.hasSuffix("/"),
+              let lastComponent = path.split(separator: "/").last,
+              lastComponent == "AuraFaceR100.mlpackage.zip" else { return false }
+        // Match the producer's literal ASCII URL policy. In particular, ports,
+        // credentials, alternate host spellings, query/fragment and backslashes fail.
+        let pattern = #"\A(?:[A-Za-z0-9._~!$&'()*+,;=:@/-]|%[0-9A-Fa-f]{2})+\z"#
+        return path.range(of: pattern, options: .regularExpression) != nil
     }
 
     static func verifyPackage(
@@ -245,7 +279,9 @@ nonisolated enum AuraFaceComponentStore {
         for relative in expectedPackageFiles.sorted() {
             let data = try io.read(package.appendingPathComponent(relative))
             let actual = Data(SHA256.hash(data: data)).lowercaseHexString
-            guard actual == descriptor.packageFiles[relative] else {
+            guard let declaration = descriptor.packageFiles[relative],
+                  Int64(data.count) == declaration.byteCount,
+                  actual == declaration.sha256 else {
                 throw AuraFaceComponentError.packageHashMismatch(relative)
             }
         }
@@ -272,7 +308,7 @@ nonisolated enum AuraFaceComponentStore {
     }
 
     private static func isLowercaseSHA256(_ value: String) -> Bool {
-        value.count == 64 && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 
@@ -295,6 +331,7 @@ actor AuraFaceComponentInstaller {
     }
 
     func downloadAndInstall() async throws -> AuraFaceDistributionDescriptor {
+        try Task.checkCancellation()
         let descriptorPayload = try await fetch(AuraFaceComponentStore.descriptorURL)
         let signaturePayload = try await fetch(AuraFaceComponentStore.signatureURL)
         let descriptor = try AuraFaceComponentStore.verifySignedDescriptor(
@@ -315,6 +352,7 @@ actor AuraFaceComponentInstaller {
         signatureData: Data,
         archiveData: Data
     ) throws -> AuraFaceDistributionDescriptor {
+        try Task.checkCancellation()
         let descriptor = try AuraFaceComponentStore.verifySignedDescriptor(
             descriptorData,
             signatureData: signatureData,
@@ -337,6 +375,7 @@ actor AuraFaceComponentInstaller {
         try io.write(archiveData, archive)
         let extracted = transaction.appendingPathComponent("extracted", isDirectory: true)
         try io.extractArchive(archive, extracted)
+        try Task.checkCancellation()
         let package = extracted.appendingPathComponent(descriptor.packageDirectory, isDirectory: true)
         try AuraFaceComponentStore.verifyPackage(at: package, descriptor: descriptor, io: io)
 
@@ -347,6 +386,7 @@ actor AuraFaceComponentInstaller {
             candidate.appendingPathComponent(AuraFaceComponentStore.packageDirectory),
             candidate.appendingPathComponent(AuraFaceComponentStore.compiledDirectory)
         )
+        try Task.checkCancellation()
         try io.write(descriptorData, candidate.appendingPathComponent(AuraFaceComponentStore.descriptorFile))
         try io.write(signatureData, candidate.appendingPathComponent(AuraFaceComponentStore.signatureFile))
 
@@ -362,7 +402,11 @@ actor AuraFaceComponentInstaller {
     }
 
     private func fetch(_ url: URL) async throws -> AuraFaceHTTPPayload {
+        try Task.checkCancellation()
+        let limit = try AuraFaceBoundedHTTP.limit(for: url)
         let payload = try await io.fetch(url)
+        try Task.checkCancellation()
+        guard payload.data.count <= limit else { throw AuraFaceComponentError.responseTooLarge }
         guard (200..<300).contains(payload.statusCode) else {
             throw AuraFaceComponentError.invalidServerResponse
         }
