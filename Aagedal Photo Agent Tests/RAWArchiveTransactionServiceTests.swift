@@ -38,6 +38,13 @@ struct RAWArchiveTransactionServiceTests {
         #expect(try VoiceMemoCompanionRepository().lookup(for: destination) == .available(
             VoiceMemoAssociation(profileIdentifier: fixture.profile, imageURL: destination, memoURL: memo)
         ))
+        let persisted = try JSONDecoder().decode(
+            VoiceMemoCompanionRecord.self,
+            from: Data(contentsOf: record)
+        )
+        #expect(persisted.provenance == .archiveDerivative)
+        #expect(persisted.imageIdentity != nil)
+        #expect(persisted.memoIdentity != nil)
         #expect(try Data(contentsOf: fixture.image) == Data("source-raw".utf8))
         #expect(try Data(contentsOf: fixture.memo) == Data("memo".utf8))
         #expect(try Data(contentsOf: fixture.xmp) == Data("source-xmp".utf8))

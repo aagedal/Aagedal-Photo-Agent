@@ -183,6 +183,10 @@ actor RAWArchiveTransactionService {
             let companion = try repository.stageArchiveCompanion(
                 from: source,
                 for: destination,
+                imageIdentity: VoiceMemoCompanionContentIdentity(
+                    byteCount: renderedEvidence.snapshot.byteCount,
+                    sha256: renderedEvidence.digest.lowercaseHexString
+                ),
                 in: staging
             )
             guard try optionalFileMatches(sourceSidecar, at: sourceSidecarURL) else {

@@ -415,6 +415,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     func stageArchiveCompanion(
         from snapshot: ArchiveSourceSnapshot,
         for destinationImageURL: URL,
+        imageIdentity: VoiceMemoCompanionContentIdentity,
         in stagingDirectory: URL
     ) throws -> StagedArchiveCompanion {
         try revalidateArchiveSource(snapshot)
@@ -441,6 +442,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             profileIdentifier: association.profileIdentifier,
             imageFilename: destinationImageURL.lastPathComponent,
             memoFilename: destinationMemo.lastPathComponent,
+            imageIdentity: imageIdentity,
             memoIdentity: contentIdentity(for: memoRevision),
             provenance: .archiveDerivative
         )
