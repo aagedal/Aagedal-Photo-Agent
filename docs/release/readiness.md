@@ -1,10 +1,10 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People directory/archive interchange, local identity, replacement and UI are committed and verified; cloud reconciliation and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange, identity, replacement, UI and explicit cloud reconciliation are committed and pass automated verification; native cloud and broader release gates remain.
 **Updated:** 2026-09-12
-**Latest implementation commit:** `c87cc63` (2,832 tests / 310 suites, repository checks and independent review passed).
+**Latest implementation commit:** `05f484a` (2,839 tests / 311 suites and repository checks passed; independent review not run for cycle 19).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–18 advance the Known People interchange through core, first-time identity, service/controller and UI.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance the Known People interchange through core, first-time identity, service/controller, UI and explicit cloud reconciliation.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
@@ -20,7 +20,7 @@ invalid names/IDs, people without examples, unknown provenance and invalid FEM2.
 core checkpoint adds strict ZIP32 transport, descriptor-bound whole-root replacement, exact
 admitted-package retention, tracked local capture, route/iCloud exclusion, generation invalidation
 and the exported `.aagedalpeople` package type. The integrated focused run passes 149 declared
-tests across 346 expanded cases; repository checks and independent source review pass.
+tests across 346 expanded cases; repository checks and the earlier core source review pass.
 The compatible companion contract is pinned to FTP Sync `2dc18e9` after its full suite
 passed. Its strengthened golden directory is pinned at `da3579e`; Photo Agent admits that
 fixture byte exactly through a strict no-follow directory reader and re-exports the captured
@@ -30,7 +30,9 @@ cases. The writer's retained parent descriptor and advisory lock cover cooperati
 non-cooperating same-user mutation remains outside the whole transaction guarantee, with observed
 boundary changes rejected while recovery evidence is retained. First-time identity assignment,
 strict directory/archive admission, high-level export preparation and the shared Settings/Expanded
-Known People UI now pass automated and native checks. Explicit local-to-cloud reconciliation
+Known People UI now pass automated and native checks. Explicit local-to-cloud replacement now
+publishes a complete isolated generation behind a strict active pointer and clears the local gate
+only after verified publication; its automated checks pass, while native iCloud/multi-Mac evidence
 remains gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
 and Core ML with a BGR negative control, and two independent locked builds produce identical bytes
 and receipts. The reviewed deterministic model now replaces the contradictory local artifact and all
@@ -198,8 +200,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    now pass that fixture. Photo Agent's strict ZIP32 archive, managed-store replacement and
    tracked local snapshot builder, atomic first-time identity assignment, unified package
    admission/export service APIs and the Settings/Expanded Known People controller pass integrated
-   review, automated tests and disposable-root native checks. Implement explicit local-to-cloud
-   reconciliation next, and coordinate the presented 65,534-entry archive limit with FTP Sync.
+   review, automated tests and disposable-root native checks. Explicit local-to-cloud reconciliation
+   is implemented and passes the complete automated suite; exercise it with disposable real iCloud
+   and multi-Mac interruption/removal cases next, and coordinate the presented 65,534-entry archive
+   limit with FTP Sync.
    Review and replace the pinned model with the independently reproduced RGB artifact before enabling
    production companion recognition; the image-to-reference proof and deterministic receipt now pass.
    Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
@@ -334,7 +338,11 @@ replacement with rollback evidence, exact visible Unicode/braces, same-library i
 byte-exact directory export and valid STORED ZIP export. The tested app stopped cleanly.
 The archive contract is 65,534 entries because `0xffff` is the ZIP64 sentinel; directory
 packages retain the 200,001-file schema cap. The companion app and UI must present the same
-limit. Explicit local-to-cloud reconciliation and later opt-in App Group publication remain
+limit. Explicit local-to-cloud reconciliation is committed as `05f484a` and recorded in
+[cycle 19](cycle-19-known-people-cloud-reconciliation-2026-09-12.md): strict write-once generation
+publication, cancellation-truthful pointer commit, active-generation routing and destructive UI
+confirmation pass 2,839 tests / 311 suites plus repository validation. Native real-iCloud and
+multi-Mac evidence, independent cycle-19 review and later opt-in App Group publication remain
 separate. Production AuraFace distribution trust and legacy embedding provenance remain open.
 
 `ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five

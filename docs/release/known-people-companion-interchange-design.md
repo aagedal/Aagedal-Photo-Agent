@@ -2,9 +2,10 @@
 
 Status: coordinated schema-2 directory and ZIP admission, provenance enforcement,
 transactional local replacement, tracked/first-identity export, and the shared Settings/Expanded
-Known People UI are implemented and verified in Photo Agent. Manual interchange remains
-local-route only: malformed or legacy/unknown-provenance stores are refused, and explicit
-local-to-cloud reconciliation is still required. Automatic local sharing remains a later opt-in phase.
+Known People UI are implemented and verified in Photo Agent. Explicit generation-safe
+local-to-cloud replacement is implemented and passes automated verification; native iCloud and
+multi-Mac evidence remains required. Malformed or legacy/unknown-provenance stores are refused.
+Automatic local sharing remains a later opt-in phase.
 
 ## Ownership and phases
 
@@ -267,8 +268,10 @@ precommit retry, and commits only through the existing whole-root owner gateway.
 uncertain result is retained and never replayed. Identity, builder and managed replacement pass
 46 declared tests across 84 expanded cases with independent approval. Unified directory/archive
 admission, owner-held export preparation, production writers and shared user-facing adapters are
-implemented and verified. Explicit local-to-cloud reconciliation, cross-app end-to-end
-matching/re-export evidence, legacy-sample disposition and App Group publication remain.
+implemented and verified. Explicit local-to-cloud reconciliation is implemented at `05f484a` using
+write-once generation IDs and a strict content-bound active pointer; its complete suite passes 2,839
+tests / 311 suites. Native iCloud/multi-Mac and cross-app end-to-end matching/re-export evidence,
+legacy-sample disposition and App Group publication remain.
 
 The contradictory older local AuraFace package has been replaced by the reviewed deterministic build.
 The manifest, locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0; a checked-in
