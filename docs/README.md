@@ -24,6 +24,8 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Known limitations](limitations-3.0.md) — material product, evidence, interoperability, and release
   boundaries.
 - [Privacy draft](../PRIVACY.md) — local storage, optional sync, network use, retention, and deletion.
+- [Known People companion interchange](release/known-people-companion-interchange-design.md) —
+  the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
 **Latest improvement continuation:** [Cycle 15: retained Primary Develop writes](release/cycle-15-primary-develop-retention-2026-09-11.md). Source `be970f0` passes independent review, 2,687 tests and repository checks. Native genuine failed-save retention, Undo-on-exit, scoped export/tamper/discard, fresh saves and dual Reset pass; the retention checkpoint also passes exact relaunch persistence. The final notice regression verifies unresolved warnings remain and resolved warnings clear. No preferences changed; QA apps stopped. Wider feature/release gates remain open.

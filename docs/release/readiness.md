@@ -10,6 +10,13 @@
 
 ## Current evidence
 
+[Known People companion interchange](known-people-companion-interchange-design.md)
+records the exact FTP Sync schema-2 projection, lossless Photo Agent extension,
+replacement semantics and later opt-in App Group channel. Strict shared FEM2 admission
+is implemented and independently reviewed; 23 focused tests and repository checks pass.
+Package export/import remains gated on companion acceptance of the opaque editor payload
+and a trustworthy policy for legacy embedding provenance.
+
 [Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
 [Cycle 14 XMP baselines](cycle-14-xmp-baselines-2026-09-11.md) captures exact load-time bytes,
@@ -162,29 +169,35 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Extend Develop native coverage to named-version failed transitions and crop changes during
+1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
+   [the companion design](known-people-companion-interchange-design.md). FTP Sync's current
+   schema-2 reader rejects the required opaque Photo Agent editor payload and has no archive
+   adapter; legacy Photo Agent imports also lack trustworthy embedding-space provenance.
+   Resolve those gates before claiming compatible or lossless exchange. Automatic local sync
+   remains a separate opt-in App Group phase after both signed targets share one entitlement.
+2. Extend Develop native coverage to named-version failed transitions and crop changes during
    drag. Cycle 15 closes failed-save retention, Undo-on-exit and stale recovery notices;
    do not repeat unchanged automated suites without a relevant change.
-2. Complete remaining variable native cases: focused live-field commit, >20-field templates,
+3. Complete remaining variable native cases: focused live-field commit, >20-field templates,
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
    checks without a relevant change. Review lifetime/IME and Write All's broader cases remain separate.
-3. Complete remaining Sony companion archive and source reassociation using the source-backed
+4. Complete remaining Sony companion archive and source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Ingest, rename, Duplicate, Move, Reject and
    memo Trash now have implementation. Preserve explicit ownership through rendering/signing/
    cleanup; schema-1 filename hints alone cannot establish historical reassociation identity.
-4. Implement cancellable local transcription with explicit language/model/offline state,
+5. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
-5. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
+6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
    real Sony, long error scrolling, face-group Trash, Bridge/Photo Mechanic, disposable transports,
    accessibility/IME/display, solar/reports and measured performance. Narrow evidence is not a full gate.
-6. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
+7. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
    and protected remote branch enforcement remain external prerequisites. Complete independent
    work before an actionable blocker handoff; do not silently move mandatory gates to acceptance.
-7. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
+8. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
    candidate, finalize and visually verify the [HTML checklist](manual-testing-checklist.html),
    then follow [the coordinator protocol](coordinator.md) before notifying for acceptance.
 
@@ -265,6 +278,14 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+The Known People companion contract is now the highest-priority coordinated slice.
+Photo Agent has a reviewed strict FEM2 codec matching FTP Sync's live reader; focused-v3
+passes 23 tests / one suite in 0.141s and repository checks pass. The package itself is
+not yet presented in either UI. FTP Sync must first accept and preserve the optional
+hash-bound editor payload and add archive admission; Photo Agent must establish honest
+provenance for legacy imported samples. Automatic sync is intentionally later and needs
+separate consent plus matching signed App Group entitlements in both targets.
 
 `ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five
 suites; full-v3 passes 2,687 tests / 297 suites in 102.945s and repository-v2 passes.

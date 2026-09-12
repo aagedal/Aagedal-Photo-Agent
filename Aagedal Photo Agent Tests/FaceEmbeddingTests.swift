@@ -115,6 +115,115 @@ struct FaceEmbeddingTests {
 
     // MARK: - EmbeddingCodec
 
+    @Test func interchangeCodecWritesCanonicalFEM2AndNormalizesAcceptedDrift() throws {
+        var vector = [Float](repeating: 0, count: 512)
+        vector[0] = 1
+
+        let data = try FaceEmbeddingInterchangeCodec.encode(vector)
+        #expect(data.count == 2_056)
+        #expect(Array(data.prefix(8)) == [0x32, 0x4d, 0x45, 0x46, 0x00, 0x02, 0x00, 0x00])
+        #expect(Array(data[8..<12]) == [0x00, 0x00, 0x80, 0x3f])
+        let decoded = try FaceEmbeddingInterchangeCodec.validate(data)
+        #expect(decoded.count == 512)
+        #expect(decoded[0] == 1)
+        #expect(decoded.dropFirst().allSatisfy { $0 == 0 })
+
+        vector[0] = 1.00005
+        let drifted = EmbeddingCodec.encode(vector)
+        let normalized = try FaceEmbeddingInterchangeCodec.validate(drifted)
+        #expect(abs(normalized[0] - 1) < 0.000001)
+    }
+
+    @Test func interchangeCodecRejectsMalformedOrIncompatibleVectors() throws {
+        var valid = [Float](repeating: 0, count: 512)
+        valid[0] = 1
+
+        #expect(throws: FaceEmbeddingInterchangeError.invalidByteCount(actual: 3)) {
+            try FaceEmbeddingInterchangeCodec.validate(Data([1, 2, 3]))
+        }
+        #expect(throws: FaceEmbeddingInterchangeError.invalidByteCount(actual: 2_057)) {
+            try FaceEmbeddingInterchangeCodec.validate(
+                try FaceEmbeddingInterchangeCodec.encode(valid) + Data([0])
+            )
+        }
+        #expect(throws: FaceEmbeddingInterchangeError.invalidByteCount(actual: 2_055)) {
+            try FaceEmbeddingInterchangeCodec.validate(
+                Data(try FaceEmbeddingInterchangeCodec.encode(valid).dropLast())
+            )
+        }
+
+        var wrongMagic = try FaceEmbeddingInterchangeCodec.encode(valid)
+        wrongMagic[0] = 0
+        #expect(throws: FaceEmbeddingInterchangeError.invalidMagic) {
+            try FaceEmbeddingInterchangeCodec.validate(wrongMagic)
+        }
+
+        var wrongDimension = try FaceEmbeddingInterchangeCodec.encode(valid)
+        wrongDimension.replaceSubrange(4..<8, with: [1, 0, 0, 0])
+        #expect(throws: FaceEmbeddingInterchangeError.invalidDimension(actual: 1)) {
+            try FaceEmbeddingInterchangeCodec.validate(wrongDimension)
+        }
+
+        var notFinite = try FaceEmbeddingInterchangeCodec.encode(valid)
+        notFinite.replaceSubrange(8..<12, with: [0x00, 0x00, 0xc0, 0x7f])
+        #expect(throws: FaceEmbeddingInterchangeError.nonFiniteValue(index: 0)) {
+            try FaceEmbeddingInterchangeCodec.validate(notFinite)
+        }
+
+        var positiveInfinity = try FaceEmbeddingInterchangeCodec.encode(valid)
+        positiveInfinity.replaceSubrange(8..<12, with: [0x00, 0x00, 0x80, 0x7f])
+        #expect(throws: FaceEmbeddingInterchangeError.nonFiniteValue(index: 0)) {
+            try FaceEmbeddingInterchangeCodec.validate(positiveInfinity)
+        }
+
+        var negativeInfinity = try FaceEmbeddingInterchangeCodec.encode(valid)
+        negativeInfinity.replaceSubrange(8..<12, with: [0x00, 0x00, 0x80, 0xff])
+        #expect(throws: FaceEmbeddingInterchangeError.nonFiniteValue(index: 0)) {
+            try FaceEmbeddingInterchangeCodec.validate(negativeInfinity)
+        }
+
+        let zeroWire = EmbeddingCodec.encode([Float](repeating: 0, count: 512))
+        #expect(throws: FaceEmbeddingInterchangeError.zeroVector) {
+            try FaceEmbeddingInterchangeCodec.validate(zeroWire)
+        }
+
+        var lowNorm = [Float](repeating: 0, count: 512)
+        lowNorm[0] = 0.9998
+        do {
+            _ = try FaceEmbeddingInterchangeCodec.validate(EmbeddingCodec.encode(lowNorm))
+            Issue.record("Expected incoming low-norm bytes to be rejected")
+        } catch let error as FaceEmbeddingInterchangeError {
+            guard case .notL2Normalized = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        valid[0] = .infinity
+        #expect(throws: FaceEmbeddingInterchangeError.nonFiniteValue(index: 0)) {
+            try FaceEmbeddingInterchangeCodec.encode(valid)
+        }
+
+        #expect(throws: FaceEmbeddingInterchangeError.zeroVector) {
+            try FaceEmbeddingInterchangeCodec.encode([Float](repeating: 0, count: 512))
+        }
+
+        valid[0] = 0.5
+        do {
+            _ = try FaceEmbeddingInterchangeCodec.encode(valid)
+            Issue.record("Expected a non-normalized vector to be rejected")
+        } catch let error as FaceEmbeddingInterchangeError {
+            guard case .notL2Normalized = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func encodeDecodeRoundTrips() {
         let vector: [Float] = [0.0, 1.5, -2.25, 3.125, 1e-6, -1e6]
         let data = EmbeddingCodec.encode(vector)
