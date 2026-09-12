@@ -7,6 +7,8 @@ first-time identity assignment, user-facing import/export and explicit cloud rec
 
 - Source base: `78f02099cc2eb0dbf6e300fc9c1f0ac65b63c1c8` on `main`, with the
   cycle-16 files uncommitted during validation.
+- Implementation checkpoint: `75efdb4`, created from the identical validated source and
+  documentation content.
 - Host: Apple Silicon (`arm64`), macOS 27.0 build 26A428.
 - Scheme/destination: `Aagedal Photo Agent Tests`, Debug, `platform=macOS`,
   parallel testing disabled for the coordinator runs.

@@ -1,10 +1,10 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Primary failed-save retention and scoped recovery pass native testing; the stale recovery notice correction also passes its native regression.
+**State:** IMPLEMENTING — Known People archive, tracked capture and managed replacement are committed and verified; identity assignment, UI and cloud reconciliation remain.
 **Updated:** 2026-09-12
-**Latest implementation commit:** `be970f06da96f330500f8d4a4cdec64a07165086` (2,687 tests / 297 suites and repository checks passed).
+**Latest implementation commit:** `75efdb4` (2,781 tests / 304 suites and repository checks passed).
 **Latest native evidence:** `ae99369` masked save, Undo on exit, genuine external conflict, failed Quit/navigation refusal, recovery cancel/export/tamper/scoped discard, fresh save, dual Reset and exact relaunch persistence pass. No preferences changed; QA apps stopped. `be970f0` verifies warning retention after failed recovery and clearance after verified discard/fresh save.
-**Cycle baseline:** `e72ceef` on `main`; cycle 15 retention implementation committed, notice follow-up committed and validated.
+**Cycle baseline:** `78f0209` on `main`; cycle 16 Known People core committed and validated as `75efdb4`.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
