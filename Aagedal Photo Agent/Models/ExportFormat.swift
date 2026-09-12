@@ -39,6 +39,14 @@ nonisolated enum RAWArchiveFormat: String, CaseIterable, Sendable {
         }
     }
 
+    var fileExtension: String {
+        switch self {
+        case .jpegXLLinear, .jpegXLCamera: return "jxl"
+        case .tiffLinear, .tiffCamera: return "tiff"
+        case .dngLossless, .dngLossy: return "dng"
+        }
+    }
+
     var batchTitle: String {
         switch self {
         case .jpegXLLinear: return "Archive RAW as JPEG XL (Linear RAW Decode)"

@@ -3385,6 +3385,7 @@ struct ContentView: View {
                         bannerFailureSection(label: "Failed", names: result.failedFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
+                        bannerPathFailureSection(label: "Private cleanup needed", paths: result.cleanupFailurePaths)
                         bannerFailureSection(label: "Used embedded metadata (.xmp sidecar stale)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
                     }
                     .padding(.top, 4)
@@ -3401,6 +3402,34 @@ struct ContentView: View {
             try? await Task.sleep(for: .seconds(4))
             if lastBatchResult?.id == result.id {
                 lastBatchResult = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bannerPathFailureSection(label: String, paths: [String]) -> some View {
+        if !paths.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(label) (\(paths.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(paths, id: \.self) { path in
+                    HStack(spacing: 4) {
+                        Text(path)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        Button {
+                            revealInFinder(URL(fileURLWithPath: path))
+                        } label: {
+                            Image(systemName: "folder")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal in Finder")
+                    }
+                }
             }
         }
     }
@@ -3660,6 +3689,7 @@ struct ContentView: View {
 
             var convertedURLs: [URL] = []
             var failedNames: [String] = []
+            var cleanupFailurePaths: [String] = []
             for (index, url) in urls.enumerated() where securityScopeClaim != nil {
                 guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
@@ -3704,39 +3734,41 @@ struct ContentView: View {
                         )
                     }
 
-                    let convertedURL = try await EditExportPipeline.renderItem(
-                        sourceURL: url,
-                        cameraRaw: nil,
-                        kind: renderKind,
-                        outputFolder: destinationFolder,
-                        folderURL: browserViewModel.currentFolderURL,
-                        writeEngine: browserViewModel.writeEngine,
-                        failureTracker: failureTracker
-                    )
-
-                    if c2paRAWURLs.contains(url),
-                       let archiveSigningConfiguration {
-                        do {
+                    let currentFolderURL = browserViewModel.currentFolderURL
+                    let writeEngine = browserViewModel.writeEngine
+                    let signer: RAWArchiveTransactionRequest.Sign?
+                    if c2paRAWURLs.contains(url), let archiveSigningConfiguration {
+                        signer = { archiveURL, parentURL in
                             try await archiveSigningConfiguration.sign(
-                                archiveURL: convertedURL,
-                                parentURL: url,
+                                archiveURL: archiveURL,
+                                parentURL: parentURL,
                                 format: format
                             )
-                        } catch {
-                            // A configured signing workflow must never leave an unsigned
-                            // archive that looks successful. Both files were created by
-                            // this batch and the unique-name preflight protected prior data.
-                            let cleanupRequest = RAWArchiveSigningFailureCleanupRequest(
-                                archiveURL: convertedURL,
-                                sourceURL: url
-                            )
-                            _ = await RAWArchiveSigningFailureCleanupService.shared.cleanup(
-                                cleanupRequest
-                            )
-                            throw error
                         }
+                    } else {
+                        signer = nil
                     }
-                    convertedURLs.append(convertedURL)
+                    let receipt = try await RAWArchiveTransactionService.shared.archive(
+                        RAWArchiveTransactionRequest(
+                            sourceURL: url,
+                            destinationFolder: destinationFolder,
+                            fileExtension: format.fileExtension,
+                            render: { sourceURL, stagingDirectory in
+                                try await EditExportPipeline.renderItem(
+                                    sourceURL: sourceURL,
+                                    cameraRaw: nil,
+                                    kind: renderKind,
+                                    outputFolder: stagingDirectory,
+                                    folderURL: currentFolderURL,
+                                    writeEngine: writeEngine,
+                                    failureTracker: failureTracker
+                                )
+                            },
+                            sign: signer
+                        )
+                    )
+                    convertedURLs.append(receipt.archiveURL)
+                    cleanupFailurePaths.append(contentsOf: receipt.cleanupResidualURLs.map(\.path))
                 } catch {
                     failedNames.append(url.lastPathComponent)
                 }
@@ -3769,7 +3801,8 @@ struct ContentView: View {
             if Task.isCancelled {
                 outcome = .cancelled
             } else if !failedNames.isEmpty || !copyFailures.isEmpty
-                        || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+                        || !overlayFailures.isEmpty || !cleanupFailurePaths.isEmpty
+                        || !staleWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -3783,6 +3816,7 @@ struct ContentView: View {
                 failedFilenames: failedNames,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
+                cleanupFailurePaths: cleanupFailurePaths,
                 staleSidecarFilenames: staleWarnings,
                 sourceFolderURL: browserViewModel.currentFolderURL
             )

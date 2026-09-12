@@ -1340,6 +1340,12 @@ struct RAWArchiveTests {
         #expect(RAWArchiveFormat.dngLossy.decodeProfile == nil)
         #expect(RAWArchiveFormat.dngLossless.requiresAdobeDNGConverter)
         #expect(RAWArchiveFormat.dngLossy.requiresAdobeDNGConverter)
+        #expect(RAWArchiveFormat.jpegXLLinear.fileExtension == "jxl")
+        #expect(RAWArchiveFormat.jpegXLCamera.fileExtension == "jxl")
+        #expect(RAWArchiveFormat.tiffLinear.fileExtension == "tiff")
+        #expect(RAWArchiveFormat.tiffCamera.fileExtension == "tiff")
+        #expect(RAWArchiveFormat.dngLossless.fileExtension == "dng")
+        #expect(RAWArchiveFormat.dngLossy.fileExtension == "dng")
         #expect(RAWArchiveFormat.jpegXLLinear.c2paActionName == "c2pa.transcoded")
         #expect(RAWArchiveFormat.jpegXLCamera.c2paActionName == "c2pa.transcoded")
         #expect(RAWArchiveFormat.tiffLinear.c2paActionName == "c2pa.transcoded")
@@ -1839,8 +1845,8 @@ struct RAWArchiveTests {
         #expect(!probe.ranOnMainThread)
     }
 
-    @Test("ContentView routes signing failure cleanup through the service boundary")
-    func signingFailureCleanupSourceContract() throws {
+    @Test("ContentView routes RAW rendering and signing through the archive transaction")
+    func archiveTransactionSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -1849,8 +1855,9 @@ struct RAWArchiveTests {
             encoding: .utf8
         )
 
-        #expect(source.contains("RAWArchiveSigningFailureCleanupRequest("))
-        #expect(source.contains("await RAWArchiveSigningFailureCleanupService.shared.cleanup("))
+        #expect(source.contains("RAWArchiveTransactionService.shared.archive("))
+        #expect(source.contains("fileExtension: format.fileExtension"))
+        #expect(source.contains("sign: signer"))
         #expect(!source.contains("try? FileManager.default.removeItem(at: convertedURL)"))
     }
 }

@@ -15,6 +15,9 @@ struct BatchOperationResult: Identifiable, Sendable {
     let failedFilenames: [String]
     let copyFailureFilenames: [String]
     let overlayFailureFilenames: [String]
+    /// Exact paths to private operation-owned artifacts that could not be removed after a
+    /// successful commit. The published output remains a success and must not be hidden.
+    var cleanupFailurePaths: [String] = []
     /// Files exported from the embedded image rather than the `.xmp` sidecar because the
     /// sidecar looked stale (image file newer and metadata differed). A warning, not a
     /// failure — the file was still published, just from its embedded metadata.
@@ -22,7 +25,8 @@ struct BatchOperationResult: Identifiable, Sendable {
     let sourceFolderURL: URL?
 
     var hasFailures: Bool {
-        !failedFilenames.isEmpty || !copyFailureFilenames.isEmpty || !overlayFailureFilenames.isEmpty
+        !failedFilenames.isEmpty || !copyFailureFilenames.isEmpty
+            || !overlayFailureFilenames.isEmpty || !cleanupFailurePaths.isEmpty
     }
 
     var hasWarnings: Bool {
@@ -48,6 +52,10 @@ struct BatchOperationResult: Identifiable, Sendable {
             if !overlayFailureFilenames.isEmpty {
                 let n = overlayFailureFilenames.count
                 parts.append("IPTC overlay failed for \(n) \(n == 1 ? "image" : "images")")
+            }
+            if !cleanupFailurePaths.isEmpty {
+                let n = cleanupFailurePaths.count
+                parts.append("\(n) private \(n == 1 ? "staging folder needs" : "staging folders need") cleanup")
             }
             if !staleSidecarFilenames.isEmpty {
                 let n = staleSidecarFilenames.count

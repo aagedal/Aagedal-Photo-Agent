@@ -18,6 +18,7 @@
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		9E909BDC0B8A4B20BDBFB647 /* VariableMetadataCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */; };
 		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
+		A02608270000000000000002 /* RAWArchiveTransactionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608270000000000000001 /* RAWArchiveTransactionServiceTests.swift */; };
 		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */; };
 		A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */; };
@@ -192,6 +193,7 @@
 		8E05576D2F2A149800BCFB49 /* TODO.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = TODO.md; sourceTree = "<group>"; };
 		9CB424FD4CEB2C23AEFF5DB0 /* MetadataSidecarServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataSidecarServiceTests.swift; sourceTree = "<group>"; };
 		A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceMemoCompanionRepositoryTests.swift; sourceTree = "<group>"; };
+		A02608270000000000000001 /* RAWArchiveTransactionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RAWArchiveTransactionServiceTests.swift; sourceTree = "<group>"; };
 		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
 		A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApplicationTerminationFlushCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -459,6 +461,7 @@
 				AB3800000000000000000001 /* AtomicJSONDocumentStoreTests.swift */,
 				AB3900000000000000000001 /* SourceImageDiscoveryServiceTests.swift */,
 				A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */,
+				A02608270000000000000001 /* RAWArchiveTransactionServiceTests.swift */,
 				AB4000000000000000000001 /* DisplayImageTransformTests.swift */,
 				AB4100000000000000000001 /* ViewportStateTests.swift */,
 				AB4200000000000000000001 /* AnalysisCaseTests.swift */,
@@ -795,6 +798,7 @@
 				AB3800000000000000000002 /* AtomicJSONDocumentStoreTests.swift in Sources */,
 				AB3900000000000000000002 /* SourceImageDiscoveryServiceTests.swift in Sources */,
 				A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */,
+				A02608270000000000000002 /* RAWArchiveTransactionServiceTests.swift in Sources */,
 				AB4000000000000000000002 /* DisplayImageTransformTests.swift in Sources */,
 				AB4100000000000000000002 /* ViewportStateTests.swift in Sources */,
 				AB4200000000000000000002 /* AnalysisCaseTests.swift in Sources */,

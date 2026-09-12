@@ -245,7 +245,109 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case missing(VoiceMemoCompanionRecord)
     }
 
+    /// Immutable source evidence retained while a derivative RAW archive is rendered and signed.
+    /// The image revision prevents a long conversion from being committed against different source
+    /// bytes. A relationship is either absent, or is bound to the exact record and regular adjacent
+    /// memo bytes captured here; adjacent WAV files without a record are deliberately ignored.
+    struct ArchiveSourceSnapshot: Sendable {
+        fileprivate let sourceImageURL: URL
+        fileprivate let imageRevision: CopyRevision
+        fileprivate let recordBytes: Data?
+        fileprivate let association: VoiceMemoAssociation?
+        fileprivate let memoRevision: CopyRevision?
+
+        var memoPathExtension: String? { association?.memoURL.pathExtension }
+        var hasAssociation: Bool { association != nil }
+    }
+
+    struct StagedArchiveCompanion: Sendable {
+        let stagedMemoURL: URL?
+        let destinationMemoURL: URL?
+        let stagedRecordURL: URL?
+        let destinationRecordURL: URL
+    }
+
     static let recordSuffix = ".voice-memo.json"
+
+    func captureArchiveSource(for imageURL: URL) throws -> ArchiveSourceSnapshot {
+        let source = imageURL.standardizedFileURL
+        let imageRevision = try copyRevision(at: source)
+        let recordBytes = try copyRecordBytes(for: source)
+        let association = try copyAssociation(for: source)
+        let memoRevision: CopyRevision?
+        if let association {
+            try requireOwnedRegularMemo(association, sourceImageURL: source)
+            memoRevision = try copyRevision(at: association.memoURL)
+        } else {
+            memoRevision = nil
+        }
+        let snapshot = ArchiveSourceSnapshot(
+            sourceImageURL: source,
+            imageRevision: imageRevision,
+            recordBytes: recordBytes,
+            association: association,
+            memoRevision: memoRevision
+        )
+        try revalidateArchiveSource(snapshot)
+        return snapshot
+    }
+
+    func revalidateArchiveSource(_ snapshot: ArchiveSourceSnapshot) throws {
+        guard snapshot.imageRevision.matches(try copyRevision(at: snapshot.sourceImageURL)),
+              snapshot.recordBytes == (try copyRecordBytes(for: snapshot.sourceImageURL)),
+              snapshot.association == (try copyAssociation(for: snapshot.sourceImageURL)) else {
+            throw RepositoryError.copySourceChanged
+        }
+        if let association = snapshot.association, let memoRevision = snapshot.memoRevision {
+            try requireOwnedRegularMemo(association, sourceImageURL: snapshot.sourceImageURL)
+            guard memoRevision.matches(try copyRevision(at: association.memoURL)) else {
+                throw RepositoryError.copySourceChanged
+            }
+        }
+    }
+
+    /// Prepares only the derivative archive's independent memo and rewritten relationship.
+    /// The rendered image and XMP remain owned by the archive transaction. No destination is
+    /// installed here, which lets signing and final source revalidation finish before commit.
+    func stageArchiveCompanion(
+        from snapshot: ArchiveSourceSnapshot,
+        for destinationImageURL: URL,
+        in stagingDirectory: URL
+    ) throws -> StagedArchiveCompanion {
+        try revalidateArchiveSource(snapshot)
+        let destinationRecord = recordURL(for: destinationImageURL)
+        guard let association = snapshot.association, let memoRevision = snapshot.memoRevision else {
+            return StagedArchiveCompanion(
+                stagedMemoURL: nil,
+                destinationMemoURL: nil,
+                stagedRecordURL: nil,
+                destinationRecordURL: destinationRecord
+            )
+        }
+
+        let destinationMemo = destinationImageURL.deletingPathExtension()
+            .appendingPathExtension(association.memoURL.pathExtension)
+        let stagedMemo = stagingDirectory.appendingPathComponent("archive-memo")
+            .appendingPathExtension(association.memoURL.pathExtension)
+        let stagedRecord = stagingDirectory.appendingPathComponent("archive-relationship.json")
+        try copyIO.copy(association.memoURL, stagedMemo)
+        guard memoRevision.digest == (try SourceImageRevisionCaptureIO.system.hash(stagedMemo)) else {
+            throw RepositoryError.copySourceChanged
+        }
+        let record = VoiceMemoCompanionRecord(
+            profileIdentifier: association.profileIdentifier,
+            imageFilename: destinationImageURL.lastPathComponent,
+            memoFilename: destinationMemo.lastPathComponent
+        )
+        try encoded(record).write(to: stagedRecord, options: .atomic)
+        try revalidateArchiveSource(snapshot)
+        return StagedArchiveCompanion(
+            stagedMemoURL: stagedMemo,
+            destinationMemoURL: destinationMemo,
+            stagedRecordURL: stagedRecord,
+            destinationRecordURL: destinationRecord
+        )
+    }
 
     func lookup(for imageURL: URL) throws -> Lookup {
         let recordURL = recordURL(for: imageURL)
@@ -475,7 +577,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         }
     }
 
-    private struct CopyRevision {
+    fileprivate struct CopyRevision: Sendable {
         let snapshot: SourceImageRevisionFileSnapshot
         let digest: Data
 
@@ -509,6 +611,29 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case .none: return nil
         case .available(let association): return association
         case .missing(let record): throw RepositoryError.memoMissing(record.memoFilename)
+        }
+    }
+
+    private func requireOwnedRegularMemo(
+        _ association: VoiceMemoAssociation,
+        sourceImageURL: URL
+    ) throws {
+        let record = try loadRecord(at: recordURL(for: sourceImageURL), expectedImageFilename: nil)
+        let memoFilename = effectiveMemoFilename(
+            for: record,
+            currentImageFilename: sourceImageURL.lastPathComponent
+        )
+        let memoEntry = sourceImageURL.deletingLastPathComponent().appendingPathComponent(memoFilename)
+        let uncachedMemoEntry = URL(fileURLWithPath: memoEntry.path)
+        let values = try uncachedMemoEntry.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey
+        ])
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              association.memoURL.deletingLastPathComponent()
+                == VoiceMemoAssociationService.canonicalURL(sourceImageURL.deletingLastPathComponent()) else {
+            throw RepositoryError.unsafeMemoFile(memoFilename)
         }
     }
 
