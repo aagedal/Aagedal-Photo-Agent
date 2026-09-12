@@ -15,10 +15,12 @@ records the exact FTP Sync schema-2 projection, lossless Photo Agent extension,
 replacement semantics and later opt-in App Group channel. Strict shared FEM2 admission
 is implemented and independently reviewed. Fresh Photo Agent detections now persist exact
 model/preprocessing provenance from the declaring embedder through Known People addition,
-while cached legacy samples remain honestly unknown. The latest focused suite passes 25
-tests; the Known People service suite passes 64 tests and repository checks pass.
-Package export/import remains gated on a verified companion commit/archive adapter and
-a trustworthy policy for legacy embedding provenance.
+while cached legacy samples remain honestly unknown. Whole-library eligibility now rejects
+invalid names/IDs, empty people, unknown provenance and invalid FEM2. The latest focused
+suite passes 26 tests; the Known People service suite passes 64 tests and repository checks pass.
+The compatible companion contract is pinned to FTP Sync `2dc18e9` after its full suite
+passed. Package export/import remains gated on a shared golden directory fixture,
+Photo Agent's transactional implementation, legacy-sample disposition and archive/UI adapters.
 
 [Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
@@ -173,9 +175,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 ## Ordered next actions
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
-   [the companion design](known-people-companion-interchange-design.md). FTP Sync has a local
-   additive editor-payload contract under integrated validation; its archive adapter and a
-   verified companion commit remain pending. Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
+   [the companion design](known-people-companion-interchange-design.md). FTP Sync has a
+   committed compatible editor-payload contract at `2dc18e9`; a shared golden directory
+   fixture and both archive/UI adapters remain pending. Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
    Resolve those gates before claiming compatible or lossless exchange. Automatic local sync
    remains a separate opt-in App Group phase after both signed targets share one entitlement.
 2. Extend Develop native coverage to named-version failed transitions and crop changes during
@@ -285,11 +287,13 @@ progress occurred. Automation remains active; no readiness notification is warra
 The Known People companion contract is now the highest-priority coordinated slice.
 Photo Agent has a reviewed strict FEM2 codec matching FTP Sync's live reader. Provenance
 now originates only at a declaring embedder, survives fresh face storage and copies into
-Known People; cached legacy samples remain unknown. Focused-v5 passes 25 tests / one suite
-in 0.135s, Known People service passes 64 tests / one suite in 14.124s, and repository checks pass. The package itself is
-not yet presented in either UI. FTP Sync now has the optional hash-bound editor payload
-under integrated validation but still needs archive admission and a verified commit;
-Photo Agent must establish honest provenance for legacy imported samples. Automatic sync is intentionally later and needs
+Known People; cached legacy samples remain unknown. Whole-library eligibility matches
+the companion's core name/ID/count/provenance/FEM2 rules. Focused-v8 passes 26 tests /
+one suite in 0.116s, Known People service passes 64 tests / one suite in 14.124s, and
+repository checks pass. The package itself is not yet presented in either UI. FTP Sync
+`2dc18e9` has the optional hash-bound editor payload and exact re-export after a
+1,030-pass full suite, but still needs archive/UI admission. Photo Agent must complete
+golden-fixture, transaction and legacy disposition work. Automatic sync is intentionally later and needs
 separate consent plus matching signed App Group entitlements in both targets.
 
 `ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five

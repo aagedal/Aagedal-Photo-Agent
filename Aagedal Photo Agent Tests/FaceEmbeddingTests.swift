@@ -300,6 +300,119 @@ struct FaceEmbeddingTests {
         #expect(CoreMLFaceEmbedder.shared.interchangeProvenance == .current)
     }
 
+    @Test func interchangeEligibilityRequiresNamesExamplesUniqueIDsAndTrustedBytes() throws {
+        var vector = [Float](repeating: 0, count: 512)
+        vector[0] = 1
+        let bytes = try FaceEmbeddingInterchangeCodec.encode(vector)
+        let personID = UUID()
+        let embeddingID = UUID()
+        let embedding = PersonEmbedding(
+            id: embeddingID,
+            featurePrintData: bytes,
+            provenance: .current
+        )
+        let valid = KnownPerson(id: personID, name: "Ada", embeddings: [embedding])
+        #expect(try KnownPeopleInterchangeEligibility.validate(people: [valid]) == .init(
+            peopleCount: 1,
+            embeddingCount: 1
+        ))
+        #expect(try KnownPeopleInterchangeEligibility.validate(people: []) == .init(
+            peopleCount: 0,
+            embeddingCount: 0
+        ))
+
+        #expect(throws: KnownPeopleInterchangeEligibilityError.invalidName(personID: personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: " \n", embeddings: [embedding])
+            ])
+        }
+        #expect(throws: KnownPeopleInterchangeEligibilityError.invalidName(personID: personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: "Ada\0Lovelace", embeddings: [embedding])
+            ])
+        }
+        #expect(try KnownPeopleInterchangeEligibility.validate(people: [
+            KnownPerson(id: personID, name: String(repeating: "é", count: 512), embeddings: [embedding])
+        ]).peopleCount == 1)
+        #expect(throws: KnownPeopleInterchangeEligibilityError.invalidName(personID: personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: String(repeating: "é", count: 513), embeddings: [embedding])
+            ])
+        }
+        #expect(throws: KnownPeopleInterchangeEligibilityError.personHasNoEmbeddings(personID: personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: "Ada")
+            ])
+        }
+        #expect(throws: KnownPeopleInterchangeEligibilityError.duplicatePersonID(personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [valid, valid])
+        }
+
+        let zeroID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        #expect(throws: KnownPeopleInterchangeEligibilityError.invalidPersonID) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: zeroID, name: "Reserved", embeddings: [embedding])
+            ])
+        }
+        #expect(throws: KnownPeopleInterchangeEligibilityError.invalidEmbeddingID(personID: personID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: "Ada", embeddings: [
+                    PersonEmbedding(
+                        id: zeroID,
+                        featurePrintData: bytes,
+                        provenance: .current
+                    )
+                ])
+            ])
+        }
+        #expect(throws: KnownPeopleInterchangeEligibilityError.tooManyPeople(actual: 10_001)) {
+            try KnownPeopleInterchangeEligibility.validate(
+                people: Array(repeating: valid, count: 10_001)
+            )
+        }
+
+        let otherPersonID = UUID()
+        #expect(throws: KnownPeopleInterchangeEligibilityError.duplicateEmbeddingID(embeddingID)) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                valid,
+                KnownPerson(id: otherPersonID, name: "Grace", embeddings: [embedding])
+            ])
+        }
+
+        let unknownID = UUID()
+        #expect(throws: KnownPeopleInterchangeEligibilityError.unknownEmbeddingProvenance(
+            personID: personID,
+            embeddingID: unknownID
+        )) {
+            try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: "Ada", embeddings: [
+                    PersonEmbedding(id: unknownID, featurePrintData: bytes)
+                ])
+            ])
+        }
+
+        let invalidID = UUID()
+        do {
+            _ = try KnownPeopleInterchangeEligibility.validate(people: [
+                KnownPerson(id: personID, name: "Ada", embeddings: [
+                    PersonEmbedding(
+                        id: invalidID,
+                        featurePrintData: Data([1, 2, 3]),
+                        provenance: .current
+                    )
+                ])
+            ])
+            Issue.record("Expected invalid portable FEM2 bytes to be rejected")
+        } catch let error as KnownPeopleInterchangeEligibilityError {
+            guard case .invalidEmbedding(let actualPersonID, let actualEmbeddingID, _) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(actualPersonID == personID)
+            #expect(actualEmbeddingID == invalidID)
+        }
+    }
+
     @Test func encodeDecodeRoundTrips() {
         let vector: [Float] = [0.0, 1.5, -2.25, 3.125, 1e-6, -1e6]
         let data = EmbeddingCodec.encode(vector)

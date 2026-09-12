@@ -26,8 +26,8 @@ source database.
 
 ## Shared matching projection
 
-The core follows FTP Sync's provisional schema-2 reader at source revision
-`0c37b2f78752a51eaa765445afd5cc801dbf0a3d`:
+The core follows FTP Sync's schema-2 package slice committed at source revision
+`2dc18e9c4df7328eb59cb0503d7febcbad4acd56` (contract docs `8ca3c77`):
 
 - `manifest.json`: `format` = `aagedal-known-people`, `schemaVersion` = 2,
   persistent lowercase `libraryID`, content-derived lowercase SHA-256 `coreRevision`
@@ -85,11 +85,11 @@ exact per-person record JSON bytes keyed by person ID, preventing a newer Photo 
 from being discarded by an older decoder. The shared person/example IDs and matching
 projection must agree with those records.
 
-FTP Sync has now implemented this additive contract and exact-byte preservation locally;
-its integrated-suite commit remains pending. Per-example `recognitionMode` is exactly
+FTP Sync has now committed this additive contract and exact-byte preservation after its
+full suite passed 1,030 tests with 15 opt-in skips and zero failures. Per-example `recognitionMode` is exactly
 `vision` or `faceClothing`, matching `FaceRecognitionMode` raw values. Photo Agent must
-still wait for the verified companion revision and its own provenance/import transaction
-before presenting the format.
+still complete its directory-level cross-app fixture and provenance/import transaction
+before presenting the format. FTP Sync's committed slice does not yet claim ZIP/UI/App Group support.
 
 ## Photo Agent admission and replacement
 
@@ -149,6 +149,11 @@ records remain nil/unknown rather than inheriting trust from matching dimensions
 preference or the Add Group action. The package exporter must reject or visibly resolve
 those unknown samples.
 
+`KnownPeopleInterchangeEligibility` now applies the companion's person/example limits,
+name rules, nonzero/global ID uniqueness, nonempty-example requirement, exact current
+provenance and strict FEM2 admission before projection. It permits an empty authoritative
+snapshot, which is required to represent a deliberately cleared library without tombstone inference.
+
 Independent source review confirms the strict codec matches FTP Sync's current FEM2
 reader. The initial codec checkpoint passes 23 tests / one suite in 0.141 seconds
 (`build/qa-known-people-interchange-focused-v3.log`). The corrected generation-to-addition
@@ -157,7 +162,15 @@ provenance follow-up passes 25 tests / one suite in 0.135 seconds
 failures, exact header/value bytes, legacy nil provenance and exact fresh-face propagation.
 The Known People service suite separately passes 64 tests / one suite in 14.124 seconds
 (`build/qa-known-people-interchange-service.log`). Repository validation passes in
-`build/qa-known-people-interchange-repository-v3.log`. Two earlier focused attempts are
+`build/qa-known-people-interchange-repository-v4.log`. Two earlier focused attempts are
 retained in the ignored build directory: the first exposed incorrect Swift catch syntax;
 the second exposed unsupported closure syntax in a new assertion. Both were test-code
 errors corrected before the passing run; no product assertion was weakened.
+
+The final eligibility follow-up passes 26 tests / one suite in 0.116 seconds
+(`build/qa-known-people-interchange-focused-v8.log`), including zero IDs, multibyte
+name boundaries and the people-count limit. Intermediate v7 exposed a misplaced new
+guard as a compile error; it was moved inside the embedding loop before v8 passed.
+A cross-repository golden directory
+fixture has been requested from the companion coordinator; manifest/package generation
+must use that committed canonical form rather than an independently guessed encoding.
