@@ -1,10 +1,10 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People archive, tracked capture and managed replacement are committed and verified; identity assignment, UI and cloud reconciliation remain.
+**State:** IMPLEMENTING — Known People directory/archive interchange, local identity, replacement and UI are committed and verified; cloud reconciliation and broader release gates remain.
 **Updated:** 2026-09-12
-**Latest implementation commit:** `75efdb4` (2,781 tests / 304 suites and repository checks passed).
-**Latest native evidence:** `ae99369` masked save, Undo on exit, genuine external conflict, failed Quit/navigation refusal, recovery cancel/export/tamper/scoped discard, fresh save, dual Reset and exact relaunch persistence pass. No preferences changed; QA apps stopped. `be970f0` verifies warning retention after failed recovery and clearance after verified discard/fresh save.
-**Cycle baseline:** `78f0209` on `main`; cycle 16 Known People core committed and validated as `75efdb4`.
+**Latest implementation commit:** `c87cc63` (2,832 tests / 310 suites, repository checks and independent review passed).
+**Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–18 advance the Known People interchange through core, first-time identity, service/controller and UI.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
@@ -16,7 +16,7 @@ replacement semantics and later opt-in App Group channel. Strict shared FEM2 adm
 is implemented and independently reviewed. Fresh Photo Agent detections now persist exact
 model/preprocessing provenance from the declaring embedder through Known People addition,
 while cached legacy samples remain honestly unknown. Whole-library eligibility now rejects
-invalid names/IDs, empty people, unknown provenance and invalid FEM2. The current Known People
+invalid names/IDs, people without examples, unknown provenance and invalid FEM2. The current Known People
 core checkpoint adds strict ZIP32 transport, descriptor-bound whole-root replacement, exact
 admitted-package retention, tracked local capture, route/iCloud exclusion, generation invalidation
 and the exported `.aagedalpeople` package type. The integrated focused run passes 149 declared
@@ -29,7 +29,9 @@ including 37 writer fault, alias, cancellation, retargeting, mutation and cooper
 cases. The writer's retained parent descriptor and advisory lock cover cooperating writers;
 non-cooperating same-user mutation remains outside the whole transaction guarantee, with observed
 boundary changes rejected while recovery evidence is retained. First-time identity assignment,
-explicit local-to-cloud reconciliation and UI adapters remain gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
+strict directory/archive admission, high-level export preparation and the shared Settings/Expanded
+Known People UI now pass automated and native checks. Explicit local-to-cloud reconciliation
+remains gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
 and Core ML with a BGR negative control, and two independent locked builds produce identical bytes
 and receipts. The reviewed deterministic model now replaces the contradictory local artifact and all
 declared hashes match. The checked-in compact reference now passes the app's exact `CGImage` preprocessing
@@ -194,10 +196,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    committed compatible editor-payload contract at `2dc18e9` and strengthened golden directory
    at `da3579e`; Photo Agent's strict directory admission and atomic exact-byte directory writer
    now pass that fixture. Photo Agent's strict ZIP32 archive, managed-store replacement and
-   tracked local snapshot builder and atomic first-time identity assignment pass integrated review
-   and tests. Implement unified package admission/export service APIs, explicit local-to-cloud
-   reconciliation and the Settings/Expanded Known People import/export controller next, including
-   the coordinated 65,534-entry archive limit.
+   tracked local snapshot builder, atomic first-time identity assignment, unified package
+   admission/export service APIs and the Settings/Expanded Known People controller pass integrated
+   review, automated tests and disposable-root native checks. Implement explicit local-to-cloud
+   reconciliation next, and coordinate the presented 65,534-entry archive limit with FTP Sync.
    Review and replace the pinned model with the independently reproduced RGB artifact before enabling
    production companion recognition; the image-to-reference proof and deterministic receipt now pass.
    Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
@@ -322,8 +324,14 @@ recorded in [cycle 17](cycle-17-known-people-identity-2026-09-12.md):
 preparation is read-only, binds the exact captured inventory across planning, generates stable
 IDs once, and commits only through the existing owner gateway. Precommit retry retains those IDs;
 committed uncertainty is returned without replay. The identity/builder/replacement checkpoint
-passes 46 declared tests / 84 expanded cases and independent review. The next bounded work is
-the high-level admission/export service API and Settings/Expanded Known People UI.
+passes 46 declared tests / 84 expanded cases and independent review.
+
+High-level admission/export and the shared MainActor UI are committed as `c87cc63` and recorded in
+[cycle 18](cycle-18-known-people-service-ui-2026-09-12.md). The complete suite passes 2,832 tests /
+310 suites; the integrated interchange/UI run passes 213 tests / 12 suites; repository checks and
+independent review pass. Native testing in a disposable root confirms cancellation without mutation,
+replacement with rollback evidence, exact visible Unicode/braces, same-library identity/count copy,
+byte-exact directory export and valid STORED ZIP export. The tested app stopped cleanly.
 The archive contract is 65,534 entries because `0xffff` is the ZIP64 sentinel; directory
 packages retain the 200,001-file schema cap. The companion app and UI must present the same
 limit. Explicit local-to-cloud reconciliation and later opt-in App Group publication remain

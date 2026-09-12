@@ -1,15 +1,17 @@
 # Cycle 17 — Known People first-time identity
 
-**State:** IMPLEMENTING. Untracked local stores can now acquire durable interchange identity;
-high-level import/export services, UI and cloud reconciliation remain.
+**State:** COMPLETE for the first-time identity slice. Untracked local stores can now acquire
+durable interchange identity. Cycle 18 subsequently completed the high-level import/export
+services and UI; explicit local-to-cloud reconciliation remains.
 
 ## Source and environment
 
-- Source base: `b6fa8d0` on `main`, with cycle-17 files uncommitted during validation.
+- Source base: `b6fa8d0` on `main`; the validated identity slice was committed as `85c7080`.
 - Host: Apple Silicon (`arm64`), macOS 27.0 build 26A428.
 - Scheme/destination: `Aagedal Photo Agent Tests`, Debug, `platform=macOS`,
   parallel testing disabled for coordinator runs.
-- No native UI result or app candidate is claimed for this service-only slice.
+- No native UI result or app candidate was claimed for this service-only slice. Cycle 18 records
+  the later native UI evidence.
 
 ## Implemented transaction
 
@@ -49,15 +51,15 @@ the displaced original root remains available at the reported recovery path.
   populated stores, malformed/legacy/iCloud refusal and unchanged recovery propagation.
 - Project plist validation and `git diff --check` pass before repository validation.
 
-## Remaining work
+## Follow-up status
 
-1. Add unified strict directory/archive package admission and high-level export preparation.
-2. Integrate one shared MainActor controller into Settings and Expanded Known People, while
-   keeping schema-1 legacy ZIP import visibly additive and separate.
-3. Add explicit local-to-cloud reconciliation before enabling iCloud for a replaced or newly
-   assigned local library.
-4. Run disposable-root native import/export, confirmation, cancellation, recovery, relaunch and
-   accessibility checks after the UI exists.
-5. Coordinate and test the ZIP32 65,534-entry limit with FTP Sync.
+Cycle 18 adds unified strict directory/archive admission, high-level export preparation, one
+shared MainActor controller in Settings and Expanded Known People, clearly separate schema-1
+legacy commands, and disposable-root native import/export, confirmation, cancellation and
+recovery checks. The ZIP32 65,534-entry limit is enforced and presented in Photo Agent; companion
+coordination remains required.
+
+Explicit local-to-cloud reconciliation before enabling iCloud for a replaced or newly assigned
+library remains open, along with broader accessibility, relaunch and release-candidate gates.
 
 Overall 3.0 readiness remains **IMPLEMENTING**. No final manual-testing notification is due.

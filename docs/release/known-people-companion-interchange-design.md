@@ -1,9 +1,10 @@
 # Known People companion interchange
 
-Status: coordinated schema, strict FEM2/provenance admission, and a verified directory
-package reader are implemented locally. Manual interchange remains gated on transactional
-Photo Agent replacement/export, archive and UI adapters, and legacy-sample disposition.
-Automatic local sharing is a later opt-in phase.
+Status: coordinated schema-2 directory and ZIP admission, provenance enforcement,
+transactional local replacement, tracked/first-identity export, and the shared Settings/Expanded
+Known People UI are implemented and verified in Photo Agent. Manual interchange remains
+local-route only: malformed or legacy/unknown-provenance stores are refused, and explicit
+local-to-cloud reconciliation is still required. Automatic local sharing remains a later opt-in phase.
 
 ## Ownership and phases
 
@@ -94,9 +95,10 @@ projection must agree with those records.
 
 FTP Sync has now committed this additive contract and exact-byte preservation after its
 full suite passed 1,030 tests with 15 opt-in skips and zero failures. Per-example `recognitionMode` is exactly
-`vision` or `faceClothing`, matching `FaceRecognitionMode` raw values. Photo Agent must
-still complete its provenance/import transaction before presenting the format. FTP Sync's
-committed slice does not yet claim ZIP/UI/App Group support.
+`vision` or `faceClothing`, matching `FaceRecognitionMode` raw values. Photo Agent has completed
+the schema-2 provenance, directory/ZIP admission, transactional import/export and user-facing
+manual interchange boundary in `c87cc63`. FTP Sync's committed slice still does not claim
+ZIP/UI/App Group support.
 
 ## Photo Agent admission and replacement
 
@@ -108,7 +110,7 @@ thumbnails fail the full snapshot. A truly absent optional thumbnail is omitted.
 Stage, validate and atomically install the destination; cancellation or failure keeps
 any prior export intact.
 
-Import is an explicit snapshot replace/merge decision separate from the legacy ZIP
+Import is an explicit snapshot replacement decision separate from the legacy ZIP
 command. Replacement is required for rename and removal semantics, including a valid
 empty snapshot. A stale or different library identity requires a visible decision;
 it must not overwrite newer edits automatically. Preserve the previous database until
@@ -263,9 +265,10 @@ canonical package from an untracked populated or empty local root, binds the com
 inventory before and after planning, retains stable library and installation IDs across safe
 precommit retry, and commits only through the existing whole-root owner gateway. A committed or
 uncertain result is retained and never replayed. Identity, builder and managed replacement pass
-46 declared tests across 84 expanded cases with independent approval. High-level package
-admission/export APIs, the explicit local-to-cloud reconciliation workflow, user-facing
-export/import adapters and App Group publication remain.
+46 declared tests across 84 expanded cases with independent approval. Unified directory/archive
+admission, owner-held export preparation, production writers and shared user-facing adapters are
+implemented and verified. Explicit local-to-cloud reconciliation, cross-app end-to-end
+matching/re-export evidence, legacy-sample disposition and App Group publication remain.
 
 The contradictory older local AuraFace package has been replaced by the reviewed deterministic build.
 The manifest, locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0; a checked-in
