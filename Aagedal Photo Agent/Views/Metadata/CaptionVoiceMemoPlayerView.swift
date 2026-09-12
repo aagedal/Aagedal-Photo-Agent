@@ -8,6 +8,7 @@ struct CaptionVoiceMemoPlayerView: View {
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
     @State private var refreshID = UUID()
     @State private var isSelectingRecoveryMemo = false
+    @State private var recoveryImageURL: URL?
 
     private struct Request: Equatable {
         let imageURL: URL?
@@ -44,6 +45,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         .foregroundStyle(.orange)
                         .textSelection(.enabled)
                     Button("Locate or replace voice memo…", systemImage: "waveform.badge.plus") {
+                        recoveryImageURL = imageURL
                         isSelectingRecoveryMemo = true
                     }
                     .disabled(recoveryModel.isWorking || imageURL == nil)
@@ -96,12 +98,13 @@ struct CaptionVoiceMemoPlayerView: View {
             allowedContentTypes: [UTType(filenameExtension: "wav") ?? .audio],
             allowsMultipleSelection: false
         ) { result in
-            guard let imageURL else { return }
+            guard let requestedImageURL = recoveryImageURL else { return }
+            recoveryImageURL = nil
             switch result {
             case .success(let urls):
                 guard let candidate = urls.first else { return }
                 Task {
-                    if await recoveryModel.select(candidateURL: candidate, for: imageURL) {
+                    if await recoveryModel.select(candidateURL: candidate, for: requestedImageURL) {
                         refreshID = UUID()
                     }
                 }
@@ -136,10 +139,12 @@ struct CaptionVoiceMemoPlayerView: View {
         .onChange(of: imageURL) {
             recoveryModel.cancel()
             isSelectingRecoveryMemo = false
+            recoveryImageURL = nil
         }
         .onDisappear {
             model.stop()
             recoveryModel.cancel()
+            recoveryImageURL = nil
         }
     }
 
