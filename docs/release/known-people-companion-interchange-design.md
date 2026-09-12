@@ -116,6 +116,32 @@ Before full-library v2 export, require either durable compatible provenance esta
 at creation/import or an explicit re-enrollment/compatibility decision that cannot be
 mistaken for cryptographic proof.
 
+The first replacement implementation must be local-store only. Package revisions are
+content hashes rather than ordered versions, and `exportedAt` does not prove ancestry.
+Preflight therefore needs an exact, non-mutating inventory token for the current root and
+an explicit same-library, different-library or previously untracked replacement decision;
+commit must reject any root change after that decision. Persist `libraryID`, installation
+identity, admitted contract and imported revisions in a strict root-local state record.
+Keep the admitted raw package bytes available for exact re-export, and treat them as the
+current projection only while a digest of the managed person and thumbnail files still
+matches. A missing identity means a legacy/untracked store, while malformed identity blocks
+replacement planning.
+
+Do not derive replacement state from `KnownPeopleService.loadDatabase()`: that compatibility
+path can migrate, resolve conflicts, collect tombstones and omit unreadable records. Stage a
+complete replacement, including a valid empty database, read it back, retain the previous
+tree as rollback evidence and install through a tested directory transaction. Root-local
+contract evidence must also prevent the global embedding migration stamp from resetting a
+newly admitted current package. Whole-root commit must invalidate every peer cache/read
+generation and discard or generation-scope thumbnail deletions admitted against the old tree.
+
+Current iCloud routing performs preserve-newer tree merges outside the service's import
+reservation, and the iCloud daemon is not stopped by process-local locks. Replacement must
+refuse while Known People iCloud sync or routing is active, and later cloud enablement must
+refuse a locally replaced state marked as needing reconciliation. Cloud replacement requires
+a separate immutable-generation publication protocol so an old record cannot resurrect after
+an empty or removal-bearing snapshot.
+
 ## Verification gate
 
 Required automated evidence includes a cross-repository golden package and revision,
@@ -171,19 +197,22 @@ The final eligibility follow-up passes 26 tests / one suite in 0.116 seconds
 (`build/qa-known-people-interchange-focused-v8.log`), including zero IDs, multibyte
 name boundaries and the people-count limit. Intermediate v7 exposed a misplaced new
 guard as a compile error; it was moved inside the embedding loop before v8 passed.
-FTP Sync's cross-repository golden directory is pinned at commit `5b43ce8`. Its library,
+FTP Sync's strengthened cross-repository golden directory is pinned at commit `da3579e`. Its library,
 person and example identities are `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`,
 `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb` and
 `cccccccc-cccc-cccc-cccc-cccccccccccc`. Photo Agent's decoded fixture files exactly match
 the companion SHA-256 values: manifest
-`01ac3394032f5945be7ba3cb4208cf013f9e1e47d4dd5dc7ebb14af57b49b20b`, people
+`9b3f1bb062b98b6482c9e8e0853b440aa88a1203beba738d006330ac04bf794d`, people
 `defe59be76163a68585a9d56a54ab55ffd54385fb72167a400e634f9fd24a901`, editor
-`97957271343108a13df0df5dfdd608ad0046b9e7ffaf73eef54b546f8af95d5a`, and FEM2
-`c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718`.
+`3135e29a2ba54766bc199d2c9e486aec39b94c66289f098fd26cde9828fb5efb`, and FEM2
+`11515e45513a5f28a7e15321d1caa573c3dc1e70a112ac813dd8019f2900f1be`.
+The FEM2 wire values begin with 0.60003 and 0.8: they are within the shared norm
+tolerance, but normalizing and re-encoding changes the bytes. This makes silent
+decode-normalize-re-encode drift observable.
 The fixture pins core revision
-`ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281`
+`636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83`
 and overall revision
-`87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709`.
+`12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba`.
 
 `KnownPeoplePackageDirectoryReader` now admits the directory form through held directory
 descriptors, `openat` and no-follow reads. It rejects non-regular or multiply linked files,
@@ -194,10 +223,31 @@ pass. The immutable snapshot retains every admitted source byte, including the o
 manifest, people and editor JSON, for a future lossless re-export. Missing editor metadata
 remains explicit; deterministic fallback dates come from `exportedAt`.
 
-Independent source review passes. The final focused run passes 9 tests / one suite across
-36 parameterized cases in 0.250 seconds. Repository validation passes after one transient
+Independent source review passes. The reader follow-up passes 10 tests / one suite, including
+valid empty replacement candidates and root-symlink refusal. `KnownPeoplePackageDirectoryWriter`
+revalidates the immutable snapshot, stages only exact captured bytes beside the destination,
+admits no-follow leaves, reads the complete stage back, and installs through exclusive rename or
+atomic directory swap. It reports the rename as committed before any later fallible sync or cleanup,
+and retains the prior directory as explicit recovery evidence after post-commit failure or cancellation.
+Its retained parent descriptor and advisory lock serialize cooperating writer instances and keep
+relative operations attached to the admitted parent if its pathname is moved. Non-cooperating
+same-user mutation remains outside the whole transaction guarantee because POSIX provides neither
+atomic compare-and-swap admission nor compare-and-unlink cleanup; repeated boundary identity/readback
+checks turn observed mutations into failures and preserve recovery evidence. The writer suite passes
+13 tests across 37 parameterized cases, covering new and replacement export,
+pre/post-commit faults, deterministic cancellation, forged snapshots, aliases/nesting, nested and
+inside/post-install mutation, parent retargeting/counterfeit entries, missing cleanup ownership, and
+cooperating-writer serialization. Repository validation passes after one transient
 `lipo` inspection failure on the unchanged bundled ffmpeg; an immediate direct probe and
 complete rerun passed. Earlier focused attempts exposed sandbox cache denial, a POSIX `read`
 name collision and a nested test macro; each was corrected without weakening product
-admission or assertions. Archive extraction, transaction/service mutation, export, UI and
-App Group publication remain unimplemented.
+admission or assertions. The directory writer remains a service boundary; archive extraction,
+managed-store replacement, user-facing export/import adapters and App Group publication remain.
+
+Production recognition compatibility is separately blocked by contradictory pinned model evidence.
+The admitted `AuraFaceR100.mlpackage` metadata declares BGR and Torch 2.12.0, while the manifest,
+locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0. Artifact hashes are internally
+consistent, but no color-asymmetric image-to-reference-vector fixture proves the intended channel
+order or binds these bytes to the checked-in recipe. Do not change the interchange contract or
+publish recognition based on metadata alone. Regenerate from the pinned ONNX source in the locked
+environment, record a build receipt, and require an RGB/BGR negative control before compatibility.

@@ -6,6 +6,9 @@ import ImageIO
 /// An admitted immutable byte snapshot. Projection never replaces the original editor JSON,
 /// whose whitespace, optional fields and fractional dates must survive future re-export.
 nonisolated struct KnownPeoplePackageSnapshot: Sendable {
+    let sourceDirectoryURL: URL
+    let sourceDevice: Int32
+    let sourceInode: UInt64
     let manifest: KnownPeoplePackageManifest
     let payload: KnownPeoplePackagePayload
     let editor: KnownPeoplePackageEditorPayload?
@@ -26,6 +29,25 @@ actor KnownPeoplePackageDirectoryReader {
         guard directoryURL.isFileURL else { throw Failure.invalidDirectory }
         let root = try Self.openDirectory(directoryURL.path)
         defer { close(root) }
+        return try readOpenedDirectory(root, sourceURL: directoryURL.resolvingSymlinksInPath().standardizedFileURL,
+                                       verifySourcePath: true)
+    }
+
+    /// Reads through a descriptor retained by a transaction. Renames do not change what is
+    /// admitted, so this form intentionally does not claim that a caller-provided path is stable.
+    func read(heldDirectoryDescriptor descriptor: Int32, sourceURL: URL) throws -> KnownPeoplePackageSnapshot {
+        try Task.checkCancellation()
+        guard sourceURL.isFileURL else { throw Failure.invalidDirectory }
+        let root = dup(descriptor)
+        guard root >= 0 else { throw Failure.io }
+        defer { close(root) }
+        return try readOpenedDirectory(root, sourceURL: sourceURL, verifySourcePath: false)
+    }
+
+    private func readOpenedDirectory(_ root: Int32, sourceURL: URL,
+                                     verifySourcePath: Bool) throws -> KnownPeoplePackageSnapshot {
+        var sourceInfo = stat()
+        guard fstat(root, &sourceInfo) == 0 else { throw Failure.io }
         let limits = KnownPeoplePackageManifest.Limits()
         let manifestBytes = try Self.readFile(root, path: "manifest.json", maximum: limits.maximumManifestBytes)
         let manifest = try KnownPeoplePackageManifest.decode(manifestBytes)
@@ -95,7 +117,15 @@ actor KnownPeoplePackageDirectoryReader {
         guard try Self.enumerate(root, maximum: limits.maximumFiles + 1) == expected else {
             throw Failure.changedDuringRead
         }
-        return KnownPeoplePackageSnapshot(manifest: manifest, payload: payload,
+        if verifySourcePath {
+            var currentSource = stat()
+            guard lstat(sourceURL.path, &currentSource) == 0, currentSource.st_mode & S_IFMT == S_IFDIR,
+                  sourceInfo.st_dev == currentSource.st_dev, sourceInfo.st_ino == currentSource.st_ino else {
+                throw Failure.changedDuringRead
+            }
+        }
+        return KnownPeoplePackageSnapshot(sourceDirectoryURL: sourceURL,
+            sourceDevice: sourceInfo.st_dev, sourceInode: sourceInfo.st_ino, manifest: manifest, payload: payload,
             editor: editor, files: files, people: people)
     }
 

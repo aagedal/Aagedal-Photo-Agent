@@ -6,12 +6,12 @@ import CryptoKit
 import Darwin
 @testable import Aagedal_Photo_Agent
 
-/// Golden wire bytes are from FTP Sync fixture commit 5b43ce8; contract source 2dc18e9.
-/// Base64 text preserves the original JSON whitespace and missing trailing newline.
+/// Golden wire bytes are from FTP Sync fixture commit da3579e; contract source 2dc18e9.
+/// Base64 text preserves the original bytes and deliberately noncanonical vector norm.
 @Suite("Known People package directory interoperability")
 struct KnownPeoplePackageDirectoryTests {
-    private let coreRevision = "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281"
-    private let revision = "87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709"
+    private let coreRevision = "636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83"
+    private let revision = "12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba"
     private let exampleID = UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!
     private let personID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
     private let embeddingPath = "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2"
@@ -20,16 +20,18 @@ struct KnownPeoplePackageDirectoryTests {
         let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Fixtures/PeopleLibraryV2")
         var files: [String: Data] = [:]
-        for path in ["manifest.json", "people.json", "editor/photo-agent.json"] {
+        let fixtureNames = [
+            "manifest.json": "manifest.json.base64",
+            "people.json": "people.json.base64",
+            "editor/photo-agent.json": "editor-photo-agent.json.base64",
+            embeddingPath: "embedding.fem2.base64",
+        ]
+        for (path, name) in fixtureNames {
             let text = try String(contentsOf: fixtures.appendingPathComponent(
-                path.replacingOccurrences(of: "/", with: "-") + ".base64"), encoding: .utf8)
-            files[path] = try #require(Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                name), encoding: .utf8)
+            let encoded = text.components(separatedBy: .whitespacesAndNewlines).joined()
+            files[path] = try #require(Data(base64Encoded: encoded))
         }
-        // Independently specified FEM2 bytes: magic 0x46454d32, dimension512,
-        // first Float32=1 and remaining511=0, all little-endian. Do not use the codec
-        // under test to construct its own golden input.
-        files[embeddingPath] = Data([0x32, 0x4d, 0x45, 0x46, 0, 2, 0, 0, 0, 0, 0x80, 0x3f])
-            + Data(repeating: 0, count: 511 * 4)
         return files
     }
 
@@ -80,7 +82,7 @@ struct KnownPeoplePackageDirectoryTests {
         #expect(snapshot.files == files)
         #expect(snapshot.manifest.libraryID.uuidString.lowercased() == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
         #expect(snapshot.manifest.files.map(\.byteCount).sorted() == [310, 655, 2056])
-        #expect(hash(try #require(files[embeddingPath])) == "c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718")
+        #expect(hash(try #require(files[embeddingPath])) == "11515e45513a5f28a7e15321d1caa573c3dc1e70a112ac813dd8019f2900f1be")
         let person = try #require(snapshot.people.first)
         #expect(snapshot.people.count == 1)
         #expect(person.id == personID)
@@ -98,7 +100,19 @@ struct KnownPeoplePackageDirectoryTests {
         #expect(example.recognitionMode == .faceAndClothing)
         #expect(example.provenance == .current)
         let vector = try FaceEmbeddingInterchangeCodec.validate(example.featurePrintData)
-        #expect(vector.count == 512 && vector[0] == 1 && vector.dropFirst().allSatisfy { $0 == 0 })
+        let rawVector = try #require(files[embeddingPath]).withUnsafeBytes { bytes in
+            [0, 1].map { index in
+                Float(bitPattern: UInt32(littleEndian: bytes.loadUnaligned(
+                    fromByteOffset: 8 + index * MemoryLayout<UInt32>.size,
+                    as: UInt32.self
+                )))
+            }
+        }
+        #expect(vector.count == 512)
+        #expect(rawVector == [0.60003, 0.8])
+        #expect(vector[0] != rawVector[0] && vector[1] != rawVector[1])
+        #expect(vector.dropFirst(2).allSatisfy { $0 == 0 })
+        #expect(try FaceEmbeddingInterchangeCodec.encode(vector) != files[embeddingPath])
         #expect(try KnownPeopleInterchangeEligibility.validate(people: snapshot.people).embeddingCount == 1)
         for (path, bytes) in files {
             #expect(try Data(contentsOf: root.appendingPathComponent(path)) == bytes)
@@ -221,7 +235,8 @@ struct KnownPeoplePackageDirectoryTests {
     @Test("Rehashed non-FEM2 input cannot acquire model provenance")
     func invalidVector() async throws {
         var files = try goldenFiles()
-        var vector = try #require(files[embeddingPath]); vector[10] = 0; vector[11] = 0
+        var vector = try #require(files[embeddingPath])
+        vector.replaceSubrange(8..<vector.count, with: repeatElement(UInt8(0), count: vector.count - 8))
         files[embeddingPath] = vector
         // No editor: avoid making its old core identity the reason for refusal.
         files.removeValue(forKey: "editor/photo-agent.json")
@@ -248,13 +263,50 @@ struct KnownPeoplePackageDirectoryTests {
         #expect(value.manifest.coreRevision == coreRevision)
     }
 
+    @Test("A valid empty snapshot remains an authoritative replacement candidate")
+    func emptySnapshot() async throws {
+        let people = Data("{\"people\":[]}".utf8)
+        let declaration = try KnownPeoplePackageManifest.FileDeclaration(
+            path: "people.json",
+            byteCount: people.count,
+            sha256: hash(people)
+        )
+        let manifest = try KnownPeoplePackageManifest(
+            libraryID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+            exportedAt: "2026-09-12T10:00:00.000Z",
+            exporter: KnownPeoplePackageManifest.Exporter(
+                app: "Aagedal FTP Sync",
+                version: "3.0.0",
+                sourceRevision: String(repeating: "a", count: 40)
+            ),
+            peopleCount: 0,
+            embeddingCount: 0,
+            files: [declaration]
+        )
+        let files = [
+            "manifest.json": try JSONEncoder().encode(manifest),
+            "people.json": people,
+        ]
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+
+        #expect(snapshot.people.isEmpty)
+        #expect(snapshot.editor == nil)
+        #expect(snapshot.files == files)
+        #expect(snapshot.manifest.peopleCount == 0)
+        #expect(snapshot.manifest.embeddingCount == 0)
+    }
+
     @Test("Directory admission refuses undeclared, missing and linked carriers", arguments: [
-        "extra", "missing", "symlink", "linked-directory", "hardlink"
+        "extra", "missing", "symlink", "linked-directory", "hardlink", "root-symlink"
     ])
     func directoryCoverage(kind: String) async throws {
         let files = try goldenFiles(); let root = try materialize(files)
         defer { try? FileManager.default.removeItem(at: root) }
         let editor = root.appendingPathComponent("editor/photo-agent.json")
+        var candidate = root
         switch kind {
         case "extra": try Data([1]).write(to: root.appendingPathComponent("undeclared"))
         case "missing": try FileManager.default.removeItem(at: editor)
@@ -265,11 +317,19 @@ struct KnownPeoplePackageDirectoryTests {
             try FileManager.default.removeItem(at: root.appendingPathComponent("editor"))
             try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("editor"), withDestinationURL: root)
         default:
-            let extra = root.appendingPathComponent("alias")
-            try FileManager.default.linkItem(at: editor, to: extra)
+            if kind == "hardlink" {
+                let extra = root.appendingPathComponent("alias")
+                try FileManager.default.linkItem(at: editor, to: extra)
+            } else {
+                let alias = root.deletingLastPathComponent()
+                    .appendingPathComponent("PhotoPeopleGolden-Alias-\(UUID().uuidString).aagedalpeople")
+                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+                candidate = alias
+                defer { try? FileManager.default.removeItem(at: alias) }
+            }
         }
         await #expect(throws: (any Error).self) {
-            try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+            try await KnownPeoplePackageDirectoryReader().read(directoryURL: candidate)
         }
     }
 }
