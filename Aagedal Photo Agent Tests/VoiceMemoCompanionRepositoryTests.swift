@@ -788,6 +788,169 @@ struct VoiceMemoCompanionRepositoryTests {
         #expect(try Data(contentsOf: recordURL) == original)
     }
 
+    @Test("Captured identity permits exact recovery while retaining the selected source")
+    func exactRecoveryUsesPersistedIdentity() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let candidate = fixture.root.appendingPathComponent("selected-original.WAV")
+        try FileManager.default.copyItem(at: fixture.memo, to: candidate)
+        try FileManager.default.removeItem(at: fixture.memo)
+
+        let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
+        #expect(assessment.kind == .exactRecovery)
+        #expect(!assessment.invalidatesTranscriptApproval)
+        let receipt = try repository.recoverMissingMemo(
+            for: fixture.image,
+            from: candidate,
+            confirmingReplacement: false
+        )
+
+        #expect(receipt.kind == .exactRecovery)
+        #expect(try Data(contentsOf: fixture.memo) == Data("wav".utf8))
+        #expect(try Data(contentsOf: candidate) == Data("wav".utf8))
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+        let recovered = try JSONDecoder().decode(
+            VoiceMemoCompanionRecord.self,
+            from: Data(contentsOf: repository.recordURL(for: fixture.image))
+        )
+        #expect(recovered.schemaVersion == 2)
+        #expect(recovered.provenance == .exactRecovery)
+        #expect(recovered.imageIdentity != nil)
+        #expect(recovered.memoIdentity != nil)
+    }
+
+    @Test("Legacy identity cannot be invented and explicit replacement preserves unknown fields")
+    func legacyRecoveryRequiresExplicitReplacement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try FileManager.default.removeItem(at: fixture.memo)
+        let recordURL = repository.recordURL(for: fixture.image)
+        let legacy = Data(#"{"schemaVersion":1,"profileIdentifier":"legacy-camera","imageFilename":"DSC00001.ARW","memoFilename":"DSC00001.WAV","future":{"keep":true}}"#.utf8)
+        try legacy.write(to: recordURL)
+        let candidate = fixture.root.appendingPathComponent("replacement.WAV")
+        try Data("replacement audio".utf8).write(to: candidate)
+
+        let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
+        guard case .missing(let missing) = try repository.lookup(for: fixture.image) else {
+            Issue.record("The legacy missing relationship must remain visible")
+            return
+        }
+        #expect(missing.schemaVersion == 1)
+        #expect(assessment.kind == .explicitReplacement(previousIdentityAvailable: false))
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.recoveryRequiresReplacementConfirmation) {
+            try repository.recoverMissingMemo(
+                for: fixture.image,
+                from: candidate,
+                confirmingReplacement: false
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.memo.path))
+        #expect(try Data(contentsOf: recordURL) == legacy)
+
+        let receipt = try repository.recoverMissingMemo(
+            for: fixture.image,
+            from: candidate,
+            confirmingReplacement: true
+        )
+        #expect(receipt.kind == .explicitReplacement(previousIdentityAvailable: false))
+        #expect(try Data(contentsOf: candidate) == Data("replacement audio".utf8))
+        #expect(try Data(contentsOf: fixture.memo) == Data("replacement audio".utf8))
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any]
+        )
+        #expect(object["schemaVersion"] as? Int == 2)
+        #expect(object["provenance"] as? String == "explicitReplacement")
+        #expect((object["future"] as? [String: Any])?["keep"] as? Bool == true)
+    }
+
+    @Test("Changed audio invalidates a bound transcript approval")
+    func changedRecoveryInvalidatesTranscriptApproval() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let recordURL = repository.recordURL(for: fixture.image)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any]
+        )
+        let memoIdentity = try #require(object["memoIdentity"] as? [String: Any])
+        object["approvedTranscriptMemoSHA256"] = memoIdentity["sha256"]
+        try JSONSerialization.data(withJSONObject: object).write(to: recordURL, options: .atomic)
+        try FileManager.default.removeItem(at: fixture.memo)
+        let candidate = fixture.root.appendingPathComponent("changed.WAV")
+        try Data("different audio".utf8).write(to: candidate)
+
+        let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
+        #expect(assessment.kind == .explicitReplacement(previousIdentityAvailable: true))
+        #expect(assessment.invalidatesTranscriptApproval)
+        let receipt = try repository.recoverMissingMemo(
+            for: fixture.image,
+            from: candidate,
+            confirmingReplacement: true
+        )
+        #expect(receipt.invalidatedTranscriptApproval)
+        let replaced = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any]
+        )
+        #expect(replaced["approvedTranscriptMemoSHA256"] == nil)
+    }
+
+    @Test("Changed photo bytes cannot be reported as an exact memo recovery")
+    func changedPhotoRequiresReplacementConfirmation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let candidate = fixture.root.appendingPathComponent("original-memo.WAV")
+        try FileManager.default.copyItem(at: fixture.memo, to: candidate)
+        try FileManager.default.removeItem(at: fixture.memo)
+        try Data("different photo revision".utf8).write(to: fixture.image)
+
+        let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
+        #expect(assessment.kind == .explicitReplacement(previousIdentityAvailable: true))
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.recoveryRequiresReplacementConfirmation) {
+            try repository.recoverMissingMemo(
+                for: fixture.image,
+                from: candidate,
+                confirmingReplacement: false
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.memo.path))
+    }
+
+    @Test("Relationship write failure rolls back only the installed recovery copy")
+    func recoveryWriteFailureRollsBackInstalledCopy() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let systemRepository = VoiceMemoCompanionRepository()
+        try systemRepository.save(fixture.association)
+        let recordURL = systemRepository.recordURL(for: fixture.image)
+        let originalRecord = try Data(contentsOf: recordURL)
+        let candidate = fixture.root.appendingPathComponent("selected.WAV")
+        try FileManager.default.copyItem(at: fixture.memo, to: candidate)
+        try FileManager.default.removeItem(at: fixture.memo)
+        let repository = VoiceMemoCompanionRepository(
+            recordIO: FailNthWriteRecordIO(failingOnWrite: 1)
+        )
+
+        #expect(throws: InjectedWriteFailure.failure) {
+            try repository.recoverMissingMemo(
+                for: fixture.image,
+                from: candidate,
+                confirmingReplacement: false
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.memo.path))
+        #expect(try Data(contentsOf: candidate) == Data("wav".utf8))
+        #expect(try Data(contentsOf: recordURL) == originalRecord)
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path)).contains {
+            $0.hasPrefix(".voice-memo-recovery-")
+        })
+    }
+
     private func successfulCopy(
         source: URL,
         destination: URL,

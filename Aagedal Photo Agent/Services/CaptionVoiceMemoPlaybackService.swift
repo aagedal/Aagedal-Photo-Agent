@@ -262,3 +262,216 @@ final class CaptionVoiceMemoPlaybackModel {
         Task { await service.clear(generation: requested) }
     }
 }
+
+/// Serializes recovery hashing/copying away from MainActor and balances any picker-granted
+/// security scopes. Candidate inspection never writes; only the confirmed recovery call commits.
+actor CaptionVoiceMemoRecoveryService {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    typealias Assess = @Sendable (URL, URL) throws -> VoiceMemoCompanionRepository.RecoveryAssessment
+    typealias Recover = @Sendable (
+        URL, URL, Bool
+    ) throws -> VoiceMemoCompanionRepository.RecoveryReceipt
+
+    private let assessCandidate: Assess
+    private let recoverCandidate: Recover
+    private let startAccess: @Sendable (URL) -> Bool
+    private let stopAccess: @Sendable (URL) -> Void
+
+    init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.caption-voice-memo-recovery", qos: .utility
+        ),
+        assessCandidate: @escaping Assess = {
+            try VoiceMemoCompanionRepository().assessRecoveryCandidate($0, for: $1)
+        },
+        recoverCandidate: @escaping Recover = {
+            try VoiceMemoCompanionRepository().recoverMissingMemo(
+                for: $1, from: $0, confirmingReplacement: $2
+            )
+        },
+        startAccess: @escaping @Sendable (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
+        stopAccess: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
+    ) {
+        self.filesystemQueue = filesystemQueue
+        self.assessCandidate = assessCandidate
+        self.recoverCandidate = recoverCandidate
+        self.startAccess = startAccess
+        self.stopAccess = stopAccess
+    }
+
+    func assess(candidateURL: URL, imageURL: URL) throws -> VoiceMemoCompanionRepository.RecoveryAssessment {
+        try Task.checkCancellation()
+        return try withAccess(candidateURL: candidateURL, imageURL: imageURL) {
+            try Task.checkCancellation()
+            return try assessCandidate(candidateURL, imageURL)
+        }
+    }
+
+    func recover(
+        candidateURL: URL,
+        imageURL: URL,
+        confirmingReplacement: Bool
+    ) throws -> VoiceMemoCompanionRepository.RecoveryReceipt {
+        try Task.checkCancellation()
+        return try withAccess(candidateURL: candidateURL, imageURL: imageURL) {
+            try Task.checkCancellation()
+            return try recoverCandidate(candidateURL, imageURL, confirmingReplacement)
+        }
+    }
+
+    private func withAccess<T>(
+        candidateURL: URL,
+        imageURL: URL,
+        operation: () throws -> T
+    ) rethrows -> T {
+        let folderURL = imageURL.deletingLastPathComponent()
+        let candidateAccess = startAccess(candidateURL)
+        let folderAccess = startAccess(folderURL)
+        defer {
+            if folderAccess { stopAccess(folderURL) }
+            if candidateAccess { stopAccess(candidateURL) }
+        }
+        return try operation()
+    }
+}
+
+@MainActor @Observable
+final class CaptionVoiceMemoRecoveryModel {
+    private enum SelectionOutcome: Sendable {
+        case recovered
+        case replacement(VoiceMemoCompanionRepository.RecoveryAssessment)
+        case failed(String)
+        case cancelled
+    }
+
+    private(set) var isWorking = false
+    private(set) var pendingReplacement: VoiceMemoCompanionRepository.RecoveryAssessment?
+    private(set) var errorMessage: String?
+    @ObservationIgnored private let service: CaptionVoiceMemoRecoveryService
+    @ObservationIgnored private var pendingImageURL: URL?
+    @ObservationIgnored private var task: Task<SelectionOutcome, Never>?
+    @ObservationIgnored private var generation: UInt64 = 0
+
+    init(service: CaptionVoiceMemoRecoveryService = CaptionVoiceMemoRecoveryService()) {
+        self.service = service
+    }
+
+    func select(candidateURL: URL, for imageURL: URL) async -> Bool {
+        cancel()
+        generation &+= 1
+        let requested = generation
+        isWorking = true
+        errorMessage = nil
+        let work = Task { [service] in
+            do {
+                let assessment = try await service.assess(
+                    candidateURL: candidateURL, imageURL: imageURL
+                )
+                switch assessment.kind {
+                case .exactRecovery:
+                    _ = try await service.recover(
+                        candidateURL: candidateURL,
+                        imageURL: imageURL,
+                        confirmingReplacement: false
+                    )
+                    return SelectionOutcome.recovered
+                case .explicitReplacement:
+                    return SelectionOutcome.replacement(assessment)
+                }
+            } catch is CancellationError {
+                return SelectionOutcome.cancelled
+            } catch {
+                return SelectionOutcome.failed(error.localizedDescription)
+            }
+        }
+        task = work
+        let outcome = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard requested == generation else { return false }
+        task = nil
+        isWorking = false
+        switch outcome {
+        case .recovered:
+            pendingReplacement = nil
+            pendingImageURL = nil
+            return true
+        case .replacement(let assessment):
+            pendingReplacement = assessment
+            pendingImageURL = imageURL
+            return false
+        case .failed(let message):
+            errorMessage = message
+            return false
+        case .cancelled:
+            return false
+        }
+    }
+
+    func confirmReplacement() async -> Bool {
+        guard let assessment = pendingReplacement, let imageURL = pendingImageURL else { return false }
+        generation &+= 1
+        let requested = generation
+        isWorking = true
+        errorMessage = nil
+        let work = Task { [service] in
+            do {
+                _ = try await service.recover(
+                    candidateURL: assessment.candidateURL,
+                    imageURL: imageURL,
+                    confirmingReplacement: true
+                )
+                return SelectionOutcome.recovered
+            } catch is CancellationError {
+                return SelectionOutcome.cancelled
+            } catch {
+                return SelectionOutcome.failed(error.localizedDescription)
+            }
+        }
+        task = work
+        let outcome = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard requested == generation else { return false }
+        task = nil
+        isWorking = false
+        switch outcome {
+        case .recovered:
+            pendingReplacement = nil
+            pendingImageURL = nil
+            return true
+        case .failed(let message):
+            errorMessage = message
+            return false
+        case .cancelled, .replacement:
+            return false
+        }
+    }
+
+    func dismissReplacement() {
+        pendingReplacement = nil
+        pendingImageURL = nil
+    }
+
+    func reportPickerError(_ error: Error) {
+        errorMessage = error.localizedDescription
+    }
+
+    func cancel() {
+        generation &+= 1
+        task?.cancel()
+        task = nil
+        isWorking = false
+        pendingReplacement = nil
+        pendingImageURL = nil
+        errorMessage = nil
+    }
+}

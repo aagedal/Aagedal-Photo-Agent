@@ -125,35 +125,114 @@ nonisolated struct SystemVoiceMemoCompanionRecordIO: VoiceMemoCompanionRecordIO 
     }
 }
 
+nonisolated struct VoiceMemoCompanionContentIdentity: Codable, Equatable, Sendable {
+    let byteCount: Int64
+    /// Lowercase SHA-256 of the complete file bytes.
+    let sha256: String
+}
+
+nonisolated enum VoiceMemoCompanionProvenance: String, Codable, Equatable, Sendable {
+    case capturedAssociation
+    case archiveDerivative
+    case exactRecovery
+    case explicitReplacement
+}
+
 nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let profileIdentifier: String
     let imageFilename: String
     let memoFilename: String
+    let imageIdentity: VoiceMemoCompanionContentIdentity?
+    let memoIdentity: VoiceMemoCompanionContentIdentity?
+    let provenance: VoiceMemoCompanionProvenance?
+    /// Reserved for the reviewed-transcript slice. Recovery only retains an approval when the
+    /// selected WAV is byte-for-byte identical to the revision on which it was approved.
+    let approvedTranscriptMemoSHA256: String?
 
-    init(profileIdentifier: String, imageFilename: String, memoFilename: String) {
-        self.schemaVersion = Self.currentSchemaVersion
+    init(
+        profileIdentifier: String,
+        imageFilename: String,
+        memoFilename: String,
+        imageIdentity: VoiceMemoCompanionContentIdentity? = nil,
+        memoIdentity: VoiceMemoCompanionContentIdentity? = nil,
+        provenance: VoiceMemoCompanionProvenance? = nil,
+        approvedTranscriptMemoSHA256: String? = nil
+    ) {
+        self.init(
+            schemaVersion: Self.currentSchemaVersion,
+            profileIdentifier: profileIdentifier,
+            imageFilename: imageFilename,
+            memoFilename: memoFilename,
+            imageIdentity: imageIdentity,
+            memoIdentity: memoIdentity,
+            provenance: provenance,
+            approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
+        )
+    }
+
+    private init(
+        schemaVersion: Int,
+        profileIdentifier: String,
+        imageFilename: String,
+        memoFilename: String,
+        imageIdentity: VoiceMemoCompanionContentIdentity?,
+        memoIdentity: VoiceMemoCompanionContentIdentity?,
+        provenance: VoiceMemoCompanionProvenance?,
+        approvedTranscriptMemoSHA256: String?
+    ) {
+        self.schemaVersion = schemaVersion
         self.profileIdentifier = profileIdentifier
         self.imageFilename = imageFilename
         self.memoFilename = memoFilename
+        self.imageIdentity = imageIdentity
+        self.memoIdentity = memoIdentity
+        self.provenance = provenance
+        self.approvedTranscriptMemoSHA256 = approvedTranscriptMemoSHA256
     }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, profileIdentifier, imageFilename, memoFilename
+        case imageIdentity, memoIdentity, provenance, approvedTranscriptMemoSHA256
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .schemaVersion)
-        guard version == Self.currentSchemaVersion else {
+        guard version == 1 || version == Self.currentSchemaVersion else {
             throw VoiceMemoCompanionRepository.RepositoryError.unsupportedSchema(version)
         }
         schemaVersion = version
         profileIdentifier = try container.decode(String.self, forKey: .profileIdentifier)
         imageFilename = try container.decode(String.self, forKey: .imageFilename)
         memoFilename = try container.decode(String.self, forKey: .memoFilename)
+        imageIdentity = try container.decodeIfPresent(
+            VoiceMemoCompanionContentIdentity.self, forKey: .imageIdentity
+        )
+        memoIdentity = try container.decodeIfPresent(
+            VoiceMemoCompanionContentIdentity.self, forKey: .memoIdentity
+        )
+        provenance = try container.decodeIfPresent(
+            VoiceMemoCompanionProvenance.self, forKey: .provenance
+        )
+        approvedTranscriptMemoSHA256 = try container.decodeIfPresent(
+            String.self, forKey: .approvedTranscriptMemoSHA256
+        )
+    }
+
+    func withFilenames(image: String, memo: String) -> Self {
+        Self(
+            schemaVersion: schemaVersion,
+            profileIdentifier: profileIdentifier,
+            imageFilename: image,
+            memoFilename: memo,
+            imageIdentity: imageIdentity,
+            memoIdentity: memoIdentity,
+            provenance: provenance,
+            approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
+        )
     }
 }
 
@@ -200,6 +279,8 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case unsafeTrashCarrier(String)
         case trashRollbackFailed([String])
         case trashOutcomeUncertain(String)
+        case recoveryNotNeeded
+        case recoveryRequiresReplacementConfirmation
 
         var errorDescription: String? {
             switch self {
@@ -235,6 +316,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 return "Trash reported an error after the recovery bundle disappeared. Check Finder Trash for \(URL(fileURLWithPath: path).lastPathComponent) before retrying; the original files may already be there. Original recovery path: \(path)"
             case .unsafeMemoFile(let filename):
                 return "The saved voice memo \(filename) must be a regular file in the photo's folder before file operations can proceed. Symbolic links are left untouched."
+            case .recoveryNotNeeded:
+                return "This photo already has an available voice memo. Refresh Caption before trying recovery again."
+            case .recoveryRequiresReplacementConfirmation:
+                return "The selected WAV cannot be proven to be the previously associated audio. Confirm an explicit replacement to continue."
             }
         }
     }
@@ -243,6 +328,24 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case none
         case available(VoiceMemoAssociation)
         case missing(VoiceMemoCompanionRecord)
+    }
+
+    enum RecoveryKind: Equatable, Sendable {
+        case exactRecovery
+        case explicitReplacement(previousIdentityAvailable: Bool)
+    }
+
+    struct RecoveryAssessment: Equatable, Sendable {
+        let candidateURL: URL
+        let destinationURL: URL
+        let kind: RecoveryKind
+        let invalidatesTranscriptApproval: Bool
+    }
+
+    struct RecoveryReceipt: Equatable, Sendable {
+        let association: VoiceMemoAssociation
+        let kind: RecoveryKind
+        let invalidatedTranscriptApproval: Bool
     }
 
     /// Immutable source evidence retained while a derivative RAW archive is rendered and signed.
@@ -337,7 +440,9 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         let record = VoiceMemoCompanionRecord(
             profileIdentifier: association.profileIdentifier,
             imageFilename: destinationImageURL.lastPathComponent,
-            memoFilename: destinationMemo.lastPathComponent
+            memoFilename: destinationMemo.lastPathComponent,
+            memoIdentity: contentIdentity(for: memoRevision),
+            provenance: .archiveDerivative
         )
         try encoded(record).write(to: stagedRecord, options: .atomic)
         try revalidateArchiveSource(snapshot)
@@ -359,10 +464,9 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         )
         let memoURL = imageURL.deletingLastPathComponent().appendingPathComponent(memoFilename)
         guard FileManager.default.fileExists(atPath: memoURL.path) else {
-            return .missing(VoiceMemoCompanionRecord(
-                profileIdentifier: record.profileIdentifier,
-                imageFilename: imageURL.lastPathComponent,
-                memoFilename: memoFilename
+            return .missing(record.withFilenames(
+                image: imageURL.lastPathComponent,
+                memo: memoFilename
             ))
         }
         return .available(VoiceMemoAssociation(
@@ -385,12 +489,124 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             throw RepositoryError.memoMissing(memoURL.lastPathComponent)
         }
 
-        let record = VoiceMemoCompanionRecord(
+        let record = try identityRecord(
             profileIdentifier: association.profileIdentifier,
-            imageFilename: imageURL.lastPathComponent,
-            memoFilename: memoURL.lastPathComponent
+            imageURL: imageURL,
+            memoURL: memoURL,
+            provenance: .capturedAssociation
         )
         try write(record, to: recordURL(for: imageURL))
+    }
+
+    /// Classifies a user-selected WAV against identity captured when the relationship was made.
+    /// Schema-1 records deliberately require replacement confirmation: hashing today's candidate
+    /// cannot manufacture historical proof that the bytes are the original memo.
+    func assessRecoveryCandidate(
+        _ candidateURL: URL,
+        for imageURL: URL
+    ) throws -> RecoveryAssessment {
+        let context = try recoveryContext(candidateURL: candidateURL, imageURL: imageURL)
+        return RecoveryAssessment(
+            candidateURL: context.candidateURL,
+            destinationURL: context.destinationURL,
+            kind: context.kind,
+            invalidatesTranscriptApproval: context.invalidatesTranscriptApproval
+        )
+    }
+
+    /// Restores a missing adjacent memo from an explicit user-selected file. The selected file is
+    /// copied, never moved. The relationship is replaced only after a verified, exclusive install;
+    /// a record-write failure removes the operation-owned copy and leaves prior bytes untouched.
+    @discardableResult
+    func recoverMissingMemo(
+        for imageURL: URL,
+        from candidateURL: URL,
+        confirmingReplacement: Bool
+    ) throws -> RecoveryReceipt {
+        let context = try recoveryContext(candidateURL: candidateURL, imageURL: imageURL)
+        if case .explicitReplacement = context.kind, !confirmingReplacement {
+            throw RepositoryError.recoveryRequiresReplacementConfirmation
+        }
+
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: context.destinationURL.path) else {
+            throw RepositoryError.copyDestinationExists(context.destinationURL.lastPathComponent)
+        }
+        let staging = imageURL.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-recovery-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: staging) }
+        let stagedMemo = staging.appendingPathComponent(context.destinationURL.lastPathComponent)
+        try copyIO.copy(context.candidateURL, stagedMemo)
+        guard context.candidateRevision.matches(try copyRevision(at: context.candidateURL)),
+              context.candidateRevision.digest == (try SourceImageRevisionCaptureIO.system.hash(stagedMemo)),
+              context.imageRevision.matches(try copyRevision(at: context.imageURL)),
+              context.recordBytes == (try copyRecordBytes(for: context.imageURL)) else {
+            throw RepositoryError.copySourceChanged
+        }
+        guard !fm.fileExists(atPath: context.destinationURL.path) else {
+            throw RepositoryError.copyDestinationExists(context.destinationURL.lastPathComponent)
+        }
+
+        let exact = context.kind == .exactRecovery
+        let approval = exact
+            && context.record.approvedTranscriptMemoSHA256 == context.candidateIdentity.sha256
+            ? context.record.approvedTranscriptMemoSHA256
+            : nil
+        let updated = VoiceMemoCompanionRecord(
+            profileIdentifier: context.record.profileIdentifier,
+            imageFilename: context.imageURL.lastPathComponent,
+            memoFilename: context.destinationURL.lastPathComponent,
+            imageIdentity: contentIdentity(for: context.imageRevision),
+            memoIdentity: context.candidateIdentity,
+            provenance: exact ? .exactRecovery : .explicitReplacement,
+            approvedTranscriptMemoSHA256: approval
+        )
+        let updatedBytes = try mergedRecoveryRecordBytes(
+            original: context.recordBytes,
+            updated: updated
+        )
+
+        let recordURL = recordURL(for: context.imageURL)
+        let association = VoiceMemoAssociation(
+            profileIdentifier: updated.profileIdentifier,
+            imageURL: VoiceMemoAssociationService.canonicalURL(context.imageURL),
+            memoURL: VoiceMemoAssociationService.canonicalURL(context.destinationURL)
+        )
+        var installed = false
+        var recordWriteAttempted = false
+        do {
+            try copyIO.install(stagedMemo, context.destinationURL)
+            installed = true
+            guard context.recordBytes == (try copyRecordBytes(for: context.imageURL)),
+                  context.imageRevision.matches(try copyRevision(at: context.imageURL)) else {
+                throw RepositoryError.copySourceChanged
+            }
+            recordWriteAttempted = true
+            try recordIO.writeAtomically(updatedBytes, to: recordURL)
+            guard try recordIO.read(from: recordURL) == updatedBytes,
+                  try lookup(for: context.imageURL) == .available(association) else {
+                throw RepositoryError.copySourceChanged
+            }
+        } catch {
+            var residuals: [String] = []
+            if recordWriteAttempted {
+                do { try recordIO.writeAtomically(context.recordBytes, to: recordURL) }
+                catch { residuals.append(recordURL.path) }
+            }
+            if installed {
+                do { try copyIO.remove(context.destinationURL) }
+                catch { residuals.append(context.destinationURL.path) }
+            }
+            if !residuals.isEmpty { throw RepositoryError.copyRollbackFailed(residuals) }
+            throw error
+        }
+
+        return RecoveryReceipt(
+            association: association,
+            kind: context.kind,
+            invalidatedTranscriptApproval: context.invalidatesTranscriptApproval
+        )
     }
 
     /// Writes durable relationships only after both copy jobs completed successfully on the same
@@ -431,10 +647,11 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                     throw RepositoryError.memoMissing(memoDestination.lastPathComponent)
                 }
                 prepared.append((
-                    VoiceMemoCompanionRecord(
+                    try identityRecord(
                         profileIdentifier: association.profileIdentifier,
-                        imageFilename: imageDestination.lastPathComponent,
-                        memoFilename: memoDestination.lastPathComponent
+                        imageURL: imageDestination,
+                        memoURL: memoDestination,
+                        provenance: .capturedAssociation
                     ),
                     recordURL(for: imageDestination)
                 ))
@@ -516,7 +733,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             let record = VoiceMemoCompanionRecord(
                 profileIdentifier: association.profileIdentifier,
                 imageFilename: destinationImageURL.lastPathComponent,
-                memoFilename: memoDestination.lastPathComponent
+                memoFilename: memoDestination.lastPathComponent,
+                imageIdentity: contentIdentity(for: imageRevision),
+                memoIdentity: memoRevision.map { contentIdentity(for: $0) },
+                provenance: .capturedAssociation
             )
             let stagedRecord = staging.appendingPathComponent(recordDestination.lastPathComponent)
             try encoded(record).write(to: stagedRecord, options: .atomic)
@@ -586,6 +806,65 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         }
     }
 
+    private struct RecoveryContext {
+        let imageURL: URL
+        let candidateURL: URL
+        let destinationURL: URL
+        let record: VoiceMemoCompanionRecord
+        let recordBytes: Data
+        let imageRevision: CopyRevision
+        let candidateRevision: CopyRevision
+        let candidateIdentity: VoiceMemoCompanionContentIdentity
+        let kind: RecoveryKind
+        let invalidatesTranscriptApproval: Bool
+    }
+
+    private func recoveryContext(candidateURL: URL, imageURL: URL) throws -> RecoveryContext {
+        let image = imageURL.standardizedFileURL
+        let candidate = candidateURL.standardizedFileURL
+        guard candidate.pathExtension.lowercased() == "wav" else {
+            throw RepositoryError.unsafeMemoFile(candidate.lastPathComponent)
+        }
+        let values = try URL(fileURLWithPath: candidate.path).resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey,
+        ])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw RepositoryError.unsafeMemoFile(candidate.lastPathComponent)
+        }
+        let record: VoiceMemoCompanionRecord
+        switch try lookup(for: image) {
+        case .missing(let missing): record = missing
+        case .available: throw RepositoryError.recoveryNotNeeded
+        case .none: throw RepositoryError.invalidRecord
+        }
+        let recordBytes = try recordIO.read(from: recordURL(for: image))
+        let imageRevision = try copyRevision(at: image)
+        let candidateRevision = try copyRevision(at: candidate)
+        let identity = contentIdentity(for: candidateRevision)
+        let capturedImageIdentity = contentIdentity(for: imageRevision)
+        let hasCompleteHistoricalIdentity = record.imageIdentity != nil && record.memoIdentity != nil
+        let kind: RecoveryKind = record.imageIdentity == capturedImageIdentity
+            && record.memoIdentity == identity
+            ? .exactRecovery
+            : .explicitReplacement(previousIdentityAvailable: hasCompleteHistoricalIdentity)
+        let destination = image.deletingLastPathComponent()
+            .appendingPathComponent(record.memoFilename)
+        let approvalIsValid = record.approvedTranscriptMemoSHA256 == identity.sha256
+            && kind == .exactRecovery
+        return RecoveryContext(
+            imageURL: image,
+            candidateURL: candidate,
+            destinationURL: destination,
+            record: record,
+            recordBytes: recordBytes,
+            imageRevision: imageRevision,
+            candidateRevision: candidateRevision,
+            candidateIdentity: identity,
+            kind: kind,
+            invalidatesTranscriptApproval: record.approvedTranscriptMemoSHA256 != nil && !approvalIsValid
+        )
+    }
+
     private func copyFileSnapshot(at url: URL) throws -> SourceImageRevisionFileSnapshot {
         // Construct a fresh URL to avoid reusing Foundation's cached resource values.
         try SourceImageRevisionCaptureIO.system.snapshot(URL(fileURLWithPath: url.path))
@@ -598,6 +877,44 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             throw RepositoryError.copySourceChanged
         }
         return CopyRevision(snapshot: before, digest: digest)
+    }
+
+    private func contentIdentity(for revision: CopyRevision) -> VoiceMemoCompanionContentIdentity {
+        VoiceMemoCompanionContentIdentity(
+            byteCount: revision.snapshot.byteCount,
+            sha256: revision.digest.lowercaseHexString
+        )
+    }
+
+    private func identityRecord(
+        profileIdentifier: String,
+        imageURL: URL,
+        memoURL: URL,
+        provenance: VoiceMemoCompanionProvenance
+    ) throws -> VoiceMemoCompanionRecord {
+        VoiceMemoCompanionRecord(
+            profileIdentifier: profileIdentifier,
+            imageFilename: imageURL.lastPathComponent,
+            memoFilename: memoURL.lastPathComponent,
+            imageIdentity: contentIdentity(for: try copyRevision(at: imageURL)),
+            memoIdentity: contentIdentity(for: try copyRevision(at: memoURL)),
+            provenance: provenance
+        )
+    }
+
+    private func mergedRecoveryRecordBytes(
+        original: Data,
+        updated: VoiceMemoCompanionRecord
+    ) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: original) as? [String: Any],
+              let known = try JSONSerialization.jsonObject(with: encoded(updated)) as? [String: Any] else {
+            throw RepositoryError.invalidRecord
+        }
+        for (key, value) in known { object[key] = value }
+        if updated.approvedTranscriptMemoSHA256 == nil {
+            object.removeValue(forKey: "approvedTranscriptMemoSHA256")
+        }
+        return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     }
 
     private func copyRecordBytes(for imageURL: URL) throws -> Data? {
@@ -689,7 +1006,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             let record = VoiceMemoCompanionRecord(
                 profileIdentifier: companion.association.profileIdentifier,
                 imageFilename: destinationImageURL.lastPathComponent,
-                memoFilename: companion.destinationMemo.lastPathComponent
+                memoFilename: companion.destinationMemo.lastPathComponent,
+                imageIdentity: contentIdentity(for: imageRevision),
+                memoIdentity: memoRevision.map { contentIdentity(for: $0) },
+                provenance: .capturedAssociation
             )
             try encoded(record).write(to: stagedRecord, options: .atomic)
         }
@@ -1093,6 +1413,8 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         try Self.validateFilename(record.imageFilename)
         try Self.validateFilename(record.memoFilename)
         guard !record.profileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              [record.imageIdentity, record.memoIdentity].compactMap({ $0 }).allSatisfy(Self.isValidIdentity),
+              record.approvedTranscriptMemoSHA256.map(Self.isLowercaseSHA256) ?? true,
               expectedImageFilename.map({ $0 == record.imageFilename }) ?? true else {
             throw RepositoryError.invalidRecord
         }
@@ -1211,6 +1533,16 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
               !filename.contains("/"),
               !filename.contains("\\") else {
             throw RepositoryError.unsafeFilename(filename)
+        }
+    }
+
+    private static func isValidIdentity(_ identity: VoiceMemoCompanionContentIdentity) -> Bool {
+        identity.byteCount >= 0 && isLowercaseSHA256(identity.sha256)
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
         }
     }
 }

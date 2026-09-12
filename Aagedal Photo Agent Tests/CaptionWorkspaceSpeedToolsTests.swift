@@ -242,6 +242,127 @@ struct CaptionVoiceMemoPlaybackTests {
         #expect(!probe.events.contains("play"))
         #expect(probe.events.contains("stop"))
     }
+
+    @Test("Recovery worker stays off MainActor and balances picker and folder access")
+    func recoveryWorkerOwnership() async throws {
+        let probe = CaptionVoiceMemoRecoveryProbe()
+        let candidate = URL(fileURLWithPath: "/selected/original.WAV")
+        let image = association.imageURL
+        let assessment = VoiceMemoCompanionRepository.RecoveryAssessment(
+            candidateURL: candidate,
+            destinationURL: association.memoURL,
+            kind: .exactRecovery,
+            invalidatesTranscriptApproval: false
+        )
+        let service = CaptionVoiceMemoRecoveryService(
+            assessCandidate: { selected, owner in
+                #expect(!Thread.isMainThread)
+                probe.record("assess:\(selected.lastPathComponent):\(owner.lastPathComponent)")
+                return assessment
+            },
+            recoverCandidate: { selected, owner, confirmed in
+                #expect(!Thread.isMainThread)
+                probe.record("recover:\(confirmed)")
+                return .init(
+                    association: VoiceMemoAssociation(
+                        profileIdentifier: "test", imageURL: owner, memoURL: assessment.destinationURL
+                    ),
+                    kind: .exactRecovery,
+                    invalidatedTranscriptApproval: false
+                )
+            },
+            startAccess: { url in probe.record("access:\(url.path)"); return true },
+            stopAccess: { url in probe.record("release:\(url.path)") }
+        )
+
+        #expect(try await service.assess(candidateURL: candidate, imageURL: image) == assessment)
+        _ = try await service.recover(
+            candidateURL: candidate, imageURL: image, confirmingReplacement: false
+        )
+        #expect(probe.events.filter { $0.hasPrefix("access:") }.count == 4)
+        #expect(probe.events.filter { $0.hasPrefix("release:") }.count == 4)
+        #expect(probe.events.contains("recover:false"))
+    }
+
+    @Test("Recovery model pauses changed audio for confirmation")
+    @MainActor
+    func recoveryModelRequiresConfirmation() async {
+        let probe = CaptionVoiceMemoRecoveryProbe()
+        let candidate = URL(fileURLWithPath: "/selected/replacement.WAV")
+        let image = association.imageURL
+        let assessment = VoiceMemoCompanionRepository.RecoveryAssessment(
+            candidateURL: candidate,
+            destinationURL: association.memoURL,
+            kind: .explicitReplacement(previousIdentityAvailable: true),
+            invalidatesTranscriptApproval: true
+        )
+        let service = CaptionVoiceMemoRecoveryService(
+            assessCandidate: { _, _ in assessment },
+            recoverCandidate: { _, owner, confirmed in
+                probe.record("recover:\(confirmed)")
+                return .init(
+                    association: VoiceMemoAssociation(
+                        profileIdentifier: "test", imageURL: owner, memoURL: assessment.destinationURL
+                    ),
+                    kind: .explicitReplacement(previousIdentityAvailable: true),
+                    invalidatedTranscriptApproval: true
+                )
+            }
+        )
+        let model = CaptionVoiceMemoRecoveryModel(service: service)
+
+        #expect(!(await model.select(candidateURL: candidate, for: image)))
+        #expect(model.pendingReplacement == assessment)
+        #expect(probe.events.isEmpty)
+        #expect(await model.confirmReplacement())
+        #expect(model.pendingReplacement == nil)
+        #expect(probe.events == ["recover:true"])
+    }
+
+    @Test("Leaving a photo during candidate hashing cannot publish or commit recovery")
+    @MainActor
+    func recoveryNavigationCancellation() async throws {
+        let probe = CaptionVoiceMemoRecoveryProbe()
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let candidate = URL(fileURLWithPath: "/selected/original.WAV")
+        let found = association
+        let assessment = VoiceMemoCompanionRepository.RecoveryAssessment(
+            candidateURL: candidate,
+            destinationURL: association.memoURL,
+            kind: .exactRecovery,
+            invalidatesTranscriptApproval: false
+        )
+        let service = CaptionVoiceMemoRecoveryService(
+            assessCandidate: { _, _ in
+                probe.record("blocked")
+                _ = gate.wait(timeout: .now() + 10)
+                return assessment
+            },
+            recoverCandidate: { _, _, _ in
+                probe.record("recover")
+                return .init(
+                    association: found,
+                    kind: .exactRecovery,
+                    invalidatedTranscriptApproval: false
+                )
+            }
+        )
+        let model = CaptionVoiceMemoRecoveryModel(service: service)
+        let selection = Task { await model.select(candidateURL: candidate, for: found.imageURL) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !probe.events.contains("blocked"), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.events.contains("blocked"))
+        model.cancel()
+        gate.signal()
+
+        #expect(!(await selection.value))
+        #expect(!probe.events.contains("recover"))
+        #expect(model.pendingReplacement == nil)
+        #expect(!model.isWorking)
+    }
 }
 
 nonisolated private enum CaptionVoiceMemoTestContext {
@@ -249,6 +370,13 @@ nonisolated private enum CaptionVoiceMemoTestContext {
 }
 
 nonisolated private final class CaptionVoiceMemoProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    var events: [String] { lock.withLock { storage } }
+    func record(_ event: String) { lock.withLock { storage.append(event) } }
+}
+
+nonisolated private final class CaptionVoiceMemoRecoveryProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String] = []
     var events: [String] { lock.withLock { storage } }
