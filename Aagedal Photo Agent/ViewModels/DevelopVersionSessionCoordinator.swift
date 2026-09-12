@@ -142,7 +142,7 @@ nonisolated enum DevelopVersionPersistenceState: Equatable {
 
 /// Persistence boundary used by a Develop-version editing session. The production repository is
 /// an actor; tests can supply a deterministic in-memory implementation without touching disk.
-protocol DevelopVersionCatalogPersisting: Sendable {
+nonisolated protocol DevelopVersionCatalogPersisting: Sendable {
     func loadMostRelevantCatalog(
         for revision: SourceImageRevision
     ) async -> DevelopVersionCatalogMatch
