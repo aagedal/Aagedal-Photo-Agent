@@ -79,7 +79,7 @@
           "scripts/auraface/pyproject.toml": "sha256:31a32e6d9ab18f47b3a41dd8e691b43d53fb543f7e35f5ae0385d266f7f1dc3b",
           "scripts/auraface/uv.lock": "sha256:fefc9d0fb967f7588c0fe864101805afd6908634296882d69397af4f78190355",
           "scripts/fetch_auraface_source.py": "sha256:9c9be0fa8992eabb134f6d1a421299bb3f7c3d536f6791dc915b7e5a559cfce4",
-          "scripts/package_auraface_distribution.py": "sha256:1ed410a327c50702ffcf6772982711648f73af84bff926550af0c1cdfdc3c701"
+          "scripts/package_auraface_distribution.py": "sha256:3fb222d10a86f976ab5542ec05b1d106e08fbc80133d8e4b07d576b01d30a375"
         }
       },
       "buildContract": {
