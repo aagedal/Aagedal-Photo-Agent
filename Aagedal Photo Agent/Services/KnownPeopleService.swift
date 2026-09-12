@@ -855,6 +855,23 @@ private enum KnownPeopleEmbeddingMigrationError: LocalizedError {
     }
 }
 
+nonisolated struct KnownPeopleLocalInterchangePreparationResult: Sendable {
+    let capture: KnownPeopleLocalStoreSnapshotCapture?
+    let identityAssignment: KnownPeopleManagedStoreReplacementResult?
+    let failure: String?
+    let wasCancelled: Bool
+
+    var isReady: Bool { capture != nil && failure == nil && !wasCancelled }
+}
+
+nonisolated struct KnownPeopleLocalInterchangePreparationAccess: Sendable {
+    var initialCapture = KnownPeopleLocalStoreSnapshotAccess()
+    var identityAssignment = KnownPeopleLocalIdentityAssignmentAccess()
+    var replacement = KnownPeopleManagedStoreReplacementAccess()
+    var beforeFinalRecapture: @Sendable () throws -> Void = {}
+    var finalCapture = KnownPeopleLocalStoreSnapshotAccess()
+}
+
 @MainActor
 final class KnownPeopleService {
 
@@ -977,7 +994,18 @@ final class KnownPeopleService {
     // archive actors. Keep admission, duplicate filtering, commit and publication ordered.
     // The archive actor serializes file work but yields back to MainActor between these stages.
     private static var importInProgress = false
-    private static var importWaiters: [CheckedContinuation<Void, Never>] = []
+    private enum ImportWaiter {
+        case ordinary(CheckedContinuation<Void, Never>)
+        case cancellable(UUID, CheckedContinuation<Void, any Error>)
+
+        func resume() {
+            switch self {
+            case .ordinary(let continuation): continuation.resume()
+            case .cancellable(_, let continuation): continuation.resume()
+            }
+        }
+    }
+    private static var importWaiters: [ImportWaiter] = []
     // Reserve destination paths before yielding to the archive actor. Synchronous local
     // writers cannot wait for that actor without blocking MainActor, so overlapping writes
     // return a retryable error; unrelated records remain editable.
@@ -1025,6 +1053,12 @@ final class KnownPeopleService {
     }
     static func replacementReservationCovers(_ url: URL) -> Bool {
         isReservedDestination(url)
+    }
+    /// Focused test observation for cancellation/FIFO behavior. No waiter identity escapes.
+    static var cancellableImportWaiterCount: Int {
+        importWaiters.reduce(into: 0) { count, waiter in
+            if case .cancellable = waiter { count += 1 }
+        }
     }
     private static var deferredThumbnailDeletions: [URL: UInt64] = [:]
     private struct DeferredImportAction {
@@ -3012,20 +3046,135 @@ final class KnownPeopleService {
                              routingActive: Bool,
                              routeMutationGate: KnownPeopleRouteMutationGate = .shared,
                              replacementAccess: KnownPeopleManagedStoreReplacementAccess = .init()) async -> KnownPeopleManagedStoreReplacementResult {
-        let routeLease: KnownPeopleRouteMutationGate.Lease
         do {
-            routeLease = try await routeMutationGate.acquire()
+            return try await withManagedRootOwnership(routingActive: routingActive,
+                routeMutationGate: routeMutationGate) { currentRoute in
+                let replacement = KnownPeopleManagedStoreReplacement.integratedWithKnownPeopleService(
+                    self, routingActive: routingActive, baseAccess: replacementAccess)
+                let result = await replacement.replace(plan: plan, decision: decision,
+                    currentRoute: currentRoute)
+                return .init(value: result, publishChange: result.committed)
+            } afterDeferredWork: { _, result in result }
         } catch {
             return .init(committed: false, revision: nil, recoveryDirectory: nil,
                 installedState: nil, failure: error is CancellationError ? nil : error.localizedDescription,
                 wasCancelled: error is CancellationError)
         }
-        defer { routeLease.release() }
+    }
 
-        await beginImport()
+    /// Produces an interchange snapshot without entering compatibility migration paths. A
+    /// previously unmanaged local root receives its identity through the same atomic owner
+    /// gateway as managed replacement, and every success is a fresh strict capture made while
+    /// the route, import lane, and complete root are still exclusively held.
+    func prepareLocalInterchangeSnapshot(exportedAt: String,
+                                         exporter: KnownPeoplePackageManifest.Exporter,
+                                         routingActive: Bool,
+                                         routeMutationGate: KnownPeopleRouteMutationGate = .shared,
+                                         access: KnownPeopleLocalInterchangePreparationAccess = .init()) async -> KnownPeopleLocalInterchangePreparationResult {
+        do {
+            return try await withManagedRootOwnership(routingActive: routingActive,
+                routeMutationGate: routeMutationGate) { route in
+                let builder = KnownPeopleLocalStoreSnapshotBuilder(access: access.initialCapture)
+                do {
+                    _ = try await builder.capture(rootURL: route.rootURL, exportedAt: exportedAt,
+                                                  exporter: exporter)
+                    return .init(value: LocalInterchangePreparationWork(
+                        assignment: nil, shouldRecapture: true, failure: nil,
+                        wasCancelled: false), publishChange: false)
+                } catch KnownPeopleLocalStoreSnapshotFailure.identityAssignmentRequired {
+                    do {
+                        let assignment = KnownPeopleLocalIdentityAssignment(access: access.identityAssignment)
+                        let plan = try await assignment.prepare(route: route, exportedAt: exportedAt,
+                                                                exporter: exporter)
+                        let replacement = KnownPeopleManagedStoreReplacement.integratedWithKnownPeopleService(
+                            self, routingActive: routingActive, baseAccess: access.replacement)
+                        let result = await assignment.assign(plan: plan) { replacementPlan in
+                            await replacement.replace(plan: replacementPlan, decision: .replaceUntracked,
+                                                      currentRoute: route)
+                        }
+                        return .init(value: LocalInterchangePreparationWork(
+                            assignment: result.transaction, shouldRecapture: true,
+                            failure: result.transaction.failure,
+                            wasCancelled: result.transaction.wasCancelled),
+                            publishChange: result.transaction.committed)
+                    } catch {
+                        // A concurrent process may have assigned the identity after our first
+                        // capture. Re-probe exactly once under ownership and accept only a now
+                        // fully tracked root; no error text is used to decide this path.
+                        return .init(value: LocalInterchangePreparationWork(
+                            assignment: nil, shouldRecapture: true,
+                            failure: Self.localInterchangeFailureDescription(error),
+                            wasCancelled: error is CancellationError), publishChange: false)
+                    }
+                } catch {
+                    return .init(value: LocalInterchangePreparationWork(
+                        assignment: nil, shouldRecapture: false,
+                        failure: Self.localInterchangeFailureDescription(error),
+                        wasCancelled: error is CancellationError), publishChange: false)
+                }
+            } afterDeferredWork: { route, work in
+                guard work.shouldRecapture else {
+                    return .init(capture: nil, identityAssignment: work.assignment,
+                                 failure: work.failure, wasCancelled: work.wasCancelled)
+                }
+                do {
+                    try access.beforeFinalRecapture()
+                    try Task.checkCancellation()
+                    let final = try await KnownPeopleLocalStoreSnapshotBuilder(
+                        access: access.finalCapture).capture(rootURL: route.rootURL,
+                            exportedAt: exportedAt, exporter: exporter)
+                    // A clean final capture supersedes a recoverable first-identity race. It
+                    // never erases uncertainty reported by a transaction that actually committed.
+                    let retainsTransactionUncertainty = work.assignment?.committed == true
+                        && (work.failure != nil || work.wasCancelled)
+                    return .init(capture: final, identityAssignment: work.assignment,
+                        failure: retainsTransactionUncertainty ? work.failure : nil,
+                        wasCancelled: retainsTransactionUncertainty && work.wasCancelled)
+                } catch {
+                    return .init(capture: nil, identityAssignment: work.assignment,
+                        failure: work.failure ?? Self.localInterchangeFailureDescription(error),
+                        wasCancelled: work.wasCancelled || error is CancellationError)
+                }
+            }
+        } catch {
+            return .init(capture: nil, identityAssignment: nil,
+                failure: error is CancellationError ? nil : Self.localInterchangeFailureDescription(error),
+                wasCancelled: error is CancellationError)
+        }
+    }
+
+    private struct ManagedRootOwnershipValue<Value> {
+        let value: Value
+        let publishChange: Bool
+    }
+
+    private struct LocalInterchangePreparationWork {
+        let assignment: KnownPeopleManagedStoreReplacementResult?
+        let shouldRecapture: Bool
+        let failure: String?
+        let wasCancelled: Bool
+    }
+
+    /// The only service-local entrance to low-level whole-root work. The finalizer runs after
+    /// deferred import work is drained but before the independent complete-root reservation is
+    /// released, so callers cannot create a stale interval by awaiting cleanup.
+    private func withManagedRootOwnership<Work, Output>(
+        routingActive: Bool,
+        routeMutationGate: KnownPeopleRouteMutationGate,
+        operation: (KnownPeopleManagedStoreRoute) async -> ManagedRootOwnershipValue<Work>,
+        afterDeferredWork: (KnownPeopleManagedStoreRoute, Work) async -> Output
+    ) async throws -> Output {
+        let routeLease = try await routeMutationGate.acquire()
+        defer { routeLease.release() }
+        try await beginCancellableImport()
+        defer { endImport() }
+        try Task.checkCancellation()
+
         // Route and root evidence are sampled only after both ownership domains are held.
-        // A route that completed while this replacement waited must make the plan stale.
         let currentRoute = managedStoreRoute(routingActive: routingActive)
+        guard !currentRoute.iCloudSyncActive, !currentRoute.routingActive else {
+            throw KnownPeopleManagedStoreFailure.activeICloudOrRouting
+        }
         let root = currentRoute.rootURL.standardizedFileURL
         Self.importCommitOwner = self
         Self.importCommitRoot = root
@@ -3035,23 +3184,27 @@ final class KnownPeopleService {
         defer {
             if managedReservationActive { Self.managedReplacementReservedRoots.remove(root) }
         }
-        defer { endImport() }
 
-        let replacement = KnownPeopleManagedStoreReplacement.integratedWithKnownPeopleService(
-            self,
-            routingActive: routingActive,
-            baseAccess: replacementAccess
-        )
-        let result = await replacement.replace(plan: plan, decision: decision, currentRoute: currentRoute)
+        let output = await operation(currentRoute)
         await releaseImportDestinations()
+        let final = await afterDeferredWork(currentRoute, output.value)
         Self.managedReplacementReservedRoots.remove(root)
         managedReservationActive = false
-        if result.committed {
-            // Observers may synchronously reload. Publish only after the complete-root
-            // reservation is gone so they see the installed projection instead of an empty cache.
+        if output.publishChange {
+            // Observers may synchronously reload. Publish only after all ownership is gone so
+            // they see the installed projection rather than a reservation-induced empty cache.
             NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
         }
-        return result
+        return final
+    }
+
+    private static func localInterchangeFailureDescription(_ error: any Error) -> String {
+        if let localized = error as? any LocalizedError,
+           let description = localized.errorDescription { return description }
+        if let failure = error as? KnownPeopleLocalStoreSnapshotFailure {
+            return "Known People local snapshot preparation failed (\(failure))."
+        }
+        return error.localizedDescription
     }
 
     func importFromZip(sourceURL: URL) async throws -> Int {
@@ -3167,7 +3320,42 @@ final class KnownPeopleService {
             Self.importInProgress = true
             return
         }
-        await withCheckedContinuation { Self.importWaiters.append($0) }
+        await withCheckedContinuation { Self.importWaiters.append(.ordinary($0)) }
+    }
+
+    /// Managed whole-root work already owns the route lease while it waits here. Removing an
+    /// exact cancelled waiter promptly releases that outer lease without disturbing FIFO order
+    /// or transferring import ownership to a task that will never run.
+    private func beginCancellableImport() async throws {
+        try Task.checkCancellation()
+        if !Self.importInProgress {
+            Self.importInProgress = true
+            return
+        }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    Self.importWaiters.append(.cancellable(id, continuation))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in Self.cancelImportWaiter(id) }
+        }
+    }
+
+    private static func cancelImportWaiter(_ id: UUID) {
+        guard let index = importWaiters.firstIndex(where: {
+            if case .cancellable(let waiterID, _) = $0 { return waiterID == id }
+            return false
+        }) else { return }
+        guard case .cancellable(_, let continuation) = importWaiters.remove(at: index) else {
+            return
+        }
+        continuation.resume(throwing: CancellationError())
     }
 
     private func endImport() {

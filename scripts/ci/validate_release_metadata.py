@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){2}")
+SOURCE_REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 DEVELOPMENT_AURAFACE_PUBLIC_KEY = base64.b64decode(
     "1A0bQ1ZA4sVlGfHc3/jnRz9On108K+v/0xjnqMGGDDs=", validate=True
 )
@@ -75,6 +76,8 @@ def validate_info_plist(root: Path, *, require_production_model_key: bool = Fals
             "Info.plist must derive CFBundleShortVersionString from MARKETING_VERSION")
     require(info.get("CFBundleVersion") == "$(CURRENT_PROJECT_VERSION)",
             "Info.plist must derive CFBundleVersion from CURRENT_PROJECT_VERSION")
+    require(info.get("AagedalSourceRevision") == "$(AAGEDAL_SOURCE_REVISION)",
+            "Info.plist must derive AagedalSourceRevision from AAGEDAL_SOURCE_REVISION")
     require(info.get("LSMinimumSystemVersion") == "$(MACOSX_DEPLOYMENT_TARGET)",
             "Info.plist must derive LSMinimumSystemVersion from MACOSX_DEPLOYMENT_TARGET")
     feed_url = str(info.get("SUFeedURL", ""))
@@ -92,6 +95,20 @@ def validate_info_plist(root: Path, *, require_production_model_key: bool = Fals
             "AuraFaceDistributionPublicEd25519Key is the development trust anchor; "
             "configure the reviewed production model key before releasing",
         )
+
+
+def validate_built_app_source_revision(app: Path, expected_source_revision: str) -> None:
+    require(SOURCE_REVISION_PATTERN.fullmatch(expected_source_revision) is not None,
+            "expected source revision must be exactly 40 lowercase hexadecimal characters")
+    info_path = app / "Contents/Info.plist"
+    require(info_path.is_file(), f"built app has no Info.plist: {info_path}")
+    with info_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    embedded = info.get("AagedalSourceRevision")
+    require(isinstance(embedded, str) and SOURCE_REVISION_PATTERN.fullmatch(embedded) is not None,
+            "built app AagedalSourceRevision must be exactly 40 lowercase hexadecimal characters")
+    require(embedded == expected_source_revision,
+            f"built app source revision {embedded} does not match expected {expected_source_revision}")
 
 
 def validate_changelog(root: Path, settings: ReleaseSettings) -> None:

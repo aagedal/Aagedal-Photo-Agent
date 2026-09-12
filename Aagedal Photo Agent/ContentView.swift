@@ -1418,7 +1418,7 @@ struct ContentView: View {
                 await deadlineProfileLibrary.create(name: "UI Smoke Deadline")
             }
             openDeadlineWorkspace()
-        case .openFolder, .importPreflight, .recoveryError:
+        case .openFolder, .importPreflight, .recoveryError, .knownPeopleInterchange:
             break
         }
     }

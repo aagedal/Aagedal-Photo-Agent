@@ -29,6 +29,8 @@ private enum KnownPeopleSortMode: String, CaseIterable, Identifiable {
 struct ExpandedKnownPeopleView: View {
     var onClose: () -> Void
 
+    @Environment(KnownPeopleInterchangeController.self) private var interchangeController
+    @State private var interchangePresenterID = UUID()
     @State private var people: [KnownPerson] = []
     @State private var selectedPersonIDs: Set<UUID> = []
     @State private var searchText: String = ""
@@ -38,8 +40,8 @@ struct ExpandedKnownPeopleView: View {
     @State private var isMergingPeople = false
     @State private var showMergeConfirmation = false
     @State private var sortMode: KnownPeopleSortMode = .name
-    @State private var isImporting = false
-    @State private var isExporting = false
+    @State private var isLegacyImporting = false
+    @State private var isLegacyExporting = false
     @State private var importExportMessage: String?
     @State private var destructiveOperationErrorMessage: String?
 
@@ -78,6 +80,10 @@ struct ExpandedKnownPeopleView: View {
         KnownPeopleService.shared.getStatistics()
     }
 
+    private var isLibraryOperationBusy: Bool {
+        interchangeController.isBusy || isLegacyImporting || isLegacyExporting
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -90,6 +96,10 @@ struct ExpandedKnownPeopleView: View {
         .onReceive(NotificationCenter.default.publisher(for: .knownPeopleDatabaseDidChange)) { _ in
             loadPeople()
         }
+        .onChange(of: interchangeController.isBusy) { wasBusy, isBusy in
+            if wasBusy && !isBusy { loadPeople() }
+        }
+        .knownPeopleInterchangePresentation(presenterID: interchangePresenterID)
         .alert("Delete Person?", isPresented: $showDeleteConfirmation, presenting: personToDelete) { person in
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
@@ -172,27 +182,23 @@ struct ExpandedKnownPeopleView: View {
 
             Spacer()
 
-            Button {
-                importKnownPeople()
-            } label: {
-                if isImporting {
-                    Label("Importing...", systemImage: "arrow.down.doc")
-                } else {
-                    Label("Import", systemImage: "arrow.down.doc")
-                }
-            }
-            .disabled(isImporting || isExporting)
+            KnownPeopleInterchangeMenu(
+                presenterID: interchangePresenterID,
+                legacyImport: importLegacyKnownPeople,
+                legacyExport: exportLegacyKnownPeople
+            )
+            .disabled(isLegacyImporting || isLegacyExporting)
 
-            Button {
-                exportKnownPeople()
-            } label: {
-                if isExporting {
-                    Label("Exporting...", systemImage: "arrow.up.doc")
-                } else {
-                    Label("Export", systemImage: "arrow.up.doc")
+            if let request = interchangeController.activeRequest,
+               request.presenterID == interchangePresenterID {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("People Library operation in progress")
+                Button("Cancel") {
+                    interchangeController.cancelActiveRequest()
                 }
+                .accessibilityIdentifier("known-people-cancel-interchange")
             }
-            .disabled(isImporting || isExporting)
 
             Menu {
                 ForEach(KnownPeopleSortMode.allCases) { mode in
@@ -224,7 +230,7 @@ struct ExpandedKnownPeopleView: View {
             } label: {
                 Label("Merge", systemImage: "arrow.triangle.merge")
             }
-            .disabled(!canMerge || isMergingPeople)
+            .disabled(!canMerge || isMergingPeople || isLibraryOperationBusy)
             .help("Merge selected people into one")
 
             // Delete button
@@ -236,7 +242,7 @@ struct ExpandedKnownPeopleView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
-            .disabled(selectedPersonIDs.count != 1)
+            .disabled(selectedPersonIDs.count != 1 || isLibraryOperationBusy)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
@@ -272,6 +278,8 @@ struct ExpandedKnownPeopleView: View {
                 .frame(width: 320)
             }
         }
+        .disabled(isLibraryOperationBusy)
+        .accessibilityIdentifier("known-people-main-content")
     }
 
     // MARK: - Person List
@@ -357,6 +365,7 @@ struct ExpandedKnownPeopleView: View {
 
     private func loadPeople() {
         people = KnownPeopleService.shared.getAllPeople()
+        selectedPersonIDs.formIntersection(Set(people.map(\.id)))
     }
 
     private func sortPeople(_ people: [KnownPerson]) -> [KnownPerson] {
@@ -370,58 +379,46 @@ struct ExpandedKnownPeopleView: View {
         }
     }
 
-    private func importKnownPeople() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.zip]
-        panel.message = "Select a Known People database (.zip)"
+    private func importLegacyKnownPeople() {
+        guard let url = KnownPeopleInterchangePanels.chooseLegacyImportSource() else { return }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        isImporting = true
+        isLegacyImporting = true
         importExportMessage = nil
 
         Task {
             do {
                 let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
-                isImporting = false
-                importExportMessage = "Imported \(count) people"
+                isLegacyImporting = false
+                importExportMessage = "Legacy ZIP added \(count) people"
                 loadPeople()
 
                 try? await Task.sleep(for: .seconds(3))
                 importExportMessage = nil
             } catch {
-                isImporting = false
-                importExportMessage = "Import failed: \(error.localizedDescription)"
+                isLegacyImporting = false
+                importExportMessage = "Legacy import failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private func exportKnownPeople() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "KnownPeople.zip"
-        panel.message = "Export Known People database"
+    private func exportLegacyKnownPeople() {
+        guard let url = KnownPeopleInterchangePanels.chooseLegacyExportDestination() else { return }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        isExporting = true
+        isLegacyExporting = true
         importExportMessage = nil
 
         Task {
             do {
                 try await KnownPeopleService.shared.exportToZip(destinationURL: url)
-                isExporting = false
-                importExportMessage = "Export complete"
+                isLegacyExporting = false
+                importExportMessage = "Legacy ZIP export complete"
                 loadPeople()
 
                 try? await Task.sleep(for: .seconds(3))
                 importExportMessage = nil
             } catch {
-                isExporting = false
-                importExportMessage = "Export failed: \(error.localizedDescription)"
+                isLegacyExporting = false
+                importExportMessage = "Legacy export failed: \(error.localizedDescription)"
             }
         }
     }

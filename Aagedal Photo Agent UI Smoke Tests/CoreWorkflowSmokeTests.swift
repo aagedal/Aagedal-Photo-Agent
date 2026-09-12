@@ -134,12 +134,25 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testKnownPeopleInterchangeOpensDisposableDatabaseWithoutPanel() throws {
+        let knownPeopleRoot = fixtureRoot.appendingPathComponent("KnownPeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: knownPeopleRoot, withIntermediateDirectories: true)
+
+        launch(workflow: "known-people-interchange", knownPeopleRoot: knownPeopleRoot)
+
+        XCTAssertTrue(app.otherElements["known-people-main-content"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["known-people-interchange-menu"].exists)
+        XCTAssertFalse(app.dialogs.firstMatch.exists)
+    }
+
+    @MainActor
     private func launch(
         workflow: String,
         folder: URL? = nil,
         source: URL? = nil,
         destination: URL? = nil,
-        profileStore: URL? = nil
+        profileStore: URL? = nil,
+        knownPeopleRoot: URL? = nil
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -147,10 +160,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-testing",
             "--ui-test-workflow", workflow,
         ]
+        if workflow == "known-people-interchange" {
+            // Argument-domain defaults are process-only and keep this workflow away
+            // from the user's iCloud-routed Known People store.
+            app.launchArguments += ["-knownPeople.iCloudEnabled", "NO"]
+        }
         append("--ui-test-folder", folder)
         append("--ui-test-source", source)
         append("--ui-test-destination", destination)
         append("--ui-test-profile-store", profileStore)
+        append("--ui-test-known-people-root", knownPeopleRoot)
         app.launch()
     }
 

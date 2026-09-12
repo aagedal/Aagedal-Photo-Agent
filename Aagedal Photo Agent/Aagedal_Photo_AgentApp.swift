@@ -8,9 +8,18 @@ struct Aagedal_Photo_AgentApp: App {
     @ObservedObject private var imageScaling = ImageScalingController.shared
     @State private var settingsViewModel = SettingsViewModel()
     @State private var commandRouter = AppCommandRouter()
+    @State private var knownPeopleInterchangeController: KnownPeopleInterchangeController
+    @State private var didOpenKnownPeopleUITestWorkflow = false
     private let recentFolders = RecentFoldersStore.shared
 
     init() {
+        let uiTestConfiguration = UITestLaunchConfiguration.current
+        if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.knownPeopleRootURL {
+            KnownPeopleService.storageOverrideURL = root.standardizedFileURL
+        }
+        _knownPeopleInterchangeController = State(initialValue: KnownPeopleInterchangeController(
+            operations: KnownPeopleInterchangeProductionOperations()
+        ))
         AppStartupSignposts.shared.processStarted()
     }
 
@@ -34,12 +43,23 @@ struct Aagedal_Photo_AgentApp: App {
         Window("Aagedal Photo Agent", id: "main") {
             ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter)
                 .environment(commandRouter)
+                .environment(knownPeopleInterchangeController)
                 .onAppear {
                     AppStartupSignposts.shared.mainContentAppeared()
                     // UI smoke launches use disposable fixtures and must not start unrelated
                     // migrations, cloud watchers, network refreshes, or backup prompts.
                     if !UITestLaunchConfiguration.current.isEnabled {
                         AppStartupWorkCoordinator.shared.startAfterFirstPaint()
+                    }
+                    if UITestLaunchConfiguration.current.isEnabled,
+                       UITestLaunchConfiguration.current.workflow == .knownPeopleInterchange,
+                       UITestLaunchConfiguration.current.knownPeopleRootURL != nil,
+                       !didOpenKnownPeopleUITestWorkflow {
+                        didOpenKnownPeopleUITestWorkflow = true
+                        Task { @MainActor in
+                            await Task.yield()
+                            commandRouter.send(.showKnownPeopleDatabase)
+                        }
                     }
                 }
         }
@@ -424,6 +444,7 @@ struct Aagedal_Photo_AgentApp: App {
         Settings {
             SettingsView(settingsViewModel: settingsViewModel)
                 .environment(commandRouter)
+                .environment(knownPeopleInterchangeController)
         }
     }
 }

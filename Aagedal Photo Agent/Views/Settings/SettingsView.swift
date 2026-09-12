@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(AppCommandRouter.self) private var commandRouter
+    @Environment(KnownPeopleInterchangeController.self) private var interchangeController
     @State private var settingsViewModel: SettingsViewModel
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
@@ -17,9 +18,10 @@ struct SettingsView: View {
     @State private var showAuraFaceRemovalConfirmation = false
 
     // Known People state
+    @State private var interchangePresenterID = UUID()
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
-    @State private var isImporting = false
-    @State private var isExporting = false
+    @State private var isLegacyImporting = false
+    @State private var isLegacyExporting = false
     @State private var isClearingKnownPeople = false
     @State private var knownPeopleClearNoticeID: UUID?
     @State private var showClearConfirmation = false
@@ -220,6 +222,13 @@ struct SettingsView: View {
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .knownPeopleDatabaseDidChange)) { _ in
+            refreshKnownPeopleStats()
+        }
+        .onChange(of: interchangeController.isBusy) { wasBusy, isBusy in
+            if wasBusy && !isBusy { refreshKnownPeopleStats() }
+        }
+        .knownPeopleInterchangePresentation(presenterID: interchangePresenterID)
         .sheet(isPresented: $showKnownPeopleDisclosure) {
             KnownPeoplePrivacyDisclosureView {
                 KnownPeoplePrivacyLifecycle.acknowledgeDisclosure()
@@ -712,25 +721,33 @@ struct SettingsView: View {
                     }
 
                     HStack {
-                        Button("Import...") {
-                            importKnownPeople()
-                        }
-                        .disabled(isImporting || isClearingKnownPeople)
+                        KnownPeopleInterchangeMenu(
+                            presenterID: interchangePresenterID,
+                            legacyImport: importLegacyKnownPeople,
+                            legacyExport: exportLegacyKnownPeople
+                        )
+                        .disabled(isLegacyImporting || isLegacyExporting || isClearingKnownPeople)
 
-                        Button("Export...") {
-                            exportKnownPeople()
+                        if let request = interchangeController.activeRequest,
+                           request.presenterID == interchangePresenterID {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("People Library operation in progress")
+                            Button("Cancel") {
+                                interchangeController.cancelActiveRequest()
+                            }
+                            .accessibilityIdentifier("known-people-cancel-interchange")
                         }
-                        .disabled(isExporting || isClearingKnownPeople || knownPeopleStats.peopleCount == 0)
 
                         Spacer()
 
                         Button("Clear Database", role: .destructive) {
                             showClearConfirmation = true
                         }
-                        .disabled(isClearingKnownPeople || isImporting || isExporting || knownPeopleStats.peopleCount == 0)
+                        .disabled(isLibraryOperationBusy || knownPeopleStats.peopleCount == 0)
                     }
 
-                    Text("Import is additive and does not replace or merge existing people.")
+                    Text("People Library import replaces the complete local library after confirmation. Legacy ZIP import only adds unseen UUIDs and does not restore renames or removals.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -819,7 +836,7 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("Export creates a ZIP of the Known People database only. Clear Database removes its names, face samples, and reference thumbnails from the active storage destination; it does not delete folder scan data or exported ZIP files.")
+            Text("People Library export creates a complete directory package or ZIP archive with names, removals, face samples, reference thumbnails, and supported editor metadata. Legacy ZIP export is provided for additive transfer to older versions. Clear Database removes the active names, face samples, and reference thumbnails; it does not delete folder scan data or exported packages.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1738,6 +1755,7 @@ struct SettingsView: View {
                     }
                 ))
                 .toggleStyle(.switch)
+                .disabled(interchangeController.isBusy)
                 Text("Turn every category below on or off at once.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1772,6 +1790,7 @@ struct SettingsView: View {
                     get: { coordinator.knownPeopleEnabled },
                     set: { requestKnownPeopleSync($0, coordinator: coordinator) }
                 ))
+                .disabled(interchangeController.isBusy)
                 Text("Names, face-only feature vectors, and reference thumbnails used for auto-matching. Folder .face_data, including clothing features, is not synced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1888,6 +1907,7 @@ struct SettingsView: View {
     }
 
     private func requestKnownPeopleSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
+        guard !interchangeController.isBusy else { return }
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
             currentlyEnabled: coordinator.knownPeopleEnabled
@@ -1900,6 +1920,7 @@ struct SettingsView: View {
     }
 
     private func requestAllCategoriesSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
+        guard !interchangeController.isBusy else { return }
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
             currentlyEnabled: coordinator.knownPeopleEnabled
@@ -1912,6 +1933,10 @@ struct SettingsView: View {
     }
 
     private func confirmKnownPeopleSync(coordinator: ICloudSyncCoordinator) {
+        guard !interchangeController.isBusy else {
+            pendingKnownPeopleSyncRequest = nil
+            return
+        }
         let request = pendingKnownPeopleSyncRequest
         pendingKnownPeopleSyncRequest = nil
         switch request {
@@ -1925,66 +1950,60 @@ struct SettingsView: View {
         refreshKnownPeopleStats()
     }
 
-    private func importKnownPeople() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.zip]
-        panel.message = "Select a Known People database (.zip)"
+    private var isLibraryOperationBusy: Bool {
+        interchangeController.isBusy || isLegacyImporting || isLegacyExporting || isClearingKnownPeople
+    }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    private func importLegacyKnownPeople() {
+        guard !isLibraryOperationBusy else { return }
+        guard let url = KnownPeopleInterchangePanels.chooseLegacyImportSource() else { return }
 
-        isImporting = true
+        isLegacyImporting = true
         knownPeopleClearNoticeID = nil
         knownPeopleMessage = nil
 
         Task {
             do {
                 let count = try await KnownPeopleService.shared.importFromZip(sourceURL: url)
-                isImporting = false
-                knownPeopleMessage = "Imported \(count) people"
+                isLegacyImporting = false
+                knownPeopleMessage = "Legacy ZIP added \(count) people"
                 refreshKnownPeopleStats()
 
                 try? await Task.sleep(for: .seconds(3))
                 knownPeopleMessage = nil
             } catch {
-                isImporting = false
-                knownPeopleMessage = "Import failed: \(error.localizedDescription)"
+                isLegacyImporting = false
+                knownPeopleMessage = "Legacy import failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private func exportKnownPeople() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = "KnownPeople.zip"
-        panel.message = "Export Known People database"
+    private func exportLegacyKnownPeople() {
+        guard !isLibraryOperationBusy else { return }
+        guard let url = KnownPeopleInterchangePanels.chooseLegacyExportDestination() else { return }
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        isExporting = true
+        isLegacyExporting = true
         knownPeopleClearNoticeID = nil
         knownPeopleMessage = nil
 
         Task {
             do {
                 try await KnownPeopleService.shared.exportToZip(destinationURL: url)
-                isExporting = false
-                knownPeopleMessage = "Export complete"
+                isLegacyExporting = false
+                knownPeopleMessage = "Legacy ZIP export complete"
                 refreshKnownPeopleStats()
 
                 try? await Task.sleep(for: .seconds(3))
                 knownPeopleMessage = nil
             } catch {
-                isExporting = false
-                knownPeopleMessage = "Export failed: \(error.localizedDescription)"
+                isLegacyExporting = false
+                knownPeopleMessage = "Legacy export failed: \(error.localizedDescription)"
             }
         }
     }
 
     private func clearKnownPeopleDatabase() {
-        guard !isClearingKnownPeople else { return }
+        guard !isLibraryOperationBusy else { return }
         let noticeID = UUID()
         knownPeopleClearNoticeID = noticeID
         isClearingKnownPeople = true

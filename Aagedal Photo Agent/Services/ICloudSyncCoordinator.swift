@@ -857,6 +857,15 @@ final class ICloudSyncCoordinator {
             ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
     }
 
+    var isKnownPeopleRouting: Bool {
+        _ = version
+        return knownPeopleRoutingRequestID != nil
+    }
+
+    var canUseLocalKnownPeopleInterchange: Bool {
+        !knownPeopleEnabled && !isKnownPeopleRouting
+    }
+
     func setKnownPeopleEnabled(_ on: Bool, confirmedFirstEnable: Bool = false) {
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,

@@ -206,6 +206,9 @@ nonisolated struct KnownPeoplePackageArchiveAccess: Sendable {
     var beforeStageAdmission: @Sendable (Int32) throws -> Void = { _ in }
     var beforeCommit: @Sendable () throws -> Void = {}
     var afterCommit: @Sendable () throws -> Void = {}
+    /// Read-only managed-import admission hooks; existing archive import/export is unchanged.
+    var beforeAdmissionReadback: @Sendable (URL) throws -> Void = { _ in }
+    var beforeAdmissionCleanup: @Sendable (URL) throws -> Void = { _ in }
 }
 
 /// Manual archive boundary only. This adapter never changes the managed Known People store.
@@ -214,6 +217,89 @@ nonisolated struct KnownPeoplePackageArchiveAccess: Sendable {
 actor KnownPeoplePackageArchive {
     private let access: KnownPeoplePackageArchiveAccess
     init(access: KnownPeoplePackageArchiveAccess = .init()) { self.access = access }
+
+    /// Admits archive bytes for managed import without publishing a directory package.
+    /// The returned admission owns immutable bytes; its temporary source directory has
+    /// already been removed and is intentionally not an export-source capability.
+    func admitArchive(at archiveURL: URL,
+                      temporaryParentURL: URL = FileManager.default.temporaryDirectory) async -> KnownPeoplePackageAdmissionResult {
+        var parent: KnownPeoplePackageHeldDirectory?
+        var stage: KnownPeoplePackageHeldDirectory?
+        var stageName: String?
+        var admitted: KnownPeopleManagedImportAdmission?
+        var cancelled = false, failure: String?
+        var recovery: [URL] = []
+        do {
+            try Task.checkCancellation()
+            let source = try KnownPeoplePackageAdmissionSource(archiveURL)
+            guard source.kind == .archive else { throw KnownPeoplePackageAdmissionFailure.unsupportedName }
+            let input = try ArchiveFile(heldFileDescriptor: source.descriptor)
+            let bytes = try input.bytes()
+            let files = try KnownPeoplePackageArchiveCodec.decode(bytes)
+            try input.verify(bytes)
+            try source.verifyPath()
+            try access.beforeMaterialization()
+            try Task.checkCancellation()
+            let name = ".KnownPeople-admission-\(UUID().uuidString)"
+            stageName = name
+            // Keep descriptor ownership, but release the synchronous parent lock before
+            // awaiting another actor. A reentrant admission must not block this one's resume.
+            let held: KnownPeoplePackageHeldDirectory = try {
+                let transaction = try KnownPeoplePackageWriterFilesystem.openParent(temporaryParentURL)
+                let descriptor = dup(transaction.descriptor)
+                guard descriptor >= 0 else { throw KnownPeoplePackageArchiveError.io }
+                parent = .init(descriptor: descriptor, identity: transaction.identity)
+                let held = try KnownPeoplePackageWriterFilesystem.createStage(transaction, name)
+                stage = held
+                for path in files.keys.sorted() {
+                    try Task.checkCancellation()
+                    try KnownPeoplePackageWriterFilesystem.writeFile(files[path]!, path, held)
+                }
+                return held
+            }()
+            let stageURL = try KnownPeoplePackageWriterFilesystem.directoryURL(held)
+            try access.beforeAdmissionReadback(stageURL)
+            let snapshot = try await KnownPeoplePackageDirectoryReader().read(
+                heldDirectoryDescriptor: held.descriptor, sourceURL: stageURL)
+            guard snapshot.files == files else { throw KnownPeoplePackageArchiveError.changedFile }
+            try input.verify(bytes)
+            try source.verifyPath()
+            try Task.checkCancellation()
+            admitted = .init(snapshot: snapshot, provenance: source.provenance(archiveByteCount: bytes.count,
+                archiveSHA256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()))
+        } catch {
+            cancelled = error is CancellationError
+            if !cancelled { failure = String(describing: error) }
+        }
+        if let parent, let stage, let stageName {
+            let actualURL = (try? KnownPeoplePackageWriterFilesystem.directoryURL(stage))
+                ?? temporaryParentURL.appendingPathComponent(stageName)
+            do {
+                let actualParent = try KnownPeoplePackageWriterFilesystem.directoryURL(parent)
+                let transaction = try KnownPeoplePackageWriterFilesystem.openParent(actualParent)
+                guard transaction.identity.sameDirectory(as: parent.identity) else { throw KnownPeoplePackageArchiveError.changedFile }
+                try access.beforeAdmissionCleanup(actualURL)
+                // Cleanup uses the still-held original parent, even if its path moved.
+                // It deliberately runs after cancellation to remove only our private stage.
+                try KnownPeoplePackageWriterFilesystem.removeOwned(transaction, stageName, stage.identity)
+            } catch {
+                cancelled = cancelled || error is CancellationError
+                failure = [failure, "Admission extraction cleanup did not finish: \(error)"].compactMap { $0 }.joined(separator: "; ")
+                recovery.append((try? KnownPeoplePackageWriterFilesystem.directoryURL(stage)) ?? actualURL)
+            }
+        } else if let parent, let stageName {
+            // mkdir may have succeeded before a failed no-follow open admitted the stage.
+            // Without its identity we cannot remove it; retain the exact observed path.
+            var info = stat()
+            if fstatat(parent.descriptor, stageName, &info, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT {
+                recovery.append(((try? KnownPeoplePackageWriterFilesystem.directoryURL(parent))
+                    ?? temporaryParentURL).appendingPathComponent(stageName))
+            }
+        }
+        if Task.isCancelled { cancelled = true }
+        return .init(admission: failure == nil && !cancelled && recovery.isEmpty ? admitted : nil,
+                     wasCancelled: cancelled, failure: failure, recoveryDirectories: recovery)
+    }
 
     func importArchive(at archiveURL: URL, to destinationURL: URL,
                        overwrite: Bool = false) async -> KnownPeoplePackageWriteResult {
@@ -422,6 +508,7 @@ nonisolated private final class ArchiveFile: @unchecked Sendable {
         self.fd = fd; original = info
     }
     convenience init(url: URL) throws { try self.init(fd: open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)) }
+    convenience init(heldFileDescriptor: Int32) throws { try self.init(fd: dup(heldFileDescriptor)) }
     static func optional(parent: Int32, name: String) throws -> ArchiveFile? {
         let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         if fd < 0, errno == ENOENT { return nil }

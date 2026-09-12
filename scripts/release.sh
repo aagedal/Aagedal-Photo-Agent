@@ -80,6 +80,8 @@ say "Verifying exact-revision release test gate"
 scripts/ci/verify_release_test_gate.sh "$OUTPUT_DIR/release-test-gate.json"
 ok "Release test gate accepted and recorded"
 SOURCE_REVISION="$(git rev-parse HEAD)"
+[[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] \
+  || die "Git HEAD must resolve to exactly 40 lowercase hexadecimal characters."
 
 artifact_matches_source_revision() {
   local marker="$1.source-revision"
@@ -98,10 +100,18 @@ artifact_app_build() {
   /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$1/Contents/Info.plist" 2>/dev/null || true
 }
 
+artifact_app_source_revision() {
+  /usr/libexec/PlistBuddy -c 'Print :AagedalSourceRevision' "$1/Contents/Info.plist" 2>/dev/null || true
+}
+
 app_matches_release() {
+  local embedded_revision
+  embedded_revision="$(artifact_app_source_revision "$1")"
   [ -d "$1" ] \
     && [ "$(artifact_app_version "$1")" = "$VERSION" ] \
-    && [ "$(artifact_app_build "$1")" = "$BUILD" ]
+    && [ "$(artifact_app_build "$1")" = "$BUILD" ] \
+    && [[ "$embedded_revision" =~ ^[0-9a-f]{40}$ ]] \
+    && [ "$embedded_revision" = "$SOURCE_REVISION" ]
 }
 
 archive_app_path() {
@@ -372,9 +382,11 @@ if [ "$BUILD_CHOICE" = "rebuild" ]; then
   say "Archiving (Release)…"
   run_with_progress "Archiving" "$OUTPUT_DIR/archive.log" \
     xcodebuild -scheme "$SCHEME" -configuration Release -destination 'generic/platform=macOS' \
-    -archivePath "$ARCHIVE" archive \
+    -archivePath "$ARCHIVE" AAGEDAL_SOURCE_REVISION="$SOURCE_REVISION" archive \
     || die "Archive failed — see $OUTPUT_DIR/archive.log"
   record_artifact_source_revision "$ARCHIVE"
+  archive_matches_release "$ARCHIVE" \
+    || die "Archive app does not embed exact source revision $SOURCE_REVISION."
   ok "Archived: $ARCHIVE"
 elif [ "$BUILD_CHOICE" = "archive" ]; then
   ARCHIVE="$EXISTING_ARCHIVE"

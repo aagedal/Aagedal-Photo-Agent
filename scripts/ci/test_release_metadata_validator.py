@@ -44,6 +44,7 @@ class ReleaseMetadataValidatorTests(unittest.TestCase):
         info = {
             "CFBundleShortVersionString": "$(MARKETING_VERSION)",
             "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+            "AagedalSourceRevision": "$(AAGEDAL_SOURCE_REVISION)",
             "LSMinimumSystemVersion": "$(MACOSX_DEPLOYMENT_TARGET)",
             "SUFeedURL": "https://example.invalid/appcast.xml",
             "SUPublicEDKey": base64.b64encode(bytes(32)).decode(),
@@ -120,6 +121,47 @@ sparkle:edSignature="{signature}" length="123" type="application/octet-stream" /
             plistlib.dump(info, handle)
         with self.assertRaisesRegex(ValueError, "CFBundleVersion"):
             validator.validate(self.root)
+
+    def test_source_revision_must_derive_from_release_build_setting(self) -> None:
+        path = self.root / "Aagedal Photo Agent/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        for value in (None, "", "$(OTHER_SETTING)", "a" * 40):
+            with self.subTest(value=value):
+                changed = dict(info)
+                if value is None:
+                    del changed["AagedalSourceRevision"]
+                else:
+                    changed["AagedalSourceRevision"] = value
+                path.write_bytes(plistlib.dumps(changed))
+                with self.assertRaisesRegex(ValueError, "AagedalSourceRevision"):
+                    validator.validate(self.root)
+        path.write_bytes(plistlib.dumps(info))
+
+    def test_built_app_requires_exact_embedded_source_revision(self) -> None:
+        app = self.root / "Built.app"
+        (app / "Contents").mkdir(parents=True)
+        info_path = app / "Contents/Info.plist"
+        revision = "a" * 40
+        info_path.write_bytes(plistlib.dumps({"AagedalSourceRevision": revision}))
+        validator.validate_built_app_source_revision(app, revision)
+
+        for embedded in (None, "", "A" * 40, "a" * 39, "$(AAGEDAL_SOURCE_REVISION)", "b" * 40):
+            with self.subTest(embedded=embedded):
+                payload = {} if embedded is None else {"AagedalSourceRevision": embedded}
+                info_path.write_bytes(plistlib.dumps(payload))
+                with self.assertRaises(ValueError):
+                    validator.validate_built_app_source_revision(app, revision)
+
+    def test_built_app_rejects_invalid_expected_source_revision(self) -> None:
+        app = self.root / "Built.app"
+        (app / "Contents").mkdir(parents=True)
+        (app / "Contents/Info.plist").write_bytes(
+            plistlib.dumps({"AagedalSourceRevision": "a" * 40})
+        )
+        for revision in ("", "A" * 40, "a" * 39, "a" * 41):
+            with self.subTest(revision=revision):
+                with self.assertRaisesRegex(ValueError, "expected source revision"):
+                    validator.validate_built_app_source_revision(app, revision)
 
     def test_model_key_is_required_sized_and_separate(self) -> None:
         path = self.root / "Aagedal Photo Agent/Info.plist"

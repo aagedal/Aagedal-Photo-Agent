@@ -659,6 +659,41 @@ struct ICloudSyncCoordinatorTests {
         #expect(await routing.callCount == 1)
     }
 
+    @Test("Local interchange availability reflects queued and completed Known People routing")
+    @MainActor
+    func localInterchangeRoutingStatus() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previous = UserDefaults.standard.object(forKey: defaultsKey)
+        UserDefaults.standard.set(false, forKey: defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let gate = KnownPeopleRouteMutationGate()
+        let held = try await gate.acquire()
+        let routing = KnownPeopleRoutingCallProbe()
+        let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
+            knownPeopleRouteMutationGate: gate,
+            knownPeopleLocalStateRequiresReconciliation: { false })
+        #expect(!coordinator.isKnownPeopleRouting)
+        #expect(coordinator.canUseLocalKnownPeopleInterchange)
+
+        coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+        try await waitForRouteGateWaiters(1, gate: gate)
+        #expect(coordinator.isKnownPeopleRouting)
+        #expect(!coordinator.canUseLocalKnownPeopleInterchange)
+        held.release()
+        try await waitForRoutingCalls(1, probe: routing)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while coordinator.isKnownPeopleRouting, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!coordinator.isKnownPeopleRouting)
+        #expect(coordinator.canUseLocalKnownPeopleInterchange)
+    }
+
     @Test("A queued cloud enable rechecks replacement reconciliation inside the lease")
     @MainActor
     func queuedCloudEnableRechecksManagedState() async throws {

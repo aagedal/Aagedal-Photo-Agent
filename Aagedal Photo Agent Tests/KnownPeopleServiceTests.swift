@@ -2901,6 +2901,427 @@ struct KnownPeopleServiceTests {
         #expect(decoded.embeddings.map(\.id) == original.embeddings.map(\.id))
         #expect(decoded.embeddings.map(\.featurePrintData) == original.embeddings.map(\.featurePrintData))
     }
+
+    @Test("Local interchange preparation assigns empty and populated roots, then uses tracked capture",
+          arguments: [false, true])
+    func localInterchangePreparation(empty: Bool) async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: empty)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previousPreference = UserDefaults.standard.object(forKey: key)
+        KnownPeopleService.storageOverrideURL = fixture.root
+        UserDefaults.standard.set(false, forKey: key)
+        defer {
+            KnownPeopleService.storageOverrideURL = previousOverride
+            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let service = KnownPeopleService()
+        let first = await service.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+            exporter: try interchangeExporter, routingActive: false,
+            routeMutationGate: KnownPeopleRouteMutationGate())
+        #expect(first.isReady)
+        #expect(first.identityAssignment?.committed == true)
+        #expect(first.identityAssignment?.failure == nil)
+        #expect(first.capture?.snapshot.people.count == (empty ? 0 : 1))
+        #expect(first.capture?.reusedAdmittedBytes == true)
+
+        let second = await service.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+            exporter: try interchangeExporter, routingActive: false,
+            routeMutationGate: KnownPeopleRouteMutationGate())
+        #expect(second.isReady)
+        #expect(second.identityAssignment == nil)
+        #expect(second.capture?.snapshot.manifest.libraryID == first.capture?.snapshot.manifest.libraryID)
+        #expect(second.capture?.snapshot.files == first.capture?.snapshot.files)
+    }
+
+    @Test("Concurrent first-time preparations converge on one tracked identity")
+    func concurrentLocalInterchangePreparation() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previousPreference = UserDefaults.standard.object(forKey: key)
+        KnownPeopleService.storageOverrideURL = fixture.root
+        UserDefaults.standard.set(false, forKey: key)
+        defer {
+            KnownPeopleService.storageOverrideURL = previousOverride
+            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let routeGate = KnownPeopleRouteMutationGate()
+        let firstService = KnownPeopleService(), secondService = KnownPeopleService()
+        let exporter = try interchangeExporter
+        async let first = firstService.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+            exporter: exporter, routingActive: false, routeMutationGate: routeGate)
+        async let second = secondService.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+            exporter: exporter, routingActive: false, routeMutationGate: routeGate)
+        let results = await [first, second]
+        #expect(results.filter { $0.isReady }.count == 2)
+        #expect(results.filter { $0.identityAssignment?.committed == true }.count == 1)
+        #expect(Set(results.compactMap { $0.capture?.snapshot.manifest.libraryID }).count == 1)
+        #expect(results[0].capture?.snapshot.files == results[1].capture?.snapshot.files)
+    }
+
+    @Test("Precommit cancellation preserves the untracked root and reports no commit")
+    func localInterchangePrecommitCancellation() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let before = try interchangeTree(fixture.root)
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        KnownPeopleService.storageOverrideURL = fixture.root
+        defer { KnownPeopleService.storageOverrideURL = previousOverride }
+        var access = KnownPeopleLocalInterchangePreparationAccess()
+        access.replacement.beforeCommit = { throw CancellationError() }
+        let result = await KnownPeopleService().prepareLocalInterchangeSnapshot(
+            exportedAt: interchangeDate, exporter: try interchangeExporter, routingActive: false,
+            routeMutationGate: KnownPeopleRouteMutationGate(), access: access)
+        #expect(!result.isReady && result.wasCancelled)
+        #expect(result.identityAssignment?.committed == false)
+        #expect(try interchangeTree(fixture.root) == before)
+    }
+
+    @Test("Cancelled managed work leaves the import queue and releases routing promptly",
+          arguments: ["preparation", "replacement"])
+    func cancelledManagedImportWaiter(operation: String) async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previousPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        KnownPeopleService.storageOverrideURL = fixture.root
+        UserDefaults.standard.set(false, forKey: defaultsKey)
+        defer {
+            KnownPeopleService.storageOverrideURL = previousOverride
+            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let exporter = try interchangeExporter
+        let owner = KnownPeopleService()
+        let replacementPlan = operation == "replacement"
+            ? try await KnownPeopleLocalIdentityAssignment().prepare(
+                route: owner.managedStoreRoute(routingActive: false),
+                exportedAt: interchangeDate, exporter: exporter).replacementPlan
+            : nil
+        let before = try interchangeTree(fixture.root)
+        let importGate = KnownPeopleLegacyImportGate()
+        let system = KnownPeopleArchiveFileAccess.system
+        let importing = KnownPeopleService(archiveService: KnownPeopleArchiveService(
+            access: KnownPeopleArchiveFileAccess(temporaryDirectory: fixture.parent,
+                createDirectory: system.createDirectory, removeItem: system.removeItem,
+                contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+                itemExists: system.itemExists, readData: system.readData,
+                readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+                writeCoordinatedData: system.writeCoordinatedData,
+                runDitto: { _ in try await importGate.pause() })))
+        let importTask = Task { @MainActor in
+            try await importing.importFromZip(sourceURL: fixture.parent.appendingPathComponent("legacy.zip"))
+        }
+        await importGate.waitUntilEntered()
+
+        let routeGate = KnownPeopleRouteMutationGate()
+        let managed = Task { @MainActor in
+            if let replacementPlan {
+                return await owner.replaceManagedStore(plan: replacementPlan,
+                    decision: .replaceUntracked, routingActive: false, routeMutationGate: routeGate)
+                    .wasCancelled
+            }
+            return await owner.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+                exporter: exporter, routingActive: false, routeMutationGate: routeGate).wasCancelled
+        }
+        let admissionDeadline = ContinuousClock.now + .seconds(2)
+        while !routeGate.isHeld, ContinuousClock.now < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(routeGate.isHeld)
+        managed.cancel()
+        #expect(await managed.value)
+        let releaseDeadline = ContinuousClock.now + .seconds(2)
+        while routeGate.isHeld, ContinuousClock.now < releaseDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!routeGate.isHeld)
+        #expect(try interchangeTree(fixture.root) == before)
+
+        let routing = KnownPeopleImportCancellationRoutingProbe()
+        let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
+            knownPeopleRouteMutationGate: routeGate,
+            knownPeopleLocalStateRequiresReconciliation: { false })
+        coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+        let routingDeadline = ContinuousClock.now + .seconds(2)
+        while await routing.callCount == 0, ContinuousClock.now < routingDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await routing.callCount == 1)
+        #expect(await importGate.isPaused)
+
+        await importGate.resume()
+        await #expect(throws: (any Error).self) { try await importTask.value }
+    }
+
+    @Test("Cancelling the second managed waiter leaves the first FIFO waiter pending")
+    func cancellationTargetsExactManagedImportWaiter() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previousPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        KnownPeopleService.storageOverrideURL = fixture.root
+        UserDefaults.standard.set(false, forKey: defaultsKey)
+        defer {
+            KnownPeopleService.storageOverrideURL = previousOverride
+            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let importGate = KnownPeopleLegacyImportGate()
+        let system = KnownPeopleArchiveFileAccess.system
+        let importing = KnownPeopleService(archiveService: KnownPeopleArchiveService(
+            access: KnownPeopleArchiveFileAccess(temporaryDirectory: fixture.parent,
+                createDirectory: system.createDirectory, removeItem: system.removeItem,
+                contentsOfDirectory: system.contentsOfDirectory, isDirectory: system.isDirectory,
+                itemExists: system.itemExists, readData: system.readData,
+                readCoordinatedData: system.readCoordinatedData, writeData: system.writeData,
+                writeCoordinatedData: system.writeCoordinatedData,
+                runDitto: { _ in try await importGate.pause() })))
+        let importTask = Task { @MainActor in
+            try await importing.importFromZip(sourceURL: fixture.parent.appendingPathComponent("legacy.zip"))
+        }
+        await importGate.waitUntilEntered()
+        let exporter = try interchangeExporter
+        let firstGate = KnownPeopleRouteMutationGate(), secondGate = KnownPeopleRouteMutationGate()
+        let first = Task { @MainActor in
+            await KnownPeopleService().prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+                exporter: exporter, routingActive: false, routeMutationGate: firstGate)
+        }
+        try await waitForCancellableImportWaiters(1)
+        let second = Task { @MainActor in
+            await KnownPeopleService().prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+                exporter: exporter, routingActive: false, routeMutationGate: secondGate)
+        }
+        try await waitForCancellableImportWaiters(2)
+
+        second.cancel()
+        let cancelled = await second.value
+        #expect(cancelled.wasCancelled && !cancelled.isReady)
+        try await waitForCancellableImportWaiters(1)
+        #expect(firstGate.isHeld)
+        #expect(!secondGate.isHeld)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(
+            KnownPeopleManagedStoreState.fileName).path))
+
+        await importGate.resume()
+        await #expect(throws: (any Error).self) { try await importTask.value }
+        let completed = await first.value
+        #expect(completed.isReady && completed.identityAssignment?.committed == true)
+        #expect(KnownPeopleService.cancellableImportWaiterCount == 0)
+        #expect(!firstGate.isHeld)
+    }
+
+    @Test("A committed identity remains explicit when final recapture fails")
+    func localInterchangePostcommitRecaptureFailure() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        KnownPeopleService.storageOverrideURL = fixture.root
+        defer { KnownPeopleService.storageOverrideURL = previousOverride }
+        var access = KnownPeopleLocalInterchangePreparationAccess()
+        access.beforeFinalRecapture = { throw CocoaError(.fileReadCorruptFile) }
+        let result = await KnownPeopleService().prepareLocalInterchangeSnapshot(
+            exportedAt: interchangeDate, exporter: try interchangeExporter, routingActive: false,
+            routeMutationGate: KnownPeopleRouteMutationGate(), access: access)
+        #expect(!result.isReady && result.capture == nil)
+        #expect(result.identityAssignment?.committed == true)
+        #expect(result.identityAssignment?.installedState != nil)
+        #expect(result.identityAssignment?.recoveryDirectory != nil)
+        #expect(result.failure != nil)
+    }
+
+    @Test("Preparation holds route and whole-root ownership through identity commit")
+    func localInterchangeOwnershipExcludesRouteAndCRUD() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        KnownPeopleService.storageOverrideURL = fixture.root
+        defer { KnownPeopleService.storageOverrideURL = previousOverride }
+        let transactionGate = KnownPeopleInterchangeCommitGate()
+        let routeGate = KnownPeopleRouteMutationGate()
+        var access = KnownPeopleLocalInterchangePreparationAccess()
+        access.replacement.beforeCommit = { transactionGate.pause() }
+        let service = KnownPeopleService()
+        let preparation = Task { @MainActor in
+            await service.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
+                exporter: try! interchangeExporter, routingActive: false,
+                routeMutationGate: routeGate, access: access)
+        }
+        try await transactionGate.waitUntilEntered()
+        #expect(KnownPeopleService.replacementReservationCovers(
+            fixture.root.appendingPathComponent("people/\(UUID().uuidString).json")))
+        #expect(throws: (any Error).self) { try service.addPerson(name: "Blocked", embeddings: []) }
+        let route = Task { try await routeGate.acquire() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while routeGate.waitingCount != 1, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(routeGate.waitingCount == 1)
+        transactionGate.resume()
+        let result = await preparation.value
+        let routeLease = try await route.value
+        routeLease.release()
+        #expect(result.isReady && result.identityAssignment?.committed == true)
+        #expect(!KnownPeopleService.replacementReservationCovers(fixture.root))
+    }
+
+    @Test("Preparation refuses active routing and iCloud after owner admission", arguments: [false, true])
+    func localInterchangeRefusesNonlocalRoute(iCloud: Bool) async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let fixture = try await makeLocalInterchangeFixture(empty: true)
+        defer { try? FileManager.default.removeItem(at: fixture.parent) }
+        let previousOverride = KnownPeopleService.storageOverrideURL
+        let key = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previousPreference = UserDefaults.standard.object(forKey: key)
+        KnownPeopleService.storageOverrideURL = fixture.root
+        UserDefaults.standard.set(iCloud, forKey: key)
+        defer {
+            KnownPeopleService.storageOverrideURL = previousOverride
+            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let result = await KnownPeopleService().prepareLocalInterchangeSnapshot(
+            exportedAt: interchangeDate, exporter: try interchangeExporter,
+            routingActive: !iCloud, routeMutationGate: KnownPeopleRouteMutationGate())
+        #expect(!result.isReady && result.capture == nil && result.identityAssignment == nil)
+        #expect(result.failure?.contains("Disable Known People iCloud sync") == true)
+    }
+
+    private var interchangeDate: String { "2026-09-12T12:00:00.000Z" }
+    private var interchangeExporter: KnownPeoplePackageManifest.Exporter {
+        get throws {
+            try .init(app: "Photo Agent service preparation test", version: "1",
+                      sourceRevision: String(repeating: "b", count: 40))
+        }
+    }
+
+    private func makeLocalInterchangeFixture(empty: Bool) async throws -> (parent: URL, root: URL) {
+        let parent = makeTempDir()
+        let root = parent.appendingPathComponent("KnownPeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        guard !empty else { return (parent, root) }
+        let source = parent.appendingPathComponent("source.aagedalpeople", isDirectory: true)
+        let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/PeopleLibraryV2", isDirectory: true)
+        for (path, fixture) in ["manifest.json": "manifest.json.base64",
+            "people.json": "people.json.base64", "editor/photo-agent.json": "editor-photo-agent.json.base64",
+            "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2": "embedding.fem2.base64"] {
+            let text = try String(contentsOf: base.appendingPathComponent(fixture), encoding: .utf8)
+            let bytes = try #require(Data(base64Encoded:
+                text.components(separatedBy: .whitespacesAndNewlines).joined()))
+            let url = source.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try bytes.write(to: url)
+        }
+        let package = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+        let person = try #require(package.people.first)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("people"),
+                                                withIntermediateDirectories: false)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(person).write(to: root.appendingPathComponent(
+            "people/\(person.id.uuidString).json"))
+        return (parent, root)
+    }
+
+    private func interchangeTree(_ root: URL) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        let enumerator = try #require(FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey]))
+        for case let url as URL in enumerator
+            where try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+            result[String(url.path.dropFirst(root.path.count + 1))] = try Data(contentsOf: url)
+        }
+        return result
+    }
+
+    private func waitForCancellableImportWaiters(_ count: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while KnownPeopleService.cancellableImportWaiterCount != count,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(KnownPeopleService.cancellableImportWaiterCount == count)
+    }
+}
+
+private nonisolated final class KnownPeopleInterchangeCommitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var didEnter = false
+    var entered: Bool { lock.withLock { didEnter } }
+    func pause() {
+        lock.withLock { didEnter = true }
+        _ = semaphore.wait(timeout: .now() + 10)
+    }
+    func resume() { semaphore.signal() }
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !entered, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(entered)
+    }
+}
+
+private actor KnownPeopleLegacyImportGate {
+    private(set) var isPaused = false
+    private var entered: [CheckedContinuation<Void, Never>] = []
+    private var release: CheckedContinuation<Void, Never>?
+
+    func pause() async throws {
+        isPaused = true
+        entered.forEach { $0.resume() }
+        entered.removeAll()
+        await withCheckedContinuation { release = $0 }
+        throw CocoaError(.fileReadCorruptFile)
+    }
+
+    func waitUntilEntered() async {
+        if isPaused { return }
+        await withCheckedContinuation { entered.append($0) }
+    }
+
+    func resume() {
+        release?.resume()
+        release = nil
+    }
+}
+
+private actor KnownPeopleImportCancellationRoutingProbe: KnownPeopleICloudRouting {
+    private(set) var callCount = 0
+    func reconcile(enabled: Bool, requestID: UUID) async throws -> KnownPeopleICloudRoutingResult {
+        callCount += 1
+        return .unavailable(requestID: requestID, enabled: enabled)
+    }
+    func storageURL(syncEnabled: Bool) async -> URL {
+        URL(fileURLWithPath: syncEnabled ? "/virtual/cancel-cloud" : "/virtual/cancel-local")
+    }
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
+        URL(fileURLWithPath: "/virtual/cancel-cloud")
+    }
 }
 
 private nonisolated final class KnownPeopleThumbnailReadProbe: @unchecked Sendable {

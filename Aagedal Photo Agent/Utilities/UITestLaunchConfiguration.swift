@@ -13,6 +13,7 @@ struct UITestLaunchConfiguration {
         case batchRename = "batch-rename"
         case deadline
         case recoveryError = "recovery-error"
+        case knownPeopleInterchange = "known-people-interchange"
     }
 
     let isEnabled: Bool
@@ -21,6 +22,7 @@ struct UITestLaunchConfiguration {
     let sourceURL: URL?
     let destinationURL: URL?
     let profileStoreURL: URL?
+    let knownPeopleRootURL: URL?
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -37,5 +39,10 @@ struct UITestLaunchConfiguration {
         sourceURL = value(after: "--ui-test-source").map { URL(fileURLWithPath: $0) }
         destinationURL = value(after: "--ui-test-destination").map { URL(fileURLWithPath: $0) }
         profileStoreURL = value(after: "--ui-test-profile-store").map { URL(fileURLWithPath: $0) }
+        // The caller applies this only when `isEnabled` is true. Parsing the URL here
+        // has no side effects and keeps the production storage override opt-in.
+        knownPeopleRootURL = isEnabled
+            ? value(after: "--ui-test-known-people-root").map { URL(fileURLWithPath: $0) }
+            : nil
     }
 }
