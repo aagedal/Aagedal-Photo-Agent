@@ -333,7 +333,7 @@ final class MetadataViewModel {
     }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
     @ObservationIgnored private var metadataLoadRequestID: UUID? {
-        didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil } }
+        didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil; primaryDevelopSourceBaseline = nil } }
     }
     @ObservationIgnored private var writeTask: Task<Void, Never>? {
         willSet {
@@ -342,6 +342,23 @@ final class MetadataViewModel {
         }
     }
     @ObservationIgnored private var writeTaskGeneration = 0
+    @ObservationIgnored private var primaryDevelopSourceBaseline: (imageURL: URL, loadID: UUID, revision: SourceImageRevision)?
+    private(set) var retainedPrimaryDevelopWrites: [PrimaryDevelopWriteRequest] = []
+    @ObservationIgnored private var primaryDevelopResults: [UUID: PrimaryDevelopWriteResult] = [:]
+    @ObservationIgnored private var primaryDevelopTask: Task<Void, Never>?
+    private(set) var primaryDevelopActiveCount = 0
+    @ObservationIgnored private let primaryDevelopOwnerID = UUID()
+    @ObservationIgnored private let primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator
+    @ObservationIgnored private let primaryDevelopExecutor: (@Sendable (PrimaryDevelopWriteRequest) async -> PrimaryDevelopWriteResult)?
+    @ObservationIgnored private var primaryDevelopGeneration: UInt64 = 0
+    private(set) var primaryDevelopRecoveryPhotoURL: URL?
+    private(set) var primaryDevelopRecoveryReloadGeneration = 0
+    @ObservationIgnored private var primaryDevelopReview: VariableConflictSnapshot?
+    @ObservationIgnored private var primaryDevelopReviewOwner: UUID?
+    @ObservationIgnored private var primaryDevelopRecoveryOperation = false
+    @ObservationIgnored private var primaryDevelopRecoveryEndRequested = false
+    @ObservationIgnored private var primaryDevelopRecoveryLoadGuard: (loadID: UUID?, edited: IPTCMetadata)?
+    @ObservationIgnored private var primaryDevelopEditorBarrier: (owner: UUID, handler: @MainActor () throws -> Void)?
     @ObservationIgnored private var historyRestoreRequestID: UUID?
     @ObservationIgnored private var discardTask: Task<Void, Never>?
     @ObservationIgnored private var discardRequestID: UUID?
@@ -383,7 +400,9 @@ final class MetadataViewModel {
         variableOptions: @escaping @MainActor () -> VariableMetadataOptions = { .capture() },
         variableResolver: @escaping @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata = {
             try await VariableMetadataResolver.resolve($0)
-        }
+        },
+        primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator = .shared,
+        primaryDevelopExecutor: (@Sendable (PrimaryDevelopWriteRequest) async -> PrimaryDevelopWriteResult)? = nil
     ) {
         self.readService = readService
         self.writeEngine = writeEngine
@@ -401,6 +420,8 @@ final class MetadataViewModel {
         self.variableRecoveryBeforeDiscard = variableRecoveryBeforeDiscard
         self.variableOptions = variableOptions
         self.variableResolver = variableResolver
+        self.primaryDevelopLifecycle = primaryDevelopLifecycle
+        self.primaryDevelopExecutor = primaryDevelopExecutor
     }
 
     deinit {
@@ -659,6 +680,7 @@ final class MetadataViewModel {
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
+                    let sourceBefore = try? await SourceImageRevision.capture(at: imageURL)
                     let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: imageURL)
                     let exifMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
@@ -675,6 +697,17 @@ final class MetadataViewModel {
                           self.metadataLoadRequestID == requestID,
                           self.currentFolderURL == folderSnapshot,
                           let sourceFacts = sidecarSnapshot.factsByImageURL[imageURL] else { return }
+                    let sourceAfter = try? await SourceImageRevision.capture(at: imageURL)
+                    guard self.metadataLoadRequestID == requestID, !Task.isCancelled else { return }
+                    if let recovery = self.primaryDevelopRecoveryLoadGuard, recovery.loadID == requestID,
+                       self.editingMetadata != recovery.edited {
+                        self.isLoading = false
+                        return
+                    }
+                    if let sourceBefore, let sourceAfter, sourceBefore.canonicalURL == sourceAfter.canonicalURL,
+                       sourceBefore.sha256 == sourceAfter.sha256 {
+                        self.primaryDevelopSourceBaseline = (imageURL, requestID, sourceAfter)
+                    }
                     let xmpMeta = sourceFacts.xmpMetadata
                     // Reconcile embedded vs sidecar: the sidecar is master unless the image
                     // file was modified more recently and they disagree (e.g. Adobe Bridge
@@ -1371,6 +1404,300 @@ final class MetadataViewModel {
         markChanged()
     }
 
+    func hasUncapturedPrimaryDevelopEdits(mode: MetadataWriteMode) -> Bool {
+        guard hasUnpersistedEditorChanges else { return false }
+        // A retained Reset keeps its captured dual destination even when the lifecycle's
+        // ordinary capture mode is XMP. A mode change never replaces that owned intent.
+        let latest = retainedPrimaryDevelopWrites.last {
+            $0.imageURL == selectedURLs.first && selectedURLs.count == 1 && $0.folderURL == currentFolderURL
+                && $0.loadID == metadataLoadRequestID
+        }
+        return latest?.edited != editingMetadata
+    }
+    var hasRetainedPrimaryDevelopWrites: Bool { !retainedPrimaryDevelopWrites.isEmpty || primaryDevelopActiveCount > 0 || primaryDevelopReviewOwner != nil }
+    var primaryDevelopRecoveryPhotos: [URL] {
+        var seen = Set<String>()
+        return retainedPrimaryDevelopWrites.map(\.imageURL).filter { seen.insert(Self.variablePhotoKey($0)).inserted }
+    }
+    func registerPrimaryDevelopRecoveryEditorBarrier(owner: UUID, handler: @escaping @MainActor () throws -> Void) {
+        primaryDevelopEditorBarrier = (owner, handler)
+    }
+    func unregisterPrimaryDevelopRecoveryEditorBarrier(owner: UUID) {
+        if primaryDevelopEditorBarrier?.owner == owner { primaryDevelopEditorBarrier = nil }
+    }
+    func waitForPrimaryDevelopWrites() async { await primaryDevelopTask?.value }
+    func requirePrimaryDevelopWritesPersisted() throws {
+        guard !hasRetainedPrimaryDevelopWrites else {
+            throw PrimaryDevelopWriteError(message: "Primary Develop work remains retained. Retry its original save, or export and review that photo's retained work before leaving.")
+        }
+    }
+    private func synchronizePrimaryDevelopRetention() {
+        primaryDevelopGeneration &+= 1
+        if hasRetainedPrimaryDevelopWrites {
+            primaryDevelopLifecycle.register(ownerID: primaryDevelopOwnerID,
+                waitForAccepted: { await self.waitForPrimaryDevelopWrites() },
+                requirePersisted: { try self.requirePrimaryDevelopWritesPersisted() })
+        } else {
+            primaryDevelopLifecycle.unregister(ownerID: primaryDevelopOwnerID)
+            primaryDevelopResults.removeAll()
+        }
+    }
+
+    /// Develop uses its own retained queue: generic metadata writes cannot cancel its only copy.
+    func commitPrimaryDevelopEdits(mode: MetadataWriteMode, onComplete: @escaping (MetadataCommitResult) -> Void) {
+        guard primaryDevelopReviewOwner == nil else {
+            let message = "Finish the Primary Develop recovery review before accepting another edit."
+            saveError = message; onComplete(.failed(message: message)); return
+        }
+        guard selectedURLs.count == 1, let image = selectedURLs.first, let folder = currentFolderURL,
+              let loadID = metadataLoadRequestID, !isLoading else {
+            let message = "Wait for one photo to finish loading before saving its Primary Develop edit."
+            saveError = message; onComplete(.failed(message: message)); return
+        }
+        let edited = editingMetadata
+        if let existing = retainedPrimaryDevelopWrites.last(where: {
+            $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
+        }), existing.edited == edited, existing.mode == mode {
+            let message = primaryDevelopResults[existing.id]?.failure ?? "This Primary Develop edit is already retained or saving."
+            onComplete(.failed(message: message)); return
+        }
+        let predecessor = retainedPrimaryDevelopWrites.last {
+            $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
+        }
+        let previous = predecessor?.edited ?? previousEditingMetadata
+        let original = originalImageMetadata
+        let now = Date()
+        let changes = MetadataHistoryEntry.changes(from: previous ?? IPTCMetadata(), to: edited, timestamp: now)
+        var history = predecessor?.sidecar.history ?? sidecarHistory; history.append(contentsOf: changes); history.trimToHistoryLimit()
+        let sidecar = MetadataSidecar(sourceFile: image.lastPathComponent, lastModified: now, pendingChanges: false,
+            metadata: edited, imageMetadataSnapshot: edited, history: history)
+        var failure: String?
+        let token: XMPSidecarWriteSnapshot?
+        do { token = try editorXMPWriteEvidence(for: image, in: folder).get() }
+        catch { token = nil; failure = error.localizedDescription }
+        let source = primaryDevelopSourceBaseline.flatMap { $0.imageURL == image && $0.loadID == loadID ? $0.revision : nil }
+        if source == nil { failure = failure ?? "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery." }
+        let writesEmbedded = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: image, requestedMode: mode).writesEmbedded
+        let xmpTechnicalBaseline = predecessor?.edited ?? xmpMetadata
+        let embeddedPredecessor = PrimaryDevelopWriteRequest.ancestry(of: predecessor.map { [$0] } ?? []).first {
+            DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: $0.imageURL, requestedMode: $0.mode).writesEmbedded
+        }
+        let embeddedTechnicalBaseline = embeddedPredecessor?.edited ?? embeddedMetadata
+        // An XMP-only ancestor cannot acknowledge embedded technical state. A shared replacement
+        // flag is conservative when either destination being written still differs.
+        let replaceDevelop = Self.developSettingsChanged(edited.cameraRaw, xmpTechnicalBaseline?.cameraRaw)
+            || (writesEmbedded && Self.developSettingsChanged(edited.cameraRaw, embeddedTechnicalBaseline?.cameraRaw))
+        let replaceOrientation = edited.exifOrientation != xmpTechnicalBaseline?.exifOrientation
+            || (writesEmbedded && edited.exifOrientation != embeddedTechnicalBaseline?.exifOrientation)
+        let structured = replaceDevelop ? StructuredWriteData(toneCurve: edited.cameraRaw?.toneCurve,
+            masks: edited.cameraRaw?.localAdjustments, watermarkLayers: edited.cameraRaw?.watermarkLayers,
+            hslAdjustments: edited.cameraRaw?.hslAdjustments, layerOrder: edited.cameraRaw?.layerOrder,
+            anonymizer: edited.cameraRaw?.anonymizer, unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
+            editorial: .init(metadata: edited), replaceCameraRawBlock: true)
+            : StructuredWriteData(editorial: .init(metadata: edited))
+        let watermarkIDs = Set(([edited, previous, original].compactMap { $0 }).flatMap {
+            ($0.cameraRaw?.watermarkLayers ?? []).map(\.libraryAssetID)
+        })
+        let watermarkDependencies = watermarkIDs.sorted { $0.uuidString < $1.uuidString }.map { id in
+            let imageURL = WatermarkStore.resolvedImageURL(forAssetID: id)
+            let asset = WatermarkStore.shared.asset(byID: id)
+            let data = WatermarkStore.shared.imageData(forAssetID: id)
+            return PrimaryDevelopWatermarkDependency(id: id, asset: asset,
+                imageData: data, imageURL: imageURL,
+                metadataURL: imageURL.deletingLastPathComponent().appendingPathComponent("meta.json"),
+                unavailableAtAdmission: asset == nil || data == nil)
+        }
+        var capturedFields = overwriteFields(from: edited, includeCameraRaw: replaceDevelop)
+        if replaceDevelop && edited.cameraRaw == nil { clearAllCameraRawFields(into: &capturedFields) }
+        let request = PrimaryDevelopWriteRequest(imageURL: image, folderURL: folder, loadID: loadID, mode: mode,
+            edited: edited, previous: previous, original: original, expectedRecord: currentWriteExpectedRecord,
+            expectedXMP: token, sourceRevision: source, captureFailure: failure, sidecar: sidecar, changes: changes,
+            fields: capturedFields, structured: structured,
+            replaceDevelop: replaceDevelop, replaceOrientation: replaceOrientation, predecessor: predecessor,
+            watermarkDependencies: watermarkDependencies, embeddedBaseline: embeddedTechnicalBaseline)
+        retainedPrimaryDevelopWrites.append(request)
+        schedulePrimaryDevelop(request, onComplete: onComplete)
+    }
+
+    private func schedulePrimaryDevelop(_ request: PrimaryDevelopWriteRequest, onComplete: @escaping (MetadataCommitResult) -> Void) {
+        let preceding = primaryDevelopTask
+        primaryDevelopActiveCount += 1
+        synchronizePrimaryDevelopRetention()
+        primaryDevelopTask = Task { @MainActor in
+            await preceding?.value
+            let result: PrimaryDevelopWriteResult
+            if let older = retainedPrimaryDevelopWrites.first(where: {
+                Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(request.imageURL)
+            }), older.id != request.id {
+                result = .init(requestID: request.id, failure: "An earlier retained Primary Develop edit for this photo must be resolved first.")
+            } else if primaryDevelopResults[request.id]?.requiresRecovery == true {
+                result = primaryDevelopResults[request.id]!
+            } else if let primaryDevelopExecutor {
+                result = await primaryDevelopExecutor(request)
+            } else {
+                result = await PrimaryDevelopWriteService(engine: writeEngine).execute(request,
+                    predecessorResult: request.predecessor.flatMap { primaryDevelopResults[$0.id] })
+            }
+            primaryDevelopResults[request.id] = result
+            primaryDevelopActiveCount -= 1
+            let matches = metadataLoadRequestID == request.loadID && selectedURLs == [request.imageURL]
+                && currentFolderURL == request.folderURL && editingMetadata == request.edited
+            if result.completed, let completion = result.completion, let installed = completion.installedSidecar {
+                retainedPrimaryDevelopWrites.removeAll { $0.id == request.id }
+                let sameEditorSession = metadataLoadRequestID == request.loadID && selectedURLs == [request.imageURL]
+                    && currentFolderURL == request.folderURL
+                if sameEditorSession {
+                    // Advance only to this own verified receipt, retaining any newer live edit.
+                    cleanupBaseline = (request.imageURL, request.folderURL, installed)
+                    sidecarHistory = installed.history
+                    previousEditingMetadata = request.edited
+                    if result.wroteEmbedded {
+                        embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited
+                    }
+                    capturedCaptionWriteExpectation = nil
+                    if completion.wroteXMPSidecar { xmpMetadata = completion.writtenXMPMetadata ?? request.edited }
+                    editorXMPWriteBaseline = (request.imageURL, request.folderURL, request.loadID,
+                        completion.writtenXMPSnapshot ?? request.expectedXMP, nil)
+                    if let source = result.sourceRevision { primaryDevelopSourceBaseline = (request.imageURL, request.loadID, source) }
+                }
+                if matches {
+                    cleanupBaseline = (request.imageURL, request.folderURL, installed)
+                    sidecarHistory = installed.history
+                    if completion.wroteXMPSidecar { xmpMetadata = completion.writtenXMPMetadata ?? request.edited }
+                    editorXMPWriteBaseline = (request.imageURL, request.folderURL, request.loadID,
+                        completion.writtenXMPSnapshot ?? request.expectedXMP, nil)
+                    if let source = result.sourceRevision { primaryDevelopSourceBaseline = (request.imageURL, request.loadID, source) }
+                    editingMetadata.cameraRaw = completion.writtenXMPMetadata?.cameraRaw ?? request.edited.cameraRaw
+                    previousEditingMetadata = editingMetadata
+                    if result.wroteEmbedded { embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited }
+                    else if metadataReferenceSource == .xmp { metadata = xmpMetadata; originalImageMetadata = xmpMetadata }
+                    hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
+                }
+                synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
+            } else {
+                let message = primaryDevelopFailureMessage(result)
+                if matches { saveError = message }
+                synchronizePrimaryDevelopRetention()
+                onComplete(result.wasCancelled ? .cancelled(message: message) : .failed(message: message))
+            }
+        }
+    }
+    private func primaryDevelopFailureMessage(_ result: PrimaryDevelopWriteResult) -> String {
+        let prefix = result.requiresRecovery
+            ? "Primary Develop metadata may be partly written. Its complete captured edit remains retained; export and review it before discarding."
+            : "The Primary Develop edit remains retained. Retry uses its original photo and captured values."
+        return prefix + " " + (result.failure ?? "The save did not complete.")
+    }
+    func retryPrimaryDevelopWrites() async throws {
+        guard primaryDevelopReviewOwner == nil else { throw PrimaryDevelopWriteError(message: "Finish the recovery review before retrying.") }
+        await waitForPrimaryDevelopWrites()
+        guard primaryDevelopReviewOwner == nil else { throw PrimaryDevelopWriteError(message: "Finish the recovery review before retrying.") }
+        for request in retainedPrimaryDevelopWrites {
+            if primaryDevelopResults[request.id]?.requiresRecovery == true { continue }
+            schedulePrimaryDevelop(request, onComplete: { _ in })
+        }
+        await waitForPrimaryDevelopWrites()
+        try requirePrimaryDevelopWritesPersisted()
+    }
+
+    func beginPrimaryDevelopRecovery(for image: URL) async throws -> VariableConflictSnapshot {
+        guard primaryDevelopReviewOwner == nil else { throw PrimaryDevelopWriteError(message: "A Primary Develop recovery review is already open.") }
+        try primaryDevelopEditorBarrier?.handler()
+        let owner = UUID(); primaryDevelopReviewOwner = owner; primaryDevelopRecoveryPhotoURL = image
+        synchronizePrimaryDevelopRetention()
+        await waitForPrimaryDevelopWrites()
+        do {
+            try Task.checkCancellation()
+            let snapshot = try await VariableConflictRecovery.makeSnapshot(photoURL: image,
+                reason: retainedPrimaryDevelopWrites.first(where: { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) })
+                    .flatMap { primaryDevelopResults[$0.id] }.map(primaryDevelopFailureMessage) ?? "Primary Develop work remains retained.",
+                generation: primaryDevelopGeneration, entries: primaryDevelopEntries(for: image))
+            guard primaryDevelopReviewOwner == owner else { throw PrimaryDevelopWriteError(message: "The recovery review changed.") }
+            primaryDevelopReview = snapshot
+            return snapshot
+        } catch { releasePrimaryDevelopReview(); throw error }
+    }
+    func endPrimaryDevelopRecovery(_ snapshot: VariableConflictSnapshot) async {
+        guard primaryDevelopReview?.id == snapshot.id else { return }
+        if primaryDevelopRecoveryOperation { primaryDevelopRecoveryEndRequested = true }
+        else { releasePrimaryDevelopReview() }
+    }
+    private func validatePrimaryDevelopReview(_ snapshot: VariableConflictSnapshot) throws {
+        guard primaryDevelopReview?.id == snapshot.id, primaryDevelopGeneration == snapshot.generation else {
+            throw PrimaryDevelopWriteError(message: "The retained Primary Develop work changed. Review and export it again.")
+        }
+    }
+    private var primaryDevelopProtectedPhotos: [URL] {
+        PrimaryDevelopWriteRequest.protectedURLs(for: retainedPrimaryDevelopWrites)
+            + variableRecoveryProtectedPhotos + selectedURLs
+    }
+    func exportPrimaryDevelopRecovery(_ snapshot: VariableConflictSnapshot, to url: URL) async throws -> VariableConflictExportReceipt {
+        try validatePrimaryDevelopReview(snapshot)
+        guard !primaryDevelopRecoveryOperation else { throw PrimaryDevelopWriteError(message: "Recovery is still running.") }
+        primaryDevelopRecoveryOperation = true
+        defer { primaryDevelopRecoveryOperation = false; if primaryDevelopRecoveryEndRequested { releasePrimaryDevelopReview() } }
+        let receipt = try await VariableConflictRecovery.export(snapshot, to: url,
+            currentEntries: primaryDevelopEntries(for: snapshot.photoURL), generation: primaryDevelopGeneration,
+            protectedPhotoURLs: primaryDevelopProtectedPhotos)
+        try validatePrimaryDevelopReview(snapshot)
+        return receipt
+    }
+    func discardPrimaryDevelopRecovery(_ snapshot: VariableConflictSnapshot, receipt: VariableConflictExportReceipt) async throws {
+        try validatePrimaryDevelopReview(snapshot)
+        guard !primaryDevelopRecoveryOperation else { throw PrimaryDevelopWriteError(message: "Recovery is still running.") }
+        primaryDevelopRecoveryOperation = true
+        defer { primaryDevelopRecoveryOperation = false; if primaryDevelopRecoveryEndRequested { releasePrimaryDevelopReview() } }
+        let ids = try await VariableConflictRecovery.verifyDiscard(snapshot, receipt: receipt,
+            currentEntries: primaryDevelopEntries(for: snapshot.photoURL), generation: primaryDevelopGeneration,
+            protectedPhotoURLs: primaryDevelopProtectedPhotos)
+        try Task.checkCancellation(); try validatePrimaryDevelopReview(snapshot)
+        try primaryDevelopEditorBarrier?.handler()
+        let last = retainedPrimaryDevelopWrites.last { ids.contains($0.id) }
+        let ownsUnchangedEditor = last.map {
+            $0.loadID == metadataLoadRequestID && selectedURLs == [$0.imageURL] && currentFolderURL == $0.folderURL && editingMetadata == $0.edited
+        } == true
+        guard !ownsUnchangedEditor || (primaryDevelopEditorBarrier != nil && !isSaving) else {
+            throw PrimaryDevelopWriteError(message: "Open this photo's Develop editor and finish its active controls before discarding the retained edit.")
+        }
+        let mayReload = ownsUnchangedEditor
+        if mayReload, let last {
+            let beforeGeneration = metadataLoadGeneration
+            let expectedEditor = editingMetadata
+            primaryDevelopRecoveryReloadGeneration += 1
+            loadMetadata(for: [ImageFile(url: last.imageURL)], folderURL: last.folderURL)
+            let reloadID = metadataLoadRequestID
+            primaryDevelopRecoveryLoadGuard = (reloadID, expectedEditor)
+            await metadataLoadTask?.value
+            if primaryDevelopRecoveryLoadGuard?.loadID == reloadID { primaryDevelopRecoveryLoadGuard = nil }
+            try validatePrimaryDevelopReview(snapshot)
+            guard metadataLoadRequestID == reloadID, selectedURLs == [last.imageURL],
+                  metadataLoadGeneration > beforeGeneration, !isLoading else {
+                throw PrimaryDevelopWriteError(message: "The recovery export is verified, but the editor could not reload. The captured work remains retained; finish reloading before discarding it.")
+            }
+        }
+        retainedPrimaryDevelopWrites.removeAll { ids.contains($0.id) }
+        // Keep receipts referenced by surviving causal successors; they remain part of export.
+        releasePrimaryDevelopReview()
+    }
+    private func releasePrimaryDevelopReview() {
+        primaryDevelopReview = nil; primaryDevelopReviewOwner = nil; primaryDevelopRecoveryPhotoURL = nil
+        primaryDevelopRecoveryEndRequested = false; synchronizePrimaryDevelopRetention()
+    }
+    private func primaryDevelopEntries(for image: URL) throws -> [VariableConflictEntry] {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try retainedPrimaryDevelopWrites.filter { Self.variablePhotoKey($0.imageURL) == Self.variablePhotoKey(image) }.map {
+            request in
+            let payloads = PrimaryDevelopWriteRequest.ancestry(of: [request]).map {
+                PrimaryDevelopRecoveryPayload($0, result: primaryDevelopResults[$0.id])
+            }
+            let graph: [String: Any] = ["kind": "Primary Develop", "requestAndPredecessors":
+                try JSONSerialization.jsonObject(with: encoder.encode(payloads))]
+            return .init(id: request.id, imageURL: request.imageURL, folderURL: request.folderURL,
+                admissionPayload: try JSONSerialization.data(withJSONObject: graph, options: [.sortedKeys]),
+                failure: primaryDevelopResults[request.id].map(primaryDevelopFailureMessage))
+        }
+    }
+
     /// Writes the editing buffer to the destination the mode dictates. A file-writing
     /// mode writes into C2PA files without ceremony — only the Simple preset resolves
     /// C2PA to `.writeToFile`, and Simple deliberately ignores content credentials
@@ -1391,6 +1718,8 @@ final class MetadataViewModel {
         mode: MetadataWriteMode,
         onComplete: @escaping (MetadataCommitResult) -> Void
     ) {
+        do { try requirePrimaryDevelopWritesPersisted() }
+        catch { saveError = error.localizedDescription; onComplete(.failed(message: error.localizedDescription)); return }
         do { try requireVariableDiscardedEditorReconciled() }
         catch { saveError = error.localizedDescription; onComplete(.failed(message: error.localizedDescription)); return }
         switch mode {
@@ -1405,6 +1734,8 @@ final class MetadataViewModel {
     }
 
     func writeMetadata() {
+        do { try requirePrimaryDevelopWritesPersisted() }
+        catch { saveError = error.localizedDescription; return }
         do { try requireVariableDiscardedEditorReconciled() }
         catch { saveError = error.localizedDescription; return }
         let urls = selectedURLs
@@ -1827,6 +2158,8 @@ final class MetadataViewModel {
     }
 
     private func writeXMPSidecar() async {
+        do { try requirePrimaryDevelopWritesPersisted() }
+        catch { saveError = error.localizedDescription; return }
         let urls = selectedURLs
         let folderAtAdmission = currentFolderURL
         guard !urls.isEmpty else { return }
@@ -3250,6 +3583,7 @@ final class MetadataViewModel {
             let requestID = UUID()
             let folderSnapshot = currentFolderURL
             metadataLoadRequestID = requestID
+            let sourceBefore = try? await SourceImageRevision.capture(at: url)
             let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: url)
             let sidecarResult = await editorReadService.load(MetadataEditorReadRequest(
                 id: requestID,
@@ -3264,6 +3598,12 @@ final class MetadataViewModel {
                   case .complete(let sidecarSnapshot) = sidecarResult,
                   sidecarSnapshot.request.id == requestID,
                   let sourceFacts = sidecarSnapshot.factsByImageURL[url] else { return }
+            let sourceAfter = try? await SourceImageRevision.capture(at: url)
+            guard self.metadataLoadRequestID == requestID, !Task.isCancelled else { return }
+            if let sourceBefore, let sourceAfter, sourceBefore.canonicalURL == sourceAfter.canonicalURL,
+               sourceBefore.sha256 == sourceAfter.sha256 {
+                self.primaryDevelopSourceBaseline = (url, requestID, sourceAfter)
+            }
             let xmpMeta = sourceFacts.xmpMetadata
             // Preserve the user's current reference source selection after processing
             let refSource: MetadataReferenceSource
@@ -3449,6 +3789,8 @@ final class MetadataViewModel {
     // MARK: - Sidecar Management
 
     func saveToSidecar() {
+        do { try requirePrimaryDevelopWritesPersisted() }
+        catch { saveError = error.localizedDescription; return }
         do { try requireVariableDiscardedEditorReconciled() }
         catch { saveError = error.localizedDescription; return }
         guard let folderURL = currentFolderURL else { return }
@@ -3520,6 +3862,7 @@ final class MetadataViewModel {
     /// the same image cannot manufacture duplicate edits; the queue retains and retries a failed
     /// request at the next durable barrier.
     func captureCaptionDraftPersistence() throws -> CaptionDraftPersistence? {
+        try requirePrimaryDevelopWritesPersisted()
         try requireVariableDiscardedEditorReconciled()
         guard let folderURL = currentFolderURL else {
             throw CaptionWorkspaceFlushError.sidecarUnavailable
@@ -3861,6 +4204,8 @@ final class MetadataViewModel {
     }
 
     func writeMetadataAndClearSidecar() {
+        do { try requirePrimaryDevelopWritesPersisted() }
+        catch { saveError = error.localizedDescription; return }
         do { try requireVariableDiscardedEditorReconciled() }
         catch { saveError = error.localizedDescription; return }
         guard selectedCount == 1,

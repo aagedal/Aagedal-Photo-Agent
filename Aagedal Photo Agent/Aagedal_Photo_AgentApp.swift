@@ -509,6 +509,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) -> ApplicationTerminationFailureChoice {
         let alert = NSAlert()
         alert.alertStyle = .critical
+        if DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork {
+            alert.messageText = "Develop Save Failed"
+            alert.informativeText = "Captured Primary Develop edits still need attention: \(failure.message)\n\nKeep the app open and use Retry Develop Writes, or Review Develop Conflicts to export the captured edits before discarding them."
+            alert.addButton(withTitle: "Keep App Open")
+            alert.runModal()
+            return .keepOpen
+        }
         switch failure.stage {
         case .caption:
             alert.messageText = "Caption Save Failed"

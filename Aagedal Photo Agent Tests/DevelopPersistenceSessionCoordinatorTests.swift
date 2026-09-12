@@ -342,7 +342,7 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(source.contains("persistenceSession.recordPublishedSettingsChange(for: url)"))
         #expect(source.components(separatedBy: "persistenceSession.schedulePrimaryPersistence").count == 2)
         #expect(source.contains("persistenceSession.primaryPersistenceErrorMessage"))
-        #expect(source.contains("metadataViewModel.commitEditsReportingResult(mode: mode)"))
+        #expect(source.contains("metadataViewModel.commitPrimaryDevelopEdits(mode: mode)"))
         #expect(!source.contains("localizedCaseInsensitiveContains(\"cancel\")"))
         #expect(source.contains("persistenceSession.scheduleBatchPersistence"))
         #expect(source.contains("persistenceSession.batchPersistenceErrorMessage"))

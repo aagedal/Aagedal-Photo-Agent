@@ -14,7 +14,6 @@
 		2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */; };
 		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
 		87EAF1DF1048410285F6CB37 /* VariableConflictRecoveryCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */; };
-		F4619B8922F94C92895B9C88 /* MetadataEditorXMPBaselineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4061590503824EFE840DD876 /* MetadataEditorXMPBaselineTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
 		9E909BDC0B8A4B20BDBFB647 /* VariableMetadataCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */; };
@@ -140,9 +139,12 @@
 		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */; };
 		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
+		F4619B8922F94C92895B9C88 /* MetadataEditorXMPBaselineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4061590503824EFE840DD876 /* MetadataEditorXMPBaselineTests.swift */; };
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
+		D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */; };
+		D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -164,11 +166,11 @@
 
 /* Begin PBXFileReference section */
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
-		4061590503824EFE840DD876 /* MetadataEditorXMPBaselineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorXMPBaselineTests.swift; sourceTree = "<group>"; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
 		25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
+		4061590503824EFE840DD876 /* MetadataEditorXMPBaselineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorXMPBaselineTests.swift; sourceTree = "<group>"; };
 		44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryTests.swift; sourceTree = "<group>"; };
 		497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataCallerTests.swift; sourceTree = "<group>"; };
 		7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamRosterExportServiceTests.swift; sourceTree = "<group>"; };
@@ -302,6 +304,8 @@
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
+		D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPrimaryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrimaryDevelopWriteServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -432,6 +436,8 @@
 				D3C004000000000000000001 /* DevelopCropSessionCoordinatorTests.swift */,
 				D3C005000000000000000001 /* DevelopWhiteBalanceSessionCoordinatorTests.swift */,
 				D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */,
+				D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */,
+				D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */,
 				D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */,
@@ -753,6 +759,8 @@
 				D3C004000000000000000002 /* DevelopCropSessionCoordinatorTests.swift in Sources */,
 				D3C005000000000000000002 /* DevelopWhiteBalanceSessionCoordinatorTests.swift in Sources */,
 				D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */,
+				D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */,
+				D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */,
 				D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */,

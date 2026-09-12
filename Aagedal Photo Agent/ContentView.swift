@@ -179,6 +179,7 @@ struct ContentView: View {
     @State private var backupEditedFolderItem: BackupEditedItem?
     @State private var isShowingWriteAllC2PAWarning = false
     @State private var isShowingVariableRecovery = false
+    @State private var isShowingPrimaryDevelopRecovery = false
     @State private var c2paDetailPresentation: C2PADetailPresentation?
     @State private var c2paValidation: C2PAValidationResult?
     @State private var pendingWriteAllC2PACount = 0
@@ -422,6 +423,9 @@ struct ContentView: View {
     private var contentWithSheets: some View {
         contentBase
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
+            .sheet(isPresented: $isShowingPrimaryDevelopRecovery) {
+                PrimaryDevelopRecoveryHost(viewModel: metadataViewModel)
+            }
             .sheet(isPresented: $isShowingVariableRecovery) {
                 VariableConflictRecoveryHost(viewModel: metadataViewModel)
             }
@@ -2080,6 +2084,36 @@ struct ContentView: View {
     /// instead of sharing one hosted item with an inferred group description.
     @ToolbarContentBuilder
     private var folderActionToolbarContent: some ToolbarContent {
+        if metadataViewModel.hasRetainedPrimaryDevelopWrites {
+            ToolbarItem(id: "develop-primary-review", placement: .secondaryAction) {
+                Button {
+                    do {
+                        try DevelopPrimaryLifecycleCoordinator.shared.captureEditors()
+                        isShowingPrimaryDevelopRecovery = true
+                    } catch {
+                        OperationIssueDetailsPresenter.present(title: "Develop Recovery", message: error.localizedDescription)
+                    }
+                } label: {
+                    Label("Review Develop Conflicts", systemImage: "doc.text.magnifyingglass")
+                }
+                .accessibilityIdentifier("toolbar.develop.review")
+                .help("Export retained Primary Develop edits before discarding the exported requests.")
+            }
+            ToolbarItem(id: "develop-primary-retry", placement: .secondaryAction) {
+                Button {
+                    Task { @MainActor in
+                        do { try await metadataViewModel.retryPrimaryDevelopWrites() }
+                        catch {
+                            OperationIssueDetailsPresenter.present(title: "Develop Save Failed", message: error.localizedDescription)
+                        }
+                    }
+                } label: {
+                    Label("Retry Develop Writes", systemImage: "arrow.clockwise")
+                }
+                .accessibilityIdentifier("toolbar.develop.retry")
+                .help("Retry captured Primary Develop edits using their original file evidence.")
+            }
+        }
         if let attention = metadataViewModel.variableBatchOutcome?.attention {
             ToolbarItem(id: "folder-variable-details", placement: .secondaryAction) {
                 Button {

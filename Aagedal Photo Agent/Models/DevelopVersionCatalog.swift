@@ -21,10 +21,15 @@ final class DevelopVersionFlushCoordinator {
 
     static let shared = DevelopVersionFlushCoordinator()
 
+    private let primaryLifecycle: DevelopPrimaryLifecycleCoordinator
     private var registration: (id: UUID, handler: Handler)?
     private var inFlightFlush: (id: UUID, task: Task<DevelopVersionFlushOutcome, Never>)?
 
-    var hasRegisteredHandler: Bool { registration != nil }
+    init(primaryLifecycle: DevelopPrimaryLifecycleCoordinator = .shared) {
+        self.primaryLifecycle = primaryLifecycle
+    }
+
+    var hasRegisteredHandler: Bool { registration != nil || primaryLifecycle.hasPendingWork }
 
     @discardableResult
     func register(_ handler: @escaping Handler) -> UUID {
@@ -42,9 +47,17 @@ final class DevelopVersionFlushCoordinator {
         if let inFlightFlush {
             return await inFlightFlush.task.value
         }
-        guard let handler = registration?.handler else { return .succeeded }
+        let namedRegistration = registration
         let id = UUID()
-        let task = Task { @MainActor in await handler(reason) }
+        let task = Task { @MainActor in
+            do { try await primaryLifecycle.flush() }
+            catch { return DevelopVersionFlushOutcome.failed(error.localizedDescription) }
+            guard registration?.id == namedRegistration?.id else {
+                return DevelopVersionFlushOutcome.failed("The Develop workspace changed while its save was finishing. Retry the transition to save the current workspace.")
+            }
+            if let handler = namedRegistration?.handler { return await handler(reason) }
+            return DevelopVersionFlushOutcome.succeeded
+        }
         inFlightFlush = (id, task)
         let outcome = await task.value
         if inFlightFlush?.id == id {

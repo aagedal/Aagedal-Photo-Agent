@@ -5,11 +5,11 @@ nonisolated enum VariableConflictRecoveryError: LocalizedError, Sendable {
     case obsoleteReview, requestRunning, incompletePayload, unsafeExport, exportVerificationFailed
     var errorDescription: String? {
         switch self {
-        case .obsoleteReview: return "The retained variable requests changed. Review and export them again before discarding."
-        case .requestRunning: return "Variable processing is still running. Wait for the captured work to settle before reviewing it."
-        case .incompletePayload: return "The complete captured variable input is unavailable. Retained work cannot be discarded."
+        case .obsoleteReview: return "The retained requests changed. Review and export them again before discarding."
+        case .requestRunning: return "Captured work is still running. Wait for the captured work to settle before reviewing it."
+        case .incompletePayload: return "The complete captured input is unavailable. Retained work cannot be discarded."
         case .unsafeExport: return "Choose a separate recovery JSON file outside photo metadata folders and linked locations. Existing photos and sidecars must be preserved."
-        case .exportVerificationFailed: return "The recovery export could not be verified. All retained variable work was preserved. Export again before discarding."
+        case .exportVerificationFailed: return "The recovery export could not be verified. All retained work was preserved. Export again before discarding."
         }
     }
 }

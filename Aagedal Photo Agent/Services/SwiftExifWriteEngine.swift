@@ -24,7 +24,7 @@ nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
 
 /// Native, in-process metadata write engine. Reads and re-emits the image file
 /// via SwiftExif. There is no external process and no fallback path.
-nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataFieldMutationWriting, PendingMetadataWriting, @unchecked Sendable {
+nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataFieldMutationWriting, PendingMetadataWriting, PrimaryDevelopWriting, @unchecked Sendable {
 
     init() {}
 
@@ -59,6 +59,45 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             try Task.checkCancellation()
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
                 try self.writeFieldsToFile(fields, structuredData: structuredData, url: url)
+            }
+        }
+    }
+
+    /// Retained Primary intent is validated under the physical writer's existing photo lock.
+    /// Any exception after admission to the writer is conservatively reported as possibly written.
+    func writePrimaryDevelop(_ request: PrimaryDevelopWriteRequest,
+        validatePreparedIntent: @escaping @Sendable () async throws -> Void
+    ) async throws -> PrimaryDevelopPhysicalReceipt {
+        guard !SupportedImageFormats.isRaw(url: request.imageURL) else {
+            throw PrimaryDevelopPhysicalError(message: "RAW Develop metadata must use XMP.",
+                mayHaveWritten: false, sourceRevision: nil, wasCancelled: false)
+        }
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: request.imageURL)) {
+            var attempted = false
+            var revision: SourceImageRevision?
+            do {
+                try Task.checkCancellation()
+                try await validatePreparedIntent()
+                attempted = true
+                var fields = request.fields
+                if request.replaceDevelop, let settings = request.edited.cameraRaw {
+                    fields.merge(settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })) { _, new in new }
+                }
+                try self.writeFieldsToFile(fields, structuredData: request.structured,
+                    url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true)
+                let written = try await SourceImageRevision.capture(at: request.imageURL)
+                revision = written
+                let actual = try readMetadata(from: request.imageURL)
+                try PendingMetadataWriteService.verifyEditorial(
+                    iptcMetadataFromDict(actual.asMetadataDict(fileURL: request.imageURL)), expected: request.edited)
+                let checked = try await SourceImageRevision.capture(at: request.imageURL)
+                guard checked.canonicalURL == written.canonicalURL, checked.sha256 == written.sha256 else {
+                    throw MetadataFieldMutationConflict()
+                }
+                return .init(sourceRevision: checked)
+            } catch {
+                throw PrimaryDevelopPhysicalError(message: error.localizedDescription, mayHaveWritten: attempted,
+                    sourceRevision: revision, wasCancelled: error is CancellationError)
             }
         }
     }
@@ -417,7 +456,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
         url: URL,
-        completeEditorial: IPTCMetadata? = nil
+        completeEditorial: IPTCMetadata? = nil,
+        verifyPrimaryTechnical: Bool = false
     ) throws {
         var metadata = try readMetadata(from: url)
 
@@ -536,6 +576,26 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         }
 
         try metadata.write(to: url)
+        if verifyPrimaryTechnical {
+            let actual = try readMetadata(from: url)
+            func technical(_ xmp: XMPData?) -> [String: XMPValue] {
+                guard let xmp else { return [:] }
+                var result: [String: XMPValue] = [:]
+                for namespace in [crsNamespace, aaphotoNamespace] {
+                    for (name, value) in xmp.properties(in: namespace) {
+                        if namespace == aaphotoNamespace && name == "LocalizedTitleCleared" { continue }
+                        result[namespace + name] = value
+                    }
+                }
+                for namespace in [XMPNamespace.tiff, XMPNamespace.exif] {
+                    result[namespace + "Orientation"] = xmp.value(namespace: namespace, property: "Orientation")
+                }
+                return result
+            }
+            guard technical(actual.xmp) == technical(metadata.xmp), actual.exif?.orientation == metadata.exif?.orientation else {
+                throw PrimaryDevelopWriteError(message: "The image's written Develop settings could not be verified. The captured edit remains retained.")
+            }
+        }
     }
 
     /// Re-applies an EXIF hemisphere ref onto a coordinate magnitude. Callers split a

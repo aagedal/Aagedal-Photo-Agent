@@ -166,11 +166,11 @@ final class DevelopPersistenceSessionCoordinator {
             streamContinuation?.finish()
         }
 
-        let task = Task { @MainActor [weak self] in
+        let task = Task { @MainActor [self] in
             var iterator = completions.makeAsyncIterator()
             let completion = await iterator.next()
                 ?? .cancelled(message: "The Develop save was cancelled before it completed.")
-            self?.finishPrimaryPersistence(
+            self.finishPrimaryPersistence(
                 requestID: requestID,
                 workspaceID: workspaceID,
                 imageID: imageID,
@@ -181,10 +181,21 @@ final class DevelopPersistenceSessionCoordinator {
         return requestID
     }
 
+    /// Waits accepted presentation callbacks across image/workspace replacement. Durable
+    /// failure retention belongs to DevelopPrimaryLifecycleCoordinator's immutable VM owner;
+    /// resetting or dismissing this session's alert never acknowledges those requests.
+    func waitForAcceptedPrimaryPersistence() async {
+        while !primaryPersistenceTasks.isEmpty {
+            for task in Array(primaryPersistenceTasks.values) { await task.value }
+        }
+    }
+
     func cancelPrimaryPersistence(requestID: UUID) {
         primaryPersistenceTasks[requestID]?.cancel()
     }
 
+    /// Hides only this presentation. The independently retained immutable writer still blocks
+    /// Close/Quit until successful retry or verified export and explicit scoped discard.
     func dismissPrimaryPersistenceResult() {
         latestPrimaryPersistenceOutcome = nil
     }

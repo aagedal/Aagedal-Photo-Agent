@@ -191,6 +191,9 @@ struct EditWorkspaceView: View {
     /// Owns image-scoped undo plus the workspace-wide inventory of edited previews that must be
     /// refreshed on exit. Durable XMP/version writes remain at this view boundary.
     @State private var persistenceSession = DevelopPersistenceSessionCoordinator()
+    @State private var primaryEditorOwnerID = UUID()
+    @State private var primaryTransitionRequestID = UUID()
+    @State private var primaryRecoveryReloadPending = false
     @State private var watermarkStore = WatermarkStore.shared
     /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
     /// continuous rendering, and workspace teardown.
@@ -724,7 +727,7 @@ struct EditWorkspaceView: View {
         )
     }
 
-    var body: some View {
+    private var workspaceLayout: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 developPreviewArea
@@ -736,6 +739,10 @@ struct EditWorkspaceView: View {
             Divider()
             filmstrip
         }
+    }
+
+    private var workspaceWithLifecycle: some View {
+        workspaceLayout
         .background(
             DisplayGamutObserver(
                 scopeViewModel: scopeViewModel,
@@ -777,6 +784,12 @@ struct EditWorkspaceView: View {
             loadFullResEditTextureIfNeeded()
         }
         .onChange(of: metadataViewModel.metadataLoadGeneration) { _, _ in
+            if primaryRecoveryReloadPending {
+                primaryRecoveryReloadPending = false
+                primaryDevelopSettings = metadataViewModel.editingMetadata.cameraRaw
+                syncCameraRawToImageFile()
+                loadSelectedImagePreview()
+            }
             // Re-apply HDR auto-enable after metadata load completes.
             // Now safe to include the "Render RAW as HDR" preference because
             // any XMP hdrEditMode value has been loaded and takes priority.
@@ -784,6 +797,21 @@ struct EditWorkspaceView: View {
             installLoadedDevelopVersionIfReady()
             renderPreview()
         }
+        .onChange(of: metadataViewModel.primaryDevelopRecoveryReloadGeneration) { _, _ in
+            // The exported revision is being replaced by a read of saved state. Its old Undo
+            // closures and transient pointer overrides must not recreate discarded intent.
+            primaryRecoveryReloadPending = true
+            primaryTransitionRequestID = UUID()
+            persistenceSession.removeAllUndoActions()
+            cropSession.cancelInteraction()
+            layerGeometryInteraction.endImageSession()
+            maskInteraction.stopBrushPainting()
+            selectedLayer = .global
+        }
+    }
+
+    private var workspaceWithPreviewObservers: some View {
+        workspaceWithLifecycle
         .onChange(of: interactiveRender.isSliderInteractionActive) { wasDragging, isDragging in
             NotificationCenter.default.post(
                 name: .editSliderDragStateChanged,
@@ -860,6 +888,10 @@ struct EditWorkspaceView: View {
         .onChange(of: scopeViewModel.targetGamut) { _, _ in
             updateGamutClipMode()
         }
+    }
+
+    var body: some View {
+        workspaceWithPreviewObservers
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
             guard let delivery else { return }
             switch delivery.command {
@@ -2295,6 +2327,10 @@ struct EditWorkspaceView: View {
     }
 
     private func createDevelopVersion(name: String) {
+        performAfterPrimaryDevelopFlush { createDevelopVersionAfterPrimaryFlush(name: name) }
+    }
+
+    private func createDevelopVersionAfterPrimaryFlush(name: String) {
         guard var candidate = developVersionCatalog else { return }
         let settings = metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings()
         if candidate.activeVersionID == nil {
@@ -2311,7 +2347,7 @@ struct EditWorkspaceView: View {
             developVersionNotice = error.localizedDescription
             return
         }
-        persistDevelopVersionCatalog(candidate)
+        persistDevelopVersionCatalogAfterPrimaryFlush(candidate, settingsToInstall: nil, installsSettings: false)
     }
 
     private func duplicateDevelopVersion(id: UUID, name: String) {
@@ -2382,6 +2418,10 @@ struct EditWorkspaceView: View {
     }
 
     private func promoteDevelopVersion(id: UUID) {
+        performAfterPrimaryDevelopFlush { promoteDevelopVersionAfterPrimaryFlush(id: id) }
+    }
+
+    private func promoteDevelopVersionAfterPrimaryFlush(id: UUID) {
         guard !developVersionSession.hasTransition,
               let repository = developVersionSession.repository as? DevelopVersionCatalogRepository,
               let imageURL = selectedImageURL,
@@ -2447,6 +2487,10 @@ struct EditWorkspaceView: View {
     }
 
     private func switchDevelopVersion(to targetID: UUID?) {
+        performAfterPrimaryDevelopFlush { switchDevelopVersionAfterPrimaryFlush(to: targetID) }
+    }
+
+    private func switchDevelopVersionAfterPrimaryFlush(to targetID: UUID?) {
         guard targetID != developVersionCatalog?.activeVersionID,
               var candidate = developVersionCatalog else { return }
         closeDevelopComparison()
@@ -2468,7 +2512,7 @@ struct EditWorkspaceView: View {
 
         // Persist both the flushed source version and the new active selection before changing
         // the editor. A write failure leaves the visible version untouched.
-        persistDevelopVersionCatalog(
+        persistDevelopVersionCatalogAfterPrimaryFlush(
             candidate,
             settingsToInstall: targetSettings,
             installsSettings: true
@@ -2479,6 +2523,17 @@ struct EditWorkspaceView: View {
         _ candidate: DevelopVersionCatalog,
         settingsToInstall: CameraRawSettings? = nil,
         installsSettings: Bool = false
+    ) {
+        performAfterPrimaryDevelopFlush {
+            persistDevelopVersionCatalogAfterPrimaryFlush(candidate,
+                settingsToInstall: settingsToInstall, installsSettings: installsSettings)
+        }
+    }
+
+    private func persistDevelopVersionCatalogAfterPrimaryFlush(
+        _ candidate: DevelopVersionCatalog,
+        settingsToInstall: CameraRawSettings?,
+        installsSettings: Bool
     ) {
         developVersionSession.persist(candidate) {
             if installsSettings {
@@ -2504,12 +2559,74 @@ struct EditWorkspaceView: View {
     private func flushActiveDevelopVersion(
         reason: DevelopVersionFlushReason
     ) async -> DevelopVersionFlushOutcome {
-        await developVersionSession.flushActive(
+        finishPrimaryDevelopControls()
+        do { try await DevelopPrimaryLifecycleCoordinator.shared.flush() }
+        catch {
+            let message = error.localizedDescription
+            developVersionNotice = message
+            return .failed(message)
+        }
+        return await developVersionSession.flushActive(
             reason: reason,
             settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
             watermarkDataProvider: watermarkStore.imageData(forAssetID:)
         ) {
             metadataViewModel.hasChanges = false
+        }
+    }
+
+    /// Version actions can replace the Primary editor without leaving this view. They cross the
+    /// same retained-intent boundary as navigation before preparing or installing another state.
+    private func performAfterPrimaryDevelopFlush(_ action: @escaping @MainActor () -> Void) {
+        guard !developVersionSession.hasTransition else { return }
+        finishPrimaryDevelopControls()
+        let imageURL = selectedImageURL
+        let loadGeneration = metadataViewModel.metadataLoadGeneration
+        let activeVersionID = developVersionCatalog?.activeVersionID
+        let requestID = UUID()
+        primaryTransitionRequestID = requestID
+        Task { @MainActor in
+            do {
+                try await DevelopPrimaryLifecycleCoordinator.shared.flush()
+                guard !Task.isCancelled, workspaceSession.isWorkspaceActive,
+                      primaryTransitionRequestID == requestID,
+                      !developVersionSession.hasTransition,
+                      selectedImageURL == imageURL,
+                      metadataViewModel.metadataLoadGeneration == loadGeneration,
+                      developVersionCatalog?.activeVersionID == activeVersionID else { return }
+                action()
+            } catch {
+                guard workspaceSession.isWorkspaceActive, primaryTransitionRequestID == requestID,
+                      selectedImageURL == imageURL else { return }
+                developVersionNotice = error.localizedDescription
+            }
+        }
+    }
+
+    /// Pointer geometry is a live editor buffer. Copy both pieces before a lifecycle capture or
+    /// recovery checkpoint; ending the crop session first would discard an unfinished drag.
+    private func finishPrimaryDevelopControls() {
+        guard selectedImageURL == metadataViewModel.selectedURLs.first,
+              metadataViewModel.selectedCount == 1, !metadataViewModel.isLoading else { return }
+        let drag = cropSession.finishInteraction()
+        if let region = drag.region { updateCrop(region, commit: false) }
+        if let angle = drag.angle { updateCropAngle(angle, commit: false) }
+    }
+
+    private var hasUncapturedPrimaryDevelopWork: Bool {
+        developVersionCatalog?.activeVersionID == nil
+            && (cropSession.dragRegion != nil || cropSession.dragAngle != nil
+                || metadataViewModel.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar))
+    }
+
+    private func capturePrimaryDevelopForLifecycle() throws {
+        guard developVersionCatalog?.activeVersionID == nil else { return }
+        finishPrimaryDevelopControls()
+        guard metadataViewModel.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar) else { return }
+        schedulePrimaryMetadataCommit(mode: .writeToXMPSidecar)
+        guard !metadataViewModel.hasUncapturedPrimaryDevelopEdits(mode: .writeToXMPSidecar) else {
+            throw PrimaryDevelopWriteError(message: metadataViewModel.saveError
+                ?? "The active Develop adjustment could not be retained. Keep this photo open and retry.")
         }
     }
 
@@ -2576,6 +2693,14 @@ struct EditWorkspaceView: View {
     }
 
     private func handleEditWorkspaceDisappear() {
+        // Retention belongs to the metadata owner, so an unexpected view teardown must capture
+        // before transient geometry is cleared. Normal exits already crossed the async flush.
+        do { try capturePrimaryDevelopForLifecycle() }
+        catch { metadataViewModel.saveError = error.localizedDescription }
+        primaryTransitionRequestID = UUID()
+        primaryRecoveryReloadPending = false
+        DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
+        metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
         exportSession.endWorkspaceSession()
         colorLUTImport.endImageSession()
         layerSession.endImageSession()
@@ -2588,14 +2713,8 @@ struct EditWorkspaceView: View {
         developComparison.close()
         NSCursor.arrow.set()
 
-        // Primary has already followed the XMP commit path during editing. A named version reaches
-        // here only after the coordinated JSON flush succeeds; sync its in-memory browser preview
-        // without scheduling a second delayed write while the view is being destroyed.
-        if developVersionCatalog?.activeVersionID == nil {
-            commitEditAdjustments()
-        } else {
-            syncCameraRawToImageFile()
-        }
+        // Captured Primary work remains owned after this presentation disappears.
+        syncCameraRawToImageFile()
 
         workspaceSession.endWorkspace()
         developVersionSession.reset()
@@ -2700,6 +2819,15 @@ struct EditWorkspaceView: View {
 
         updateGamutClipMode()
         metadataViewModel.isInEditView = true
+        DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
+        metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
+        primaryEditorOwnerID = UUID()
+        DevelopPrimaryLifecycleCoordinator.shared.registerEditor(ownerID: primaryEditorOwnerID,
+            hasPendingWork: { hasUncapturedPrimaryDevelopWork },
+            capture: { try capturePrimaryDevelopForLifecycle() })
+        metadataViewModel.registerPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID) {
+            finishPrimaryDevelopControls()
+        }
         workspaceSession.beginWorkspace(flushHandler: { reason in
             await flushActiveDevelopVersion(reason: reason)
         })
@@ -3819,7 +3947,7 @@ struct EditWorkspaceView: View {
     /// this snapshots that result before a later save can replace its mutable presentation state.
     private func schedulePrimaryMetadataCommit(mode: MetadataWriteMode) {
         persistenceSession.schedulePrimaryPersistence { completion in
-            metadataViewModel.commitEditsReportingResult(mode: mode) { result in
+            metadataViewModel.commitPrimaryDevelopEdits(mode: mode) { result in
                 onPendingStatusChanged?()
                 switch result {
                 case .succeeded:
@@ -7821,6 +7949,10 @@ struct EditWorkspaceView: View {
     // MARK: - Key Event Handling
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        // Recovery and save panels own their key events. The workspace's application-wide
+        // monitor must not turn typing or Escape in a sheet into another Develop mutation.
+        guard NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
+              event.window?.sheetParent == nil else { return event }
         let chars = event.charactersIgnoringModifiers ?? ""
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isKeyDown = event.type == .keyDown
