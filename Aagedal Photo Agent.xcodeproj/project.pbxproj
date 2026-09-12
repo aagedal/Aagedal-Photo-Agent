@@ -48,6 +48,7 @@
 		A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */; };
 		A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */; };
 		A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */; };
+		A9D005000000000000000002 /* KnownPeopleLocalIdentityAssignmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */; };
 		AB1700000000000000000002 /* ToneCurveGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */; };
 		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB1900000000000000000002 /* ColorLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1900000000000000000001 /* ColorLabelTests.swift */; };
@@ -216,6 +217,7 @@
 		A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageArchiveTests.swift; sourceTree = "<group>"; };
 		A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalStoreSnapshotBuilderTests.swift; sourceTree = "<group>"; };
 		A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleManagedStoreReplacementTests.swift; sourceTree = "<group>"; };
+		A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalIdentityAssignmentTests.swift; sourceTree = "<group>"; };
 		AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToneCurveGeneratorTests.swift; sourceTree = "<group>"; };
 		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB1900000000000000000001 /* ColorLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ColorLabelTests.swift; sourceTree = "<group>"; };
@@ -398,6 +400,7 @@
 				A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */,
 				A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */,
 				A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */,
+				A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
 				AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */,
@@ -727,6 +730,7 @@
 				A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */,
 				A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */,
 				A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */,
+				A9D005000000000000000002 /* KnownPeopleLocalIdentityAssignmentTests.swift in Sources */,
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,

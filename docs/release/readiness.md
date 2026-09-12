@@ -194,9 +194,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    committed compatible editor-payload contract at `2dc18e9` and strengthened golden directory
    at `da3579e`; Photo Agent's strict directory admission and atomic exact-byte directory writer
    now pass that fixture. Photo Agent's strict ZIP32 archive, managed-store replacement and
-   tracked local snapshot builder pass integrated review and tests. Implement atomic first-time
-   identity assignment, explicit local-to-cloud reconciliation and the Settings/Expanded Known
-   People import/export controller next, including the coordinated 65,534-entry archive limit.
+   tracked local snapshot builder and atomic first-time identity assignment pass integrated review
+   and tests. Implement unified package admission/export service APIs, explicit local-to-cloud
+   reconciliation and the Settings/Expanded Known People import/export controller next, including
+   the coordinated 65,534-entry archive limit.
    Review and replace the pinned model with the independently reproduced RGB artifact before enabling
    production companion recognition; the image-to-reference proof and deterministic receipt now pass.
    Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
@@ -316,8 +317,13 @@ keeping lowercase package paths. The final focused run passes 149 declared tests
 expanded cases across five suites, independent review passes, and repository validation
 passes. The complete post-fix suite result is recorded in cycle 16.
 
-The next bounded work is atomic first-time identity assignment for untracked populated or
-empty stores, followed by the high-level service API and Settings/Expanded Known People UI.
+Atomic first-time identity assignment for untracked populated or empty stores is complete and
+recorded in [cycle 17](cycle-17-known-people-identity-2026-09-12.md):
+preparation is read-only, binds the exact captured inventory across planning, generates stable
+IDs once, and commits only through the existing owner gateway. Precommit retry retains those IDs;
+committed uncertainty is returned without replay. The identity/builder/replacement checkpoint
+passes 46 declared tests / 84 expanded cases and independent review. The next bounded work is
+the high-level admission/export service API and Settings/Expanded Known People UI.
 The archive contract is 65,534 entries because `0xffff` is the ZIP64 sentinel; directory
 packages retain the 200,001-file schema cap. The companion app and UI must present the same
 limit. Explicit local-to-cloud reconciliation and later opt-in App Group publication remain

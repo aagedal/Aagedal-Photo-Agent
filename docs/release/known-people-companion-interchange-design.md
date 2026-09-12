@@ -258,9 +258,14 @@ reconciliation. Local capture rejects unsafe, changed or untracked roots and reu
 bytes only while both package and managed-projection hashes still bind. Service-local UUID
 filenames use uppercase `UUID.uuidString`; interchange paths remain lowercase. The integrated
 five-suite checkpoint passes 149 declared tests across 346 expanded cases, and the independent
-source audit approves the implementation. First-time identity assignment, the explicit
-local-to-cloud reconciliation workflow, user-facing export/import adapters and App Group
-publication remain.
+source audit approves the implementation. Atomic first-time identity assignment now builds a
+canonical package from an untracked populated or empty local root, binds the complete captured
+inventory before and after planning, retains stable library and installation IDs across safe
+precommit retry, and commits only through the existing whole-root owner gateway. A committed or
+uncertain result is retained and never replayed. Identity, builder and managed replacement pass
+46 declared tests across 84 expanded cases with independent approval. High-level package
+admission/export APIs, the explicit local-to-cloud reconciliation workflow, user-facing
+export/import adapters and App Group publication remain.
 
 The contradictory older local AuraFace package has been replaced by the reviewed deterministic build.
 The manifest, locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0; a checked-in

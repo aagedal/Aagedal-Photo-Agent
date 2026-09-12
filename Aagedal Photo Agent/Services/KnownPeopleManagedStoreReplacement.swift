@@ -125,6 +125,16 @@ nonisolated struct KnownPeopleManagedStoreInventoryToken: Equatable, Sendable {
     let rootURL: URL
     let rootIdentity: KnownPeoplePackageDirectoryIdentity
     let inventorySHA256: String
+
+    /// Directory entries use a trailing slash and the literal bytes `directory`.
+    static func hash(entries: [String: Data]) -> String {
+        var hasher = SHA256()
+        for path in entries.keys.sorted() {
+            hasher.update(data: Data(path.utf8)); hasher.update(data: Data([0]))
+            hasher.update(data: entries[path]!); hasher.update(data: Data([0]))
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 nonisolated struct KnownPeopleManagedStoreReplacementPlan: Sendable {
@@ -133,6 +143,8 @@ nonisolated struct KnownPeopleManagedStoreReplacementPlan: Sendable {
     let inventory: KnownPeopleManagedStoreInventoryToken
     let requiredDecision: KnownPeopleManagedStoreDecision
     let priorState: KnownPeopleManagedStoreState?
+    /// A first-identity plan retains this UUID across precommit retries.
+    let initialInstallationID: UUID?
 }
 
 /// Strict root-local authority. This record, rather than a process-global preference,
@@ -378,11 +390,19 @@ actor KnownPeopleManagedStoreReplacement {
     }
 
     func plan(snapshot: KnownPeoplePackageSnapshot,
-              route: KnownPeopleManagedStoreRoute) throws -> KnownPeopleManagedStoreReplacementPlan {
+              route: KnownPeopleManagedStoreRoute,
+              initialInstallationID: UUID? = nil) throws -> KnownPeopleManagedStoreReplacementPlan {
         try admit(snapshot)
         try validateLocal(route)
+        if let initialInstallationID,
+           initialInstallationID == UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) {
+            throw KnownPeopleManagedStoreFailure.wrongDecision
+        }
         let inventory = try inventoryToken(root: route.rootURL)
         let state = try readState(root: route.rootURL)
+        guard initialInstallationID == nil || state == nil else {
+            throw KnownPeopleManagedStoreFailure.wrongDecision
+        }
         let decision: KnownPeopleManagedStoreDecision
         if let state {
             decision = state.libraryID == snapshot.manifest.libraryID
@@ -391,7 +411,16 @@ actor KnownPeopleManagedStoreReplacement {
             decision = .replaceUntracked
         }
         return KnownPeopleManagedStoreReplacementPlan(snapshot: snapshot, route: route,
-            inventory: inventory, requiredDecision: decision, priorState: state)
+            inventory: inventory, requiredDecision: decision, priorState: state,
+            initialInstallationID: initialInstallationID)
+    }
+
+    /// Read-only transaction evidence, also used to bind first-identity construction to
+    /// the exact root that the replacement transaction will later revalidate.
+    func inventory(route: KnownPeopleManagedStoreRoute) throws -> KnownPeopleManagedStoreInventoryToken {
+        try validateLocal(route)
+        try Task.checkCancellation()
+        return try inventoryToken(root: route.rootURL)
     }
 
     func replace(plan: KnownPeopleManagedStoreReplacementPlan,
@@ -578,7 +607,7 @@ actor KnownPeopleManagedStoreReplacement {
         let projectionHash = try KnownPeopleManagedProjection.hash(descriptor: stage.descriptor)
         let prior = plan.priorState?.importedRevisions ?? []
         let state = try KnownPeopleManagedStoreState(libraryID: plan.snapshot.manifest.libraryID,
-            installationID: plan.priorState?.installationID ?? UUID(),
+            installationID: plan.priorState?.installationID ?? plan.initialInstallationID ?? UUID(),
             currentRevision: plan.snapshot.manifest.revision,
             currentCoreRevision: plan.snapshot.manifest.coreRevision,
             importedRevisions: prior + [plan.snapshot.manifest.revision],
@@ -694,14 +723,8 @@ actor KnownPeopleManagedStoreReplacement {
 
     private func inventoryToken(root: URL, identity: KnownPeoplePackageDirectoryIdentity,
                                 files: [String: Data]) -> KnownPeopleManagedStoreInventoryToken {
-        var hasher = SHA256()
-        for path in files.keys.sorted() {
-            let value = files[path]!
-            hasher.update(data: Data(path.utf8)); hasher.update(data: Data([0]))
-            hasher.update(data: value); hasher.update(data: Data([0]))
-        }
         return .init(rootURL: root, rootIdentity: identity,
-                     inventorySHA256: hasher.finalize().map { String(format: "%02x", $0) }.joined())
+                     inventorySHA256: KnownPeopleManagedStoreInventoryToken.hash(entries: files))
     }
 
     private func readFiles(root: URL, includeDirectories: Bool = false,

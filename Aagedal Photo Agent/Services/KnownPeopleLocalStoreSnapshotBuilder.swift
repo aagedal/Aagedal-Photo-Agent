@@ -4,6 +4,7 @@ import Foundation
 
 nonisolated enum KnownPeopleLocalStoreSnapshotFailure: Error, Equatable {
     case identityAssignmentRequired
+    case identityAlreadyAssigned, orphanAdmittedPackage
     case unsafeRoot, unsafeFile, unsupportedRootEntry, tombstonesPresent, invalidPerson
     case invalidStateBinding, missingReferencedThumbnail(String), unreferencedThumbnail(String)
     case changedDuringCapture, sizeLimit, io
@@ -21,6 +22,7 @@ nonisolated struct KnownPeopleLocalStoreSnapshotCapture: Sendable {
     let snapshot: KnownPeoplePackageSnapshot
     let inventory: KnownPeopleLocalStoreInventoryToken
     let reusedAdmittedBytes: Bool
+    let managedInventorySHA256: String
 }
 
 nonisolated struct KnownPeopleLocalStoreSnapshotAccess: Sendable {
@@ -79,7 +81,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
                 sourceInode: root.identity.st_ino, manifest: admitted.manifest, payload: admitted.payload,
                 editor: admitted.editor, files: admitted.files, people: admitted.people)
         } else {
-            snapshot = try Self.build(people: people, thumbnails: thumbnails, state: state,
+            snapshot = try Self.build(people: people, thumbnails: thumbnails, libraryID: state.libraryID,
                                       root: root, exportedAt: exportedAt, exporter: exporter)
         }
         try KnownPeoplePackageSnapshotValidation.validate(snapshot)
@@ -90,7 +92,36 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         try root.verifyPath()
         return .init(snapshot: snapshot, inventory: .init(device: root.identity.st_dev, inode: root.identity.st_ino,
             directories: initial.directories, files: initial.files.mapValues { .init(byteCount: $0.count, sha256: Self.hash($0)) }),
-            reusedAdmittedBytes: reused)
+            reusedAdmittedBytes: reused, managedInventorySHA256: initial.managedInventorySHA256)
+    }
+
+    /// Read-only first-identity input. The owner must bind this capture to its managed
+    /// inventory and commit through the managed replacement gateway; this never assigns state.
+    func captureUntracked(rootURL: URL, libraryID: UUID, exportedAt: String,
+                          exporter: KnownPeoplePackageManifest.Exporter) async throws -> KnownPeopleLocalStoreSnapshotCapture {
+        try Task.checkCancellation()
+        let root = try LocalRoot(rootURL, afterOpen: access.afterRootOpen)
+        let initial = try root.capture()
+        guard initial.files[KnownPeopleManagedStoreState.fileName] == nil else {
+            throw KnownPeopleLocalStoreSnapshotFailure.identityAlreadyAssigned
+        }
+        guard !initial.directories.contains(".admitted-package"),
+              !initial.files.keys.contains(where: { $0.hasPrefix(".admitted-package/") }) else {
+            throw KnownPeopleLocalStoreSnapshotFailure.orphanAdmittedPackage
+        }
+        let people = try Self.people(initial.files)
+        _ = try KnownPeopleInterchangeEligibility.validate(people: people)
+        let thumbnails = try Self.thumbnails(initial.files, people: people, admitted: nil)
+        let snapshot = try Self.build(people: people, thumbnails: thumbnails, libraryID: libraryID,
+                                      root: root, exportedAt: exportedAt, exporter: exporter)
+        try KnownPeoplePackageSnapshotValidation.validate(snapshot)
+        try access.beforeFinalValidation()
+        try Task.checkCancellation()
+        guard try root.capture() == initial else { throw KnownPeopleLocalStoreSnapshotFailure.changedDuringCapture }
+        try root.verifyPath()
+        return .init(snapshot: snapshot, inventory: .init(device: root.identity.st_dev, inode: root.identity.st_ino,
+            directories: initial.directories, files: initial.files.mapValues { .init(byteCount: $0.count, sha256: Self.hash($0)) }),
+            reusedAdmittedBytes: false, managedInventorySHA256: initial.managedInventorySHA256)
     }
 
     private static func people(_ files: [String: Data]) throws -> [KnownPerson] {
@@ -117,7 +148,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
     }
 
     private static func thumbnails(_ files: [String: Data], people: [KnownPerson],
-                                   admitted: KnownPeoplePackageSnapshot) throws -> [String: Data] {
+                                   admitted: KnownPeoplePackageSnapshot?) throws -> [String: Data] {
         let personIDs = Set(people.map(\.id)), exampleIDs = Set(people.flatMap { $0.embeddings.map(\.id) })
         var result: [String: Data] = [:]
         for (path, bytes) in files {
@@ -135,7 +166,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         // Package paths, unlike representativeThumbnailID (an example selection), are actual
         // file references. Preserve the distinction: the shared golden editor has a selected
         // representative example with no thumbnail, which is valid schema-2 metadata.
-        for person in admitted.payload.people where personIDs.contains(person.id) {
+        for person in admitted?.payload.people ?? [] where personIDs.contains(person.id) {
             if let path = person.thumbnailPath, result[path] == nil {
                 throw KnownPeopleLocalStoreSnapshotFailure.missingReferencedThumbnail(path)
             }
@@ -148,7 +179,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         return result
     }
 
-    private static func build(people: [KnownPerson], thumbnails: [String: Data], state: KnownPeopleManagedStoreState,
+    private static func build(people: [KnownPerson], thumbnails: [String: Data], libraryID: UUID,
                               root: LocalRoot, exportedAt: String,
                               exporter: KnownPeoplePackageManifest.Exporter) throws -> KnownPeoplePackageSnapshot {
         var files = thumbnails, corePeople: [KnownPeoplePackagePayload.Person] = []
@@ -185,14 +216,14 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
             try files.keys.sorted().map { try .init(path: $0, byteCount: files[$0]!.count, sha256: hash(files[$0]!)) }
         }
         let embeddingCount = sorted.reduce(0) { $0 + $1.embeddings.count }
-        let core = try KnownPeoplePackageManifest(libraryID: state.libraryID, exportedAt: exportedAt, exporter: exporter,
+        let core = try KnownPeoplePackageManifest(libraryID: libraryID, exportedAt: exportedAt, exporter: exporter,
             peopleCount: sorted.count, embeddingCount: embeddingCount, files: declarations())
-        let editor = try KnownPeoplePackageEditorPayload(libraryID: state.libraryID, coreRevision: core.coreRevision,
+        let editor = try KnownPeoplePackageEditorPayload(libraryID: libraryID, coreRevision: core.coreRevision,
                                                         people: editorPeople, examples: editorExamples)
         let editorBytes = try encode(editor)
         files[KnownPeoplePackageManifest.EditorPayloadDescriptor.filePath] = editorBytes
         let descriptor = try KnownPeoplePackageManifest.EditorPayloadDescriptor(byteCount: editorBytes.count, sha256: hash(editorBytes))
-        let manifest = try KnownPeoplePackageManifest(libraryID: state.libraryID, exportedAt: exportedAt, exporter: exporter,
+        let manifest = try KnownPeoplePackageManifest(libraryID: libraryID, exportedAt: exportedAt, exporter: exporter,
             peopleCount: sorted.count, embeddingCount: embeddingCount, files: declarations(), editorPayload: descriptor)
         files["manifest.json"] = try encode(manifest)
         return .init(sourceDirectoryURL: root.url, sourceDevice: root.identity.st_dev, sourceInode: root.identity.st_ino,
@@ -263,7 +294,15 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
 /// Retains the root descriptor across asynchronous package admission and validates all root
 /// names/bytes twice. No directory enumeration, symlink traversal or migration is delegated to UI.
 nonisolated private final class LocalRoot: @unchecked Sendable {
-    struct Contents: Equatable { var files: [String: Data] = [:]; var directories: Set<String> = [] }
+    struct Contents: Equatable {
+        var files: [String: Data] = [:]
+        var directories: Set<String> = []
+        var managedInventorySHA256: String {
+            var entries = files
+            for directory in directories { entries[directory + "/"] = Data("directory".utf8) }
+            return KnownPeopleManagedStoreInventoryToken.hash(entries: entries)
+        }
+    }
     let fd: Int32
     let identity: stat
     let url: URL
