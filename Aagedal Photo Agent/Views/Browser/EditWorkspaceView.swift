@@ -194,6 +194,7 @@ struct EditWorkspaceView: View {
     @State private var primaryEditorOwnerID = UUID()
     @State private var primaryTransitionRequestID = UUID()
     @State private var primaryRecoveryReloadPending = false
+    @State private var primaryTransitionNotice: String?
     @State private var watermarkStore = WatermarkStore.shared
     /// Owns the live Metal pipeline, AppKit render coordinator, source-generation reset, warmup,
     /// continuous rendering, and workspace teardown.
@@ -807,6 +808,9 @@ struct EditWorkspaceView: View {
             layerGeometryInteraction.endImageSession()
             maskInteraction.stopBrushPainting()
             selectedLayer = .global
+        }
+        .onChange(of: metadataViewModel.hasRetainedPrimaryDevelopWrites) { _, retained in
+            if !retained { clearResolvedPrimaryTransitionNotice() }
         }
     }
 
@@ -1929,6 +1933,11 @@ struct EditWorkspaceView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
+            if let primaryTransitionNotice {
+                Label(primaryTransitionNotice, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Develop version selector")
@@ -2563,9 +2572,10 @@ struct EditWorkspaceView: View {
         do { try await DevelopPrimaryLifecycleCoordinator.shared.flush() }
         catch {
             let message = error.localizedDescription
-            developVersionNotice = message
+            primaryTransitionNotice = message
             return .failed(message)
         }
+        clearResolvedPrimaryTransitionNotice()
         return await developVersionSession.flushActive(
             reason: reason,
             settings: metadataViewModel.editingMetadata.cameraRaw ?? CameraRawSettings(),
@@ -2594,13 +2604,21 @@ struct EditWorkspaceView: View {
                       selectedImageURL == imageURL,
                       metadataViewModel.metadataLoadGeneration == loadGeneration,
                       developVersionCatalog?.activeVersionID == activeVersionID else { return }
+                clearResolvedPrimaryTransitionNotice()
                 action()
             } catch {
                 guard workspaceSession.isWorkspaceActive, primaryTransitionRequestID == requestID,
                       selectedImageURL == imageURL else { return }
-                developVersionNotice = error.localizedDescription
+                primaryTransitionNotice = error.localizedDescription
             }
         }
+    }
+
+    private func clearResolvedPrimaryTransitionNotice() {
+        // Primary recovery and saves do not own the named-version notice. Keep both failures
+        // independent, and retain this one while another accepted or live Primary edit remains.
+        guard !DevelopPrimaryLifecycleCoordinator.shared.hasPendingWork else { return }
+        primaryTransitionNotice = nil
     }
 
     /// Pointer geometry is a live editor buffer. Copy both pieces before a lifecycle capture or
@@ -3951,6 +3969,7 @@ struct EditWorkspaceView: View {
                 onPendingStatusChanged?()
                 switch result {
                 case .succeeded:
+                    clearResolvedPrimaryTransitionNotice()
                     completion(.succeeded)
                 case .cancelled(let message):
                     completion(.cancelled(message: message))
