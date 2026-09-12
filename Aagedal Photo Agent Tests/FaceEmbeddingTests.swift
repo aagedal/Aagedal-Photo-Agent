@@ -3,7 +3,276 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import CryptoKit
+import Darwin
 @testable import Aagedal_Photo_Agent
+
+/// Golden wire bytes are from FTP Sync fixture commit 5b43ce8; contract source 2dc18e9.
+/// Base64 text preserves the original JSON whitespace and missing trailing newline.
+@Suite("Known People package directory interoperability")
+struct KnownPeoplePackageDirectoryTests {
+    private let coreRevision = "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281"
+    private let revision = "87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709"
+    private let exampleID = UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!
+    private let personID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+    private let embeddingPath = "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2"
+
+    private func goldenFiles() throws -> [String: Data] {
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/PeopleLibraryV2")
+        var files: [String: Data] = [:]
+        for path in ["manifest.json", "people.json", "editor/photo-agent.json"] {
+            let text = try String(contentsOf: fixtures.appendingPathComponent(
+                path.replacingOccurrences(of: "/", with: "-") + ".base64"), encoding: .utf8)
+            files[path] = try #require(Data(base64Encoded: text.trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        // Independently specified FEM2 bytes: magic 0x46454d32, dimension512,
+        // first Float32=1 and remaining511=0, all little-endian. Do not use the codec
+        // under test to construct its own golden input.
+        files[embeddingPath] = Data([0x32, 0x4d, 0x45, 0x46, 0, 2, 0, 0, 0, 0, 0x80, 0x3f])
+            + Data(repeating: 0, count: 511 * 4)
+        return files
+    }
+
+    private func materialize(_ files: [String: Data]) throws -> URL {
+        let root = URL(fileURLWithPath: "/private/tmp/PhotoPeopleGolden-\(UUID().uuidString).aagedalpeople")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        do {
+            for (path, bytes) in files {
+                let destination = root.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try bytes.write(to: destination)
+            }
+            return root
+        } catch {
+            try? FileManager.default.removeItem(at: root)
+            throw error
+        }
+    }
+
+    private func hash(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Re-sign mutated files so negative tests reach semantic/coverage validation,
+    /// rather than succeeding merely because an earlier hash check rejected them.
+    private func updateManifest(_ files: inout [String: Data]) throws {
+        let original = try KnownPeoplePackageManifest.decode(try #require(files["manifest.json"]))
+        let declarations = try files.filter { $0.key != "manifest.json" }.map { path, bytes in
+            try KnownPeoplePackageManifest.FileDeclaration(path: path, byteCount: bytes.count, sha256: hash(bytes))
+        }
+        let descriptor = try files["editor/photo-agent.json"].map {
+            try KnownPeoplePackageManifest.EditorPayloadDescriptor(byteCount: $0.count, sha256: hash($0))
+        }
+        let manifest = try KnownPeoplePackageManifest(libraryID: original.libraryID,
+            exportedAt: original.exportedAt, exporter: original.exporter, peopleCount: original.peopleCount,
+            embeddingCount: original.embeddingCount, files: declarations, editorPayload: descriptor)
+        files["manifest.json"] = try JSONEncoder().encode(manifest)
+    }
+
+    @Test("FTP schema2 golden directory pins revisions, wire bytes and complete Photo Agent projection")
+    func goldenProjection() async throws {
+        let files = try goldenFiles()
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        #expect(snapshot.manifest.coreRevision == coreRevision)
+        #expect(snapshot.manifest.revision == revision)
+        #expect(snapshot.files == files)
+        #expect(snapshot.manifest.libraryID.uuidString.lowercased() == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        #expect(snapshot.manifest.files.map(\.byteCount).sorted() == [310, 655, 2056])
+        #expect(hash(try #require(files[embeddingPath])) == "c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718")
+        let person = try #require(snapshot.people.first)
+        #expect(snapshot.people.count == 1)
+        #expect(person.id == personID)
+        #expect(person.name == "Åda {persons}")
+        #expect(person.role == "")
+        #expect(person.notes == "  Preserve exactly {value}")
+        #expect(person.representativeThumbnailID == exampleID)
+        #expect(person.createdAt.timeIntervalSinceReferenceDate == -0.125)
+        #expect(person.updatedAt.timeIntervalSinceReferenceDate == 812345678.123456)
+        let example = try #require(person.embeddings.first)
+        #expect(example.id == exampleID)
+        #expect(example.featurePrintData == files[embeddingPath])
+        #expect(example.sourceDescription == "/private/source/Å face.jpg")
+        #expect(example.addedAt.timeIntervalSinceReferenceDate == 42.125)
+        #expect(example.recognitionMode == .faceAndClothing)
+        #expect(example.provenance == .current)
+        let vector = try FaceEmbeddingInterchangeCodec.validate(example.featurePrintData)
+        #expect(vector.count == 512 && vector[0] == 1 && vector.dropFirst().allSatisfy { $0 == 0 })
+        #expect(try KnownPeopleInterchangeEligibility.validate(people: snapshot.people).embeddingCount == 1)
+        for (path, bytes) in files {
+            #expect(try Data(contentsOf: root.appendingPathComponent(path)) == bytes)
+        }
+    }
+
+    @Test("Every declared golden file is hash checked before projection", arguments: [
+        "people.json", "editor/photo-agent.json", "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2"
+    ])
+    func tamperedFile(path: String) async throws {
+        var files = try goldenFiles()
+        var bytes = try #require(files[path]); bytes[bytes.count - 1] ^= 1; files[path] = bytes
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: KnownPeoplePackageDirectoryReader.Failure.hashMismatch) {
+            try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        }
+    }
+
+    @Test("Rehashed editor still requires exact coverage and strict fields", arguments: [
+        "missing-person", "missing-example", "unknown", "duplicate", "escaped-duplicate", "null",
+        "mode", "nonfinite-date", "foreign-representative", "uppercase-id", "core-identity"
+    ])
+    func editorSemantics(kind: String) async throws {
+        var files = try goldenFiles()
+        var text = String(decoding: try #require(files["editor/photo-agent.json"]), as: UTF8.self)
+        switch kind {
+        case "missing-person": text = text.replacingOccurrences(of: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", with: "dddddddd-dddd-dddd-dddd-dddddddddddd")
+        case "missing-example": text = text.replacingOccurrences(of: "cccccccc-cccc-cccc-cccc-cccccccccccc\" :", with: "dddddddd-dddd-dddd-dddd-dddddddddddd\" :")
+        case "unknown": text = text.replacingOccurrences(of: "\"role\" : \"\"", with: "\"role\" : \"\", \"unexpected\" : 1")
+        case "duplicate": text = text.replacingOccurrences(of: "\"role\" : \"\"", with: "\"role\" : \"\", \"role\" : \"second\"")
+        case "escaped-duplicate": text = text.replacingOccurrences(of: "\"role\" : \"\"", with: "\"role\" : \"\", \"r\\u006fle\" : \"second\"")
+        case "null": text = text.replacingOccurrences(of: "\"role\" : \"\"", with: "\"role\" : null")
+        case "mode": text = text.replacingOccurrences(of: "faceClothing", with: "unknown")
+        case "nonfinite-date": text = text.replacingOccurrences(of: "42.125", with: "1e400")
+        case "foreign-representative": text = text.replacingOccurrences(of: "\"representativeThumbnailID\" : \"cccccccc-cccc-cccc-cccc-cccccccccccc\"", with: "\"representativeThumbnailID\" : \"dddddddd-dddd-dddd-dddd-dddddddddddd\"")
+        case "uppercase-id": text = text.replacingOccurrences(of: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", with: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")
+        default: text = text.replacingOccurrences(of: coreRevision, with: String(repeating: "0", count: 64))
+        }
+        #expect(Data(text.utf8) != files["editor/photo-agent.json"])
+        files["editor/photo-agent.json"] = Data(text.utf8)
+        try updateManifest(&files)
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: (any Error).self) {
+            try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        }
+    }
+
+    @Test("Manifest duplicate keys, unknown fields, unsupported provenance and revisions are refused", arguments: [
+        "duplicate", "unknown", "schema", "provenance", "core", "overall", "count"
+    ])
+    func manifestSemantics(kind: String) throws {
+        let files = try goldenFiles()
+        var text = String(decoding: try #require(files["manifest.json"]), as: UTF8.self)
+        switch kind {
+        case "duplicate": text = text.replacingOccurrences(of: "\"schemaVersion\" : 2", with: "\"schemaVersion\" : 2, \"schemaVersion\" : 2")
+        case "unknown": text = text.replacingOccurrences(of: "\"schemaVersion\" : 2", with: "\"schemaVersion\" : 2, \"extra\" : true")
+        case "schema": text = text.replacingOccurrences(of: "\"schemaVersion\" : 2", with: "\"schemaVersion\" : 3")
+        case "provenance": text = text.replacingOccurrences(of: "photo-agent-eyes112-rgb-v3", with: "other-preprocessing")
+        case "core": text = text.replacingOccurrences(of: coreRevision, with: String(repeating: "0", count: 64))
+        case "overall": text = text.replacingOccurrences(of: revision, with: String(repeating: "0", count: 64))
+        default: text = text.replacingOccurrences(of: "\"peopleCount\" : 1", with: "\"peopleCount\" : 2")
+        }
+        #expect(throws: (any Error).self) { try KnownPeoplePackageManifest.decode(Data(text.utf8)) }
+    }
+
+    @Test("Core payload rejects unknown or duplicate fields, empty examples and undeclared references", arguments: [
+        "unknown", "duplicate", "null", "empty", "reference"
+    ])
+    func peopleSemantics(kind: String) throws {
+        let files = try goldenFiles()
+        var text = String(decoding: try #require(files["people.json"]), as: UTF8.self)
+        switch kind {
+        case "unknown": text = text.replacingOccurrences(of: "\"name\" : \"Åda {persons}\"", with: "\"name\" : \"Åda {persons}\", \"extra\" : true")
+        case "duplicate": text = text.replacingOccurrences(of: "\"name\" : \"Åda {persons}\"", with: "\"name\" : \"Åda {persons}\", \"name\" : \"Other\"")
+        case "null": text = text.replacingOccurrences(of: "\"name\" : \"Åda {persons}\"", with: "\"name\" : null")
+        case "empty":
+            text = "{\"people\":[{\"id\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\",\"name\":\"Person\",\"examples\":[]}]}"
+        default: text = text.replacingOccurrences(of: "cccccccc-cccc-cccc-cccc-cccccccccccc", with: "dddddddd-dddd-dddd-dddd-dddddddddddd")
+        }
+        #expect(throws: (any Error).self) {
+            let payload = try KnownPeoplePackagePayload.decode(Data(text.utf8))
+            let manifest = try KnownPeoplePackageManifest.decode(try #require(files["manifest.json"]))
+            try manifest.validate(payload: payload)
+        }
+    }
+
+    @Test("Both editor modes and omitted optionals project without fabricating metadata", arguments: [true, false])
+    func optionalEditorMetadata(vision: Bool) async throws {
+        var files = try goldenFiles()
+        let editorBytes = try #require(files["editor/photo-agent.json"])
+        let object = try JSONSerialization.jsonObject(with: editorBytes)
+        var graph = try #require(object as? [String: Any])
+        var people = try #require(graph["people"] as? [String: [String: Any]])
+        var person = try #require(people[personID.uuidString.lowercased()])
+        for key in ["role", "notes", "representativeThumbnailID"] { person.removeValue(forKey: key) }
+        people[personID.uuidString.lowercased()] = person
+        graph["people"] = people
+        var examples = try #require(graph["examples"] as? [String: [String: Any]])
+        var example = try #require(examples[exampleID.uuidString.lowercased()])
+        example.removeValue(forKey: "sourceDescription")
+        if vision { example["recognitionMode"] = "vision" } else { example.removeValue(forKey: "recognitionMode") }
+        examples[exampleID.uuidString.lowercased()] = example
+        graph["examples"] = examples
+        files["editor/photo-agent.json"] = try JSONSerialization.data(withJSONObject: graph)
+        try updateManifest(&files)
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        let value = try #require(snapshot.people.first)
+        #expect(value.role == nil && value.notes == nil && value.representativeThumbnailID == nil)
+        #expect(value.embeddings.first?.sourceDescription == nil)
+        #expect(value.embeddings.first?.recognitionMode == (vision ? FaceRecognitionMode.visionFeaturePrint : nil))
+        #expect(value.createdAt.timeIntervalSinceReferenceDate == -0.125)
+        #expect(snapshot.manifest.coreRevision == coreRevision && snapshot.manifest.revision != revision)
+        #expect(snapshot.files == files)
+    }
+
+    @Test("Rehashed non-FEM2 input cannot acquire model provenance")
+    func invalidVector() async throws {
+        var files = try goldenFiles()
+        var vector = try #require(files[embeddingPath]); vector[10] = 0; vector[11] = 0
+        files[embeddingPath] = vector
+        // No editor: avoid making its old core identity the reason for refusal.
+        files.removeValue(forKey: "editor/photo-agent.json")
+        try updateManifest(&files)
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: FaceEmbeddingInterchangeError.zeroVector) {
+            try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        }
+    }
+
+    @Test("Missing editor is explicit; deterministic fallback does not invent private metadata")
+    func recognitionOnly() async throws {
+        var files = try goldenFiles(); files.removeValue(forKey: "editor/photo-agent.json")
+        try updateManifest(&files)
+        let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        #expect(value.editor == nil && value.manifest.editorPayload == nil)
+        let person = try #require(value.people.first)
+        #expect(person.notes == nil && person.role == nil && person.representativeThumbnailID == nil)
+        #expect(person.embeddings.first?.sourceDescription == nil && person.embeddings.first?.recognitionMode == nil)
+        #expect(person.createdAt == person.updatedAt && person.createdAt == person.embeddings.first?.addedAt)
+        #expect(value.manifest.coreRevision == coreRevision)
+    }
+
+    @Test("Directory admission refuses undeclared, missing and linked carriers", arguments: [
+        "extra", "missing", "symlink", "linked-directory", "hardlink"
+    ])
+    func directoryCoverage(kind: String) async throws {
+        let files = try goldenFiles(); let root = try materialize(files)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editor = root.appendingPathComponent("editor/photo-agent.json")
+        switch kind {
+        case "extra": try Data([1]).write(to: root.appendingPathComponent("undeclared"))
+        case "missing": try FileManager.default.removeItem(at: editor)
+        case "symlink":
+            try FileManager.default.removeItem(at: editor)
+            try FileManager.default.createSymbolicLink(at: editor, withDestinationURL: root.appendingPathComponent("people.json"))
+        case "linked-directory":
+            try FileManager.default.removeItem(at: root.appendingPathComponent("editor"))
+            try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("editor"), withDestinationURL: root)
+        default:
+            let extra = root.appendingPathComponent("alias")
+            try FileManager.default.linkItem(at: editor, to: extra)
+        }
+        await #expect(throws: (any Error).self) {
+            try await KnownPeoplePackageDirectoryReader().read(directoryURL: root)
+        }
+    }
+}
 
 /// Tests for the face-embedding serialization + distance layer that replaced the old
 /// `VNFeaturePrintObservation` payload, plus a smoke test of the bundled CoreML embedder.

@@ -1,9 +1,9 @@
 # Known People companion interchange
 
-Status: coordinated design with strict FEM2 admission and provenance for newly created
-samples implemented locally; manual package implementation remains gated on legacy
-sample disposition and the verified companion archive revision. Automatic local sharing
-is a later opt-in phase.
+Status: coordinated schema, strict FEM2/provenance admission, and a verified directory
+package reader are implemented locally. Manual interchange remains gated on transactional
+Photo Agent replacement/export, archive and UI adapters, and legacy-sample disposition.
+Automatic local sharing is a later opt-in phase.
 
 ## Ownership and phases
 
@@ -88,8 +88,8 @@ projection must agree with those records.
 FTP Sync has now committed this additive contract and exact-byte preservation after its
 full suite passed 1,030 tests with 15 opt-in skips and zero failures. Per-example `recognitionMode` is exactly
 `vision` or `faceClothing`, matching `FaceRecognitionMode` raw values. Photo Agent must
-still complete its directory-level cross-app fixture and provenance/import transaction
-before presenting the format. FTP Sync's committed slice does not yet claim ZIP/UI/App Group support.
+still complete its provenance/import transaction before presenting the format. FTP Sync's
+committed slice does not yet claim ZIP/UI/App Group support.
 
 ## Photo Agent admission and replacement
 
@@ -171,6 +171,33 @@ The final eligibility follow-up passes 26 tests / one suite in 0.116 seconds
 (`build/qa-known-people-interchange-focused-v8.log`), including zero IDs, multibyte
 name boundaries and the people-count limit. Intermediate v7 exposed a misplaced new
 guard as a compile error; it was moved inside the embedding loop before v8 passed.
-A cross-repository golden directory
-fixture has been requested from the companion coordinator; manifest/package generation
-must use that committed canonical form rather than an independently guessed encoding.
+FTP Sync's cross-repository golden directory is pinned at commit `5b43ce8`. Its library,
+person and example identities are `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`,
+`bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb` and
+`cccccccc-cccc-cccc-cccc-cccccccccccc`. Photo Agent's decoded fixture files exactly match
+the companion SHA-256 values: manifest
+`01ac3394032f5945be7ba3cb4208cf013f9e1e47d4dd5dc7ebb14af57b49b20b`, people
+`defe59be76163a68585a9d56a54ab55ffd54385fb72167a400e634f9fd24a901`, editor
+`97957271343108a13df0df5dfdd608ad0046b9e7ffaf73eef54b546f8af95d5a`, and FEM2
+`c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718`.
+The fixture pins core revision
+`ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281`
+and overall revision
+`87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709`.
+
+`KnownPeoplePackageDirectoryReader` now admits the directory form through held directory
+descriptors, `openat` and no-follow reads. It rejects non-regular or multiply linked files,
+undeclared/missing carriers, unsafe paths, size/hash/revision/count/schema/editor-coverage
+failures, invalid JPEGs and malformed FEM2 before projecting a `KnownPerson`. It assigns
+current provenance only after the manifest's exact embedding contract and each FEM2 payload
+pass. The immutable snapshot retains every admitted source byte, including the original
+manifest, people and editor JSON, for a future lossless re-export. Missing editor metadata
+remains explicit; deterministic fallback dates come from `exportedAt`.
+
+Independent source review passes. The final focused run passes 9 tests / one suite across
+36 parameterized cases in 0.250 seconds. Repository validation passes after one transient
+`lipo` inspection failure on the unchanged bundled ffmpeg; an immediate direct probe and
+complete rerun passed. Earlier focused attempts exposed sandbox cache denial, a POSIX `read`
+name collision and a nested test macro; each was corrected without weakening product
+admission or assertions. Archive extraction, transaction/service mutation, export, UI and
+App Group publication remain unimplemented.

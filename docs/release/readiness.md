@@ -19,8 +19,11 @@ while cached legacy samples remain honestly unknown. Whole-library eligibility n
 invalid names/IDs, empty people, unknown provenance and invalid FEM2. The latest focused
 suite passes 26 tests; the Known People service suite passes 64 tests and repository checks pass.
 The compatible companion contract is pinned to FTP Sync `2dc18e9` after its full suite
-passed. Package export/import remains gated on a shared golden directory fixture,
-Photo Agent's transactional implementation, legacy-sample disposition and archive/UI adapters.
+passed. Its golden directory is pinned at `5b43ce8`; Photo Agent now admits that fixture
+byte exactly through a strict no-follow directory reader, preserves all source bytes and
+projects current provenance only after exact contract/FEM2 validation. Independent review,
+9 focused tests across 36 cases and repository checks pass. Package export/import remains
+gated on Photo Agent's transactional implementation, legacy-sample disposition and archive/UI adapters.
 
 [Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
@@ -176,8 +179,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
    [the companion design](known-people-companion-interchange-design.md). FTP Sync has a
-   committed compatible editor-payload contract at `2dc18e9`; a shared golden directory
-   fixture and both archive/UI adapters remain pending. Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
+   committed compatible editor-payload contract at `2dc18e9` and golden directory at
+   `5b43ce8`; Photo Agent's strict directory admission now passes that fixture. Transactional
+   replacement/export and both archive/UI adapters remain pending. Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
    Resolve those gates before claiming compatible or lossless exchange. Automatic local sync
    remains a separate opt-in App Group phase after both signed targets share one entitlement.
 2. Extend Develop native coverage to named-version failed transitions and crop changes during
