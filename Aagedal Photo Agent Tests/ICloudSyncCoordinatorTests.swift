@@ -575,6 +575,59 @@ struct ICloudSyncCoordinatorTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("Known People routing uses the pointer's exact active generation")
+    func knownPeopleRoutingUsesActiveGeneration() async throws {
+        let parent = URL(fileURLWithPath:
+            "/private/tmp/KnownPeopleRoutingGeneration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let local = parent.appendingPathComponent("local", isDirectory: true)
+        let cloud = parent.appendingPathComponent("cloud", isDirectory: true)
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/PeopleLibraryV2", isDirectory: true)
+        let source = parent.appendingPathComponent("source.aagedalpeople", isDirectory: true)
+        let files = [
+            "manifest.json": "manifest.json.base64",
+            "people.json": "people.json.base64",
+            "editor/photo-agent.json": "editor-photo-agent.json.base64",
+            "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2": "embedding.fem2.base64",
+        ]
+        for (path, encodedName) in files {
+            let text = try String(contentsOf: fixture.appendingPathComponent(encodedName),
+                                  encoding: .utf8)
+            let destination = source.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let bytes = try #require(Data(base64Encoded:
+                text.components(separatedBy: .whitespacesAndNewlines).joined()))
+            try bytes.write(to: destination)
+        }
+        let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+        let publication = try await KnownPeopleCloudGenerationPublisher().publish(
+            snapshot: snapshot, cloudRootURL: cloud
+        )
+        let probe = KnownPeopleICloudRoutingProbe(local: local, cloud: cloud)
+        let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
+
+        guard case .committed(let enable) = try await service.reconcile(
+            enabled: true, requestID: UUID()
+        ) else {
+            Issue.record("Expected committed enable route")
+            return
+        }
+        guard case .committed(let disable) = try await service.reconcile(
+            enabled: false, requestID: UUID()
+        ) else {
+            Issue.record("Expected committed disable route")
+            return
+        }
+
+        #expect(enable.destinationURL == publication.destinationURL)
+        #expect(disable.sourceURL == publication.destinationURL)
+        #expect(probe.merges.map(\.0) == [local, publication.destinationURL])
+        #expect(probe.merges.map(\.1) == [publication.destinationURL, local])
+    }
+
     @Test("Known People routing reports unavailable before entering the recursive merger")
     func knownPeopleRoutingUnavailable() async throws {
         let probe = KnownPeopleICloudRoutingProbe(

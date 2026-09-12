@@ -144,6 +144,12 @@ nonisolated struct KnownPeopleStorageSnapshot: Equatable, Sendable {
     let syncEnabled: Bool
 }
 
+nonisolated enum KnownPeopleCloudEnableRequirement: Equatable, Sendable {
+    case ready
+    case explicitLocalReplacement
+    case unsafeLocalState
+}
+
 /// Immutable evidence for a Teams or Watermark library route change. These libraries share
 /// the same preserve-newer directory policy even though their in-memory stores remain distinct.
 nonisolated struct LibraryICloudRoutingCommit: Equatable, Sendable {
@@ -479,8 +485,10 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
             return .cancelledBeforeCommit(requestID: requestID, enabled: enabled)
         }
 
-        let source = enabled ? local : cloud
-        let destination = enabled ? cloud : local
+        let activeCloud = try await KnownPeopleCloudGenerationPublisher.shared
+            .resolveActiveGeneration(in: cloud) ?? cloud
+        let source = enabled ? local : activeCloud
+        let destination = enabled ? activeCloud : local
         try access.merge(source, destination)
         let commit = KnownPeopleICloudRoutingCommit(
             requestID: requestID,
@@ -502,7 +510,9 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
     func storageURL(syncEnabled: Bool) async -> URL {
         let local = access.localRootURL()
         guard syncEnabled else { return local }
-        return access.cloudRootURL() ?? local
+        guard let cloud = access.cloudRootURL() else { return local }
+        return (try? await KnownPeopleCloudGenerationPublisher.shared
+            .resolveActiveGeneration(in: cloud)) ?? cloud
     }
 
     func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
@@ -715,14 +725,21 @@ final class ICloudSyncCoordinator {
     /// Enables or disables every category at once. Each per-category setter still
     /// runs its own data movement and availability check, and any failure remains
     /// surfaced in `lastError` after all categories have been attempted.
-    func setAllEnabled(_ on: Bool, confirmedKnownPeopleFirstEnable: Bool = false) {
+    func setAllEnabled(_ on: Bool, confirmedKnownPeopleFirstEnable: Bool = false,
+                       replacingKnownPeopleCloud: Bool = false) {
         var firstError: String?
         for category in Self.masterCategories {
-            setEnabled(
-                on,
-                for: category,
-                confirmedKnownPeopleFirstEnable: confirmedKnownPeopleFirstEnable
-            )
+            if category == .knownPeople, on, replacingKnownPeopleCloud {
+                replaceKnownPeopleCloudWithLocalAndEnable(
+                    confirmedFirstEnable: confirmedKnownPeopleFirstEnable
+                )
+            } else {
+                setEnabled(
+                    on,
+                    for: category,
+                    confirmedKnownPeopleFirstEnable: confirmedKnownPeopleFirstEnable
+                )
+            }
             if firstError == nil { firstError = lastError }
         }
         // Each category setter clears its predecessor's error. Preserve the
@@ -866,6 +883,16 @@ final class ICloudSyncCoordinator {
         !knownPeopleEnabled && !isKnownPeopleRouting
     }
 
+    var knownPeopleCloudEnableRequirement: KnownPeopleCloudEnableRequirement {
+        guard !knownPeopleEnabled else { return .ready }
+        do {
+            return try knownPeopleLocalStateRequiresReconciliation()
+                ? .explicitLocalReplacement : .ready
+        } catch {
+            return .unsafeLocalState
+        }
+    }
+
     func setKnownPeopleEnabled(_ on: Bool, confirmedFirstEnable: Bool = false) {
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
@@ -933,6 +960,7 @@ final class ICloudSyncCoordinator {
                 switch result {
                 case .committed(let commit):
                     UserDefaults.standard.set(on, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                    if on { Self.cacheKnownPeopleCloudGeneration(from: commit.destinationURL) }
                     if confirmedFirstEnable {
                         KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
                     }
@@ -940,7 +968,7 @@ final class ICloudSyncCoordinator {
                         resolvedStorageURL: commit.destinationURL
                     )
                     if on {
-                        KnownPeopleCloudCoordinator.shared.refresh(resolvedRoot: commit.cloudRootURL)
+                        KnownPeopleCloudCoordinator.shared.refresh(resolvedRoot: commit.destinationURL)
                     } else {
                         KnownPeopleCloudCoordinator.shared.refresh()
                     }
@@ -957,6 +985,87 @@ final class ICloudSyncCoordinator {
                 knownPeopleRoutingRequestID = nil
                 pendingKnownPeopleEnabled = nil
                 lastError = "Could not reconcile the Known People database with iCloud Drive: \(error.localizedDescription)"
+                KnownPeopleCloudCoordinator.shared.refresh()
+                bump()
+            }
+        }
+    }
+
+    /// The destructive counterpart to normal preserve-newer routing. It is available only for
+    /// a tracked local store whose state explicitly requires reconciliation, and publishes that
+    /// complete library as a new immutable cloud generation before enabling the route.
+    func replaceKnownPeopleCloudWithLocalAndEnable(confirmedFirstEnable: Bool = false) {
+        if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
+            enabling: true,
+            currentlyEnabled: knownPeopleEnabled
+        ), !confirmedFirstEnable {
+            lastError = Self.knownPeopleConfirmationRequiredMessage
+            bump()
+            return
+        }
+        guard knownPeopleCloudEnableRequirement == .explicitLocalReplacement else {
+            if knownPeopleCloudEnableRequirement == .ready {
+                setKnownPeopleEnabled(true, confirmedFirstEnable: confirmedFirstEnable)
+            } else {
+                lastError = "The local Known People identity record is unsafe or malformed. Repair or restore the library before enabling iCloud sync."
+                bump()
+            }
+            return
+        }
+
+        knownPeopleRoutingTask?.cancel()
+        let requestID = UUID()
+        knownPeopleRoutingRequestID = requestID
+        pendingKnownPeopleEnabled = true
+        lastError = nil
+        bump()
+        knownPeopleRoutingTask = Task { [weak self] in
+            guard let self else { return }
+            guard let cloudRoot = await knownPeopleRouting.cloudRootURL(ensuringDirectory: true) else {
+                guard knownPeopleRoutingRequestID == requestID else { return }
+                knownPeopleRoutingTask = nil
+                knownPeopleRoutingRequestID = nil
+                pendingKnownPeopleEnabled = nil
+                lastError = Self.unavailableMessage
+                bump()
+                return
+            }
+            do {
+                let exporter = try KnownPeopleInterchangeBundleExporterFactory().make()
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let result = await KnownPeopleService.shared.reconcileLocalManagedStoreToCloud(
+                    exportedAt: formatter.string(from: Date()),
+                    exporter: exporter,
+                    cloudRootURL: cloudRoot,
+                    routeMutationGate: knownPeopleRouteMutationGate
+                )
+                guard knownPeopleRoutingRequestID == requestID else { return }
+                knownPeopleRoutingTask = nil
+                knownPeopleRoutingRequestID = nil
+                pendingKnownPeopleEnabled = nil
+                guard result.cloudPublished, result.verified,
+                      let destination = result.destinationURL else {
+                    lastError = result.wasCancelled
+                        ? "Known People iCloud replacement was cancelled before publication."
+                        : "Could not replace the Known People iCloud library: \(result.failure ?? "The transaction did not verify.")"
+                    bump()
+                    return
+                }
+                UserDefaults.standard.set(true, forKey: UserDefaultsKeys.knownPeopleICloudEnabled)
+                Self.cacheKnownPeopleCloudGeneration(from: destination)
+                if confirmedFirstEnable {
+                    KnownPeoplePrivacyLifecycle.recordICloudTransferConfirmation()
+                }
+                KnownPeopleService.shared.reloadAfterStorageChange(resolvedStorageURL: destination)
+                KnownPeopleCloudCoordinator.shared.refresh(resolvedRoot: destination)
+                bump()
+            } catch {
+                guard knownPeopleRoutingRequestID == requestID else { return }
+                knownPeopleRoutingTask = nil
+                knownPeopleRoutingRequestID = nil
+                pendingKnownPeopleEnabled = nil
+                lastError = "Could not prepare the Known People iCloud replacement: \(error.localizedDescription)"
                 KnownPeopleCloudCoordinator.shared.refresh()
                 bump()
             }
@@ -1169,6 +1278,18 @@ final class ICloudSyncCoordinator {
         "iCloud Drive is not available. Sign in to iCloud in System Settings and enable iCloud Drive for this app."
     private static let knownPeopleConfirmationRequiredMessage =
         "Confirm the Known People iCloud transfer before turning on this sync category."
+
+    static func cacheKnownPeopleCloudGeneration(from destination: URL) {
+        let parent = destination.standardizedFileURL.deletingLastPathComponent()
+        guard parent.lastPathComponent == KnownPeopleCloudGenerationPointer.generationsDirectory,
+              let generationID = UUID(uuidString: destination.lastPathComponent),
+              generationID.uuidString.lowercased() == destination.lastPathComponent else {
+            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.knownPeopleICloudGenerationID)
+            return
+        }
+        UserDefaults.standard.set(destination.lastPathComponent,
+                                  forKey: UserDefaultsKeys.knownPeopleICloudGenerationID)
+    }
 
     private func bump() { version &+= 1 }
 

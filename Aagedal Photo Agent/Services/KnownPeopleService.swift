@@ -1164,7 +1164,17 @@ final class KnownPeopleService {
             url = testFallback
         } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
                   let cloud = AppPaths.iCloudKnownPeopleURL {
-            url = cloud
+            if let text = UserDefaults.standard.string(
+                forKey: UserDefaultsKeys.knownPeopleICloudGenerationID
+            ), text == text.lowercased(), let generationID = UUID(uuidString: text),
+               generationID.uuidString.lowercased() == text {
+                url = cloud.appendingPathComponent(
+                    KnownPeopleCloudGenerationPointer.generationsDirectory,
+                    isDirectory: true
+                ).appendingPathComponent(text, isDirectory: true)
+            } else {
+                url = cloud
+            }
         } else {
             url = Self.localKnownPeopleDirectory
         }
@@ -3140,6 +3150,112 @@ final class KnownPeopleService {
             return .init(capture: nil, identityAssignment: nil,
                 failure: error is CancellationError ? nil : Self.localInterchangeFailureDescription(error),
                 wasCancelled: error is CancellationError)
+        }
+    }
+
+    /// Explicitly publishes the complete local managed library as a new immutable iCloud
+    /// generation. The local projection is first refreshed through the normal whole-root
+    /// replacement transaction, then the cloud pointer is committed, and only then is the
+    /// local reconciliation gate cleared. A failure before pointer publication leaves iCloud's
+    /// prior generation active; a failure afterward keeps local enablement blocked for retry.
+    func reconcileLocalManagedStoreToCloud(
+        exportedAt: String,
+        exporter: KnownPeoplePackageManifest.Exporter,
+        cloudRootURL: URL,
+        routeMutationGate: KnownPeopleRouteMutationGate = .shared,
+        publisher: KnownPeopleCloudGenerationPublisher = .shared,
+        snapshotAccess: KnownPeopleLocalStoreSnapshotAccess = .init(),
+        replacementAccess: KnownPeopleManagedStoreReplacementAccess = .init()
+    ) async -> KnownPeopleCloudReconciliationResult {
+        do {
+            return try await withManagedRootOwnership(
+                routingActive: false,
+                routeMutationGate: routeMutationGate
+            ) { route in
+                var localRecovery: URL?
+                do {
+                    guard try KnownPeopleManagedStoreState.requiresCloudReconciliation(
+                        at: route.rootURL
+                    ) else {
+                        throw KnownPeopleCloudGenerationFailure.invalidGeneration
+                    }
+                    let captured = try await KnownPeopleLocalStoreSnapshotBuilder(
+                        access: snapshotAccess
+                    ).capture(
+                        rootURL: route.rootURL,
+                        exportedAt: exportedAt,
+                        exporter: exporter
+                    )
+                    let replacement = KnownPeopleManagedStoreReplacement
+                        .integratedWithKnownPeopleService(
+                            self,
+                            routingActive: false,
+                            baseAccess: replacementAccess
+                        )
+                    let plan = try await replacement.plan(
+                        snapshot: captured.snapshot,
+                        route: route
+                    )
+                    let installed = await replacement.replace(
+                        plan: plan,
+                        decision: plan.requiredDecision,
+                        currentRoute: route
+                    )
+                    localRecovery = installed.recoveryDirectory
+                    guard installed.committed, installed.failure == nil,
+                          !installed.wasCancelled, installed.installedState != nil else {
+                        return .init(value: KnownPeopleCloudReconciliationResult(
+                            cloudPublished: false,
+                            verified: false,
+                            destinationURL: nil,
+                            localRecoveryDirectory: localRecovery,
+                            cloudRecoveryDirectory: nil,
+                            failure: installed.failure,
+                            wasCancelled: installed.wasCancelled
+                        ), publishChange: installed.committed)
+                    }
+
+                    let publication = try await publisher.publish(
+                        snapshot: captured.snapshot,
+                        cloudRootURL: cloudRootURL
+                    )
+                    // Publication is now visible. Do not sample cancellation here: clearing the
+                    // matching local gate completes the already-committed transaction truthfully.
+                    try await publisher.markLocalStateReconciled(
+                        rootURL: route.rootURL,
+                        expected: publication.pointer
+                    )
+                    return .init(value: KnownPeopleCloudReconciliationResult(
+                        cloudPublished: true,
+                        verified: true,
+                        destinationURL: publication.destinationURL,
+                        localRecoveryDirectory: localRecovery,
+                        cloudRecoveryDirectory: publication.recoveryDirectory,
+                        failure: nil,
+                        wasCancelled: false
+                    ), publishChange: true)
+                } catch {
+                    return .init(value: KnownPeopleCloudReconciliationResult(
+                        cloudPublished: false,
+                        verified: false,
+                        destinationURL: nil,
+                        localRecoveryDirectory: localRecovery,
+                        cloudRecoveryDirectory: nil,
+                        failure: error is CancellationError ? nil : Self.localInterchangeFailureDescription(error),
+                        wasCancelled: error is CancellationError
+                    ), publishChange: localRecovery != nil)
+                }
+            } afterDeferredWork: { _, result in result }
+        } catch {
+            return .init(
+                cloudPublished: false,
+                verified: false,
+                destinationURL: nil,
+                localRecoveryDirectory: nil,
+                cloudRecoveryDirectory: nil,
+                failure: error is CancellationError ? nil : Self.localInterchangeFailureDescription(error),
+                wasCancelled: error is CancellationError
+            )
         }
     }
 

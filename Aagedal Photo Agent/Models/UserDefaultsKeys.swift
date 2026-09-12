@@ -224,6 +224,9 @@ nonisolated enum UserDefaultsKeys {
     static let templatesICloudEnabled = "templates.iCloudEnabled"
     /// True when the Known People database lives in the iCloud ubiquity container.
     static let knownPeopleICloudEnabled = "knownPeople.iCloudEnabled"
+    /// Last resolved immutable Known People cloud generation for fast startup. The cloud
+    /// pointer remains authoritative and refresh replaces this local-only cache.
+    static let knownPeopleICloudGenerationID = "knownPeople.iCloudGenerationID"
     /// True when the Teams library lives in the iCloud ubiquity container.
     static let teamsICloudEnabled = "teams.iCloudEnabled"
     /// True when the Watermark library lives in the iCloud ubiquity container.

@@ -87,13 +87,28 @@ final class KnownPeopleCloudCoordinator {
     private func scheduleContainerResolution() {
         guard query == nil, pendingStart == nil else { return }
         pendingStart = Task { [weak self] in
-            let resolved = await KnownPeopleICloudRoutingService.shared.cloudRootURL(
+            let cloudRoot = await KnownPeopleICloudRoutingService.shared.cloudRootURL(
                 ensuringDirectory: true
             )
+            let resolved: URL?
+            if let cloudRoot {
+                do {
+                    resolved = try await KnownPeopleCloudGenerationPublisher.shared
+                        .resolveActiveGeneration(in: cloudRoot) ?? cloudRoot
+                } catch {
+                    // A present but invalid pointer must not silently reactivate legacy root
+                    // records. Keep monitoring stopped until a later refresh can validate it.
+                    resolved = nil
+                }
+            } else {
+                resolved = nil
+            }
             guard !Task.isCancelled, let self else { return }
             self.pendingStart = nil
             let stillEnabled = self.isEnabled()
             guard stillEnabled, let resolved else { return }
+            ICloudSyncCoordinator.cacheKnownPeopleCloudGeneration(from: resolved)
+            KnownPeopleService.shared.reloadAfterStorageChange(resolvedStorageURL: resolved)
             self.resolvedRoot = resolved
             self.startQueryIfNeeded(root: resolved)
             // The query's gathering callback delivers the synced person files

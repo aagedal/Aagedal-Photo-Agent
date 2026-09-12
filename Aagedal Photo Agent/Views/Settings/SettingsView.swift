@@ -84,6 +84,15 @@ struct SettingsView: View {
     private enum KnownPeopleSyncRequest {
         case knownPeopleOnly
         case allCategories
+        case replaceCloudWithKnownPeople
+        case replaceCloudWithAllCategories
+
+        var replacesCloudLibrary: Bool {
+            switch self {
+            case .replaceCloudWithKnownPeople, .replaceCloudWithAllCategories: true
+            case .knownPeopleOnly, .allCategories: false
+            }
+        }
     }
 
     // MARK: - Sidebar Sections
@@ -1848,7 +1857,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding()
         .alert(
-            "Sync Known People with iCloud?",
+            pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true
+                ? "Replace the iCloud Known People Library?"
+                : "Sync Known People with iCloud?",
             isPresented: Binding(
                 get: { pendingKnownPeopleSyncRequest != nil },
                 set: { if !$0 { pendingKnownPeopleSyncRequest = nil } }
@@ -1857,12 +1868,18 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {
                 pendingKnownPeopleSyncRequest = nil
             }
-            Button("Sync Known People") {
+            Button(pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true
+                   ? "Replace iCloud Library and Sync" : "Sync Known People") {
                 confirmKnownPeopleSync(coordinator: coordinator)
             }
+            .tint(pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true ? .red : nil)
             .keyboardShortcut(.defaultAction)
         } message: {
-            Text("This uploads names, face-only feature vectors, and reference thumbnails from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+            if pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true {
+                Text("This local library was replaced or assigned a new interchange identity. Continuing publishes it as a complete new iCloud generation. It replaces the active iCloud Known People library, including removals and an intentionally empty library; the previous cloud generation is not merged into it. Names, face-only feature vectors, and reference thumbnails are uploaded. Folder scan and clothing data stay in each photo folder.")
+            } else {
+                Text("This uploads names, face-only feature vectors, and reference thumbnails from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+            }
         }
     }
 
@@ -1908,6 +1925,10 @@ struct SettingsView: View {
 
     private func requestKnownPeopleSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
         guard !interchangeController.isBusy else { return }
+        if on, coordinator.knownPeopleCloudEnableRequirement == .explicitLocalReplacement {
+            pendingKnownPeopleSyncRequest = .replaceCloudWithKnownPeople
+            return
+        }
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
             currentlyEnabled: coordinator.knownPeopleEnabled
@@ -1921,6 +1942,10 @@ struct SettingsView: View {
 
     private func requestAllCategoriesSync(_ on: Bool, coordinator: ICloudSyncCoordinator) {
         guard !interchangeController.isBusy else { return }
+        if on, coordinator.knownPeopleCloudEnableRequirement == .explicitLocalReplacement {
+            pendingKnownPeopleSyncRequest = .replaceCloudWithAllCategories
+            return
+        }
         if KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
             enabling: on,
             currentlyEnabled: coordinator.knownPeopleEnabled
@@ -1944,6 +1969,11 @@ struct SettingsView: View {
             coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
         case .allCategories:
             coordinator.setAllEnabled(true, confirmedKnownPeopleFirstEnable: true)
+        case .replaceCloudWithKnownPeople:
+            coordinator.replaceKnownPeopleCloudWithLocalAndEnable(confirmedFirstEnable: true)
+        case .replaceCloudWithAllCategories:
+            coordinator.setAllEnabled(true, confirmedKnownPeopleFirstEnable: true,
+                                      replacingKnownPeopleCloud: true)
         case nil:
             return
         }

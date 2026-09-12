@@ -238,7 +238,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
     /// Mirrors the managed replacement's durable projection digest, including its directory
     /// domain separators and exact canonical local record encoding. The state hash binds the
     /// preserved package to its original installation, not to later intentional local edits.
-    private static func admittedProjectionHash(_ admitted: KnownPeoplePackageSnapshot) throws -> String {
+    static func admittedProjectionHash(_ admitted: KnownPeoplePackageSnapshot) throws -> String {
         var projectionFiles: [String: Data] = [:]
         // Local service paths use UUID.uuidString, including on case-sensitive volumes.
         // The admitted package's lowercase names remain unchanged in its raw byte map.

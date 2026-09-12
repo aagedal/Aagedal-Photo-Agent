@@ -175,7 +175,8 @@ nonisolated struct KnownPeopleManagedStoreState: Codable, Equatable, Sendable {
     init(libraryID: UUID, installationID: UUID, currentRevision: String,
          currentCoreRevision: String, importedRevisions: [String],
          contract: KnownPeoplePackageManifest.EmbeddingContract,
-         managedProjectionSHA256: String, admittedPackageSHA256: String) throws {
+         managedProjectionSHA256: String, admittedPackageSHA256: String,
+         needsCloudReconciliation: Bool = true) throws {
         self.libraryID = libraryID
         self.installationID = installationID
         self.currentRevision = currentRevision
@@ -185,7 +186,7 @@ nonisolated struct KnownPeopleManagedStoreState: Codable, Equatable, Sendable {
         self.managedProjectionSHA256 = managedProjectionSHA256
         self.admittedPackageSHA256 = admittedPackageSHA256
         admittedPackageDirectory = ".admitted-package"
-        needsCloudReconciliation = true
+        self.needsCloudReconciliation = needsCloudReconciliation
         try validate()
     }
 
@@ -243,7 +244,7 @@ nonisolated struct KnownPeopleManagedStoreState: Codable, Equatable, Sendable {
               !importedRevisions.isEmpty,
               importedRevisions == Array(Set(importedRevisions)).sorted(),
               importedRevisions.allSatisfy(Self.isHash), importedRevisions.contains(currentRevision),
-              admittedPackageDirectory == ".admitted-package", needsCloudReconciliation,
+              admittedPackageDirectory == ".admitted-package",
               contract == .auraFaceV1 else { throw KnownPeopleManagedStoreFailure.malformedState }
     }
 
@@ -276,6 +277,17 @@ nonisolated struct KnownPeopleManagedStoreState: Codable, Equatable, Sendable {
             hasher.update(data: Data([0]))
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Returns the same root-local authority with only its cloud publication gate changed.
+    /// The revision, projection and admitted-package bindings remain immutable.
+    func requiringCloudReconciliation(_ required: Bool) throws -> Self {
+        try Self(libraryID: libraryID, installationID: installationID,
+                 currentRevision: currentRevision, currentCoreRevision: currentCoreRevision,
+                 importedRevisions: importedRevisions, contract: contract,
+                 managedProjectionSHA256: managedProjectionSHA256,
+                 admittedPackageSHA256: admittedPackageSHA256,
+                 needsCloudReconciliation: required)
     }
 
     /// A valid record protects an admitted v3 store from the legacy global-version reset
