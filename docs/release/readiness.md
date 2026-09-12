@@ -1,14 +1,16 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — exact XMP baselines and bounded native saves pass; failed Develop-save termination loses unsaved intent and remains a release blocker.
-**Updated:** 2026-09-11
-**Latest implementation commit:** `a777dd78c1b7e6ecac6eaa8be6aa59de882ae571` (2,666 tests / 295 suites and repository checks passed).
-**Latest native evidence:** `a777dd7` masked repeat saves, external-change refusal, deliberate reload/retry, embedded-plus-XMP reset and relaunch pass. Genuine failed-save Quit lacks retention/decision and is the next defect. No preferences changed; QA apps stopped.
-**Cycle baseline:** `1ca6bce` on `main`; cycle 14 exact XMP baseline implementation and bounded native checks complete.
+**State:** IMPLEMENTING — Primary failed-save retention and scoped recovery pass native testing; the stale recovery notice correction also passes its native regression.
+**Updated:** 2026-09-12
+**Latest implementation commit:** `be970f06da96f330500f8d4a4cdec64a07165086` (2,687 tests / 297 suites and repository checks passed).
+**Latest native evidence:** `ae99369` masked save, Undo on exit, genuine external conflict, failed Quit/navigation refusal, recovery cancel/export/tamper/scoped discard, fresh save, dual Reset and exact relaunch persistence pass. No preferences changed; QA apps stopped. `be970f0` verifies warning retention after failed recovery and clearance after verified discard/fresh save.
+**Cycle baseline:** `e72ceef` on `main`; cycle 15 retention implementation committed, notice follow-up committed and validated.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
 [Cycle 14 XMP baselines](cycle-14-xmp-baselines-2026-09-11.md) captures exact load-time bytes,
 propagates verified receipts and prevents stale technical intent from adopting Caption/Variables
@@ -16,8 +18,8 @@ physical results. Restore admission also uses exact bytes. Independent review pa
 passes 121 tests / five suites, full passes 2,666 tests / 295 suites in 96.165s, repository checks pass.
 Native masked reset/repeated save, genuine external refusal, fresh reload/retry, embedded reset
 and relaunch pass. All artifacts match after final relaunch; no preferences changed; QA apps stopped.
-A genuine failed Develop reset can still be lost on normal Quit after dismissing the error;
-this is a confirmed release blocker, not a passing lifecycle check.
+At the cycle-14 checkpoint, a genuine failed Develop reset could be lost on normal Quit.
+Cycle 15 above fixes and verifies that retention defect.
 
 
 [Cycle 13 variable recovery](cycle-13-variable-recovery-2026-09-11.md) adds complete private exports,
@@ -160,11 +162,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-1. Fix failed Develop-save lifetime: cycle14 final binary allowed normal Quit after genuine
-   external-XMP conflict without a retry/discard decision or durable unsaved-reset carrier.
-   Retain captured intent across Quit/workspace/selection, or require an explicit safe recovery
-   decision. Audit undo/redo persistence too. Exact-byte save admission is now verified; do not
-   mistake that fix for safe failure retention.
+1. Extend Develop native coverage to named-version failed transitions and crop changes during
+   drag. Cycle 15 closes failed-save retention, Undo-on-exit and stale recovery notices;
+   do not repeat unchanged automated suites without a relevant change.
 2. Complete remaining variable native cases: focused live-field commit, >20-field templates,
    in-flight cancellation/selection, authentic RAW/C2PA and accessibility/performance. Cycle 12's
    physical/error/repair/History Only/relaunch cases pass on `fbe253f`; do not rerun unchanged full
@@ -266,23 +266,42 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Implementation `a777dd7` is committed and independently reviewed. Focused v3 passes 121 tests,
-full passes 2,666 tests and repository checks pass. Native repeated masked save, external conflict
-refusal, fresh reload/retry, embedded-plus-sidecar reset and final relaunch artifact equality pass
-on the identified Debug binary. All QA app entries are stopped; no preferences changed.
+`ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five
+suites; full-v3 passes 2,687 tests / 297 suites in 102.945s and repository-v2 passes.
+Full-v2 had one unchanged Known People timed-gate failure; isolated 64 tests and full-v3
+pass without changing its assertion or timeout. No claim of proven root cause is made.
 
-Highest priority: failed Develop save loses unsaved intent on normal Quit after dismissing its
-error. Reproduced with a genuine externally modified XMP on the final binary; external saved
-bytes survive, but the requested in-memory reset does not. Fix lifecycle retention/recovery and
-test Quit/workspace/selection, including undo/redo, before progressing to the remaining broad
-native and voice/transcription/delivery gates. Do not describe this as ready for final testing.
+Native evidence under `build/qa-primary-develop-cycle15` confirms the previously lost
+failed Primary edit now blocks normal Quit after alert dismissal, workspace exit and
+photo navigation. Retry uses original evidence; verified export and exact discard
+preserve every photo artifact. Undo reaches XMP on exit; fresh saves, dual Reset and
+normal relaunch retain captions, masks where expected, opaque data and pixels. All
+photo artifacts are identical after relaunch and every Photo Agent app is stopped.
 
-Cycle14 report includes exact identity, failed test fixtures and corrections, native evidence and
-limitations. All four plans retain 60 open criteria (9/23/22/6). HTML has 35 cases with results and
-candidate unassigned; interactive validation remains pending. No-progress counter is zero and
-existing heartbeat remains active. No unrelated source or overlapping checkout work was found.
+The native run found stale Primary notice text after successful recovery. Committed
+`be970f0` separates notice ownership; independent review, 51 focused tests / four suites
+(4.797s), 2,687 integrated tests / 297 suites (92.351s) and repository checks pass.
+Fresh native fixtures in `build/qa-primary-develop-cycle15-notice` verify the warning
+survives tampered-export refusal and Cancel, clears after verified scoped discard,
+and stays clear after a fresh save. Discard preserves all photo artifacts exactly;
+Undo is disabled afterward and normal Exit/Quit succeeds. All QA apps are stopped.
+This final view-only regression did not repeat the earlier relaunch sequence.
+No source is dirty. No preferences changed. The retained API's
+currently tested UI routes are XMP and dual; file-only orientation chaining is a latent
+unsupported-route limitation, not claimed as verified behavior.
 
-Root cause for next cycle: termination invokes DevelopVersionFlushCoordinator, but EditWorkspaceView
-only flushes its named-version session, which reports success for Primary. Primary persistence
-outcomes are discarded with alert/session state. Add retained immutable Primary work to the shared
-flush boundary; preserve original exact evidence and scoped recovery. Detailed map is in cycle14.
+All four plans retain 60 open criteria (9/23/22/6). HTML has 35 cases with results and
+candidate unassigned; final interactive checklist validation remains pending. The
+no-progress counter is zero and the existing heartbeat remains active. Broader native,
+voice/transcription/delivery, external interoperability and release gates remain open.
+
+## Companion integration follow-up — 2026-09-12
+
+The FTP Sync coordinator reports local matcher/FEM2 codec work in its separate
+checkout and requests a Known People interchange v2 exporter integration review.
+Its proposed contract is in that project's
+`Documentation/Testing/3.0-M0-Face-Compatibility.md` (reported source `a7392e3`):
+model, embedding-space and preprocessing identity, persistent library ID/revision,
+payload hashes, and replacement semantics for removals/renames. This is a queued
+compatibility review, not verified exporter support or a checked acceptance gate.
+No Photo Agent files were delegated to that task and desktop ownership remains here.

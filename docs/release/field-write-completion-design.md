@@ -188,3 +188,24 @@ quitting normally loses the unsaved requested reset without another recovery dec
 that captured intent or require an explicit safe decision across termination, workspace exit and
 selection. Do not count exact-byte admission as durable failed-save retention. This is the next
 mandatory lifecycle correction; undo/redo persistence also needs an explicit audit.
+
+### Cycle 15 Primary lifetime and recovery
+
+`ae99369` resolves the cycle-14 retention defect for the current Primary XMP and dual
+routes. Immutable requests retain load-time source/JSON/XMP evidence and survive
+presentation dismissal; causal successors use only exact verified predecessor receipts.
+Destination-specific embedded baselines preserve rapid Undo and XMP-to-dual intent.
+Shared lifecycle capture includes unfinished controls and waits for admitted work;
+failed or uncertain work blocks ordinary exits until retry or verified scoped recovery.
+Partial physical writes are retained for export/reconciliation, not blindly replayed.
+
+Recovery exports full request ancestry, metadata/history, original evidence and receipts,
+plus available cached watermark assets and explicit unavailable-at-admission diagnostics.
+Protected destinations include ancestor assets. Exact export validation precedes discard;
+reload publication cannot overwrite newer editor input. The [cycle15 report](cycle-15-primary-develop-retention-2026-09-11.md)
+records 2,687 passing tests and native Undo-on-exit, genuine failed-Quit retention,
+recovery cancel/tamper/scoped discard, preserved artifacts and relaunch. A stale Primary
+notice discovered by that native run is fixed in `be970f0`, with independent review,
+2,687 passing tests and native tamper/refusal/scoped-discard/fresh-save regression.
+Unresolved attention persists; successful recovery clears only Primary attention.
+Broad remaining manual and release gates are unchanged.
