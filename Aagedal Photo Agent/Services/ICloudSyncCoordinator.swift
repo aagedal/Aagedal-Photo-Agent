@@ -645,6 +645,8 @@ final class ICloudSyncCoordinator {
     @ObservationIgnored private var templatesRoutingRequestID: UUID?
     private var pendingKnownPeopleEnabled: Bool?
     @ObservationIgnored private let knownPeopleRouting: any KnownPeopleICloudRouting
+    @ObservationIgnored private let knownPeopleRouteMutationGate: KnownPeopleRouteMutationGate
+    @ObservationIgnored private let knownPeopleLocalStateRequiresReconciliation: @Sendable () throws -> Bool
     @ObservationIgnored private var knownPeopleRoutingTask: Task<Void, Never>?
     @ObservationIgnored private var knownPeopleRoutingRequestID: UUID?
     private var pendingTeamsEnabled: Bool?
@@ -661,6 +663,12 @@ final class ICloudSyncCoordinator {
         preferencesSync: any PreferencesSyncControlling = PreferencesSyncService.shared,
         templatesRouting: any TemplateICloudRouting = TemplateICloudRoutingService.shared,
         knownPeopleRouting: any KnownPeopleICloudRouting = KnownPeopleICloudRoutingService.shared,
+        knownPeopleRouteMutationGate: KnownPeopleRouteMutationGate = .shared,
+        knownPeopleLocalStateRequiresReconciliation: @escaping @Sendable () throws -> Bool = {
+            try KnownPeopleManagedStoreState.requiresCloudReconciliation(
+                at: KnownPeopleService.localKnownPeopleDirectory
+            )
+        },
         teamsRouting: any LibraryICloudRouting = LibraryICloudRoutingService.teams,
         watermarksRouting: any LibraryICloudRouting = LibraryICloudRoutingService.watermarks
     ) {
@@ -668,6 +676,8 @@ final class ICloudSyncCoordinator {
         self.preferencesSync = preferencesSync
         self.templatesRouting = templatesRouting
         self.knownPeopleRouting = knownPeopleRouting
+        self.knownPeopleRouteMutationGate = knownPeopleRouteMutationGate
+        self.knownPeopleLocalStateRequiresReconciliation = knownPeopleLocalStateRequiresReconciliation
         self.teamsRouting = teamsRouting
         self.watermarksRouting = watermarksRouting
     }
@@ -856,6 +866,19 @@ final class ICloudSyncCoordinator {
             bump()
             return
         }
+        if on {
+            do {
+                guard try knownPeopleLocalStateRequiresReconciliation() == false else {
+                    lastError = "This locally replaced Known People library must be reconciled explicitly before iCloud sync can be enabled."
+                    bump()
+                    return
+                }
+            } catch {
+                lastError = "The local Known People identity record is unsafe or malformed. Repair or restore the library before enabling iCloud sync."
+                bump()
+                return
+            }
+        }
         knownPeopleRoutingTask?.cancel()
         let requestID = UUID()
         knownPeopleRoutingRequestID = requestID
@@ -865,6 +888,31 @@ final class ICloudSyncCoordinator {
         knownPeopleRoutingTask = Task { [weak self] in
             guard let self else { return }
             do {
+                // Retain route ownership through preference, service-generation and watcher
+                // publication so a waiting managed replacement cannot observe half a route.
+                let routeLease = try await knownPeopleRouteMutationGate.acquire()
+                defer { routeLease.release() }
+                if on {
+                    do {
+                        guard try knownPeopleLocalStateRequiresReconciliation() == false else {
+                            guard knownPeopleRoutingRequestID == requestID else { return }
+                            knownPeopleRoutingTask = nil
+                            knownPeopleRoutingRequestID = nil
+                            pendingKnownPeopleEnabled = nil
+                            lastError = "This locally replaced Known People library must be reconciled explicitly before iCloud sync can be enabled."
+                            bump()
+                            return
+                        }
+                    } catch {
+                        guard knownPeopleRoutingRequestID == requestID else { return }
+                        knownPeopleRoutingTask = nil
+                        knownPeopleRoutingRequestID = nil
+                        pendingKnownPeopleEnabled = nil
+                        lastError = "The local Known People identity record is unsafe or malformed. Repair or restore the library before enabling iCloud sync."
+                        bump()
+                        return
+                    }
+                }
                 let result = try await knownPeopleRouting.reconcile(
                     enabled: on,
                     requestID: requestID

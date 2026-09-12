@@ -16,8 +16,11 @@ replacement semantics and later opt-in App Group channel. Strict shared FEM2 adm
 is implemented and independently reviewed. Fresh Photo Agent detections now persist exact
 model/preprocessing provenance from the declaring embedder through Known People addition,
 while cached legacy samples remain honestly unknown. Whole-library eligibility now rejects
-invalid names/IDs, empty people, unknown provenance and invalid FEM2. The latest focused
-suite passes 26 tests; the Known People service suite passes 64 tests and repository checks pass.
+invalid names/IDs, empty people, unknown provenance and invalid FEM2. The current Known People
+core checkpoint adds strict ZIP32 transport, descriptor-bound whole-root replacement, exact
+admitted-package retention, tracked local capture, route/iCloud exclusion, generation invalidation
+and the exported `.aagedalpeople` package type. The integrated focused run passes 149 declared
+tests across 346 expanded cases; repository checks and independent source review pass.
 The compatible companion contract is pinned to FTP Sync `2dc18e9` after its full suite
 passed. Its strengthened golden directory is pinned at `da3579e`; Photo Agent admits that
 fixture byte exactly through a strict no-follow directory reader and re-exports the captured
@@ -25,8 +28,8 @@ bytes through an atomic directory writer. Reader and writer suites pass 10 and 1
 including 37 writer fault, alias, cancellation, retargeting, mutation and cooperative-serialization
 cases. The writer's retained parent descriptor and advisory lock cover cooperating writers;
 non-cooperating same-user mutation remains outside the whole transaction guarantee, with observed
-boundary changes rejected while recovery evidence is retained. Managed-store replacement and archive/UI
-adapters remain gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
+boundary changes rejected while recovery evidence is retained. First-time identity assignment,
+explicit local-to-cloud reconciliation and UI adapters remain gated. A pinned color-asymmetric fixture now proves the RGB contract against Torch
 and Core ML with a BGR negative control, and two independent locked builds produce identical bytes
 and receipts. The reviewed deterministic model now replaces the contradictory local artifact and all
 declared hashes match. The checked-in compact reference now passes the app's exact `CGImage` preprocessing
@@ -190,7 +193,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    [the companion design](known-people-companion-interchange-design.md). FTP Sync has a
    committed compatible editor-payload contract at `2dc18e9` and strengthened golden directory
    at `da3579e`; Photo Agent's strict directory admission and atomic exact-byte directory writer
-   now pass that fixture. Managed-store replacement and both archive/UI adapters remain pending.
+   now pass that fixture. Photo Agent's strict ZIP32 archive, managed-store replacement and
+   tracked local snapshot builder pass integrated review and tests. Implement atomic first-time
+   identity assignment, explicit local-to-cloud reconciliation and the Settings/Expanded Known
+   People import/export controller next, including the coordinated 65,534-entry archive limit.
    Review and replace the pinned model with the independently reproduced RGB artifact before enabling
    production companion recognition; the image-to-reference proof and deterministic receipt now pass.
    Legacy Photo Agent imports also lack trustworthy embedding-space provenance.
@@ -300,17 +306,22 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-The Known People companion contract is now the highest-priority coordinated slice.
-Photo Agent has a reviewed strict FEM2 codec matching FTP Sync's live reader. Provenance
-now originates only at a declaring embedder, survives fresh face storage and copies into
-Known People; cached legacy samples remain unknown. Whole-library eligibility matches
-the companion's core name/ID/count/provenance/FEM2 rules. Focused-v8 passes 26 tests /
-one suite in 0.116s, Known People service passes 64 tests / one suite in 14.124s, and
-repository checks pass. The package itself is not yet presented in either UI. FTP Sync
-`2dc18e9` has the optional hash-bound editor payload and exact re-export after a
-1,030-pass full suite, but still needs archive/UI admission. Photo Agent must complete
-golden-fixture, transaction and legacy disposition work. Automatic sync is intentionally later and needs
-separate consent plus matching signed App Group entitlements in both targets.
+The Known People core interchange checkpoint is implemented on source based at `78f0209`
+and recorded in [cycle 16](cycle-16-known-people-core-2026-09-12.md). Directory packages
+and strict STORED ZIP32 transport preserve exact admitted bytes; managed replacement owns
+the route and whole local root, retains the displaced root as recovery evidence, discards
+stale deferred work and blocks iCloud enablement until explicit reconciliation. Tracked
+local capture binds both the admitted package and uppercase service-local projection while
+keeping lowercase package paths. The final focused run passes 149 declared tests / 346
+expanded cases across five suites, independent review passes, and repository validation
+passes. The complete post-fix suite result is recorded in cycle 16.
+
+The next bounded work is atomic first-time identity assignment for untracked populated or
+empty stores, followed by the high-level service API and Settings/Expanded Known People UI.
+The archive contract is 65,534 entries because `0xffff` is the ZIP64 sentinel; directory
+packages retain the 200,001-file schema cap. The companion app and UI must present the same
+limit. Explicit local-to-cloud reconciliation and later opt-in App Group publication remain
+separate. Production AuraFace distribution trust and legacy embedding provenance remain open.
 
 `ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five
 suites; full-v3 passes 2,687 tests / 297 suites in 102.945s and repository-v2 passes.

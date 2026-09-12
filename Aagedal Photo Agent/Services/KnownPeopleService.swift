@@ -1,6 +1,7 @@
 import Foundation
 import Vision
 import AppKit
+import Darwin
 import os
 import os.log
 
@@ -952,6 +953,26 @@ final class KnownPeopleService {
         }
     }
 
+    /// A whole-root replacement invalidates every read generation, including suspended
+    /// thumbnail work and imports admitted against the displaced tree.
+    static func invalidateAfterManagedStoreReplacement(at root: URL) {
+        let normalizedRoot = root.standardizedFileURL
+        managedStoreGenerations[normalizedRoot, default: 0] &+= 1
+        instances.removeAll { $0.value == nil }
+        for instance in instances {
+            guard let service = instance.value,
+                  service.cachedDirectory?.standardizedFileURL == root.standardizedFileURL else { continue }
+            service.storageRevision &+= 1
+            service.thumbnailContentRevision &+= 1
+            service.database = nil
+            service.peopleIndex = [:]
+            service.clearFeaturePrintCache()
+            service.personThumbnailCache.removeAllObjects()
+            service.embeddingThumbnailCache.removeAllObjects()
+            service.recentLocalWrites.removeAll()
+        }
+    }
+
     // Process-wide ownership covers every KnownPeopleService instance, including injected
     // archive actors. Keep admission, duplicate filtering, commit and publication ordered.
     // The archive actor serializes file work but yields back to MainActor between these stages.
@@ -965,15 +986,57 @@ final class KnownPeopleService {
     private static var importReservedURLs: Set<URL> = []
     // Whole-store deletion and legacy migration exclude new identities as well as existing paths.
     private static var clearReservedRoot: URL?
+    // Managed replacements retain independent whole-root ownership so cleanup from an older
+    // import cannot clear their reservation while the replacement actor is suspended.
+    private static var managedReplacementReservedRoots: Set<URL> = []
+    private static var managedStoreGenerations: [URL: UInt64] = [:]
 
     private static func isReservedDestination(_ url: URL) -> Bool {
-        let normalized = url.standardizedFileURL
-        if let root = clearReservedRoot,
-           normalized == root || normalized.path.hasPrefix(root.path + "/") { return true }
-        return importReservedURLs.contains(normalized)
+        let destinationCandidates = [url.standardizedFileURL.pathComponents,
+                                     canonicalPathComponents(url)]
+        for root in ([clearReservedRoot].compactMap { $0 } + Array(managedReplacementReservedRoots)) {
+            let rootCandidates = [root.standardizedFileURL.pathComponents,
+                                  canonicalPathComponents(root)]
+            if destinationCandidates.contains(where: { destination in
+                rootCandidates.contains(where: { root in
+                    destination.count >= root.count
+                        && Array(destination.prefix(root.count)) == root
+                })
+            }) { return true }
+        }
+        return importReservedURLs.contains(url.standardizedFileURL)
     }
-    private static var deferredThumbnailDeletions: Set<URL> = []
-    private static var deferredImportActions: [() -> Void] = []
+
+    /// Resolve aliases in the longest existing prefix while retaining missing descendants.
+    private static func canonicalPathComponents(_ url: URL) -> [String] {
+        var existing = url.standardizedFileURL
+        var suffix: [String] = []
+        while true {
+            if let pointer = realpath(existing.path, nil) {
+                defer { free(pointer) }
+                let base = URL(fileURLWithPath: String(cString: pointer), isDirectory: true).pathComponents
+                return base + suffix
+            }
+            let parent = existing.deletingLastPathComponent()
+            guard parent.path != existing.path else { return url.standardizedFileURL.pathComponents }
+            suffix.insert(existing.lastPathComponent, at: 0)
+            existing = parent
+        }
+    }
+    static func replacementReservationCovers(_ url: URL) -> Bool {
+        isReservedDestination(url)
+    }
+    private static var deferredThumbnailDeletions: [URL: UInt64] = [:]
+    private struct DeferredImportAction {
+        let root: URL
+        let generation: UInt64
+        let action: () -> Void
+    }
+    private static var deferredImportActions: [DeferredImportAction] = []
+
+    private static func managedStoreGeneration(for root: URL) -> UInt64 {
+        managedStoreGenerations[root.standardizedFileURL, default: 0]
+    }
 
     private func requireLocalWriteAdmission(to url: URL) throws {
         guard !Self.isReservedDestination(url) else {
@@ -1007,8 +1070,12 @@ final class KnownPeopleService {
         // Keep reservations until all queued removals finish. MainActor may admit more
         // deletion requests while the worker is suspended; drain those in another batch.
         while !Self.deferredThumbnailDeletions.isEmpty {
-            let urls = Self.deferredThumbnailDeletions
+            let entries = Self.deferredThumbnailDeletions
             Self.deferredThumbnailDeletions.removeAll()
+            let urls = Set(entries.compactMap { url, generation in
+                generation == Self.managedStoreGeneration(for:
+                    url.deletingLastPathComponent().deletingLastPathComponent()) ? url : nil
+            })
             await archiveService.removeDeferredThumbnails(at: urls)
             for url in urls {
                 invalidatePeerThumbnails(at: url.deletingLastPathComponent().deletingLastPathComponent())
@@ -1027,17 +1094,21 @@ final class KnownPeopleService {
         Self.deferredImportActions.removeAll()
         // Replay each originating instance's invalidation/events after durable publication.
         // The callbacks retain the original URL; remote changes recheck the current root.
-        for action in actions { action() }
+        for action in actions where action.generation == Self.managedStoreGeneration(for: action.root) {
+            action.action()
+        }
     }
 
     private func deferThumbnailDeletion(at url: URL) {
-        Self.deferredThumbnailDeletions.insert(url.standardizedFileURL)
-        Self.deferredImportActions.append { [weak self] in
+        let root = url.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL
+        let generation = Self.managedStoreGeneration(for: root)
+        Self.deferredThumbnailDeletions[url.standardizedFileURL] = generation
+        Self.deferredImportActions.append(DeferredImportAction(root: root, generation: generation) { [weak self] in
             guard let self else { return }
             self.thumbnailContentRevision &+= 1
             self.personThumbnailCache.removeAllObjects()
             self.embeddingThumbnailCache.removeAllObjects()
-        }
+        })
     }
 
     init(
@@ -1211,7 +1282,7 @@ final class KnownPeopleService {
         // A cold peer must not run repair/GC writes or cache an intermediate listing
         // while a whole-root reset or migration owns the filesystem. Existing snapshots remain
         // available until its durable result invalidates them.
-        guard Self.clearReservedRoot != knownPeopleDirectory.standardizedFileURL else {
+        guard !Self.isReservedDestination(knownPeopleDirectory) else {
             return KnownPeopleDatabase()
         }
         migrateLegacyDatabaseIfNeeded()
@@ -1562,14 +1633,16 @@ final class KnownPeopleService {
             guard KnownPeopleCloudCoordinator.acceptsChange(at: url, root: knownPeopleDirectory) else { continue }
             if Self.isReservedDestination(url) {
                 let importOwner = Self.importCommitOwner
-                Self.deferredImportActions.append { [weak self, weak importOwner] in
+                let root = knownPeopleDirectory.standardizedFileURL
+                let generation = Self.managedStoreGeneration(for: root)
+                Self.deferredImportActions.append(DeferredImportAction(root: root, generation: generation) { [weak self, weak importOwner] in
                     self?.applyRemoteChanges([change], ignoringLocalWriteEchoes: true)
                     // The owner just published the durable prefix. A change received by another
                     // instance must also remove or refresh that newly published cached record.
                     if let importOwner, importOwner !== self {
                         importOwner.applyRemoteChanges([change], ignoringLocalWriteEchoes: true)
                     }
-                }
+                })
                 continue
             }
             guard ignoringLocalWriteEchoes || !shouldSkipRemoteReload(
@@ -2478,6 +2551,13 @@ final class KnownPeopleService {
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
+        // An admitted managed replacement carries its model contract in the root itself.
+        // Honor it only while the managed projection still matches the recorded digest.
+        if KnownPeopleManagedStoreState.protectsCurrentEmbeddingStore(at: knownPeopleDirectory) {
+            UserDefaults.standard.set(current, forKey: key)
+            Self.migrationRecoveryNotices.clear(.knownPeople)
+            return
+        }
         guard Self.embeddingMigrationModelReadiness() else {
             knownPeopleLog.info("Known People embedding migration deferred until the current face model is verified")
             return
@@ -2909,6 +2989,70 @@ final class KnownPeopleService {
     }
 
     // MARK: - Import
+
+    /// Captures the resolved local route used for managed replacement planning. The caller
+    /// supplies routing activity because the settings coordinator owns that transition state.
+    func managedStoreRoute(routingActive: Bool) -> KnownPeopleManagedStoreRoute {
+        KnownPeopleManagedStoreRoute(rootURL: knownPeopleDirectory,
+            generation: storageRevision,
+            iCloudSyncActive: UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+            routingActive: routingActive)
+    }
+
+    func planManagedStoreReplacement(snapshot: KnownPeoplePackageSnapshot,
+                                     routingActive: Bool) async throws -> KnownPeopleManagedStoreReplacementPlan {
+        let route = managedStoreRoute(routingActive: routingActive)
+        return try await KnownPeopleManagedStoreReplacement().plan(snapshot: snapshot, route: route)
+    }
+
+    /// Re-admits the plan after acquiring the existing process-wide import lane, then reserves
+    /// the complete root so synchronous CRUD cannot overlap inventory, staging or the swap.
+    func replaceManagedStore(plan: KnownPeopleManagedStoreReplacementPlan,
+                             decision: KnownPeopleManagedStoreDecision,
+                             routingActive: Bool,
+                             routeMutationGate: KnownPeopleRouteMutationGate = .shared,
+                             replacementAccess: KnownPeopleManagedStoreReplacementAccess = .init()) async -> KnownPeopleManagedStoreReplacementResult {
+        let routeLease: KnownPeopleRouteMutationGate.Lease
+        do {
+            routeLease = try await routeMutationGate.acquire()
+        } catch {
+            return .init(committed: false, revision: nil, recoveryDirectory: nil,
+                installedState: nil, failure: error is CancellationError ? nil : error.localizedDescription,
+                wasCancelled: error is CancellationError)
+        }
+        defer { routeLease.release() }
+
+        await beginImport()
+        // Route and root evidence are sampled only after both ownership domains are held.
+        // A route that completed while this replacement waited must make the plan stale.
+        let currentRoute = managedStoreRoute(routingActive: routingActive)
+        let root = currentRoute.rootURL.standardizedFileURL
+        Self.importCommitOwner = self
+        Self.importCommitRoot = root
+        Self.clearReservedRoot = root
+        Self.managedReplacementReservedRoots.insert(root)
+        var managedReservationActive = true
+        defer {
+            if managedReservationActive { Self.managedReplacementReservedRoots.remove(root) }
+        }
+        defer { endImport() }
+
+        let replacement = KnownPeopleManagedStoreReplacement.integratedWithKnownPeopleService(
+            self,
+            routingActive: routingActive,
+            baseAccess: replacementAccess
+        )
+        let result = await replacement.replace(plan: plan, decision: decision, currentRoute: currentRoute)
+        await releaseImportDestinations()
+        Self.managedReplacementReservedRoots.remove(root)
+        managedReservationActive = false
+        if result.committed {
+            // Observers may synchronously reload. Publish only after the complete-root
+            // reservation is gone so they see the installed projection instead of an empty cache.
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+        return result
+    }
 
     func importFromZip(sourceURL: URL) async throws -> Int {
         let expectedStorageRevision = storageRevision

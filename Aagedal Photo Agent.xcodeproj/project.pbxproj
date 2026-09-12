@@ -45,6 +45,9 @@
 		AFACE1000000000000000002 /* AuraFaceChannelReferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */; };
 		AFACE2000000000000000002 /* AuraFaceInstallerSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */; };
 		A9D001000000000000000002 /* KnownPeoplePackageDirectoryWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */; };
+		A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */; };
+		A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */; };
+		A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */; };
 		AB1700000000000000000002 /* ToneCurveGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */; };
 		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB1900000000000000000002 /* ColorLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1900000000000000000001 /* ColorLabelTests.swift */; };
@@ -210,6 +213,9 @@
 		AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceChannelReferenceTests.swift; sourceTree = "<group>"; };
 		AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceInstallerSecurityTests.swift; sourceTree = "<group>"; };
 		A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageDirectoryWriterTests.swift; sourceTree = "<group>"; };
+		A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageArchiveTests.swift; sourceTree = "<group>"; };
+		A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalStoreSnapshotBuilderTests.swift; sourceTree = "<group>"; };
+		A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleManagedStoreReplacementTests.swift; sourceTree = "<group>"; };
 		AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToneCurveGeneratorTests.swift; sourceTree = "<group>"; };
 		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB1900000000000000000001 /* ColorLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ColorLabelTests.swift; sourceTree = "<group>"; };
@@ -389,6 +395,9 @@
 				AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */,
 				AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */,
 				A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */,
+				A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */,
+				A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */,
+				A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */,
 				AB0300000000000000000001 /* StructuredKeywordParserTests.swift */,
 				AB0400000000000000000001 /* StructuredKeywordSerializerTests.swift */,
 				AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */,
@@ -715,6 +724,9 @@
 				AFACE1000000000000000002 /* AuraFaceChannelReferenceTests.swift in Sources */,
 				AFACE2000000000000000002 /* AuraFaceInstallerSecurityTests.swift in Sources */,
 				A9D001000000000000000002 /* KnownPeoplePackageDirectoryWriterTests.swift in Sources */,
+				A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */,
+				A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */,
+				A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */,
 				AB0700000000000000000002 /* StructuredKeywordServiceTests.swift in Sources */,
 				AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */,
 				AB0400000000000000000002 /* StructuredKeywordSerializerTests.swift in Sources */,

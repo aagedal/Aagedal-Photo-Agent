@@ -632,6 +632,90 @@ struct ICloudSyncCoordinatorTests {
         )))
     }
 
+    @Test("Known People routing waits for managed replacement ownership")
+    @MainActor
+    func knownPeopleRoutingWaitsForReplacementLease() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previous = UserDefaults.standard.object(forKey: defaultsKey)
+        UserDefaults.standard.set(false, forKey: defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let gate = KnownPeopleRouteMutationGate()
+        let replacement = try await gate.acquire()
+        let routing = KnownPeopleRoutingCallProbe()
+        let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
+            knownPeopleRouteMutationGate: gate,
+            knownPeopleLocalStateRequiresReconciliation: { false })
+
+        coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+        try await waitForRouteGateWaiters(1, gate: gate)
+        #expect(await routing.callCount == 0)
+        replacement.release()
+        try await waitForRoutingCalls(1, probe: routing)
+        #expect(await routing.callCount == 1)
+    }
+
+    @Test("A queued cloud enable rechecks replacement reconciliation inside the lease")
+    @MainActor
+    func queuedCloudEnableRechecksManagedState() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previous = UserDefaults.standard.object(forKey: defaultsKey)
+        UserDefaults.standard.set(false, forKey: defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let gate = KnownPeopleRouteMutationGate()
+        let replacement = try await gate.acquire()
+        let routing = KnownPeopleRoutingCallProbe()
+        let state = KnownPeopleReconciliationProbe(required: false)
+        let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
+            knownPeopleRouteMutationGate: gate,
+            knownPeopleLocalStateRequiresReconciliation: { state.required })
+
+        coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+        try await waitForRouteGateWaiters(1, gate: gate)
+        state.required = true
+        replacement.release()
+        let deadline = ContinuousClock.now + .seconds(2)
+        while coordinator.lastError == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await routing.callCount == 0)
+        #expect(coordinator.lastError?.contains("reconciled explicitly") == true)
+        #expect(!coordinator.knownPeopleEnabled)
+    }
+
+    @Test("Malformed local managed state blocks cloud routing conservatively")
+    @MainActor
+    func malformedManagedStateBlocksCloudEnable() async throws {
+        let preferenceLease = try await knownPeopleICloudPreferenceTestGate.acquire()
+        defer { preferenceLease.release() }
+        let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
+        let previous = UserDefaults.standard.object(forKey: defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+        }
+        let routing = KnownPeopleRoutingCallProbe()
+        let coordinator = ICloudSyncCoordinator(knownPeopleRouting: routing,
+            knownPeopleRouteMutationGate: KnownPeopleRouteMutationGate(),
+            knownPeopleLocalStateRequiresReconciliation: {
+                throw KnownPeopleManagedStoreFailure.malformedState
+            })
+
+        coordinator.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+
+        #expect(await routing.callCount == 0)
+        #expect(coordinator.lastError?.contains("unsafe or malformed") == true)
+    }
+
     @Test("library iCloud routing resolves and merges off MainActor in both directions")
     @MainActor
     func libraryRoutingRunsOffMainActor() async throws {
@@ -1053,6 +1137,24 @@ struct ICloudSyncCoordinatorTests {
         }
     }
 
+    private func waitForRouteGateWaiters(_ count: Int,
+                                         gate: KnownPeopleRouteMutationGate) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while gate.waitingCount != count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(gate.waitingCount == count)
+    }
+
+    private func waitForRoutingCalls(_ count: Int,
+                                     probe: KnownPeopleRoutingCallProbe) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while await probe.callCount != count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await probe.callCount == count)
+    }
+
 
     @Test("store migration preserves a newer destination and accepts a newer source")
     func migrationUsesNewestFile() throws {
@@ -1081,6 +1183,8 @@ struct ICloudSyncCoordinatorTests {
         #expect(try Data(contentsOf: destinationFile) == Data("newest-local".utf8))
     }
 }
+
+nonisolated let knownPeopleICloudPreferenceTestGate = KnownPeopleRouteMutationGate()
 
 nonisolated private final class ICloudAvailabilityThreadProbe: @unchecked Sendable {
     private let lock = NSLock()
@@ -1298,6 +1402,34 @@ nonisolated private final class KnownPeopleICloudRoutingProbe: @unchecked Sendab
         lock.withLock {
             observedMainThread = observedMainThread || Thread.isMainThread
         }
+    }
+}
+
+private actor KnownPeopleRoutingCallProbe: KnownPeopleICloudRouting {
+    private(set) var callCount = 0
+
+    func reconcile(enabled: Bool, requestID: UUID) async throws -> KnownPeopleICloudRoutingResult {
+        callCount += 1
+        return .unavailable(requestID: requestID, enabled: enabled)
+    }
+
+    func storageURL(syncEnabled: Bool) async -> URL {
+        URL(fileURLWithPath: syncEnabled ? "/virtual/cloud-known-people" : "/virtual/local-known-people")
+    }
+
+    func cloudRootURL(ensuringDirectory: Bool) async -> URL? {
+        URL(fileURLWithPath: "/virtual/cloud-known-people")
+    }
+}
+
+nonisolated private final class KnownPeopleReconciliationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+
+    init(required: Bool) { value = required }
+    var required: Bool {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
     }
 }
 

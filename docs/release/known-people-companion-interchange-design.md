@@ -49,15 +49,22 @@ The core follows FTP Sync's schema-2 package slice committed at source revision
   library ID, contract, counts and the ASCII-path-sorted file inventory. Export time
   and exporter identity do not affect it.
 
-Honor the companion limits: 10,000 people, 100,000 examples, 200,001 files,
-16 MiB for each file/manifest/people payload and 500 MB total. Reject blank/NUL/overlong
+Honor the companion directory-package limits: 10,000 people, 100,000 examples,
+200,001 files, 16 MiB for each file/manifest/people payload and 500 MB total. Reject blank/NUL/overlong
 names, duplicate IDs or JSON keys, unknown keys, trailing JSON, excessive nesting,
 symlinks, noncanonical/case-variant paths, undeclared/unreferenced files and hash,
 size, count or revision mismatches. Every shared person must have an example.
 
-The package is a ZIP-compatible archive with `.aagedalpeople` as its user-facing
-extension and the files above at its root. Extraction must enforce the same path and
-size policy before the existing validated-directory reader is invoked.
+The primary package is a directory bundle with the exported type identifier
+`no.aagedal.people-library`, conforming to `com.apple.package`, and the user-facing
+extension `.aagedalpeople`. A transport archive uses the distinct compound extension
+`.aagedalpeople.zip`, with the package files at the archive root. Import accepts both
+forms. The strict ZIP32 transport supports at most 65,534 entries because `0xffff` is
+reserved as the ZIP64 sentinel; larger valid libraries must use the directory package.
+ZIP extraction enforces the directory package's path, per-file and total-size policy
+before the existing validated-directory reader is invoked. ZIP bytes must never be
+written under the bare package extension. Both apps and their UI must present the same
+archive limit and direct larger libraries to the directory form.
 
 ## Lossless Photo Agent extension
 
@@ -241,8 +248,19 @@ cooperating-writer serialization. Repository validation passes after one transie
 `lipo` inspection failure on the unchanged bundled ffmpeg; an immediate direct probe and
 complete rerun passed. Earlier focused attempts exposed sandbox cache denial, a POSIX `read`
 name collision and a nested test macro; each was corrected without weakening product
-admission or assertions. The directory writer remains a service boundary; archive extraction,
-managed-store replacement, user-facing export/import adapters and App Group publication remain.
+admission or assertions. The strict ZIP32 archive, managed-store replacement and local
+snapshot builder now form the verified Photo Agent core boundary. The archive validates
+headers, inventory, hashes, CRC, JPEG and FEM2 before extraction and retains truthful
+cleanup/recovery evidence. Managed replacement holds the route and complete local root,
+rechecks descriptor-bound inventory, atomically swaps the projection, preserves exact admitted
+package bytes, invalidates stale deferred work and blocks iCloud enablement until explicit
+reconciliation. Local capture rejects unsafe, changed or untracked roots and reuses admitted
+bytes only while both package and managed-projection hashes still bind. Service-local UUID
+filenames use uppercase `UUID.uuidString`; interchange paths remain lowercase. The integrated
+five-suite checkpoint passes 149 declared tests across 346 expanded cases, and the independent
+source audit approves the implementation. First-time identity assignment, the explicit
+local-to-cloud reconciliation workflow, user-facing export/import adapters and App Group
+publication remain.
 
 The contradictory older local AuraFace package has been replaced by the reviewed deterministic build.
 The manifest, locked recipe and `CoreMLFaceEmbedder` declare RGB and Torch 2.8.0; a checked-in
