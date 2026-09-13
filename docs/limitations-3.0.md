@@ -70,10 +70,12 @@ These are material product and evidence boundaries, not a list of unfinished int
   retain photo/WAV hashes, and Caption can restore a missing adjacent WAV from an explicitly selected
   exact copy or confirmed replacement. Caption can also search a user-selected folder for an exact
   moved relationship; duplicate, changed and missing results are not adopted. Native validation of
-  that workflow remains incomplete. Caption can explicitly use Apple on-device speech after an
-  explicit language download, show an exact-WAV-bound editable draft, and persist generated/reviewed
-  provenance only after explicit approval. Editing revokes approval, and incremental edits serialize
-  toward the latest complete durable review before a photo or locale transition. The shared
+  archive and reassociation breadth remains incomplete. Caption can explicitly use Apple on-device
+  speech after an explicit language download, show an exact-WAV-bound editable draft, and persist
+  generated/reviewed provenance only after explicit approval. Editing revokes approval, and
+  incremental edits serialize toward the latest complete durable review before a photo or locale
+  transition. The native review fixture verifies complete editing, relaunch and approval without
+  changing the WAV or relationship bytes. The shared
   `{voiceMemoTranscript}` variable can place that reviewed text through an explicit template/variable
   operation and revalidates the exact approval before each metadata write; braces in transcript text
   remain literal. The supported Description, Extended Description, Headline and Instructions

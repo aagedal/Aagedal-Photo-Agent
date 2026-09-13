@@ -581,12 +581,15 @@ reservation capacity and an explicit release-before-download recovery path. Nati
 offline/relaunch and authorized-Sony evidence remain incomplete. [Cycle 29](cycle-29-voice-memo-review-edit-durability-2026-09-13.md)
 serializes incremental post-approval edits toward the latest complete durable review, waits for that
 boundary before photo/locale changes and blocks replacement transcription while it saves. Its native
-edit/relaunch test compiles but could not activate the app while the Mac was locked.
+edit/relaunch test is completed by [cycle 30](cycle-30-voice-memo-native-approval-2026-09-13.md):
+the built app preserves complete reviewed text, revokes and restores approval correctly across
+relaunch, then persists approval without changing the relationship or WAV. Canonical encoded
+verification also prevents subsecond production timestamps from causing false post-write corruption.
 
-**Smallest next action/evidence:** Unlock the Mac and run cycle 29's dedicated native edit/relaunch/
-approval test. Then run an installed-language transcription offline in the built app, relaunch and
-verify persisted review/application read-back; repeat malformed, empty, silent, long-cancellation
-and reservation recovery with authorized Sony WAV material.
+**Smallest next action/evidence:** Run an installed-language transcription offline in the built app,
+relaunch and verify the persisted review. Then verify transcript application/read-back and repeat
+malformed, empty, silent, long-cancellation and reservation recovery with authorized Sony WAV
+material.
 
 ### J-VOICE-VARIABLE
 

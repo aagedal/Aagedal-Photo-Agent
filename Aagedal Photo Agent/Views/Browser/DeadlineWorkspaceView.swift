@@ -131,7 +131,6 @@ struct DeadlineWorkspaceView: View {
             Divider()
             footer
         }
-        .accessibilityIdentifier("deadline.workspace")
         .task(id: DeadlineWorkspaceTaskIdentity(
             preflight: input?.revisionToken,
             resumeWorkflowIdentifier: resumeWorkflowIdentifier
@@ -177,6 +176,7 @@ struct DeadlineWorkspaceView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Deadline Workspace")
                     .font(.title2.weight(.semibold))
+                    .accessibilityIdentifier("deadline.workspace")
                 Text("Selected profile: \(model.presentedState?.profileName ?? input?.request.profile.name ?? "None")")
                     .foregroundStyle(.secondary)
             }

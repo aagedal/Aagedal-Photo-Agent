@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
+    @FocusState private var searchFieldFocused: Bool
     var faceCount: Int = 0
     var faceGroupCount: Int = 0
     /// Fired when the user clicks into this grid (split-view pane focus).
@@ -111,18 +112,6 @@ struct BrowserView: View {
                     }
                 }
             }
-        } else if viewModel.visibleImages.isEmpty {
-            ContentUnavailableView {
-                Label("No Results", systemImage: "magnifyingglass")
-            } description: {
-                Text("No images match the current search or filters.")
-            } actions: {
-                if viewModel.isFilteringActive {
-                    Button("Clear Filters") {
-                        viewModel.clearFilters()
-                    }
-                }
-            }
         } else {
             ZStack {
                 CollectionViewGridRepresentable(viewModel: viewModel, onFocus: onFocus)
@@ -205,6 +194,22 @@ struct BrowserView: View {
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
                         .padding(8)
                     }
+                }
+
+                if viewModel.visibleImages.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Results", systemImage: "magnifyingglass")
+                    } description: {
+                        Text("No images match the current search or filters.")
+                    } actions: {
+                        if viewModel.isFilteringActive {
+                            Button("Clear Filters") {
+                                viewModel.clearFilters()
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .windowBackgroundColor))
                 }
             }
         }
@@ -299,6 +304,7 @@ struct BrowserView: View {
             TextField("Search", text: $viewModel.searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 200)
+                .focused($searchFieldFocused)
                 .accessibilityIdentifier("browser.search")
 
             Button {

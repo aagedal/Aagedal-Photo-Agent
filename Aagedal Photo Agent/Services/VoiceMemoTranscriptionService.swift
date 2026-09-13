@@ -648,8 +648,6 @@ actor VoiceMemoTranscriptionService {
         )
         let normalizedReview = draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedReview.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
-        var persistedDraft = draft
-        persistedDraft.reviewedText = normalizedReview
         let record = VoiceMemoTranscriptRecord(
             sourceImageFilename: image.lastPathComponent,
             sourceMemoFilename: association.memoURL.lastPathComponent,
@@ -664,15 +662,28 @@ actor VoiceMemoTranscriptionService {
             reviewedText: normalizedReview,
             approvedAt: draft.approvedAt
         )
-        _ = try await saveTranscript(record, image, image.deletingLastPathComponent())
+        let saved = try await saveTranscript(record, image, image.deletingLastPathComponent())
         try Task.checkCancellation()
-        _ = try await validatedAssociation(
+        let currentAssociation = try await validatedAssociation(
             for: image,
-            memoSHA256: draft.memoSHA256,
-            memoByteCount: draft.memoByteCount,
-            profileIdentifier: draft.associationProfileIdentifier
+            memoSHA256: saved.memoSHA256,
+            memoByteCount: saved.memoByteCount,
+            profileIdentifier: saved.associationProfileIdentifier
         )
-        return persistedDraft
+        return VoiceMemoTranscriptDraft(
+            imageURL: image,
+            memoURL: currentAssociation.memoURL,
+            memoByteCount: saved.memoByteCount,
+            memoSHA256: saved.memoSHA256,
+            associationProfileIdentifier: saved.associationProfileIdentifier,
+            localeIdentifier: saved.localeIdentifier,
+            provider: saved.provider,
+            providerModel: saved.providerModel,
+            generatedAt: saved.generatedAt,
+            generatedText: saved.generatedText,
+            reviewedText: saved.reviewedText,
+            approvedAt: saved.approvedAt
+        )
     }
 
     private func validatedAssociation(

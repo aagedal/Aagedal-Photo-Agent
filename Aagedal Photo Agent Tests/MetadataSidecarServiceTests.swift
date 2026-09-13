@@ -2428,6 +2428,38 @@ struct VoiceMemoTranscriptSidecarTests {
         #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == approved)
     }
 
+    @Test("fractional dates return the canonical verified ISO-8601 record")
+    func fractionalDateReadBack() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        var transcript = VoiceMemoTranscriptRecord(
+            sourceImageFilename: "photo.JPG",
+            sourceMemoFilename: "photo.WAV",
+            memoByteCount: 42,
+            memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "sony-test",
+            localeIdentifier: "en-US",
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100.875),
+            generatedText: "Generated transcript",
+            reviewedText: "Human-reviewed text"
+        )
+        transcript.approvedAt = Date(timeIntervalSince1970: 500.625)
+
+        let saved = try await service.saveVoiceMemoTranscriptSerialized(
+            transcript,
+            for: image,
+            in: folder
+        )
+
+        #expect(saved.generatedAt == Date(timeIntervalSince1970: 100))
+        #expect(saved.approvedAt == Date(timeIntervalSince1970: 500))
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == saved)
+    }
+
     @Test("copy and relocation carry the exact transcript extension")
     func copyAndRelocation() async throws {
         let folder = try makeFolder()

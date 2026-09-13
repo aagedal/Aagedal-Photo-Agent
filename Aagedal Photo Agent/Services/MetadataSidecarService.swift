@@ -462,11 +462,24 @@ struct MetadataSidecarService: Sendable {
             guard let installed = try self.loadVoiceMemoTranscript(
                 for: imageURL,
                 in: folderURL
-            ), installed == transcript else {
+            ), try Self.encodedVoiceMemoTranscript(installed)
+                == Self.encodedVoiceMemoTranscript(transcript) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
             return installed
         }
+    }
+
+    /// Foundation's ISO-8601 strategy stores whole seconds. Compare the canonical encoded
+    /// representation rather than the pre-encoding `Date` values so a verified write with a
+    /// fractional generation or approval timestamp is not reported as corrupt.
+    private nonisolated static func encodedVoiceMemoTranscript(
+        _ transcript: VoiceMemoTranscriptRecord
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(transcript)
     }
 
     private nonisolated static func replacingVoiceMemoTranscript(
@@ -477,10 +490,7 @@ struct MetadataSidecarService: Sendable {
         guard var carrier = try JSONSerialization.jsonObject(with: carrierData) as? [String: Any] else {
             throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let encoded = try encoder.encode(transcript)
+        let encoded = try encodedVoiceMemoTranscript(transcript)
         guard var replacement = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: sourceURL.path])
         }

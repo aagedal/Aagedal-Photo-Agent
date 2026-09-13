@@ -29,7 +29,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
   bound app sidecar record; editing revokes approval, serializes the latest complete review, and
   finishes that durability boundary before photo or locale navigation. Replacement transcription is
-  unavailable while review persistence is active. The carrier-neutral
+  unavailable while review persistence is active. Approval now verifies and returns the canonical
+  stored timestamp representation instead of falsely reporting corruption when the originating
+  clock includes fractional seconds. The carrier-neutral
   `{voiceMemoTranscript}` template variable resolves only that exact approved review and revalidates
   it before metadata writes or retries. Application is limited to Description, Extended Description,
   Headline and Instructions, and an
@@ -113,6 +115,8 @@ upload the current image from Photo Agent.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the
   active mode remains visible and cannot change merely because the app loses focus on newer macOS
   releases.
+- Browser search now keeps its active editor while filters temporarily produce no results, so typing
+  can restore matches without clicking the toolbar field again.
 - Quick List additions and Keyword Lists iCloud route changes now perform coordinated file access
   away from the main thread, reject stale completions, and preserve list contents when local and
   cloud copies are reconciled.

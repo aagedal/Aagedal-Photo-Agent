@@ -28,7 +28,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)
 
-        XCTAssertTrue(app.otherElements["browser.workspace"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 12))
         XCTAssertFalse(app.staticTexts["No Images"].exists)
     }
 
@@ -46,13 +46,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         search.typeText("zzzz")
         XCTAssertTrue(app.staticTexts["No Results"].waitForExistence(timeout: 5))
         // Send keys to the current responder, without clicking/refocusing the field.
-        app.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4))
+        for _ in 0..<4 {
+            search.typeKey(.delete, modifierFlags: [])
+        }
+        XCTAssertEqual(search.value as? String, "smoke")
         let resultsReturned = NSPredicate { _, _ in
             !self.app.staticTexts["No Results"].exists
         }
         expectation(for: resultsReturned, evaluatedWith: app)
         waitForExpectations(timeout: 5)
-        app.typeText("-1")
+        search.typeText("-1")
         XCTAssertEqual(search.value as? String, "smoke-1")
     }
 
@@ -73,14 +76,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             destination: destination
         )
 
-        XCTAssertTrue(app.otherElements["import.workspace"].waitForExistence(timeout: 10))
-        app.buttons["import.start"].click()
+        XCTAssertTrue(app.staticTexts["Import Photos"].waitForExistence(timeout: 10))
+        let startImport = app.buttons["import.start"]
+        XCTAssertTrue(startImport.waitForExistence(timeout: 10))
+        startImport.click()
 
-        let alert = app.alerts["Confirm overwrite"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 10))
-        XCTAssertTrue(alert.buttons["Replace 1 existing files"].exists)
-        alert.buttons["Cancel"].click()
-        XCTAssertFalse(alert.waitForExistence(timeout: 2))
+        let replace = app.buttons["Replace 1 existing files"]
+        XCTAssertTrue(replace.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Confirm overwrite"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(replace.waitForExistence(timeout: 2))
         XCTAssertEqual(try Data(contentsOf: existing), Data("existing destination bytes".utf8))
     }
 
@@ -89,7 +94,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "caption", folder: photos)
 
-        XCTAssertTrue(app.otherElements["caption.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
         let headline = app.textFields["metadata.input.title"]
         XCTAssertTrue(headline.waitForExistence(timeout: 10))
         headline.click()
@@ -108,7 +113,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let originalMemo = try Data(contentsOf: fixture.memoURL)
         launch(workflow: "caption", folder: fixture.folder)
 
-        XCTAssertTrue(app.otherElements["caption.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
         let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
         let approval = app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"]
         XCTAssertTrue(draft.waitForExistence(timeout: 15))
@@ -142,7 +147,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             approved: true,
             at: fixture.sidecarURL
         ))
-        XCTAssertFalse(relaunchedApproval.isEnabled)
+        XCTAssertTrue(waitForEnabled(relaunchedApproval, expected: false))
         XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
         XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
     }
@@ -152,7 +157,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "batch-rename", folder: photos)
 
-        XCTAssertTrue(app.otherElements["batchRename.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["batchRename.workspace"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["2 selected files · recipe order follows the visible browser sort"].exists)
         XCTAssertTrue(app.buttons["Rename"].exists)
     }
@@ -165,7 +170,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             .appendingPathComponent("profiles.json")
         launch(workflow: "deadline", folder: photos, profileStore: profileStore)
 
-        XCTAssertTrue(app.otherElements["deadline.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["deadline.workspace"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["deadline.currentPhase"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["deadline.readinessSummary"].exists)
         XCTAssertTrue(app.staticTexts["deadline.nextRequiredAction"].exists)
@@ -188,7 +193,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
         launch(workflow: "known-people-interchange", knownPeopleRoot: knownPeopleRoot)
 
-        XCTAssertTrue(app.otherElements["known-people-main-content"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.descendants(matching: .any)["known-people-main-content"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.descendants(matching: .any)["known-people-interchange-menu"].exists)
         XCTAssertFalse(app.dialogs.firstMatch.exists)
     }
@@ -219,6 +224,20 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-profile-store", profileStore)
         append("--ui-test-known-people-root", knownPeopleRoot)
         app.launch()
+        reopenMainWindowIfNeeded()
+    }
+
+    @MainActor
+    private func reopenMainWindowIfNeeded() {
+        guard !app.windows.firstMatch.waitForExistence(timeout: 2) else { return }
+
+        let windowMenu = app.menuBars.menuBarItems["Window"]
+        guard windowMenu.waitForExistence(timeout: 3) else { return }
+        windowMenu.click()
+
+        let mainWindowItem = app.menuItems["Aagedal Photo Agent"]
+        guard mainWindowItem.waitForExistence(timeout: 3) else { return }
+        mainWindowItem.click()
     }
 
     @MainActor
@@ -318,6 +337,14 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         expectation(for: predicate, evaluatedWith: NSObject())
         waitForExpectations(timeout: 10)
         return predicate.evaluate(with: NSObject())
+    }
+
+    @MainActor
+    private func waitForEnabled(_ element: XCUIElement, expected: Bool) -> Bool {
+        let predicate = NSPredicate { _, _ in element.isEnabled == expected }
+        expectation(for: predicate, evaluatedWith: element)
+        waitForExpectations(timeout: 5)
+        return predicate.evaluate(with: element)
     }
 
     private func writeJSON(_ object: [String: Any], to url: URL) throws {

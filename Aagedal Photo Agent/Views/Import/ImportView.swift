@@ -29,7 +29,6 @@ struct ImportView: View {
         }
         .frame(minWidth: 680, minHeight: 480)
         .frame(maxHeight: maxSheetHeight)
-        .accessibilityIdentifier("import.workspace")
         .alert("Thumbnail previews are slow", isPresented: $showSlowThumbnailWarning) {
             Button("OK") { }
         } message: {
@@ -69,6 +68,7 @@ struct ImportView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Import Photos")
                     .font(.title2.bold())
+                    .accessibilityIdentifier("import.workspace")
 
                 importNameSection
                 sourceSection

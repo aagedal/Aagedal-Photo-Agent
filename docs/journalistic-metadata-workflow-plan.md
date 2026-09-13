@@ -857,6 +857,17 @@ native edit/relaunch/approval test compiles, but execution stopped before produc
 the locked Mac prevented app activation. Native/offline, authorized-Sony, application/read-back and
 accessibility evidence remains open.
 
+**Coordinator cycle 30 — 2026-09-13:** The dedicated native fixture now passes complete reviewed-text
+editing, durable approval revocation, relaunch and approval while preserving the relationship and WAV
+bytes exactly. It exposed a false corruption result when production subsecond `Date` values were
+encoded as whole-second ISO-8601 values; verification now compares canonical encodings and returns
+the installed transcript record. The macOS 27 harness reopens a remembered closed app window and
+keeps sheet markers from overwriting descendant control identities. The full smoke run additionally
+found and fixed Browser search focus loss by keeping the collection view mounted beneath the
+no-results state. The complete 2,905-test serial suite, all 9 UI smoke tests and repository validation
+pass; see [cycle 30 evidence](release/cycle-30-voice-memo-native-approval-2026-09-13.md). Offline,
+authorized-Sony, application/read-back, accessibility and real-server evidence remains open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.
