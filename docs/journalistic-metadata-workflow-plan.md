@@ -780,6 +780,19 @@ owned rollback, opaque-field preservation and navigation cancellation. The 51 af
 [cycle 22 evidence](release/cycle-22-voice-memo-reassociation-2026-09-13.md). The lifecycle checkbox
 remains open for authentic Sony/native picker, archive and physical-volume evidence.
 
+**Coordinator cycle 23 — 2026-09-13:** Caption now offers an explicit Apple on-device speech path
+for an available associated WAV. It resolves supported languages at runtime, distinguishes installed,
+download-required, downloading and unavailable states, and never installs a language while browsing.
+Transcription runs on the retained utility executor, owns analyzer/result cancellation, and rechecks
+the exact WAV revision and persisted association before publishing an editable, source-bound draft.
+Navigation rejects late results. The draft deliberately remains in memory and cannot write metadata;
+persisted review/approval, variable resolution and Deadline policy remain the next implementation
+boundary. Six transcription tests, the adjacent 13-test playback suite, the complete 2,872-test serial
+suite and repository validation pass; see
+[cycle 23 evidence](release/cycle-23-voice-memo-transcription-foundation-2026-09-13.md). The broad
+transcription checkbox remains open until durable reviewed state and the remaining failure/native
+matrix are complete.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

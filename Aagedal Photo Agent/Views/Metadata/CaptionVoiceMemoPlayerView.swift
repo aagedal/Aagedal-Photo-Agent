@@ -7,6 +7,7 @@ struct CaptionVoiceMemoPlayerView: View {
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
     @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
+    @State private var transcriptModel = CaptionVoiceMemoTranscriptModel()
     @State private var refreshID = UUID()
     @State private var isSelectingRecoveryMemo = false
     @State private var isSelectingRelationshipFolder = false
@@ -65,25 +66,28 @@ struct CaptionVoiceMemoPlayerView: View {
             case .unavailable(let message):
                 Text(message).foregroundStyle(.orange)
             case .available(let playback):
-                HStack(spacing: 10) {
-                    Button(playback.isPlaying ? "Pause voice memo" : "Play voice memo",
-                           systemImage: playback.isPlaying ? "pause.fill" : "play.fill") {
-                        Task { await model.toggle() }
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 10) {
+                        Button(playback.isPlaying ? "Pause voice memo" : "Play voice memo",
+                               systemImage: playback.isPlaying ? "pause.fill" : "play.fill") {
+                            Task { await model.toggle() }
+                        }
+                        .labelStyle(.iconOnly)
+                        .disabled(model.isChangingPlayback)
+                        .accessibilityIdentifier("caption.voiceMemo.playPause")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(playback.association.memoURL.lastPathComponent)
+                                .lineLimit(1)
+                                .help(playback.association.memoURL.path)
+                            Text("\(time(playback.position)) / \(time(playback.duration))")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Voice memo playback time")
+                                .accessibilityValue("\(time(playback.position)) of \(time(playback.duration))")
+                        }
+                        Spacer(minLength: 0)
                     }
-                    .labelStyle(.iconOnly)
-                    .disabled(model.isChangingPlayback)
-                    .accessibilityIdentifier("caption.voiceMemo.playPause")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(playback.association.memoURL.lastPathComponent)
-                            .lineLimit(1)
-                            .help(playback.association.memoURL.path)
-                        Text("\(time(playback.position)) / \(time(playback.duration))")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("Voice memo playback time")
-                            .accessibilityValue("\(time(playback.position)) of \(time(playback.duration))")
-                    }
-                    Spacer(minLength: 0)
+                    transcriptionPanel
                 }
             }
             if recoveryModel.isWorking {
@@ -112,6 +116,9 @@ struct CaptionVoiceMemoPlayerView: View {
         .accessibilityIdentifier("caption.voiceMemo")
         .task(id: Request(imageURL: imageURL, refreshID: refreshID)) {
             await model.load(imageURL)
+        }
+        .task(id: Request(imageURL: imageURL, refreshID: refreshID)) {
+            await transcriptModel.load(imageURL)
         }
         .task(id: isPlaying) { await model.pollWhilePlaying() }
         .fileImporter(
@@ -181,6 +188,7 @@ struct CaptionVoiceMemoPlayerView: View {
         .onChange(of: imageURL) {
             recoveryModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.cancel(resetDraft: true)
             isSelectingRecoveryMemo = false
             isSelectingRelationshipFolder = false
             recoveryImageURL = nil
@@ -190,8 +198,95 @@ struct CaptionVoiceMemoPlayerView: View {
             model.stop()
             recoveryModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.cancel(resetDraft: true)
             recoveryImageURL = nil
             reassociationImageURL = nil
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptionPanel: some View {
+        Divider()
+        if transcriptModel.isChecking {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking on-device speech…").foregroundStyle(.secondary)
+            }
+        } else if let availability = transcriptModel.availability {
+            HStack(spacing: 8) {
+                if !availability.supportedLocales.isEmpty {
+                    Picker("Transcription language", selection: Binding(
+                        get: { transcriptModel.selectedLocaleIdentifier },
+                        set: { identifier in
+                            Task { await transcriptModel.selectLocale(identifier: identifier) }
+                        }
+                    )) {
+                        ForEach(availability.supportedLocales, id: \.identifier) { locale in
+                            Text(Locale.current.localizedString(forIdentifier: locale.identifier)
+                                 ?? locale.identifier)
+                                .tag(locale.identifier)
+                        }
+                    }
+                    .frame(maxWidth: 220)
+                    .accessibilityIdentifier("caption.voiceMemo.transcriptionLanguage")
+                }
+                Spacer(minLength: 0)
+                switch availability.status {
+                case .installed:
+                    Button("Transcribe", systemImage: "text.bubble") {
+                        Task { await transcriptModel.transcribe() }
+                    }
+                    .disabled(transcriptModel.isTranscribing)
+                    .accessibilityIdentifier("caption.voiceMemo.transcribe")
+                case .needsDownload:
+                    Button("Download Language", systemImage: "arrow.down.circle") {
+                        Task { await transcriptModel.downloadLanguage() }
+                    }
+                    .disabled(transcriptModel.isDownloading)
+                    .accessibilityIdentifier("caption.voiceMemo.downloadLanguage")
+                case .downloading:
+                    Text("Language downloading…").foregroundStyle(.secondary)
+                case .unsupported:
+                    Text("On-device transcription unavailable").foregroundStyle(.secondary)
+                }
+            }
+
+            if transcriptModel.isTranscribing || transcriptModel.isDownloading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(transcriptModel.isTranscribing
+                         ? "Transcribing locally with Apple on-device speech…"
+                         : "Downloading the selected on-device language…")
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("Cancel") { transcriptModel.cancel() }
+                        .accessibilityIdentifier("caption.voiceMemo.cancelTranscription")
+                }
+            }
+        }
+
+        if let error = transcriptModel.errorMessage {
+            Text(error).foregroundStyle(.red).textSelection(.enabled)
+        }
+
+        if let draft = transcriptModel.draft {
+            Text("Transcript draft")
+                .font(.caption.weight(.semibold))
+            TextEditor(text: Binding(
+                get: { draft.reviewedText },
+                set: { transcriptModel.updateReviewedText($0) }
+            ))
+            .font(.body)
+            .frame(minHeight: 70, maxHeight: 130)
+            .overlay {
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(.separator, lineWidth: 1)
+            }
+            .accessibilityLabel("Voice memo transcript draft")
+            .accessibilityIdentifier("caption.voiceMemo.transcriptDraft")
+            Text("Generated locally in \(draft.localeIdentifier). Review or edit the text here. It is not saved to metadata until the reviewed-transcript workflow is implemented.")
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 

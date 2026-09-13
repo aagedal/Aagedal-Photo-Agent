@@ -70,7 +70,9 @@ These are material product and evidence boundaries, not a list of unfinished int
   retain photo/WAV hashes, and Caption can restore a missing adjacent WAV from an explicitly selected
   exact copy or confirmed replacement. Caption can also search a user-selected folder for an exact
   moved relationship; duplicate, changed and missing results are not adopted. Native validation of
-  that workflow, transcription, reviewed transcript variables and delivery integration remain incomplete.
+  that workflow remains incomplete. Caption can explicitly use Apple on-device speech after an
+  explicit language download and show an exact-WAV-bound editable draft, but that draft is currently
+  in memory only: persisted review/approval, transcript variables and delivery integration remain incomplete.
   Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
   and broader camera workflows remain unverified. General Move reports separate XMP/editorial

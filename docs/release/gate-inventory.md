@@ -569,9 +569,16 @@ Do not spend release time implementing excluded conditional analyzers.
   review/edit-before-apply. Keep the audio source and generated transcript provenance distinguishable.
 ```
 
-**Current status:** Baseline local transcription, review/provenance and model/language UI are not implemented.
+**Current status:** [Cycle 23](cycle-23-voice-memo-transcription-foundation-2026-09-13.md) implements
+the first Apple on-device slice: runtime language/asset state, explicit download, cancellable analysis,
+exact-WAV and association revalidation, stale-navigation rejection, distinct generated/reviewed text,
+and an editable in-memory draft that cannot write metadata. Durable review/approval, sidecar survival,
+the broader injected failure matrix and native/offline/Sony evidence remain incomplete.
 
-**Smallest next action/evidence:** Choose a bounded local transcription integration, document language/model/offline availability, implement cancellable requests with stale-result rejection, and require review/edit before explicit apply.
+**Smallest next action/evidence:** Persist the source-bound generated/reviewed provenance through the
+existing serialized sidecar transaction, add explicit approval/revocation, prove unrelated save/history/
+move/archive paths preserve it, and complete malformed/empty/finalization/install-cancellation tests before
+native offline and authorized-Sony recognition drills.
 
 ### J-VOICE-VARIABLE
 

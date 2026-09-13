@@ -22,6 +22,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Caption can find a moved voice-memo relationship inside a user-selected folder. Exact photo and
   WAV identities are reassociated into a verified adjacent copy; duplicate, changed and missing
   results remain explicit and selected source files are preserved.
+- Caption can explicitly transcribe an associated WAV with Apple on-device speech. Language assets
+  are shown and downloaded only on request, work is cancellable, and the exact WAV is revalidated
+  before an editable draft is shown. Draft text is not yet persisted or applied to metadata.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.
@@ -83,7 +86,9 @@ upload the current image from Photo Agent.
   replacement confirmation. A photo without an adjacent record can search a selected folder for an
   exact moved relationship; filename-only, changed, duplicate and missing candidates are never
   adopted. Duplicate preserves a verified image/WAV relationship in independent copies with
-  collision protection and rollback on failure.
+  collision protection and rollback on failure. Apple on-device transcription is an explicit,
+  cancellable action with a language picker and separate asset download; its editable result remains
+  an in-memory draft until reviewed-transcript persistence and metadata application are implemented.
 - Import now creates the destination reveal folder before handing it to the browser, preventing a
   transient “Couldn’t Open Folder” error at the start of a memory-card import.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the

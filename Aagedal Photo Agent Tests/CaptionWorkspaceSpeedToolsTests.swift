@@ -426,6 +426,274 @@ struct CaptionVoiceMemoPlaybackTests {
     }
 }
 
+@Suite("Caption voice memo transcription")
+struct CaptionVoiceMemoTranscriptionTests {
+    private let imageURL = URL(fileURLWithPath: "/caption/transcription.jpg")
+    private let memoURL = URL(fileURLWithPath: "/caption/transcription.wav")
+    private let locale = Locale(identifier: "en-US")
+
+    @Test("availability distinguishes installed and download-required language assets")
+    func availabilityStates() async {
+        let installed = service(status: .installed)
+        let downloadable = service(status: .needsDownload)
+
+        let ready = await installed.availability(preferredLocale: locale)
+        let missing = await downloadable.availability(preferredLocale: locale)
+
+        #expect(ready.selectedLocale?.identifier == locale.identifier)
+        #expect(ready.supportedLocales.map(\.identifier) == [locale.identifier])
+        #expect(ready.status == .installed)
+        #expect(missing.status == .needsDownload)
+    }
+
+    @Test("explicit asset download is rechecked before it becomes ready")
+    func explicitDownload() async throws {
+        let probe = VoiceMemoTranscriptionProbe(status: .needsDownload)
+        let service = service(probe: probe)
+
+        let result = try await service.downloadLanguage(locale)
+
+        #expect(result.status == .installed)
+        #expect(probe.installCount == 1)
+    }
+
+    @Test("transcription binds a trimmed draft to exact WAV identity and runs off MainActor")
+    @MainActor
+    func exactDraft() async throws {
+        let found = association
+        let revision = self.revision(hash: String(repeating: "a", count: 64))
+        let selectedLocale = locale
+        let queue = DispatchSerialQueue(label: "test.voice-memo.transcription")
+        let runtime = VoiceMemoTranscriptionRuntime(
+            isAvailable: { true },
+            supportedLocales: { [selectedLocale] },
+            resolveLocale: { _ in selectedLocale },
+            assetStatus: { _ in .installed },
+            installAssets: { _ in },
+            transcribe: { url, selected in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(url == found.memoURL)
+                #expect(selected.identifier == selectedLocale.identifier)
+                return "  A verified local transcript.  "
+            }
+        )
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime,
+            filesystemQueue: queue,
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in revision },
+            now: { Date(timeIntervalSince1970: 123) },
+            startAccess: { _ in false }
+        )
+
+        let draft = try await service.transcribe(imageURL: imageURL, locale: locale)
+
+        #expect(draft.generatedText == "A verified local transcript.")
+        #expect(draft.reviewedText == draft.generatedText)
+        #expect(draft.memoSHA256 == revision.sha256)
+        #expect(draft.memoByteCount == revision.byteCount)
+        #expect(draft.provider == "Apple on-device speech")
+        #expect(draft.providerModel == "System managed; exact version unavailable")
+        #expect(draft.generatedAt == Date(timeIntervalSince1970: 123))
+    }
+
+    @Test("changed WAV bytes discard the generated result")
+    func changedSourceIsRejected() async {
+        let found = association
+        let revisions = VoiceMemoRevisionSequence([
+            revision(hash: String(repeating: "a", count: 64)),
+            revision(hash: String(repeating: "b", count: 64)),
+        ])
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed, transcript: "Must be discarded"),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in revisions.next() },
+            startAccess: { _ in false }
+        )
+
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            _ = try await service.transcribe(imageURL: imageURL, locale: locale)
+        }
+    }
+
+    @Test("navigation cancellation rejects a late transcription result")
+    @MainActor
+    func navigationRejectsLateResult() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let selectedLocale = locale
+        let gate = VoiceMemoTranscriptionGate()
+        defer { Task { await gate.open() } }
+        let service = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in .installed },
+                installAssets: { _ in },
+                transcribe: { _, _ in
+                    await gate.wait()
+                    return "Late transcript"
+                }
+            ),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            startAccess: { _ in false }
+        )
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        let request = Task { await model.transcribe() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await gate.hasWaiter)
+        model.cancel(resetDraft: true)
+        await gate.open()
+        await request.value
+
+        #expect(model.draft == nil)
+        #expect(!model.isTranscribing)
+    }
+
+    @Test("Caption presents draft review without metadata or relationship writes")
+    func presentationContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/CaptionVoiceMemoPlayerView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(source.contains("caption.voiceMemo.transcriptionLanguage"))
+        #expect(source.contains("caption.voiceMemo.downloadLanguage"))
+        #expect(source.contains("caption.voiceMemo.cancelTranscription"))
+        #expect(source.contains("caption.voiceMemo.transcriptDraft"))
+        #expect(source.contains("It is not saved to metadata"))
+        #expect(!source.contains("saveVoiceMemoTranscript"))
+    }
+
+    private var association: VoiceMemoAssociation {
+        VoiceMemoAssociation(
+            profileIdentifier: "sony-test",
+            imageURL: imageURL,
+            memoURL: memoURL
+        )
+    }
+
+    private func service(status: VoiceMemoTranscriptionAssetStatus) -> VoiceMemoTranscriptionService {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        return VoiceMemoTranscriptionService(
+            runtime: runtime(status: status),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            startAccess: { _ in false }
+        )
+    }
+
+    private func service(probe: VoiceMemoTranscriptionProbe) -> VoiceMemoTranscriptionService {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let selectedLocale = locale
+        return VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in probe.status },
+                installAssets: { _ in probe.install() },
+                transcribe: { _, _ in "Transcript" }
+            ),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            startAccess: { _ in false }
+        )
+    }
+
+    private func runtime(
+        status: VoiceMemoTranscriptionAssetStatus,
+        transcript: String = "Transcript"
+    ) -> VoiceMemoTranscriptionRuntime {
+        let selectedLocale = locale
+        return VoiceMemoTranscriptionRuntime(
+            isAvailable: { true },
+            supportedLocales: { [selectedLocale] },
+            resolveLocale: { _ in selectedLocale },
+            assetStatus: { _ in status },
+            installAssets: { _ in },
+            transcribe: { _, _ in transcript }
+        )
+    }
+
+    private func revision(hash: String) -> SourceImageRevision {
+        SourceImageRevision(
+            canonicalURL: memoURL,
+            fileResourceIdentifier: nil,
+            filenameAtCreation: memoURL.lastPathComponent,
+            byteCount: 42,
+            contentModificationDate: .distantPast,
+            pixelWidth: nil,
+            pixelHeight: nil,
+            exifOrientation: nil,
+            sha256: hash,
+            hashCompletedAt: .distantPast
+        )
+    }
+}
+
+nonisolated private final class VoiceMemoTranscriptionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedStatus: VoiceMemoTranscriptionAssetStatus
+    private var storedInstallCount = 0
+
+    init(status: VoiceMemoTranscriptionAssetStatus) {
+        storedStatus = status
+    }
+
+    var status: VoiceMemoTranscriptionAssetStatus { lock.withLock { storedStatus } }
+    var installCount: Int { lock.withLock { storedInstallCount } }
+
+    func install() {
+        lock.withLock {
+            storedInstallCount += 1
+            storedStatus = .installed
+        }
+    }
+}
+
+nonisolated private final class VoiceMemoRevisionSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revisions: [SourceImageRevision]
+
+    init(_ revisions: [SourceImageRevision]) { self.revisions = revisions }
+
+    func next() -> SourceImageRevision {
+        lock.withLock {
+            if revisions.count > 1 { return revisions.removeFirst() }
+            return revisions[0]
+        }
+    }
+}
+
+private actor VoiceMemoTranscriptionGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private(set) var hasWaiter = false
+
+    func wait() async {
+        hasWaiter = true
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func open() {
+        waiter?.resume()
+        waiter = nil
+        hasWaiter = false
+    }
+}
+
 nonisolated private enum CaptionVoiceMemoTestContext {
     @TaskLocal static var marker: String?
 }
