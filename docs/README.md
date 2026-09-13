@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 28: voice-memo transcription failure matrix](release/cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md). Recognition now exposes injectable analysis, result-consumption, finalization and single-teardown boundaries; malformed/empty/recognition/install failures stay explicit and non-destructive. Caption also exposes Apple speech-language reservation exhaustion and an explicit release-before-download recovery path. The final focused 18-test run, 2,903-test serial suite and repository checks pass. Native/offline, authorized-Sony, relaunch/application, accessibility, real-server and wider release gates remain open.
+**Latest improvement continuation:** [Cycle 29: voice-memo review edit durability](release/cycle-29-voice-memo-review-edit-durability-2026-09-13.md). Incremental edits to an approved transcript now serialize toward the latest complete review, photo/locale transitions wait for that durability boundary, and transcription replacement is unavailable while it is saving. The final focused 19-test run, 2,904-test serial suite and repository checks pass. A dedicated native edit/relaunch fixture compiles, but execution remains pending because the Mac was locked; offline, authorized-Sony, application/read-back, accessibility, real-server and wider release gates remain open.
 
 ## Portfolio
 

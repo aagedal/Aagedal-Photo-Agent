@@ -236,7 +236,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     Button("Transcribe", systemImage: "text.bubble") {
                         Task { await transcriptModel.transcribe() }
                     }
-                    .disabled(transcriptModel.isTranscribing)
+                    .disabled(transcriptModel.isTranscribing || transcriptModel.isSavingReview)
                     .accessibilityIdentifier("caption.voiceMemo.transcribe")
                 case .needsDownload:
                     Button("Download Language", systemImage: "arrow.down.circle") {

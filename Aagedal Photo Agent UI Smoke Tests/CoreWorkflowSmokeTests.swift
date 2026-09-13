@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import XCTest
 
 final class CoreWorkflowSmokeTests: XCTestCase {
@@ -16,6 +17,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        app?.terminate()
         if let fixtureRoot {
             try? FileManager.default.removeItem(at: fixtureRoot)
         }
@@ -97,6 +99,52 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(saveAndNext.isEnabled)
         saveAndNext.click()
         XCTAssertTrue(app.staticTexts["2 of 2"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testApprovedVoiceMemoReviewPersistsCompleteNativeEditsAcrossRelaunch() throws {
+        let fixture = try makeApprovedVoiceMemoFolder()
+        let originalRelationship = try Data(contentsOf: fixture.relationshipURL)
+        let originalMemo = try Data(contentsOf: fixture.memoURL)
+        launch(workflow: "caption", folder: fixture.folder)
+
+        XCTAssertTrue(app.otherElements["caption.workspace"].waitForExistence(timeout: 15))
+        let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        let approval = app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 15))
+        XCTAssertTrue(approval.exists)
+        XCTAssertFalse(approval.isEnabled)
+        XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
+
+        draft.click()
+        draft.typeKey("a", modifierFlags: .command)
+        draft.typeText("Complete native review after many editor updates")
+        XCTAssertTrue(waitForTranscript(
+            "Complete native review after many editor updates",
+            approved: false,
+            at: fixture.sidecarURL
+        ))
+        XCTAssertTrue(approval.isEnabled)
+
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder)
+        let relaunchedDraft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        let relaunchedApproval = app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"]
+        XCTAssertTrue(relaunchedDraft.waitForExistence(timeout: 15))
+        XCTAssertTrue((relaunchedDraft.value as? String)?.contains(
+            "Complete native review after many editor updates"
+        ) == true)
+        XCTAssertTrue(relaunchedApproval.isEnabled)
+
+        relaunchedApproval.click()
+        XCTAssertTrue(waitForTranscript(
+            "Complete native review after many editor updates",
+            approved: true,
+            at: fixture.sidecarURL
+        ))
+        XCTAssertFalse(relaunchedApproval.isEnabled)
+        XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
+        XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
     }
 
     @MainActor
@@ -189,6 +237,122 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             )
         }
         return folder
+    }
+
+    private struct VoiceMemoFixture {
+        let folder: URL
+        let memoURL: URL
+        let relationshipURL: URL
+        let sidecarURL: URL
+    }
+
+    private func makeApprovedVoiceMemoFolder() throws -> VoiceMemoFixture {
+        let folder = fixtureRoot.appendingPathComponent(
+            "ApprovedVoiceMemo-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let imageName = "voice-review.jpg"
+        let memoName = "voice-review.WAV"
+        let imageURL = folder.appendingPathComponent(imageName)
+        let memoURL = folder.appendingPathComponent(memoName)
+        let imageData = try makeJPEG(index: 2)
+        let memoData = makeSilentWAV()
+        try imageData.write(to: imageURL, options: .atomic)
+        try memoData.write(to: memoURL, options: .atomic)
+
+        let imageHash = sha256(imageData)
+        let memoHash = sha256(memoData)
+        let relationshipURL = folder.appendingPathComponent(".\(imageName).voice-memo.json")
+        try writeJSON([
+            "schemaVersion": 2,
+            "profileIdentifier": "ui-smoke",
+            "imageFilename": imageName,
+            "memoFilename": memoName,
+            "imageIdentity": ["byteCount": imageData.count, "sha256": imageHash],
+            "memoIdentity": ["byteCount": memoData.count, "sha256": memoHash],
+            "provenance": "capturedAssociation",
+            "approvedTranscriptMemoSHA256": memoHash,
+        ], to: relationshipURL)
+
+        let sidecarDirectory = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: sidecarDirectory, withIntermediateDirectories: true)
+        let sidecarURL = sidecarDirectory.appendingPathComponent("\(imageName).meta.json")
+        try writeJSON([
+            "schemaVersion": 1,
+            "sourceFile": imageName,
+            "voiceMemoTranscript": [
+                "schemaVersion": 1,
+                "sourceImageFilename": imageName,
+                "sourceMemoFilename": memoName,
+                "memoByteCount": memoData.count,
+                "memoSHA256": memoHash,
+                "associationProfileIdentifier": "ui-smoke",
+                "localeIdentifier": "en-US",
+                "provider": "Apple on-device speech",
+                "providerModel": "System managed; exact version unavailable",
+                "generatedAt": "2026-09-13T12:00:00Z",
+                "generatedText": "Generated UI smoke transcript",
+                "reviewedText": "Approved UI smoke review",
+                "approvedAt": "2026-09-13T12:01:00Z",
+            ],
+        ], to: sidecarURL)
+
+        return VoiceMemoFixture(
+            folder: folder,
+            memoURL: memoURL,
+            relationshipURL: relationshipURL,
+            sidecarURL: sidecarURL
+        )
+    }
+
+    @MainActor
+    private func waitForTranscript(_ text: String, approved: Bool, at sidecarURL: URL) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            guard let data = try? Data(contentsOf: sidecarURL),
+                  let graph = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let transcript = graph["voiceMemoTranscript"] as? [String: Any] else { return false }
+            return transcript["reviewedText"] as? String == text
+                && (transcript["approvedAt"] != nil) == approved
+        }
+        expectation(for: predicate, evaluatedWith: NSObject())
+        waitForExpectations(timeout: 10)
+        return predicate.evaluate(with: NSObject())
+    }
+
+    private func writeJSON(_ object: [String: Any], to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            .write(to: url, options: .atomic)
+    }
+
+    private func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func makeSilentWAV() -> Data {
+        let sampleRate: UInt32 = 16_000
+        let sampleCount: UInt32 = 4_000
+        let dataSize = sampleCount * 2
+        var data = Data()
+        data.append(Data("RIFF".utf8))
+        appendLittleEndian(36 + dataSize, to: &data)
+        data.append(Data("WAVEfmt ".utf8))
+        appendLittleEndian(UInt32(16), to: &data)
+        appendLittleEndian(UInt16(1), to: &data)
+        appendLittleEndian(UInt16(1), to: &data)
+        appendLittleEndian(sampleRate, to: &data)
+        appendLittleEndian(sampleRate * 2, to: &data)
+        appendLittleEndian(UInt16(2), to: &data)
+        appendLittleEndian(UInt16(16), to: &data)
+        data.append(Data("data".utf8))
+        appendLittleEndian(dataSize, to: &data)
+        data.append(Data(repeating: 0, count: Int(dataSize)))
+        return data
+    }
+
+    private func appendLittleEndian<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
     }
 
     private func makeJPEG(index: Int) throws -> Data {

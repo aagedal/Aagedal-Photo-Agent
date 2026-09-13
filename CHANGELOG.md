@@ -27,7 +27,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   reservations can be released explicitly before retrying. Malformed/empty audio, recognition and
   language-install failures remain non-destructive, and the exact WAV is revalidated before an
   editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
-  bound app sidecar record; editing revokes approval. The carrier-neutral
+  bound app sidecar record; editing revokes approval, serializes the latest complete review, and
+  finishes that durability boundary before photo or locale navigation. Replacement transcription is
+  unavailable while review persistence is active. The carrier-neutral
   `{voiceMemoTranscript}` template variable resolves only that exact approved review and revalidates
   it before metadata writes or retries. Application is limited to Description, Extended Description,
   Headline and Instructions, and an

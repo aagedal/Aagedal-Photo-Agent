@@ -2,13 +2,21 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, pre-mutation application preview and explicit verified WAV delivery pass automated verification; authentic native/real-server voice-memo evidence, cloud and broader release gates remain.
 **Updated:** 2026-09-13
-**Latest implementation state:** Cycle 28 voice-memo transcription failure matrix (18 focused tests plus 2,903 tests in the serial run passed; repository checks passed; independent review and native/offline/Sony/relaunch recognition not run).
+**Latest implementation state:** Cycle 29 voice-memo review edit durability (19 focused tests plus 2,904 tests in the serial run passed; repository checks passed; the native relaunch test compiled but could not activate the app while the Mac was locked; independent review and native/offline/Sony/application evidence remain open).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable, cycle 26 adds compatible-target enforcement plus its pre-mutation preview, cycle 27 adds explicit verified WAV delivery and cycle 28 adds the transcription failure/reservation matrix.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable, cycle 26 adds compatible-target enforcement plus its pre-mutation preview, cycle 27 adds explicit verified WAV delivery, cycle 28 adds the transcription failure/reservation matrix and cycle 29 makes incremental review edits durable through navigation and relaunch boundaries.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 29 voice-memo review edit durability](cycle-29-voice-memo-review-edit-durability-2026-09-13.md)
+serializes incremental edits after approval revocation toward the latest complete review. Photo and
+locale transitions await that durability boundary, transcription replacement is unavailable while
+it saves, and failure restores the latest durable state. The focused 19-test run, 2,904-test serial
+suite and repository validation pass. The dedicated native edit/relaunch test compiles, but its run
+stopped before product assertions because the locked Mac prevented app activation. Native/offline,
+authorized-Sony, application/read-back and accessibility evidence remain open.
 
 [Cycle 28 voice-memo transcription failure matrix](cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md)
 splits recognition into injectable consumer, analysis, finalization and cancellation/finish phases,
@@ -303,8 +311,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    compatible-target exact affected-image Append/Replace preview with zero-write batch refusal.
    Cycle 27 adds the visible Deadline WAV delivery policy/receipt and exact verified execution.
    Cycle 28 completes the injected malformed/empty/finalization/install-cancellation/reservation
-   matrix with a single-teardown recognition lifecycle. Next run native offline/Sony/relaunch and
-   application/read-back drills plus native and real-server image-plus-WAV delivery.
+   matrix with a single-teardown recognition lifecycle. Cycle 29 serializes every incremental review
+   edit toward the latest durable unapproved text, waits before photo/locale transitions and blocks
+   replacement transcription during persistence. Its native relaunch fixture compiles but remains
+   unexecuted because the Mac was locked. Next unlock and run that test, then continue native
+   offline/Sony/application/read-back drills plus native and real-server image-plus-WAV delivery.
 6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
@@ -323,7 +334,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 28: 2,903 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 29: 2,904 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |

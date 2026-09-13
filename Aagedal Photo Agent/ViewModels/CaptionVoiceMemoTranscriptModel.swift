@@ -15,6 +15,11 @@ final class CaptionVoiceMemoTranscriptModel {
     @ObservationIgnored private let service: VoiceMemoTranscriptionService
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var reviewPersistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var queuedReviewDraft: VoiceMemoTranscriptDraft?
+    @ObservationIgnored private var lastPersistedReviewDraft: VoiceMemoTranscriptDraft?
+    @ObservationIgnored private var reviewPersistenceGeneration: UInt64?
+    @ObservationIgnored private var persistsReviewEdits = false
     @ObservationIgnored private var imageURL: URL?
 
     init(service: VoiceMemoTranscriptionService = VoiceMemoTranscriptionService()) {
@@ -23,6 +28,12 @@ final class CaptionVoiceMemoTranscriptModel {
 
     func load(_ imageURL: URL?) async {
         cancel(resetDraft: true)
+        // Approval revocation is a durability boundary, not disposable presentation work.
+        // Finish any queued TextEditor changes before loading another photo or locale so a
+        // relaunch cannot restore only the first incremental edit.
+        await reviewPersistenceTask?.value
+        persistsReviewEdits = false
+        lastPersistedReviewDraft = nil
         self.imageURL = imageURL?.standardizedFileURL
         guard let imageURL = self.imageURL else { return }
         generation &+= 1
@@ -114,7 +125,7 @@ final class CaptionVoiceMemoTranscriptModel {
     }
 
     func transcribe() async {
-        guard let imageURL, !isDownloading, !isTranscribing else { return }
+        guard let imageURL, !isDownloading, !isTranscribing, !isSavingReview else { return }
         startOperation()
         let requested = generation
         isTranscribing = true
@@ -127,6 +138,8 @@ final class CaptionVoiceMemoTranscriptModel {
                 await MainActor.run {
                     guard self.generation == requested, self.imageURL == result.imageURL else { return }
                     self.draft = result
+                    self.persistsReviewEdits = false
+                    self.lastPersistedReviewDraft = nil
                     self.isTranscribing = false
                 }
             } catch is CancellationError {
@@ -147,38 +160,68 @@ final class CaptionVoiceMemoTranscriptModel {
 
     func updateReviewedText(_ text: String) {
         guard var draft else { return }
-        let approved = draft.isApproved
         let previous = draft
+        if draft.isApproved {
+            persistsReviewEdits = true
+            lastPersistedReviewDraft = draft
+        }
         draft.reviewedText = text
-        if approved { draft.approvedAt = nil }
+        if persistsReviewEdits { draft.approvedAt = nil }
         self.draft = draft
-        guard approved else { return }
+        guard persistsReviewEdits else { return }
 
+        if lastPersistedReviewDraft == nil { lastPersistedReviewDraft = previous }
+        queuedReviewDraft = draft
         isSavingReview = true
         errorMessage = nil
-        let requested = generation
-        Task { [service] in
+        guard reviewPersistenceTask == nil else { return }
+        reviewPersistenceGeneration = generation
+        reviewPersistenceTask = Task { [weak self] in
+            await self?.drainReviewPersistence()
+        }
+    }
+
+    private func drainReviewPersistence() async {
+        let requested = reviewPersistenceGeneration
+        while let pending = queuedReviewDraft {
+            queuedReviewDraft = nil
             do {
-                let saved = try await service.revokeApproval(draft)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard self.generation == requested else { return }
-                    self.draft = saved
-                    self.isSavingReview = false
+                let saved = try await service.revokeApproval(pending)
+                lastPersistedReviewDraft = saved
+                guard queuedReviewDraft == nil else { continue }
+                if generation == requested,
+                   imageURL == saved.imageURL,
+                   draft?.reviewedText == saved.reviewedText {
+                    draft = saved
                 }
+                finishReviewPersistence(generationMatches: generation == requested)
+                return
             } catch is CancellationError {
-                await MainActor.run {
-                    if self.generation == requested { self.isSavingReview = false }
-                }
+                finishReviewPersistence(generationMatches: generation == requested)
+                return
             } catch {
-                await MainActor.run {
-                    guard self.generation == requested else { return }
-                    self.draft = previous
-                    self.errorMessage = "The edit was not kept because transcript approval could not be revoked. "
+                let fallback = lastPersistedReviewDraft
+                if generation == requested {
+                    draft = fallback
+                    errorMessage = "The edit was not kept because the transcript review could not be saved. "
                         + error.localizedDescription
-                    self.isSavingReview = false
                 }
+                persistsReviewEdits = fallback?.isApproved == false
+                finishReviewPersistence(generationMatches: generation == requested)
+                return
             }
+        }
+        finishReviewPersistence(generationMatches: generation == requested)
+    }
+
+    private func finishReviewPersistence(generationMatches: Bool) {
+        queuedReviewDraft = nil
+        reviewPersistenceTask = nil
+        reviewPersistenceGeneration = nil
+        isSavingReview = false
+        if !generationMatches {
+            persistsReviewEdits = false
+            lastPersistedReviewDraft = nil
         }
     }
 
@@ -195,6 +238,8 @@ final class CaptionVoiceMemoTranscriptModel {
                 await MainActor.run {
                     guard self.generation == requested else { return }
                     self.draft = saved
+                    self.persistsReviewEdits = false
+                    self.lastPersistedReviewDraft = saved
                     self.isSavingReview = false
                 }
             } catch is CancellationError {
@@ -220,7 +265,7 @@ final class CaptionVoiceMemoTranscriptModel {
         isChecking = false
         isDownloading = false
         isTranscribing = false
-        isSavingReview = false
+        isSavingReview = reviewPersistenceTask != nil
         errorMessage = nil
         if resetDraft {
             availability = nil

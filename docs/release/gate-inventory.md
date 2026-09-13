@@ -578,11 +578,15 @@ compatible-target, whole-batch preflight and exact affected-image preview. [Cycl
 adds independently injectable result/analysis/finalization/teardown phases, explicit malformed,
 empty, recognition and installation failures, noncooperative cancellation coverage, device-reported
 reservation capacity and an explicit release-before-download recovery path. Native application,
-offline/relaunch and authorized-Sony evidence remain incomplete.
+offline/relaunch and authorized-Sony evidence remain incomplete. [Cycle 29](cycle-29-voice-memo-review-edit-durability-2026-09-13.md)
+serializes incremental post-approval edits toward the latest complete durable review, waits for that
+boundary before photo/locale changes and blocks replacement transcription while it saves. Its native
+edit/relaunch test compiles but could not activate the app while the Mac was locked.
 
-**Smallest next action/evidence:** Run an installed-language transcription offline in the built app,
-relaunch and verify persisted review/application read-back; then repeat malformed, empty, silent,
-long-cancellation and reservation recovery with authorized Sony WAV material.
+**Smallest next action/evidence:** Unlock the Mac and run cycle 29's dedicated native edit/relaunch/
+approval test. Then run an installed-language transcription offline in the built app, relaunch and
+verify persisted review/application read-back; repeat malformed, empty, silent, long-cancellation
+and reservation recovery with authorized Sony WAV material.
 
 ### J-VOICE-VARIABLE
 

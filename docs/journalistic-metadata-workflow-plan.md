@@ -846,6 +846,17 @@ retrying download. The exact final focused 18-test run, complete 2,903-test seri
 validation pass; see [cycle 28 evidence](release/cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md).
 Native/offline, authorized-Sony, relaunch/application and accessibility evidence remains open.
 
+**Coordinator cycle 29 — 2026-09-13:** Editing an approved transcript now starts a serialized
+durability session whose queue converges on the latest complete review rather than persisting only
+the first incremental `TextEditor` change. Photo and locale transitions await outstanding review
+persistence, replacement transcription is unavailable while it saves, and failure restores the most
+recent durable state. The exact final focused 19-test run, complete 2,904-test serial suite and
+repository validation pass; see
+[cycle 29 evidence](release/cycle-29-voice-memo-review-edit-durability-2026-09-13.md). A dedicated
+native edit/relaunch/approval test compiles, but execution stopped before product assertions because
+the locked Mac prevented app activation. Native/offline, authorized-Sony, application/read-back and
+accessibility evidence remains open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

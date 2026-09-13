@@ -810,6 +810,61 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect((await storage.load())?.approvedAt == nil)
     }
 
+    @Test("rapid approved-transcript edits persist latest review and block replacement")
+    @MainActor
+    func rapidApprovedEditsPersistLatestReview() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let saveGate = VoiceMemoTranscriptionGate()
+        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
+            sourceImageFilename: imageURL.lastPathComponent,
+            sourceMemoFilename: memoURL.lastPathComponent,
+            memoByteCount: stable.byteCount,
+            memoSHA256: stable.sha256,
+            associationProfileIdentifier: found.profileIdentifier,
+            localeIdentifier: locale.identifier,
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generatedText: "Original generated text",
+            reviewedText: "Approved review",
+            approvedAt: Date(timeIntervalSince1970: 200)
+        ))
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in
+                if record.reviewedText == "First incremental edit" {
+                    await saveGate.wait()
+                }
+                return await storage.save(record)
+            },
+            startAccess: { _ in false }
+        )
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+
+        model.updateReviewedText("First incremental edit")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await saveGate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await saveGate.hasWaiter)
+        model.updateReviewedText("The complete human review")
+        await model.transcribe()
+        await saveGate.open()
+        while model.isSavingReview, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(model.draft?.reviewedText == "The complete human review")
+        #expect(model.draft?.approvedAt == nil)
+        #expect((await storage.load())?.reviewedText == "The complete human review")
+        #expect((await storage.load())?.approvedAt == nil)
+    }
+
     @Test("metadata variable context requires and revalidates exact approval")
     func approvedVariableContext() async throws {
         let found = association
