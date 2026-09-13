@@ -511,6 +511,7 @@ private struct DeliveryReceiptDetailView: View {
                     "Transport",
                     detail.transportSecurity?.evidenceDescription ?? "Legacy receipt — not recorded"
                 )
+                safeFact("Voice memos", detail.voiceMemoDeliveryPolicy.title)
                 safeFact("Started", Self.dateFormatter.string(from: detail.startedAt))
                 safeFact("Completed", Self.dateFormatter.string(from: detail.completedAt))
                 safeFact(
@@ -569,6 +570,12 @@ private struct DeliveryReceiptEvidenceRow: View {
             Text("\(item.renderSettings.formatIdentifier) · \(item.renderSettings.colorSpaceIdentifier) · \(item.renderSettings.pixelWidth)×\(item.renderSettings.pixelHeight) · \(Self.byteCount(item.deliveredByteSize))")
             Text("Metadata: \(metadataTitle) · Upload: \(uploadTitle) · Remote size: \(remoteTitle)")
 
+            if let voiceMemo = item.voiceMemo {
+                Text("Voice memo: delivered · \(Self.byteCount(voiceMemo.deliveredByteSize)) · Upload: \(uploadTitle(voiceMemo.uploadAcknowledgement)) · Remote size: \(remoteTitle(voiceMemo.remoteStatAcknowledgement))")
+            } else {
+                Text("Voice memo: not delivered")
+            }
+
             if !item.controlledFieldIdentifiers.isEmpty {
                 Text("Controlled fields: \(item.controlledFieldIdentifiers.map(\.rawValue).joined(separator: ", "))")
             }
@@ -594,7 +601,11 @@ private struct DeliveryReceiptEvidenceRow: View {
     }
 
     private var uploadTitle: String {
-        switch item.uploadAcknowledgement.status {
+        uploadTitle(item.uploadAcknowledgement)
+    }
+
+    private func uploadTitle(_ acknowledgement: DeliveryUploadAcknowledgement) -> String {
+        switch acknowledgement.status {
         case .notAttempted: "not attempted"
         case .protocolAcknowledged: "protocol acknowledged"
         case .rejected: "rejected"
@@ -602,7 +613,11 @@ private struct DeliveryReceiptEvidenceRow: View {
     }
 
     private var remoteTitle: String {
-        switch item.remoteStatAcknowledgement.status {
+        remoteTitle(item.remoteStatAcknowledgement)
+    }
+
+    private func remoteTitle(_ acknowledgement: DeliveryRemoteStatAcknowledgement) -> String {
+        switch acknowledgement.status {
         case .notRequested: "not requested"
         case .unavailable: "unavailable"
         case .matchesDeliveredByteSize: "matches delivered size"

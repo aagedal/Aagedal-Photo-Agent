@@ -612,9 +612,15 @@ metadata read-back and zero-write refusal evidence.
   visible in Deadline preflight and receipts instead of silently dropping an ingested companion.
 ```
 
-**Current status:** Baseline delivery plan/receipt has no visible WAV policy integration.
+**Current status:** [Cycle 27](cycle-27-voice-memo-delivery-policy-2026-09-13.md) implements explicit
+exclude, include-when-available and require-for-every-image choices. Legacy profiles fail safely to
+exclude. Preflight, confirmation, exact frozen plan/staging/upload/checkpoint execution, schema-3
+receipts and privacy-safe Activity/export presentation pass automated verification. The authoritative
+implementation checkbox is complete; native/relaunch and disposable real-server delivery remain open.
 
-**Smallest next action/evidence:** Record an explicit include/exclude/optional policy; surface the chosen companion disposition in frozen Deadline preflight and receipts, and test no silent omission.
+**Smallest next action/evidence:** Exercise all three policies in the built app, then deliver
+disposable image/WAV pairs through FTP, FTPS and SFTP with success, changed-source, cancellation,
+image-before-WAV failure, resume, receipt and cleanup observations.
 
 ### J-VOICE-END-TO-END
 
@@ -625,9 +631,11 @@ metadata read-back and zero-write refusal evidence.
   sidecar-durability, and delivery tests, followed by a manual card-to-caption pass on real samples.
 ```
 
-**Current status:** Association, ingest and rename fixtures already exist; transcription/variable/delivery and full lifecycle coverage plus real card-to-caption observations remain incomplete.
+**Current status:** Association, ingest, rename, transcription, variable and delivery fixtures now
+exist. Full lifecycle breadth and real card-to-caption/delivery observations remain incomplete.
 
-**Smallest next action/evidence:** Extend fixture tests alongside J-VOICE-LIFECYCLE through J-VOICE-DELIVERY, then exercise real authorized Sony card samples from ingest to reviewed caption/delivery; widen body/firmware claims only with additional samples.
+**Smallest next action/evidence:** Exercise real authorized Sony card samples from ingest through
+reviewed caption and explicit WAV delivery; widen body/firmware claims only with additional samples.
 
 ### J-CAPTION-100-KEYBOARD
 

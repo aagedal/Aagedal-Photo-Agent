@@ -5,7 +5,7 @@ import Foundation
 /// Connections are represented only by stable identifiers. Authentication material remains in
 /// the application's connection store and must never be serialized into this document.
 nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var id: UUID
@@ -20,6 +20,9 @@ nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
     var destination: DeadlineDestinationConfiguration?
     var gpsPolicy: DeadlineGPSPolicy
     var metadataWriteStrategy: DeadlineMetadataWriteStrategy
+    /// Explicit audio-companion policy. Legacy profiles default to exclusion so upgrading never
+    /// begins transmitting an ingested recording without a deliberate newsroom choice.
+    var voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy
 
     init(
         id: UUID = UUID(),
@@ -32,7 +35,8 @@ nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
         export: DeadlineExportConfigurationSource? = nil,
         destination: DeadlineDestinationConfiguration? = nil,
         gpsPolicy: DeadlineGPSPolicy = .retain,
-        metadataWriteStrategy: DeadlineMetadataWriteStrategy = .stagedCopies
+        metadataWriteStrategy: DeadlineMetadataWriteStrategy = .stagedCopies,
+        voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy = .exclude
     ) {
         schemaVersion = Self.currentSchemaVersion
         self.id = id
@@ -46,11 +50,12 @@ nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
         self.destination = destination
         self.gpsPolicy = gpsPolicy
         self.metadataWriteStrategy = metadataWriteStrategy
+        self.voiceMemoDeliveryPolicy = voiceMemoDeliveryPolicy
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, name, validationProfile, captionFields, metadataTemplate, requiredLists
-        case rename, export, destination, gpsPolicy, metadataWriteStrategy
+        case rename, export, destination, gpsPolicy, metadataWriteStrategy, voiceMemoDeliveryPolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +106,10 @@ nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
             DeadlineMetadataWriteStrategy.self,
             forKey: .metadataWriteStrategy
         ) ?? .xmpSidecars
+        voiceMemoDeliveryPolicy = try container.decodeIfPresent(
+            DeadlineVoiceMemoDeliveryPolicy.self,
+            forKey: .voiceMemoDeliveryPolicy
+        ) ?? .exclude
     }
 
     func encode(to encoder: Encoder) throws {
@@ -117,6 +126,7 @@ nonisolated struct DeadlineProfile: Codable, Equatable, Sendable {
         try container.encodeIfPresent(destination, forKey: .destination)
         try container.encode(gpsPolicy, forKey: .gpsPolicy)
         try container.encode(metadataWriteStrategy, forKey: .metadataWriteStrategy)
+        try container.encode(voiceMemoDeliveryPolicy, forKey: .voiceMemoDeliveryPolicy)
     }
 }
 
@@ -347,6 +357,31 @@ nonisolated enum DeadlineMetadataWriteStrategy: String, Codable, Equatable, Send
     case originals
     case xmpSidecars
     case stagedCopies
+}
+
+/// Controls whether a proven Sony voice-memo companion participates in Deadline delivery.
+/// `includeWhenAvailable` is intentionally distinct from `require`: a missing relationship is
+/// visible but does not block an otherwise valid mixed batch.
+nonisolated enum DeadlineVoiceMemoDeliveryPolicy: String, CaseIterable, Codable, Equatable, Sendable {
+    case exclude
+    case includeWhenAvailable
+    case require
+
+    var title: String {
+        switch self {
+        case .exclude: "Exclude voice memos"
+        case .includeWhenAvailable: "Include when available"
+        case .require: "Require for every image"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .exclude: "WAV companions are never staged or sent."
+        case .includeWhenAvailable: "Proven WAV companions are sent; images without one remain eligible."
+        case .require: "Every image must have a proven, readable WAV companion before Send."
+        }
+    }
 }
 
 nonisolated enum DeadlineProfileSnapshotError: Error, Equatable, LocalizedError, Sendable {

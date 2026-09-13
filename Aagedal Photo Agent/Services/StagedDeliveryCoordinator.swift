@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
 
+private nonisolated enum DeliveryVoiceMemoStagingError: Error {
+    case verificationFailed
+}
+
 /// The ordered lifecycle of one staged delivery item. These stable values can be mirrored into
 /// Activity records or a future resume manifest without exposing implementation-specific errors.
 nonisolated enum DeliveryStagingItemStage: String, Codable, Equatable, Sendable {
@@ -11,6 +15,7 @@ nonisolated enum DeliveryStagingItemStage: String, Codable, Equatable, Sendable 
     case readingStagedBytes
     case verifyingMetadata
     case verifyingPreservation
+    case copyingVoiceMemo
     case verified
     case failed
     case cancelled
@@ -27,6 +32,8 @@ nonisolated enum DeliveryStagingFailureCode: String, Codable, Equatable, Sendabl
     case metadataPreservationMismatch
     case metadataPreservationUnconfirmed
     case outputExceedsMaximumByteCount
+    case voiceMemoCopyFailed
+    case voiceMemoVerificationFailed
 }
 
 nonisolated struct DeliveryStagingItemFailure: Codable, Equatable, Sendable {
@@ -52,6 +59,41 @@ nonisolated struct DeliveryStagingItemResult: Codable, Equatable, Sendable {
     var checkedFields: [IPTCMetadataVerificationField]
     var mismatchedFields: [IPTCMetadataVerificationField]
     var failure: DeliveryStagingItemFailure?
+    var voiceMemoStagedRelativePath: String?
+    var voiceMemoStagedByteCount: Int?
+    var voiceMemoStagedSHA256: String?
+
+    init(
+        itemIndex: Int,
+        stageInputFingerprint: String,
+        stagedRelativePath: String,
+        stage: DeliveryStagingItemStage,
+        stagedByteCount: Int?,
+        stagedSHA256: String?,
+        renderSettings: DeliveryRenderSettings?,
+        metadataPreservation: MetadataPreservationVerificationReport? = nil,
+        checkedFields: [IPTCMetadataVerificationField],
+        mismatchedFields: [IPTCMetadataVerificationField],
+        failure: DeliveryStagingItemFailure?,
+        voiceMemoStagedRelativePath: String? = nil,
+        voiceMemoStagedByteCount: Int? = nil,
+        voiceMemoStagedSHA256: String? = nil
+    ) {
+        self.itemIndex = itemIndex
+        self.stageInputFingerprint = stageInputFingerprint
+        self.stagedRelativePath = stagedRelativePath
+        self.stage = stage
+        self.stagedByteCount = stagedByteCount
+        self.stagedSHA256 = stagedSHA256
+        self.renderSettings = renderSettings
+        self.metadataPreservation = metadataPreservation
+        self.checkedFields = checkedFields
+        self.mismatchedFields = mismatchedFields
+        self.failure = failure
+        self.voiceMemoStagedRelativePath = voiceMemoStagedRelativePath
+        self.voiceMemoStagedByteCount = voiceMemoStagedByteCount
+        self.voiceMemoStagedSHA256 = voiceMemoStagedSHA256
+    }
 }
 
 nonisolated enum DeliveryStagingBatchStatus: String, Codable, Equatable, Sendable {
@@ -179,6 +221,23 @@ nonisolated struct DeliveryStagingFileSystem: Sendable {
     let createUniqueBatchDirectory: @Sendable (URL, UUID) async throws -> URL
     let readStagedBytes: @Sendable (URL) async throws -> Data
     let removeBatchDirectory: @Sendable (URL) async throws -> Void
+    let copyFile: @Sendable (URL, URL) async throws -> Void
+
+    init(
+        availableCapacity: @escaping @Sendable (URL) async throws -> Int64?,
+        createUniqueBatchDirectory: @escaping @Sendable (URL, UUID) async throws -> URL,
+        readStagedBytes: @escaping @Sendable (URL) async throws -> Data,
+        removeBatchDirectory: @escaping @Sendable (URL) async throws -> Void,
+        copyFile: @escaping @Sendable (URL, URL) async throws -> Void = { source, destination in
+            try FileManager.default.copyItem(at: source, to: destination)
+        }
+    ) {
+        self.availableCapacity = availableCapacity
+        self.createUniqueBatchDirectory = createUniqueBatchDirectory
+        self.readStagedBytes = readStagedBytes
+        self.removeBatchDirectory = removeBatchDirectory
+        self.copyFile = copyFile
+    }
 
     static let live = Self(
         availableCapacity: { rootURL in
@@ -338,11 +397,19 @@ actor StagedDeliveryCoordinator {
         for item in request.plan.items {
             try checkCancellation()
             try await validateSource(item)
+            try await validateVoiceMemoSource(item)
         }
 
         let requiredBytes: Int64
         do {
-            requiredBytes = try await sizeEstimator.estimateRequiredBytes(request.plan)
+            let imageBytes = try await sizeEstimator.estimateRequiredBytes(request.plan)
+            let memoBytes = request.plan.items.compactMap(\.voiceMemo)
+                .map(\.sourceRevision.byteCount).reduce(Int64(0), +)
+            let addition = imageBytes.addingReportingOverflow(memoBytes)
+            guard !addition.overflow else {
+                throw DeliveryStagingPreflightError.invalidStagingSizeEstimate
+            }
+            requiredBytes = addition.partialValue
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -436,6 +503,7 @@ actor StagedDeliveryCoordinator {
             do {
                 try checkCancellation()
                 try await validateSource(item)
+                try await validateVoiceMemoSource(item)
 
                 let stagedURL = directory.appendingPathComponent(
                     item.stagedRelativePath,
@@ -629,6 +697,41 @@ actor StagedDeliveryCoordinator {
                 }
 
                 results[index].stagedSHA256 = Data(SHA256.hash(data: stagedBytes)).lowercaseHexString
+
+                if let memo = item.voiceMemo {
+                    activeStage = .copyingVoiceMemo
+                    results[index].stage = activeStage
+                    await publish(
+                        progress,
+                        batchID: batchID,
+                        plan: request.plan,
+                        directory: directory,
+                        requiredBytes: requiredBytes,
+                        currentItemIndex: index,
+                        results: results
+                    )
+                    try checkCancellation()
+                    try await validateVoiceMemoSource(item)
+                    let stagedMemoURL = directory.appendingPathComponent(
+                        memo.stagedRelativePath,
+                        isDirectory: false
+                    )
+                    try await fileSystem.copyFile(memo.sourceRevision.canonicalURL, stagedMemoURL)
+                    let stagedMemoBytes = try await fileSystem.readStagedBytes(stagedMemoURL)
+                    let stagedMemoSHA256 = Data(SHA256.hash(data: stagedMemoBytes)).lowercaseHexString
+                    guard Int64(stagedMemoBytes.count) == memo.sourceRevision.byteCount,
+                          stagedMemoSHA256 == memo.sourceRevision.sha256 else {
+                        results[index].failure = DeliveryStagingItemFailure(
+                            code: .voiceMemoVerificationFailed,
+                            message: "The staged voice memo did not match the exact approved source bytes."
+                        )
+                        throw DeliveryVoiceMemoStagingError.verificationFailed
+                    }
+                    try await validateVoiceMemoSource(item)
+                    results[index].voiceMemoStagedRelativePath = memo.stagedRelativePath
+                    results[index].voiceMemoStagedByteCount = stagedMemoBytes.count
+                    results[index].voiceMemoStagedSHA256 = stagedMemoSHA256
+                }
                 results[index].stage = .verified
                 await publish(
                     progress,
@@ -731,6 +834,24 @@ actor StagedDeliveryCoordinator {
         }
     }
 
+    private func validateVoiceMemoSource(_ item: DeliveryPlanStageItem) async throws {
+        guard let memo = item.voiceMemo else { return }
+        let actual: SourceImageRevision
+        do {
+            actual = try await sourceInspector.inspect(memo.sourceRevision.canonicalURL)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DeliveryStagingPreflightError.sourceInspectionFailed(itemIndex: item.itemIndex)
+        }
+        try checkCancellation()
+        guard memo.sourceRevision.canonicalURL.standardizedFileURL.resolvingSymlinksInPath()
+                == actual.canonicalURL.standardizedFileURL.resolvingSymlinksInPath(),
+              memo.sourceRevision.relationship(to: actual) == .exactRevision else {
+            throw DeliveryStagingPreflightError.sourceDrift(itemIndex: item.itemIndex)
+        }
+    }
+
     private func publish(
         _ handler: ProgressHandler?,
         batchID: UUID,
@@ -788,6 +909,10 @@ actor StagedDeliveryCoordinator {
         case .writingMetadata: return .metadataWriteFailed
         case .readingStagedBytes: return .stagedBytesReadFailed
         case .verifyingMetadata, .verifyingPreservation: return .metadataVerificationFailed
+        case .copyingVoiceMemo:
+            return error is DeliveryVoiceMemoStagingError
+                ? .voiceMemoVerificationFailed
+                : .voiceMemoCopyFailed
         case .pending, .verified, .failed, .cancelled: return .metadataVerificationFailed
         }
     }
@@ -810,6 +935,7 @@ actor StagedDeliveryCoordinator {
         case .readingStagedBytes: return "Reading the completed staged bytes failed."
         case .verifyingMetadata: return "Read-back metadata verification failed."
         case .verifyingPreservation: return "Unrelated metadata preservation verification failed."
+        case .copyingVoiceMemo: return "The voice-memo WAV could not be copied and verified."
         case .pending, .verified, .failed, .cancelled: return "Staging failed."
         }
     }

@@ -683,7 +683,7 @@ gated by additional samples and follow-up implementation.
 - [ ] Add a carrier-neutral metadata variable such as `{voiceMemoTranscript}`. Resolve it through
   the existing template/variable engine so a user can place the reviewed transcript in Description,
   Extended Description, or another compatible field without silently overwriting existing text.
-- [ ] Define whether delivery includes, excludes, or optionally carries the WAV; make the choice
+- [x] Define whether delivery includes, excludes, or optionally carries the WAV; make the choice
   visible in Deadline preflight and receipts instead of silently dropping an ingested companion.
 - [ ] Add fixture-driven association, ingest, rename/rollback, transcription-state, variable,
   sidecar-durability, and delivery tests, followed by a manual card-to-caption pass on real samples.
@@ -827,6 +827,16 @@ incompatible uses. The focused 47-test run, adjacent 84-test regression, complet
 suite and repository validation pass; see
 [cycle 26 evidence](release/cycle-26-voice-memo-variable-preview-2026-09-13.md). The broad variable
 checkbox remains open only for native/relaunch/read-back and accessibility evidence.
+
+**Coordinator cycle 27 — 2026-09-13:** Deadline profiles now explicitly exclude WAV companions,
+include each proven WAV when available, or require a proven WAV for every selected image. Legacy
+profiles default to exclusion. Preflight shows each disposition; preparation revalidates and freezes
+the exact audio revision and final name; staging copies and verifies the WAV; upload re-inspects it
+and retains resumable acknowledgement evidence; and schema-3 receipts persist the policy plus exact
+terminal evidence. Activity and exports show only privacy-safe anonymous audio facts. The focused
+123-test run, complete 2,896-test serial suite and repository validation pass; see
+[cycle 27 evidence](release/cycle-27-voice-memo-delivery-policy-2026-09-13.md). Native/relaunch and
+real-server delivery evidence remains open under the broader release gates.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text

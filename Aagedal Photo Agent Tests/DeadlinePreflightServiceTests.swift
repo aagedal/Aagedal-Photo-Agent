@@ -456,6 +456,53 @@ struct DeadlinePreflightServiceTests {
             Issue.record("Unexpected error: \(error)")
         }
     }
+
+    @Test("Voice-memo delivery policy is explicit for included, optional, required, and excluded audio")
+    func voiceMemoPolicy() async throws {
+        let image = root.appendingPathComponent("memo.jpg")
+        let memoURL = root.appendingPathComponent("memo.WAV").standardizedFileURL
+        let memoRevision = SourceImageRevision(
+            canonicalURL: memoURL,
+            fileResourceIdentifier: nil,
+            filenameAtCreation: memoURL.lastPathComponent,
+            byteCount: 12,
+            contentModificationDate: Date(timeIntervalSince1970: 10),
+            pixelWidth: nil,
+            pixelHeight: nil,
+            exifOrientation: nil,
+            sha256: String(repeating: "a", count: 64),
+            hashCompletedAt: Date(timeIntervalSince1970: 11)
+        )
+        let available = DeadlinePreflightItemSnapshot(
+            sourceURL: image,
+            voiceMemo: .available(revision: memoRevision, profileIdentifier: "sony-ilce1-v4")
+        )
+
+        var profile = DeadlineProfile(name: "Memo", voiceMemoDeliveryPolicy: .exclude)
+        var report = try await DeadlinePreflightService().evaluate(.init(
+            profile: profile,
+            items: [available]
+        ))
+        #expect(report.issues.contains { $0.code == .voiceMemoExcluded && $0.severity == .information })
+
+        profile.voiceMemoDeliveryPolicy = .includeWhenAvailable
+        report = try await DeadlinePreflightService().evaluate(.init(profile: profile, items: [available]))
+        #expect(report.issues.contains { $0.code == .voiceMemoIncluded && $0.severity == .information })
+
+        let missing = DeadlinePreflightItemSnapshot(
+            sourceURL: image,
+            voiceMemo: .missing(filename: "memo.WAV")
+        )
+        report = try await DeadlinePreflightService().evaluate(.init(profile: profile, items: [missing]))
+        #expect(report.issues.contains { $0.code == .voiceMemoUnavailable && $0.severity == .warning })
+
+        profile.voiceMemoDeliveryPolicy = .require
+        report = try await DeadlinePreflightService().evaluate(.init(
+            profile: profile,
+            items: [.init(sourceURL: image)]
+        ))
+        #expect(report.issues.contains { $0.code == .voiceMemoUnavailable && $0.severity == .blocker })
+    }
 }
 
 private actor DeadlineProgressRecorder {

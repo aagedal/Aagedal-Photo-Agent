@@ -173,6 +173,40 @@ struct DeliveryPlanningServiceTests {
         #expect(unlimitedPlan.items[0].stageInputFingerprint != limitedPlan.items[0].stageInputFingerprint)
     }
 
+    @Test("A proven voice memo is frozen beside the renamed output and source drift is refused")
+    func voiceMemoIsFrozen() async throws {
+        let context = try await makeContext(voiceMemoPolicy: .includeWhenAvailable)
+        let plan = try DeliveryPlanningService().makePlan(context.planningRequest())
+
+        #expect(plan.profile.voiceMemoDeliveryPolicy == .includeWhenAvailable)
+        #expect(plan.items[0].voiceMemo?.outputFilename == "source.WAV")
+        #expect(plan.items[0].voiceMemo?.sourceRevision == context.voiceMemoRevision)
+        #expect(plan.items[0].stageInputFingerprint.count == 64)
+
+        let changedMemo = context.voiceMemoRevision.map {
+            SourceImageRevision(
+                canonicalURL: $0.canonicalURL,
+                fileResourceIdentifier: $0.fileResourceIdentifier,
+                filenameAtCreation: $0.filenameAtCreation,
+                byteCount: $0.byteCount,
+                contentModificationDate: $0.contentModificationDate,
+                pixelWidth: nil,
+                pixelHeight: nil,
+                exifOrientation: nil,
+                sha256: String(repeating: "d", count: 64),
+                hashCompletedAt: $0.hashCompletedAt
+            )
+        }
+        let input = DeliveryPlanningItemInput(
+            sourceRevision: context.sourceRevision,
+            resolvedMetadata: context.metadata,
+            voiceMemoRevision: changedMemo
+        )
+        #expect(throws: DeliveryPlanningError.preflightResultMismatch) {
+            try DeliveryPlanningService().makePlan(context.planningRequest(items: [input]))
+        }
+    }
+
     @Test("rename output and export extension are frozen from the preflight plan")
     func renameOutputFrozen() async throws {
         let recipe = BatchRenameRecipe(
@@ -206,6 +240,50 @@ struct DeliveryPlanningServiceTests {
         #expect(throws: DeliveryPlanningError.invalidFingerprint) {
             try io.decode(tampered)
         }
+    }
+
+    @Test("schema-one retained plans remain resumable only with implicit WAV exclusion")
+    func legacyPlanFingerprintCompatibility() async throws {
+        let context = try await makeContext()
+        let current = try DeliveryPlanningService().makePlan(context.planningRequest())
+        let legacyDraft = DeliveryPlan(
+            schemaVersion: 1,
+            fingerprint: "",
+            profile: current.profile,
+            preflight: current.preflight,
+            renderAndWrite: current.renderAndWrite,
+            destination: current.destination,
+            acceptedWarningIDs: current.acceptedWarningIDs,
+            items: current.items
+        )
+        let legacyFingerprint = try DeliveryPlanningService.legacyPlanFingerprint(for: legacyDraft)
+        #expect(legacyFingerprint != current.fingerprint)
+        let legacy = DeliveryPlan(
+            schemaVersion: 1,
+            fingerprint: legacyFingerprint,
+            profile: legacyDraft.profile,
+            preflight: legacyDraft.preflight,
+            renderAndWrite: legacyDraft.renderAndWrite,
+            destination: legacyDraft.destination,
+            acceptedWarningIDs: legacyDraft.acceptedWarningIDs,
+            items: legacyDraft.items
+        )
+        let io = DeliveryPlanIO()
+        var object = try #require(
+            JSONSerialization.jsonObject(with: try io.encode(legacy)) as? [String: Any]
+        )
+        var profile = try #require(object["profile"] as? [String: Any])
+        profile["schemaVersion"] = 1
+        profile.removeValue(forKey: "voiceMemoDeliveryPolicy")
+        object["profile"] = profile
+        let legacyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        let restored = try io.decode(legacyData)
+
+        #expect(restored.profile.voiceMemoDeliveryPolicy == .exclude)
+        #expect(restored.items.allSatisfy { $0.voiceMemo == nil })
+        #expect(restored.fingerprint == legacyFingerprint)
+        try restored.validateForPersistence()
     }
 
     @Test("future schemas and existing export files are never overwritten")
@@ -293,7 +371,8 @@ struct DeliveryPlanningServiceTests {
         sourceAvailable: Bool = true,
         includeSpaceWarning: Bool = false,
         renameRecipe: BatchRenameRecipe? = nil,
-        maximumOutputByteCount: Int64? = nil
+        maximumOutputByteCount: Int64? = nil,
+        voiceMemoPolicy: DeadlineVoiceMemoDeliveryPolicy = .exclude
     ) async throws -> PlanningContext {
         let export = DeadlineExportSnapshot(
             sdrFormat: .jpeg,
@@ -323,10 +402,12 @@ struct DeliveryPlanningServiceTests {
                 remotePathTemplate: "/incoming/{desk}"
             ),
             gpsPolicy: .remove,
-            metadataWriteStrategy: .stagedCopies
+            metadataWriteStrategy: .stagedCopies,
+            voiceMemoDeliveryPolicy: voiceMemoPolicy
         )
         let sourceURL = URL(fileURLWithPath: "/private/tmp/source.jpg")
         let revision = sourceRevision(hash: sourceHash)
+        let memoRevision = voiceMemoPolicy == .exclude ? nil : voiceMemoRevision()
         let item = DeadlinePreflightItemSnapshot(
             sourceURL: sourceURL,
             metadata: metadata,
@@ -336,7 +417,10 @@ struct DeliveryPlanningServiceTests {
                 pixelWidth: 6000,
                 pixelHeight: 4000
             ),
-            estimatedOutputByteCount: maximumOutputByteCount.map { min($0, 1_000) }
+            estimatedOutputByteCount: maximumOutputByteCount.map { min($0, 1_000) },
+            voiceMemo: memoRevision.map {
+                .available(revision: $0, profileIdentifier: "sony-ilce1-v4")
+            } ?? .none
         )
         let request = DeadlinePreflightRequest(
             profile: profile,
@@ -367,7 +451,8 @@ struct DeliveryPlanningServiceTests {
             token: revisionToken,
             profile: profile,
             sourceRevision: revision,
-            metadata: metadata
+            metadata: metadata,
+            voiceMemoRevision: memoRevision
         )
     }
 
@@ -387,6 +472,24 @@ struct DeliveryPlanningServiceTests {
             exifOrientation: 1,
             sha256: hash,
             hashCompletedAt: modificationDate.addingTimeInterval(1)
+        )
+    }
+
+    private func voiceMemoRevision() -> SourceImageRevision {
+        let url = URL(fileURLWithPath: "/private/tmp/source.WAV")
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        return SourceImageRevision(
+            canonicalURL: url,
+            fileResourceIdentifier: nil,
+            filenameAtCreation: url.lastPathComponent,
+            byteCount: 9,
+            contentModificationDate: date,
+            pixelWidth: nil,
+            pixelHeight: nil,
+            exifOrientation: nil,
+            sha256: String(repeating: "e", count: 64),
+            hashCompletedAt: date.addingTimeInterval(1)
         )
     }
 
@@ -410,6 +513,7 @@ private struct PlanningContext {
     let profile: DeadlineProfile
     let sourceRevision: SourceImageRevision
     let metadata: IPTCMetadata
+    let voiceMemoRevision: SourceImageRevision?
 
     func planningRequest(
         currentRevision: DeadlinePreflightRevisionToken? = nil,
@@ -424,7 +528,8 @@ private struct PlanningContext {
             currentProfile: currentProfile ?? profile,
             items: items ?? [DeliveryPlanningItemInput(
                 sourceRevision: sourceRevision,
-                resolvedMetadata: metadata
+                resolvedMetadata: metadata,
+                voiceMemoRevision: voiceMemoRevision
             )],
             acceptedWarningIDs: acceptedWarningIDs
         )

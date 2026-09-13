@@ -86,6 +86,14 @@ final class DeadlineProfileLibraryModel {
         }
     }
 
+    func setVoiceMemoDeliveryPolicy(_ policy: DeadlineVoiceMemoDeliveryPolicy) async {
+        guard !isBusy, var profile = selectedProfile else { return }
+        profile.voiceMemoDeliveryPolicy = policy
+        await mutate {
+            try await repository.update(profile)
+        }
+    }
+
     func importProfile(from source: URL) async {
         guard !isBusy else { return }
         await mutate {

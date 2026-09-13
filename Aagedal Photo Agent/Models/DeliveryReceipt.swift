@@ -5,7 +5,7 @@ import Foundation
 /// The receipt deliberately has no fields for credentials or editorial values. Metadata evidence
 /// records stable field and issue identifiers only; it never records captions, names, or places.
 nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     let id: UUID
@@ -18,6 +18,7 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
     /// Complete batch-level warning acceptance from the frozen plan. Per-item lists below contain
     /// only warnings whose preflight evidence is scoped to that image.
     let acceptedWarningIdentifiers: [String]
+    let voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy
     let items: [DeliveryReceiptItem]
 
     init(
@@ -29,6 +30,7 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
         completedAt: Date,
         destination: DeliveryReceiptDestination,
         acceptedWarningIdentifiers: [String] = [],
+        voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy = .exclude,
         items: [DeliveryReceiptItem]
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -40,6 +42,7 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
         self.completedAt = completedAt
         self.destination = destination
         self.acceptedWarningIdentifiers = acceptedWarningIdentifiers
+        self.voiceMemoDeliveryPolicy = voiceMemoDeliveryPolicy
         self.items = items
     }
 
@@ -53,6 +56,7 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
             completedAt: completedAt,
             destination: destination,
             acceptedWarningIdentifiers: sortedUniqueIdentifiers(acceptedWarningIdentifiers),
+            voiceMemoDeliveryPolicy: voiceMemoDeliveryPolicy,
             items: items.map(\.deterministicallyOrdered).sorted(by: deliveryReceiptItemOrder)
         )
     }
@@ -93,12 +97,29 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
                     item.deliveredFilename
                 )
             }
+            if let voiceMemo = item.voiceMemo {
+                guard voiceMemoDeliveryPolicy != .exclude else {
+                    throw DeliveryReceiptValidationError.incoherentVoiceMemoDisposition
+                }
+                let memoKey = voiceMemo.deliveredFilename.folding(
+                    options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                )
+                guard deliveredNames.insert(memoKey).inserted else {
+                    throw DeliveryReceiptValidationError.duplicateDeliveredFilename(
+                        voiceMemo.deliveredFilename
+                    )
+                }
+            } else if voiceMemoDeliveryPolicy == .require {
+                throw DeliveryReceiptValidationError.incoherentVoiceMemoDisposition
+            }
         }
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, batchIdentifier, profileIdentifier, applicationVersion
-        case startedAt, completedAt, destination, acceptedWarningIdentifiers, items
+        case startedAt, completedAt, destination, acceptedWarningIdentifiers
+        case voiceMemoDeliveryPolicy, items
     }
 
     init(from decoder: Decoder) throws {
@@ -131,6 +152,10 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
             [String].self,
             forKey: .acceptedWarningIdentifiers
         ) ?? sortedUniqueIdentifiers(decodedItems.flatMap(\.acceptedWarningIdentifiers))
+        voiceMemoDeliveryPolicy = try container.decodeIfPresent(
+            DeadlineVoiceMemoDeliveryPolicy.self,
+            forKey: .voiceMemoDeliveryPolicy
+        ) ?? .exclude
         items = decodedItems
     }
 
@@ -148,6 +173,7 @@ nonisolated struct DeliveryReceipt: Codable, Equatable, Identifiable, Sendable {
             sortedUniqueIdentifiers(acceptedWarningIdentifiers),
             forKey: .acceptedWarningIdentifiers
         )
+        try container.encode(voiceMemoDeliveryPolicy, forKey: .voiceMemoDeliveryPolicy)
         try container.encode(items.map(\.deterministicallyOrdered).sorted(by: deliveryReceiptItemOrder), forKey: .items)
     }
 }
@@ -412,6 +438,7 @@ nonisolated struct DeliveryReceiptItem: Codable, Equatable, Sendable {
     let uploadAcknowledgement: DeliveryUploadAcknowledgement
     let remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement
     let acceptedWarningIdentifiers: [String]
+    let voiceMemo: DeliveryReceiptVoiceMemo?
 
     init(
         sourceIdentity: DeliveryReceiptSourceIdentity,
@@ -422,7 +449,8 @@ nonisolated struct DeliveryReceiptItem: Codable, Equatable, Sendable {
         renderSettings: DeliveryRenderSettings,
         uploadAcknowledgement: DeliveryUploadAcknowledgement,
         remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement,
-        acceptedWarningIdentifiers: [String] = []
+        acceptedWarningIdentifiers: [String] = [],
+        voiceMemo: DeliveryReceiptVoiceMemo? = nil
     ) {
         self.sourceIdentity = sourceIdentity
         self.deliveredFilename = deliveredFilename
@@ -433,6 +461,7 @@ nonisolated struct DeliveryReceiptItem: Codable, Equatable, Sendable {
         self.uploadAcknowledgement = uploadAcknowledgement
         self.remoteStatAcknowledgement = remoteStatAcknowledgement
         self.acceptedWarningIdentifiers = acceptedWarningIdentifiers
+        self.voiceMemo = voiceMemo
     }
 
     fileprivate var deterministicallyOrdered: Self {
@@ -445,7 +474,8 @@ nonisolated struct DeliveryReceiptItem: Codable, Equatable, Sendable {
             renderSettings: renderSettings,
             uploadAcknowledgement: uploadAcknowledgement,
             remoteStatAcknowledgement: remoteStatAcknowledgement,
-            acceptedWarningIdentifiers: sortedUniqueIdentifiers(acceptedWarningIdentifiers)
+            acceptedWarningIdentifiers: sortedUniqueIdentifiers(acceptedWarningIdentifiers),
+            voiceMemo: voiceMemo
         )
     }
 
@@ -472,6 +502,32 @@ nonisolated struct DeliveryReceiptItem: Codable, Equatable, Sendable {
             completedAt: completedAt
         )
         try validateReceiptIdentifiers(acceptedWarningIdentifiers, field: "accepted warning")
+        try voiceMemo?.validateForPersistence(startedAt: startedAt, completedAt: completedAt)
+    }
+}
+
+/// Privacy-safe proof for an audio companion that completed the same verified upload workflow.
+nonisolated struct DeliveryReceiptVoiceMemo: Codable, Equatable, Sendable {
+    let sourceIdentity: DeliveryReceiptSourceIdentity
+    let deliveredFilename: String
+    let deliveredSHA256: String
+    let deliveredByteSize: Int64
+    let uploadAcknowledgement: DeliveryUploadAcknowledgement
+    let remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement
+
+    fileprivate func validateForPersistence(startedAt: Date, completedAt: Date) throws {
+        try sourceIdentity.validateForPersistence()
+        try validateDeliveredFilename(deliveredFilename)
+        try validateSHA256(deliveredSHA256, field: "delivered voice memo SHA-256")
+        guard deliveredByteSize >= 0 else {
+            throw DeliveryReceiptValidationError.negativeByteSize(field: "delivered voice memo")
+        }
+        try uploadAcknowledgement.validateForPersistence(startedAt: startedAt, completedAt: completedAt)
+        try remoteStatAcknowledgement.validateForPersistence(
+            deliveredByteSize: deliveredByteSize,
+            startedAt: startedAt,
+            completedAt: completedAt
+        )
     }
 }
 
@@ -493,6 +549,7 @@ nonisolated enum DeliveryReceiptValidationError: Error, Equatable, LocalizedErro
     case deliveredOutputExceedsMaximum
     case incoherentUploadAcknowledgement
     case incoherentRemoteStatAcknowledgement
+    case incoherentVoiceMemoDisposition
 
     var errorDescription: String? {
         switch self {
@@ -530,6 +587,8 @@ nonisolated enum DeliveryReceiptValidationError: Error, Equatable, LocalizedErro
             "The upload acknowledgement status and timestamp are inconsistent."
         case .incoherentRemoteStatAcknowledgement:
             "The remote-stat acknowledgement status, timestamp, and byte size are inconsistent."
+        case .incoherentVoiceMemoDisposition:
+            "The voice-memo receipt evidence does not match the frozen delivery policy."
         }
     }
 }

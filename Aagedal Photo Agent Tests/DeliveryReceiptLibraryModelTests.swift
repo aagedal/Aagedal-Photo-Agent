@@ -89,6 +89,31 @@ struct DeliveryReceiptLibraryModelTests {
         #expect(!detail.summaryText.contains("private-source-name.jpg"))
     }
 
+    @Test("detail and exported summary expose voice-memo disposition without private identity")
+    func safeVoiceMemoProjection() async throws {
+        let receipt = makeActivityReceipt(
+            filename: "private-source-name.jpg",
+            includeVoiceMemo: true
+        )
+        let repository = ReceiptLibraryStub(
+            entries: [entry(for: receipt)],
+            receipts: [receipt.id: receipt]
+        )
+        let model = DeliveryReceiptLibraryModel(repository: repository)
+
+        await model.reload()
+        await model.loadDetail(id: receipt.id)
+
+        let detail = try #require(model.detail(for: receipt.id))
+        #expect(detail.voiceMemoDeliveryPolicy == .includeWhenAvailable)
+        #expect(detail.items[0].voiceMemo?.deliveredByteSize == 240)
+        let reflected = String(reflecting: detail).lowercased()
+        #expect(!reflected.contains("private-source-name.wav"))
+        #expect(!reflected.contains(String(repeating: "c", count: 64)))
+        #expect(detail.summaryText.contains("Voice memos: Include when available; delivered: 1"))
+        #expect(!detail.summaryText.contains("private-source-name.wav"))
+    }
+
     @Test("list and detail failures remain typed and preserve the last good snapshot")
     func typedLoadFailures() async {
         let id = testUUID("30000000-0000-0000-0000-000000000001")
@@ -593,7 +618,8 @@ private func makeActivityReceipt(
     filename: String,
     metadataOutcome: DeliveryMetadataVerificationOutcome = .verifiedWithWarnings,
     warnings: [String] = ["warning.accepted"],
-    remoteStatus: DeliveryRemoteStatAcknowledgement.Status = .matchesDeliveredByteSize
+    remoteStatus: DeliveryRemoteStatAcknowledgement.Status = .matchesDeliveredByteSize,
+    includeVoiceMemo: Bool = false
 ) -> DeliveryReceipt {
     let completedAt = testInstant(30)
     let remoteAcknowledgement: DeliveryRemoteStatAcknowledgement
@@ -633,6 +659,7 @@ private func makeActivityReceipt(
             path: "/incoming/wire"
         ),
         acceptedWarningIdentifiers: warnings,
+        voiceMemoDeliveryPolicy: includeVoiceMemo ? .includeWhenAvailable : .exclude,
         items: [
             DeliveryReceiptItem(
                 sourceIdentity: DeliveryReceiptSourceIdentity(
@@ -671,7 +698,25 @@ private func makeActivityReceipt(
                     acknowledgedAt: completedAt.addingTimeInterval(-5)
                 ),
                 remoteStatAcknowledgement: remoteAcknowledgement,
-                acceptedWarningIdentifiers: warnings
+                acceptedWarningIdentifiers: warnings,
+                voiceMemo: includeVoiceMemo ? DeliveryReceiptVoiceMemo(
+                    sourceIdentity: DeliveryReceiptSourceIdentity(
+                        sha256: String(repeating: "c", count: 64),
+                        byteSize: 240
+                    ),
+                    deliveredFilename: "private-source-name.WAV",
+                    deliveredSHA256: String(repeating: "c", count: 64),
+                    deliveredByteSize: 240,
+                    uploadAcknowledgement: DeliveryUploadAcknowledgement(
+                        status: .protocolAcknowledged,
+                        acknowledgedAt: completedAt.addingTimeInterval(-3)
+                    ),
+                    remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement(
+                        status: .matchesDeliveredByteSize,
+                        checkedAt: completedAt.addingTimeInterval(-2),
+                        observedByteSize: 240
+                    )
+                ) : nil
             ),
         ]
     )

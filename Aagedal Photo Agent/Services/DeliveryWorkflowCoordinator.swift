@@ -111,7 +111,8 @@ nonisolated struct DeliveryWorkflowManifest: VersionedJSONDocument, Equatable, S
                 guard item.itemIndex == expectedIndex,
                       Self.isSHA256(item.stageInputFingerprint),
                       Self.isSHA256(item.localEvidence.sha256),
-                      item.localEvidence.byteCount >= 0 else {
+                      item.localEvidence.byteCount >= 0,
+                      Self.isCoherentVoiceMemoCheckpoint(item) else {
                     throw DeliveryWorkflowError.invalidManifest
                 }
             }
@@ -139,6 +140,34 @@ nonisolated struct DeliveryWorkflowManifest: VersionedJSONDocument, Equatable, S
     private static func isSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy {
             (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    private static func isCoherentVoiceMemoCheckpoint(
+        _ item: DeliveryUploadCheckpointItem
+    ) -> Bool {
+        switch (
+            item.voiceMemoLocalEvidence,
+            item.voiceMemoUploadAcknowledgedAt,
+            item.voiceMemoRemoteConfirmation
+        ) {
+        case (nil, nil, nil):
+            return true
+        case let (.some(evidence), .some(acknowledgedAt), .some(confirmation)):
+            guard isSHA256(evidence.sha256), evidence.byteCount >= 0 else { return false }
+            switch confirmation {
+            case .notRequested:
+                return true
+            case let .unavailable(checkedAt: .some(checkedAt)),
+                 let .existsSizeUnknown(checkedAt):
+                return checkedAt >= acknowledgedAt
+            case let .sizeMatches(checkedAt, observedByteCount):
+                return checkedAt >= acknowledgedAt && observedByteCount == evidence.byteCount
+            case .unavailable(checkedAt: nil), .missing, .sizeMismatch:
+                return false
+            }
+        default:
+            return false
         }
     }
 }

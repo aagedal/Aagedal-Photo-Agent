@@ -283,6 +283,7 @@ struct DeadlineWorkspaceView: View {
                 HStack(spacing: 20) {
                     Label(state.writeStrategySummary, systemImage: "square.and.pencil")
                     Label(state.destinationSummary, systemImage: "paperplane")
+                    Label(state.voiceMemoPolicySummary, systemImage: "waveform")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -523,6 +524,9 @@ struct DeadlineWorkspaceView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                Text(row.voiceMemoSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
             if row.blockerCount > 0 {
@@ -615,6 +619,10 @@ private struct DeadlineDeliveryConfirmationView: View {
                 }
                 GridRow { Text("Metadata policy").foregroundStyle(.secondary); Text("Staged copies only") }
                 GridRow {
+                    Text("Voice memos").foregroundStyle(.secondary)
+                    Text(confirmation.voiceMemoDeliveryPolicy.title)
+                }
+                GridRow {
                     Text("Maximum file size").foregroundStyle(.secondary)
                     Text(confirmation.maximumOutputByteCount.map {
                         ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
@@ -674,6 +682,9 @@ private struct DeadlineDeliveryConfirmationRow: View {
             Text(c2paText)
                 .font(.caption)
                 .foregroundStyle(item.c2paConsequence == .none ? Color.secondary : Color.orange)
+            Text(item.voiceMemoFilename.map { "Voice memo: include \($0)" } ?? "Voice memo: not included")
+                .font(.caption)
+                .foregroundStyle(item.voiceMemoFilename == nil ? Color.secondary : Color.accentColor)
         }
     }
 

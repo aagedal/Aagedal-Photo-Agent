@@ -78,6 +78,29 @@ struct DeadlineProfileManagementView: View {
 
             Divider()
 
+            if let selected = model.selectedProfile {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Voice memo delivery", selection: Binding(
+                        get: { selected.voiceMemoDeliveryPolicy },
+                        set: { policy in
+                            Task { await model.setVoiceMemoDeliveryPolicy(policy) }
+                        }
+                    )) {
+                        ForEach(DeadlineVoiceMemoDeliveryPolicy.allCases, id: \.self) { policy in
+                            Text(policy.title).tag(policy)
+                        }
+                    }
+                    Text(selected.voiceMemoDeliveryPolicy.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .disabled(model.isBusy)
+
+                Divider()
+            }
+
             HStack(spacing: 8) {
                 Button {
                     proposedName = ""

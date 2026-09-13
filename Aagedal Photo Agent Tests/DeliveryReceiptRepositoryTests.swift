@@ -283,7 +283,7 @@ struct DeliveryReceiptRepositoryTests {
         )
         #expect(object["schemaVersion"] as? Int == 2)
         let receipts = try #require(object["receipts"] as? [[String: Any]])
-        #expect(receipts.first?["schemaVersion"] as? Int == 2)
+        #expect(receipts.first?["schemaVersion"] as? Int == DeliveryReceipt.currentSchemaVersion)
         #expect(FileManager.default.fileExists(atPath: fixture.backupURL.path))
     }
 
@@ -322,7 +322,7 @@ struct DeliveryReceiptRepositoryTests {
             throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
                 document: "delivery receipt",
                 found: 99,
-                supported: 2
+                supported: DeliveryReceipt.currentSchemaVersion
             )
         ) {
             _ = try await repository.list()
@@ -366,7 +366,7 @@ struct DeliveryReceiptRepositoryTests {
             throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
                 document: "delivery receipt",
                 found: 99,
-                supported: 2
+                supported: DeliveryReceipt.currentSchemaVersion
             )
         ) {
             try await repository.record(

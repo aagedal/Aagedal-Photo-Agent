@@ -59,6 +59,15 @@ nonisolated struct DeliveryReceiptActivityItemEvidence: Equatable, Identifiable,
     let uploadAcknowledgement: DeliveryUploadAcknowledgement
     let remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement
     let acceptedWarningIdentifiers: [String]
+    let voiceMemo: DeliveryReceiptActivityVoiceMemoEvidence?
+}
+
+/// Privacy-safe voice-memo evidence. Filenames, paths, and hashes stay in the persisted receipt
+/// and never enter the Activity presentation model.
+nonisolated struct DeliveryReceiptActivityVoiceMemoEvidence: Equatable, Sendable {
+    let deliveredByteSize: Int64
+    let uploadAcknowledgement: DeliveryUploadAcknowledgement
+    let remoteStatAcknowledgement: DeliveryRemoteStatAcknowledgement
 }
 
 /// Full Activity detail, still constrained to the receipt's human-readable privacy contract.
@@ -72,6 +81,7 @@ nonisolated struct DeliveryReceiptActivityDetail: Equatable, Identifiable, Senda
     let destinationIdentifier: String
     let destinationPath: String
     let transportSecurity: DeliveryTransportSecurity?
+    let voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy
     let acceptedWarningIdentifiers: [String]
     let status: DeliveryReceiptActivityStatus
     let items: [DeliveryReceiptActivityItemEvidence]
@@ -317,7 +327,14 @@ final class DeliveryReceiptLibraryModel {
                 renderSettings: item.renderSettings,
                 uploadAcknowledgement: item.uploadAcknowledgement,
                 remoteStatAcknowledgement: item.remoteStatAcknowledgement,
-                acceptedWarningIdentifiers: item.acceptedWarningIdentifiers
+                acceptedWarningIdentifiers: item.acceptedWarningIdentifiers,
+                voiceMemo: item.voiceMemo.map {
+                    DeliveryReceiptActivityVoiceMemoEvidence(
+                        deliveredByteSize: $0.deliveredByteSize,
+                        uploadAcknowledgement: $0.uploadAcknowledgement,
+                        remoteStatAcknowledgement: $0.remoteStatAcknowledgement
+                    )
+                }
             )
         }
         return DeliveryReceiptActivityDetail(
@@ -330,6 +347,7 @@ final class DeliveryReceiptLibraryModel {
             destinationIdentifier: receipt.destination.identifier,
             destinationPath: receipt.destination.path,
             transportSecurity: receipt.destination.transportSecurity,
+            voiceMemoDeliveryPolicy: receipt.voiceMemoDeliveryPolicy,
             acceptedWarningIdentifiers: receipt.acceptedWarningIdentifiers,
             status: detailStatus(
                 items,

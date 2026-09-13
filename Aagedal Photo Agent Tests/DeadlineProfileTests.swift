@@ -7,11 +7,14 @@ struct DeadlineProfileTests {
     @Test("New profiles default to isolated staged-copy delivery")
     func newProfileDefaultsToStagedCopies() throws {
         #expect(DeadlineProfile(name: "Wire").metadataWriteStrategy == .stagedCopies)
+        #expect(DeadlineProfile(name: "Wire").voiceMemoDeliveryPolicy == .exclude)
 
         // A missing key belongs to a legacy schema-v1 profile and keeps the old fallback.
         let legacy = Data(#"{"schemaVersion":1,"name":"Legacy"}"#.utf8)
         #expect(try JSONDecoder().decode(DeadlineProfile.self, from: legacy)
             .metadataWriteStrategy == .xmpSidecars)
+        #expect(try JSONDecoder().decode(DeadlineProfile.self, from: legacy)
+            .voiceMemoDeliveryPolicy == .exclude)
     }
 
     private let io = DeadlineProfileIO()
@@ -81,7 +84,8 @@ struct DeadlineProfileTests {
                 remotePathTemplate: "/incoming/{date}/{job}"
             ),
             gpsPolicy: .remove,
-            metadataWriteStrategy: .stagedCopies
+            metadataWriteStrategy: .stagedCopies,
+            voiceMemoDeliveryPolicy: .includeWhenAvailable
         )
 
         let encoded = try io.encode(profile)
@@ -159,10 +163,11 @@ struct DeadlineProfileTests {
         #expect(profile.destination == nil)
         #expect(profile.gpsPolicy == .retain)
         #expect(profile.metadataWriteStrategy == .xmpSidecars)
+        #expect(profile.voiceMemoDeliveryPolicy == .exclude)
 
         let migrated = try io.encode(profile)
         let object = try #require(JSONSerialization.jsonObject(with: migrated) as? [String: Any])
-        #expect(object["schemaVersion"] as? Int == 1)
+        #expect(object["schemaVersion"] as? Int == DeadlineProfile.currentSchemaVersion)
     }
 
     @Test("Legacy export snapshots without a byte ceiling decode with no limit")
@@ -203,7 +208,7 @@ struct DeadlineProfileTests {
         #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
             document: "deadline profile",
             found: 99,
-            supported: 1
+            supported: DeadlineProfile.currentSchemaVersion
         )) {
             try io.decode(data)
         }
@@ -222,7 +227,7 @@ struct DeadlineProfileTests {
         #expect(throws: EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
             document: "deadline profile",
             found: 42,
-            supported: 1
+            supported: DeadlineProfile.currentSchemaVersion
         )) {
             try io.export(DeadlineProfile(name: "Current"), to: destination)
         }

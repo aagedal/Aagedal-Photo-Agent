@@ -137,7 +137,13 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 ),
                 acceptedWarningIdentifiers: plan.preflight.issues.compactMap { issue in
                     issue.severity == .warning && issue.imageIndex == index ? issue.id : nil
-                }
+                },
+                voiceMemo: try voiceMemoReceipt(
+                    planItem: planItem,
+                    stagedItem: stagedItem,
+                    uploadItem: uploadItem,
+                    itemIndex: index
+                )
             ))
         }
 
@@ -154,6 +160,7 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 transportSecurity: transportSecurity(plan.destination.connectionIdentifier)
             ),
             acceptedWarningIdentifiers: plan.acceptedWarningIDs,
+            voiceMemoDeliveryPolicy: plan.profile.voiceMemoDeliveryPolicy,
             items: receiptItems
         )
         do {
@@ -211,6 +218,18 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
                 throw DeliveryReceiptAssemblyError.stagingItemMismatch(
                     itemIndex: item.itemIndex
                 )
+            }
+            if let memo = item.voiceMemo {
+                guard staged.voiceMemoStagedRelativePath == memo.stagedRelativePath,
+                      staged.voiceMemoStagedByteCount.map(Int64.init)
+                        == memo.sourceRevision.byteCount,
+                      staged.voiceMemoStagedSHA256 == memo.sourceRevision.sha256 else {
+                    throw DeliveryReceiptAssemblyError.stagingItemMismatch(itemIndex: item.itemIndex)
+                }
+            } else if staged.voiceMemoStagedRelativePath != nil
+                        || staged.voiceMemoStagedByteCount != nil
+                        || staged.voiceMemoStagedSHA256 != nil {
+                throw DeliveryReceiptAssemblyError.stagingItemMismatch(itemIndex: item.itemIndex)
             }
             guard let preservation = staged.metadataPreservation,
                   preservation.domains.map(\.domain) == MetadataPreservationDomain.allCases,
@@ -307,12 +326,40 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
             acknowledgementTimes.append(acknowledgedAt)
             latestEvidenceTimes.append(remoteTimestamp ?? acknowledgedAt)
 
+            if let memo = planItem.voiceMemo {
+                guard let memoEvidence = uploaded.voiceMemoLocalEvidence,
+                      memoEvidence.sha256 == memo.sourceRevision.sha256,
+                      memoEvidence.byteCount == memo.sourceRevision.byteCount,
+                      uploaded.voiceMemoUploadAcknowledgement?.status == .protocolAcknowledged,
+                      let memoAcknowledgedAt = uploaded.voiceMemoUploadAcknowledgement?.acknowledgedAt,
+                      let memoRemote = uploaded.voiceMemoRemoteConfirmation else {
+                    throw DeliveryReceiptAssemblyError.uploadItemMismatch(itemIndex: index)
+                }
+                let memoRemoteTimestamp = try validateRemoteEvidence(
+                    memoRemote,
+                    deliveredByteCount: memoEvidence.byteCount,
+                    acknowledgedAt: memoAcknowledgedAt,
+                    itemIndex: index
+                )
+                acknowledgementTimes.append(memoAcknowledgedAt)
+                latestEvidenceTimes.append(memoRemoteTimestamp ?? memoAcknowledgedAt)
+            } else if uploaded.voiceMemoLocalEvidence != nil
+                        || uploaded.voiceMemoUploadAcknowledgement != nil
+                        || uploaded.voiceMemoRemoteConfirmation != nil {
+                throw DeliveryReceiptAssemblyError.uploadItemMismatch(itemIndex: index)
+            }
+
             let checkpoint = result.checkpoint.items[index]
             guard checkpoint.itemIndex == index,
                   checkpoint.stageInputFingerprint == planItem.stageInputFingerprint,
                   checkpoint.localEvidence == uploaded.localEvidence,
                   checkpoint.uploadAcknowledgedAt == acknowledgedAt,
-                  checkpoint.remoteConfirmation == uploaded.remoteConfirmation else {
+                  checkpoint.remoteConfirmation == uploaded.remoteConfirmation,
+                  checkpoint.voiceMemoLocalEvidence == uploaded.voiceMemoLocalEvidence,
+                  checkpoint.voiceMemoUploadAcknowledgedAt
+                    == uploaded.voiceMemoUploadAcknowledgement?.acknowledgedAt,
+                  checkpoint.voiceMemoRemoteConfirmation
+                    == uploaded.voiceMemoRemoteConfirmation else {
                 throw DeliveryReceiptAssemblyError.checkpointMismatch
             }
         }
@@ -323,6 +370,38 @@ nonisolated struct DeliveryReceiptAssembler: Sendable {
             throw DeliveryReceiptAssemblyError.checkpointMismatch
         }
         return (earliest, latest)
+    }
+
+    private func voiceMemoReceipt(
+        planItem: DeliveryPlanStageItem,
+        stagedItem: DeliveryStagingItemResult,
+        uploadItem: DeliveryUploadItemResult,
+        itemIndex: Int
+    ) throws -> DeliveryReceiptVoiceMemo? {
+        guard let memo = planItem.voiceMemo else { return nil }
+        guard let stagedByteCount = stagedItem.voiceMemoStagedByteCount,
+              let stagedSHA256 = stagedItem.voiceMemoStagedSHA256,
+              let localEvidence = uploadItem.voiceMemoLocalEvidence,
+              localEvidence.byteCount == Int64(stagedByteCount),
+              localEvidence.sha256 == stagedSHA256,
+              let uploadAcknowledgement = uploadItem.voiceMemoUploadAcknowledgement,
+              let remoteConfirmation = uploadItem.voiceMemoRemoteConfirmation else {
+            throw DeliveryReceiptAssemblyError.uploadItemMismatch(itemIndex: itemIndex)
+        }
+        return DeliveryReceiptVoiceMemo(
+            sourceIdentity: DeliveryReceiptSourceIdentity(
+                sha256: memo.sourceRevision.sha256,
+                byteSize: memo.sourceRevision.byteCount
+            ),
+            deliveredFilename: memo.outputFilename,
+            deliveredSHA256: stagedSHA256,
+            deliveredByteSize: Int64(stagedByteCount),
+            uploadAcknowledgement: uploadAcknowledgement,
+            remoteStatAcknowledgement: try remoteAcknowledgement(
+                remoteConfirmation,
+                itemIndex: itemIndex
+            )
+        )
     }
 
     private func validateRemoteEvidence(

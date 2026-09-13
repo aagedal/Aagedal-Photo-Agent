@@ -77,6 +77,30 @@ struct DeliveryReceiptAssemblerTests {
         #expect(json.contains("verificationenabled"))
     }
 
+    @Test("voice-memo policy and exact terminal evidence are retained in the receipt")
+    func voiceMemoEvidence() async throws {
+        let fixture = try await ReceiptAssemblyFixture(includeVoiceMemos: true)
+
+        let receipt = try makeAssembler().assemble(
+            plan: fixture.plan,
+            stagingResult: fixture.staging,
+            uploadResult: fixture.upload
+        )
+
+        #expect(receipt.voiceMemoDeliveryPolicy == .includeWhenAvailable)
+        #expect(receipt.items.allSatisfy { $0.voiceMemo != nil })
+        for index in receipt.items.indices {
+            let memo = try #require(receipt.items[index].voiceMemo)
+            let planned = try #require(fixture.plan.items[index].voiceMemo)
+            #expect(memo.sourceIdentity.sha256 == planned.sourceRevision.sha256)
+            #expect(memo.deliveredFilename == planned.outputFilename)
+            #expect(memo.deliveredSHA256 == planned.sourceRevision.sha256)
+            #expect(memo.uploadAcknowledgement.status == .protocolAcknowledged)
+            #expect(memo.remoteStatAcknowledgement.status == .matchesDeliveredByteSize)
+        }
+        try receipt.validateForPersistence()
+    }
+
     @Test("invalid or fingerprint-tampered plans are refused")
     func planRefusal() async throws {
         let fixture = try await ReceiptAssemblyFixture()
@@ -376,7 +400,7 @@ private struct ReceiptAssemblyFixture {
     let staging: DeliveryStagingBatchResult
     let upload: DeliveryUploadBatchResult
 
-    init() async throws {
+    init(includeVoiceMemos: Bool = false) async throws {
         let root = URL(fileURLWithPath: "/private/tmp/receipt-assembly-fixture", isDirectory: true)
         let sourceURLs = (0..<2).map { root.appendingPathComponent("source-\($0).raw") }
         let export = DeadlineExportSnapshot(
@@ -403,12 +427,27 @@ private struct ReceiptAssemblyFixture {
                 remotePathTemplate: "/incoming/wire"
             ),
             gpsPolicy: .remove,
-            metadataWriteStrategy: .stagedCopies
+            metadataWriteStrategy: .stagedCopies,
+            voiceMemoDeliveryPolicy: includeVoiceMemos ? .includeWhenAvailable : .exclude
         )
         let metadata = [
             IPTCMetadata(title: "Private caption zero"),
             IPTCMetadata(title: "Private caption one"),
         ]
+        let memoRevisions = sourceURLs.enumerated().map { index, url in
+            SourceImageRevision(
+                canonicalURL: url.deletingPathExtension().appendingPathExtension("WAV"),
+                fileResourceIdentifier: nil,
+                filenameAtCreation: "source-\(index).WAV",
+                byteCount: Int64(200 + index),
+                contentModificationDate: Date(timeIntervalSince1970: 10),
+                pixelWidth: nil,
+                pixelHeight: nil,
+                exifOrientation: nil,
+                sha256: String(repeating: index == 0 ? "e" : "f", count: 64),
+                hashCompletedAt: Date(timeIntervalSince1970: 11)
+            )
+        }
         let request = DeadlinePreflightRequest(
             profile: profile,
             items: sourceURLs.enumerated().map { index, url in
@@ -420,7 +459,13 @@ private struct ReceiptAssemblyFixture {
                         pixelWidth: 6_000,
                         pixelHeight: 4_000,
                         isHDR: index == 1
-                    )
+                    ),
+                    voiceMemo: includeVoiceMemos
+                        ? .available(
+                            revision: memoRevisions[index],
+                            profileIdentifier: "voice-memo-companion.v1"
+                        )
+                        : .none
                 )
             },
             delivery: DeadlineBatchDeliverySnapshot(
@@ -461,8 +506,12 @@ private struct ReceiptAssemblyFixture {
             publication: publication,
             currentRevision: token,
             currentProfile: profile,
-            items: zip(revisions, metadata).map {
-                DeliveryPlanningItemInput(sourceRevision: $0.0, resolvedMetadata: $0.1)
+            items: revisions.indices.map { index in
+                DeliveryPlanningItemInput(
+                    sourceRevision: revisions[index],
+                    resolvedMetadata: metadata[index],
+                    voiceMemoRevision: includeVoiceMemos ? memoRevisions[index] : nil
+                )
             },
             acceptedWarningIDs: Set(report.issues.filter { $0.severity == .warning }.map(\.id))
         ))
@@ -508,14 +557,17 @@ private struct ReceiptAssemblyFixture {
                     expected: item.resolvedMetadata
                 ),
                 mismatchedFields: [],
-                failure: nil
+                failure: nil,
+                voiceMemoStagedRelativePath: item.voiceMemo?.stagedRelativePath,
+                voiceMemoStagedByteCount: item.voiceMemo.map { Int($0.sourceRevision.byteCount) },
+                voiceMemoStagedSHA256: item.voiceMemo?.sourceRevision.sha256
             )
         }
         staging = DeliveryStagingBatchResult(
             batchID: batchID,
             planFingerprint: fixturePlan.fingerprint,
             stagingDirectoryURL: directory,
-            requiredBytes: 2_001,
+            requiredBytes: 2_001 + (includeVoiceMemos ? 401 : 0),
             status: .completed,
             items: stagedItems,
             cleanupToken: DeliveryStagingCleanupToken(
@@ -534,6 +586,7 @@ private struct ReceiptAssemblyFixture {
                     observedByteCount: Int64(staged.stagedByteCount!)
                 )
                 : .existsSizeUnknown(checkedAt: acknowledgedAt.addingTimeInterval(1))
+            let memoAcknowledgedAt = acknowledgedAt.addingTimeInterval(2)
             return DeliveryUploadItemResult(
                 itemIndex: staged.itemIndex,
                 stageInputFingerprint: staged.stageInputFingerprint,
@@ -547,7 +600,25 @@ private struct ReceiptAssemblyFixture {
                     acknowledgedAt: acknowledgedAt
                 ),
                 remoteConfirmation: remote,
-                failure: nil
+                failure: nil,
+                voiceMemoLocalEvidence: staged.voiceMemoStagedSHA256.map {
+                    DeliveryUploadFileEvidence(
+                        sha256: $0,
+                        byteCount: Int64(staged.voiceMemoStagedByteCount!)
+                    )
+                },
+                voiceMemoUploadAcknowledgement: staged.voiceMemoStagedSHA256.map { _ in
+                    DeliveryUploadAcknowledgement(
+                        status: .protocolAcknowledged,
+                        acknowledgedAt: memoAcknowledgedAt
+                    )
+                },
+                voiceMemoRemoteConfirmation: staged.voiceMemoStagedByteCount.map {
+                    .sizeMatches(
+                        checkedAt: memoAcknowledgedAt.addingTimeInterval(1),
+                        observedByteCount: Int64($0)
+                    )
+                }
             )
         }
         let checkpointItems = uploadedItems.map { item in
@@ -556,7 +627,10 @@ private struct ReceiptAssemblyFixture {
                 stageInputFingerprint: item.stageInputFingerprint,
                 localEvidence: item.localEvidence!,
                 uploadAcknowledgedAt: item.uploadAcknowledgement.acknowledgedAt!,
-                remoteConfirmation: item.remoteConfirmation
+                remoteConfirmation: item.remoteConfirmation,
+                voiceMemoLocalEvidence: item.voiceMemoLocalEvidence,
+                voiceMemoUploadAcknowledgedAt: item.voiceMemoUploadAcknowledgement?.acknowledgedAt,
+                voiceMemoRemoteConfirmation: item.voiceMemoRemoteConfirmation
             )
         }
         upload = DeliveryUploadBatchResult(

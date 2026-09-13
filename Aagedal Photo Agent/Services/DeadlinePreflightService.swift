@@ -58,6 +58,9 @@ nonisolated enum DeadlinePreflightIssueCode: Codable, Equatable, Sendable {
     case connectionUnreachable(identifier: String)
     case remotePathInvalid
     case remotePathHasUnresolvedVariables([String])
+    case voiceMemoExcluded
+    case voiceMemoIncluded
+    case voiceMemoUnavailable
 }
 
 nonisolated enum DeadlineCreatorContactField: String, Codable, Equatable, Sendable {
@@ -220,6 +223,7 @@ nonisolated struct DeadlinePreflightItemSnapshot: Equatable, Sendable {
     var c2paConsequence: DeadlineC2PAConsequence
     /// A renderer-aware per-item estimate. Source byte size is not an output estimate.
     var estimatedOutputByteCount: Int64?
+    var voiceMemo: DeadlineVoiceMemoSnapshot
 
     init(
         sourceURL: URL,
@@ -229,7 +233,8 @@ nonisolated struct DeadlinePreflightItemSnapshot: Equatable, Sendable {
         source: DeadlineSourceSnapshot = DeadlineSourceSnapshot(),
         descriptiveConflict: DeadlineDescriptiveMetadataConflictSnapshot = .none,
         c2paConsequence: DeadlineC2PAConsequence = .none,
-        estimatedOutputByteCount: Int64? = nil
+        estimatedOutputByteCount: Int64? = nil,
+        voiceMemo: DeadlineVoiceMemoSnapshot = .none
     ) {
         self.sourceURL = sourceURL
         self.metadata = metadata
@@ -240,6 +245,21 @@ nonisolated struct DeadlinePreflightItemSnapshot: Equatable, Sendable {
         self.descriptiveConflict = descriptiveConflict
         self.c2paConsequence = c2paConsequence
         self.estimatedOutputByteCount = estimatedOutputByteCount
+        self.voiceMemo = voiceMemo
+    }
+}
+
+/// Exact audio-companion state captured with the rest of Deadline preflight. An available value
+/// contains a cryptographic source revision; filenames and adjacency alone never authorize Send.
+nonisolated enum DeadlineVoiceMemoSnapshot: Equatable, Sendable {
+    case none
+    case available(revision: SourceImageRevision, profileIdentifier: String)
+    case missing(filename: String)
+    case invalid
+
+    var availableRevision: SourceImageRevision? {
+        guard case let .available(revision, _) = self else { return nil }
+        return revision
     }
 }
 
@@ -544,6 +564,15 @@ nonisolated struct DeadlinePreflightService: Sendable {
                 occurrence: &occurrence
             )
 
+            appendVoiceMemoIssue(
+                item.voiceMemo,
+                policy: request.profile.voiceMemoDeliveryPolicy,
+                imageIndex: imageIndex,
+                imageURL: item.sourceURL,
+                to: &issues,
+                occurrence: &occurrence
+            )
+
             if case let .value(export) = exportResolution {
                 appendExportIssues(
                     export,
@@ -614,6 +643,57 @@ nonisolated struct DeadlinePreflightService: Sendable {
             completedImageCount: request.items.count,
             renamePlan: renamePlan
         )
+    }
+
+    private func appendVoiceMemoIssue(
+        _ snapshot: DeadlineVoiceMemoSnapshot,
+        policy: DeadlineVoiceMemoDeliveryPolicy,
+        imageIndex: Int,
+        imageURL: URL,
+        to issues: inout [DeadlinePreflightIssue],
+        occurrence: inout Int
+    ) {
+        switch (policy, snapshot) {
+        case (.exclude, .available):
+            append(&issues, occurrence: &occurrence, severity: .information, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoExcluded,
+                   message: "The associated voice memo will be excluded from delivery.", technicalDetail: nil)
+        case (.exclude, .none):
+            break
+        case (.exclude, .missing), (.exclude, .invalid):
+            append(&issues, occurrence: &occurrence, severity: .information, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoExcluded,
+                   message: "Voice-memo delivery is excluded; unavailable companion evidence will not block Send.",
+                   technicalDetail: nil)
+        case (.includeWhenAvailable, .available), (.require, .available):
+            append(&issues, occurrence: &occurrence, severity: .information, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoIncluded,
+                   message: "The proven voice-memo WAV will be staged, verified, and sent with this image.",
+                   technicalDetail: nil)
+        case (.includeWhenAvailable, .none):
+            break
+        case let (.includeWhenAvailable, .missing(filename)):
+            append(&issues, occurrence: &occurrence, severity: .warning, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoUnavailable,
+                   message: "The saved voice memo is missing and will not be delivered.", technicalDetail: filename)
+        case (.includeWhenAvailable, .invalid):
+            append(&issues, occurrence: &occurrence, severity: .warning, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoUnavailable,
+                   message: "The voice-memo relationship could not be verified and will not be delivered.",
+                   technicalDetail: nil)
+        case (.require, .none):
+            append(&issues, occurrence: &occurrence, severity: .blocker, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoUnavailable,
+                   message: "This profile requires a voice memo for every image.", technicalDetail: nil)
+        case let (.require, .missing(filename)):
+            append(&issues, occurrence: &occurrence, severity: .blocker, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoUnavailable,
+                   message: "The required saved voice memo is missing.", technicalDetail: filename)
+        case (.require, .invalid):
+            append(&issues, occurrence: &occurrence, severity: .blocker, checkRank: 6,
+                   imageIndex: imageIndex, imageURL: imageURL, code: .voiceMemoUnavailable,
+                   message: "The required voice-memo relationship could not be verified.", technicalDetail: nil)
+        }
     }
 
     private func publishProgress(

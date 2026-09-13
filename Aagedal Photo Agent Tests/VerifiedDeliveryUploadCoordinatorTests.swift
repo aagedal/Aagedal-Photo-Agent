@@ -129,6 +129,28 @@ struct VerifiedDeliveryUploadCoordinatorTests {
         #expect(recordedStates.contains(.sent))
     }
 
+    @Test("A verified voice memo uploads after its image and is retained in the checkpoint")
+    func uploadsVoiceMemo() async throws {
+        let fixture = try await UploadFixture(itemCount: 1, includeVoiceMemo: true)
+        defer { fixture.remove() }
+        let recorder = UploadRecorder()
+        let result = try await VerifiedDeliveryUploadCoordinator(
+            transport: recorder.transport(),
+            now: { Date(timeIntervalSince1970: 1_700_000_100) }
+        ).upload(DeliveryUploadRequest(
+            plan: fixture.plan,
+            stagedBatch: fixture.verifiedBatch()
+        ))
+
+        #expect(result.status == .completed)
+        #expect(await recorder.uploadedItemIndices() == [0, 0])
+        #expect(result.items[0].voiceMemoLocalEvidence?.sha256
+                == fixture.plan.items[0].voiceMemo?.sourceRevision.sha256)
+        #expect(result.items[0].voiceMemoUploadAcknowledgement?.status == .protocolAcknowledged)
+        #expect(result.checkpoint.items[0].voiceMemoLocalEvidence
+                == result.items[0].voiceMemoLocalEvidence)
+    }
+
     @Test("remote size mismatch fails without claiming cryptographic verification")
     func remoteSizeMismatch() async throws {
         let fixture = try await UploadFixture(itemCount: 1)
@@ -721,7 +743,11 @@ private struct UploadFixture {
     let stagingResult: DeliveryStagingBatchResult
     let stagedURLs: [URL]
 
-    init(itemCount: Int, stagedContents: [Data]? = nil) async throws {
+    init(
+        itemCount: Int,
+        stagedContents: [Data]? = nil,
+        includeVoiceMemo: Bool = false
+    ) async throws {
         let fixtureRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
             "apa-upload-tests-\(UUID().uuidString)",
             isDirectory: true
@@ -738,6 +764,13 @@ private struct UploadFixture {
         }
         for (url, data) in zip(sourceURLs, contents) {
             try data.write(to: url)
+        }
+        let memoContents = (0..<itemCount).map { Data("voice-memo-\($0)".utf8) }
+        let memoURLs = (0..<itemCount).map {
+            fixtureRoot.appendingPathComponent("source-\($0).WAV")
+        }
+        if includeVoiceMemo {
+            for (url, data) in zip(memoURLs, memoContents) { try data.write(to: url) }
         }
 
         let export = DeadlineExportSnapshot(
@@ -765,7 +798,8 @@ private struct UploadFixture {
                 remotePathTemplate: "/incoming/wire"
             ),
             gpsPolicy: .remove,
-            metadataWriteStrategy: .stagedCopies
+            metadataWriteStrategy: .stagedCopies,
+            voiceMemoDeliveryPolicy: includeVoiceMemo ? .includeWhenAvailable : .exclude
         )
         let metadata = (0..<itemCount).map {
             IPTCMetadata(title: "Private caption \($0)")
@@ -786,6 +820,23 @@ private struct UploadFixture {
                 hashCompletedAt: Date(timeIntervalSince1970: 1_700_000_001)
             ))
         }
+        var memoRevisions: [SourceImageRevision?] = Array(repeating: nil, count: itemCount)
+        if includeVoiceMemo {
+            for index in memoURLs.indices {
+                memoRevisions[index] = SourceImageRevision(
+                    canonicalURL: memoURLs[index].standardizedFileURL.resolvingSymlinksInPath(),
+                    fileResourceIdentifier: nil,
+                    filenameAtCreation: memoURLs[index].lastPathComponent,
+                    byteCount: Int64(memoContents[index].count),
+                    contentModificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+                    pixelWidth: nil,
+                    pixelHeight: nil,
+                    exifOrientation: nil,
+                    sha256: try await HashStream.hashFile(at: memoURLs[index]).lowercaseHexString,
+                    hashCompletedAt: Date(timeIntervalSince1970: 1_700_000_001)
+                )
+            }
+        }
         let preflightRequest = DeadlinePreflightRequest(
             profile: profile,
             items: sourceURLs.enumerated().map { index, url in
@@ -796,7 +847,10 @@ private struct UploadFixture {
                         byteCount: Int64(contents[index].count),
                         pixelWidth: 6000,
                         pixelHeight: 4000
-                    )
+                    ),
+                    voiceMemo: memoRevisions[index].map {
+                        .available(revision: $0, profileIdentifier: "sony-ilce1-v4")
+                    } ?? .none
                 )
             },
             delivery: DeadlineBatchDeliverySnapshot(
@@ -823,8 +877,12 @@ private struct UploadFixture {
             publication: publication,
             currentRevision: token,
             currentProfile: profile,
-            items: zip(sourceRevisions, metadata).map {
-                DeliveryPlanningItemInput(sourceRevision: $0.0, resolvedMetadata: $0.1)
+            items: sourceRevisions.enumerated().map { index, revision in
+                DeliveryPlanningItemInput(
+                    sourceRevision: revision,
+                    resolvedMetadata: metadata[index],
+                    voiceMemoRevision: memoRevisions[index]
+                )
             }
         ))
 
@@ -841,6 +899,16 @@ private struct UploadFixture {
             let url = stagingDirectory.appendingPathComponent(item.stagedRelativePath)
             try data.write(to: url)
             createdURLs.append(url)
+            var memoByteCount: Int?
+            var memoSHA256: String?
+            if let memo = item.voiceMemo {
+                let memoData = memoContents[item.itemIndex]
+                let memoURL = stagingDirectory.appendingPathComponent(memo.stagedRelativePath)
+                try memoData.write(to: memoURL)
+                createdURLs.append(memoURL)
+                memoByteCount = memoData.count
+                memoSHA256 = try await HashStream.hashFile(at: memoURL).lowercaseHexString
+            }
             itemResults.append(DeliveryStagingItemResult(
                 itemIndex: item.itemIndex,
                 stageInputFingerprint: item.stageInputFingerprint,
@@ -878,7 +946,10 @@ private struct UploadFixture {
                     expected: item.resolvedMetadata
                 ),
                 mismatchedFields: [],
-                failure: nil
+                failure: nil,
+                voiceMemoStagedRelativePath: item.voiceMemo?.stagedRelativePath,
+                voiceMemoStagedByteCount: memoByteCount,
+                voiceMemoStagedSHA256: memoSHA256
             ))
         }
         stagedURLs = createdURLs

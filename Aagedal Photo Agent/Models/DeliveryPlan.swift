@@ -73,11 +73,41 @@ nonisolated struct DeliveryPlanStageItem: Codable, Equatable, Sendable {
     let isHDR: Bool
     let developSnapshot: DevelopVersionSnapshot?
     let stageInputFingerprint: String
+    let voiceMemo: DeliveryPlanVoiceMemo?
+
+    init(
+        itemIndex: Int,
+        sourceRevision: SourceImageRevision,
+        resolvedMetadata: IPTCMetadata,
+        outputFilename: String,
+        stagedRelativePath: String,
+        isHDR: Bool,
+        developSnapshot: DevelopVersionSnapshot?,
+        stageInputFingerprint: String,
+        voiceMemo: DeliveryPlanVoiceMemo? = nil
+    ) {
+        self.itemIndex = itemIndex
+        self.sourceRevision = sourceRevision
+        self.resolvedMetadata = resolvedMetadata
+        self.outputFilename = outputFilename
+        self.stagedRelativePath = stagedRelativePath
+        self.isHDR = isHDR
+        self.developSnapshot = developSnapshot
+        self.stageInputFingerprint = stageInputFingerprint
+        self.voiceMemo = voiceMemo
+    }
+}
+
+/// A proven audio companion frozen into the same immutable per-image delivery contract.
+nonisolated struct DeliveryPlanVoiceMemo: Codable, Equatable, Sendable {
+    let sourceRevision: SourceImageRevision
+    let outputFilename: String
+    let stagedRelativePath: String
 }
 
 /// Immutable contract consumed by later staging, verification, and upload phases.
 nonisolated struct DeliveryPlan: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let fingerprint: String
@@ -121,17 +151,22 @@ nonisolated struct DeliveryPlanningItemInput: Equatable, Sendable {
     let resolvedMetadata: IPTCMetadata
     let preflightDevelopSnapshot: DevelopVersionSnapshot?
     let currentDevelopSnapshot: DevelopVersionSnapshot?
+    let preflightVoiceMemoRevision: SourceImageRevision?
+    let currentVoiceMemoRevision: SourceImageRevision?
 
     init(
         sourceRevision: SourceImageRevision,
         resolvedMetadata: IPTCMetadata,
-        developSnapshot: DevelopVersionSnapshot? = nil
+        developSnapshot: DevelopVersionSnapshot? = nil,
+        voiceMemoRevision: SourceImageRevision? = nil
     ) {
         preflightSourceRevision = sourceRevision
         currentSourceRevision = sourceRevision
         self.resolvedMetadata = resolvedMetadata
         preflightDevelopSnapshot = developSnapshot
         currentDevelopSnapshot = developSnapshot
+        preflightVoiceMemoRevision = voiceMemoRevision
+        currentVoiceMemoRevision = voiceMemoRevision
     }
 
     init(
@@ -139,13 +174,17 @@ nonisolated struct DeliveryPlanningItemInput: Equatable, Sendable {
         currentSourceRevision: SourceImageRevision,
         resolvedMetadata: IPTCMetadata,
         preflightDevelopSnapshot: DevelopVersionSnapshot?,
-        currentDevelopSnapshot: DevelopVersionSnapshot?
+        currentDevelopSnapshot: DevelopVersionSnapshot?,
+        preflightVoiceMemoRevision: SourceImageRevision? = nil,
+        currentVoiceMemoRevision: SourceImageRevision? = nil
     ) {
         self.preflightSourceRevision = preflightSourceRevision
         self.currentSourceRevision = currentSourceRevision
         self.resolvedMetadata = resolvedMetadata
         self.preflightDevelopSnapshot = preflightDevelopSnapshot
         self.currentDevelopSnapshot = currentDevelopSnapshot
+        self.preflightVoiceMemoRevision = preflightVoiceMemoRevision
+        self.currentVoiceMemoRevision = currentVoiceMemoRevision
     }
 }
 

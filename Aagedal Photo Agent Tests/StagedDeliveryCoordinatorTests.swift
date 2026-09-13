@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -48,6 +49,20 @@ struct StagedDeliveryCoordinatorTests {
         try await coordinator.cleanup(result.cleanupToken)
         let afterCleanup = await harness.snapshot()
         #expect(afterCleanup.removedDirectories == [result.stagingDirectoryURL])
+    }
+
+    @Test("A proven voice memo is copied byte-for-byte into the verified staging batch")
+    func stagesVoiceMemo() async throws {
+        let fixture = try await makeFixture(itemCount: 1, includeVoiceMemo: true)
+        let harness = StageHarness(plan: fixture.plan)
+        let result = try await makeCoordinator(harness: harness).stage(fixture.request)
+
+        #expect(result.status == .completed)
+        #expect(result.requiredBytes == 106)
+        #expect(result.items[0].voiceMemoStagedRelativePath == "stage-source-0.WAV")
+        #expect(result.items[0].voiceMemoStagedByteCount == 6)
+        #expect(result.items[0].voiceMemoStagedSHA256 == fixture.plan.items[0].voiceMemo?.sourceRevision.sha256)
+        #expect((await harness.snapshot()).events.contains("copy-memo-0"))
     }
 
     @Test("fingerprint, profile, and source drift are refused before a batch directory exists")
@@ -465,7 +480,10 @@ struct StagedDeliveryCoordinatorTests {
                     try await harness.createDirectory(root: root, batchID: batchID)
                 },
                 readStagedBytes: { url in try await harness.read(url: url) },
-                removeBatchDirectory: { url in await harness.remove(url: url) }
+                removeBatchDirectory: { url in await harness.remove(url: url) },
+                copyFile: { source, destination in
+                    try await harness.copyMemo(source: source, destination: destination)
+                }
             ),
             renderer: DeliveryStageRenderer { item, snapshot, url in
                 try await harness.render(item: item, snapshot: snapshot, destination: url)
@@ -555,7 +573,8 @@ struct StagedDeliveryCoordinatorTests {
 
     private func makeFixture(
         itemCount: Int,
-        maximumOutputByteCount: Int64? = nil
+        maximumOutputByteCount: Int64? = nil,
+        includeVoiceMemo: Bool = false
     ) async throws -> StagingFixture {
         let export = DeadlineExportSnapshot(
             sdrFormat: .jpeg,
@@ -583,7 +602,8 @@ struct StagedDeliveryCoordinatorTests {
                 remotePathTemplate: "/incoming/desk"
             ),
             gpsPolicy: .retain,
-            metadataWriteStrategy: .stagedCopies
+            metadataWriteStrategy: .stagedCopies,
+            voiceMemoDeliveryPolicy: includeVoiceMemo ? .includeWhenAvailable : .exclude
         )
         let metadata = (0..<itemCount).map { IPTCMetadata(title: "Caption \($0)") }
         let revisions = (0..<itemCount).map { index -> SourceImageRevision in
@@ -607,6 +627,24 @@ struct StagedDeliveryCoordinatorTests {
                 hashCompletedAt: date.addingTimeInterval(1)
             )
         }
+        let memoRevisions = revisions.enumerated().map { index, _ -> SourceImageRevision? in
+            guard includeVoiceMemo else { return nil }
+            let url = URL(fileURLWithPath: "/private/tmp/source-\(index).WAV").standardizedFileURL
+            let bytes = Data("memo-\(index)".utf8)
+            let memoDate = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            return SourceImageRevision(
+                canonicalURL: url,
+                fileResourceIdentifier: nil,
+                filenameAtCreation: url.lastPathComponent,
+                byteCount: Int64(bytes.count),
+                contentModificationDate: memoDate,
+                pixelWidth: nil,
+                pixelHeight: nil,
+                exifOrientation: nil,
+                sha256: Data(SHA256.hash(data: bytes)).map { String(format: "%02x", $0) }.joined(),
+                hashCompletedAt: memoDate.addingTimeInterval(1)
+            )
+        }
         let preflightItems = revisions.enumerated().map { index, revision in
             DeadlinePreflightItemSnapshot(
                 sourceURL: revision.canonicalURL,
@@ -616,7 +654,10 @@ struct StagedDeliveryCoordinatorTests {
                     pixelWidth: 6000,
                     pixelHeight: 4000
                 ),
-                estimatedOutputByteCount: maximumOutputByteCount.map { min($0, 8) }
+                estimatedOutputByteCount: maximumOutputByteCount.map { min($0, 8) },
+                voiceMemo: memoRevisions[index].map {
+                    .available(revision: $0, profileIdentifier: "sony-ilce1-v4")
+                } ?? .none
             )
         }
         let preflightRequest = DeadlinePreflightRequest(
@@ -652,7 +693,11 @@ struct StagedDeliveryCoordinatorTests {
             currentRevision: token,
             currentProfile: profile,
             items: revisions.enumerated().map { index, revision in
-                DeliveryPlanningItemInput(sourceRevision: revision, resolvedMetadata: metadata[index])
+                DeliveryPlanningItemInput(
+                    sourceRevision: revision,
+                    resolvedMetadata: metadata[index],
+                    voiceMemoRevision: memoRevisions[index]
+                )
             }
         ))
         let root = URL(fileURLWithPath: "/private/tmp/deadline-staging-root", isDirectory: true)
@@ -839,7 +884,9 @@ actor StageHarness {
             || injection == .sourceICloudOffline(itemIndex: index) {
             throw InjectedEnvironmentalFailure()
         }
-        let expected = plan.items[index].sourceRevision
+        let expected = plan.items[index].voiceMemo?.sourceRevision.canonicalURL == url
+            ? plan.items[index].voiceMemo!.sourceRevision
+            : plan.items[index].sourceRevision
         if injection == .sourceDrift(itemIndex: index) {
             return SourceImageRevision(
                 canonicalURL: expected.canonicalURL,
@@ -937,6 +984,15 @@ actor StageHarness {
         return payloads[index] ?? Data()
     }
 
+    func copyMemo(source: URL, destination: URL) throws {
+        let index = itemIndex(for: source)
+        events.append("copy-memo-\(index)")
+        guard plan.items[index].voiceMemo?.stagedRelativePath == destination.lastPathComponent else {
+            throw InjectedFailure.requested
+        }
+        payloads[index] = Data("memo-\(index)".utf8)
+    }
+
     func verify(
         bytes: Data,
         url: URL,
@@ -1005,6 +1061,8 @@ actor StageHarness {
     private func itemIndex(for url: URL) -> Int {
         if let index = plan.items.firstIndex(where: {
             $0.sourceRevision.canonicalURL == url || $0.outputFilename == url.lastPathComponent
+                || $0.voiceMemo?.sourceRevision.canonicalURL == url
+                || $0.voiceMemo?.outputFilename == url.lastPathComponent
         }) {
             return index
         }

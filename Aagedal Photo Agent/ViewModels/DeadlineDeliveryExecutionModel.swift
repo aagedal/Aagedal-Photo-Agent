@@ -54,6 +54,7 @@ nonisolated struct DeadlineDeliveryConfirmationItem: Equatable, Identifiable, Se
     let qualityPercent: Int?
     let resolution: DeadlineExportSnapshot.ResolutionLimit
     let c2paConsequence: DeadlineC2PAConsequence
+    let voiceMemoFilename: String?
 
     var id: Int { itemIndex }
 }
@@ -69,6 +70,7 @@ nonisolated struct DeadlineDeliveryConfirmation: Equatable, Sendable {
     let acceptedWarningIDs: [String]
     let transportSecurity: DeliveryTransportSecurity?
     let requiresFirstInsecureTransportAcknowledgement: Bool
+    let voiceMemoDeliveryPolicy: DeadlineVoiceMemoDeliveryPolicy
 
     init(prepared: DeadlinePreparedDeliveryBatch) {
         let export = prepared.plan.renderAndWrite.export
@@ -81,6 +83,7 @@ nonisolated struct DeadlineDeliveryConfirmation: Equatable, Sendable {
         transportSecurity = prepared.transportSecurity
         requiresFirstInsecureTransportAcknowledgement =
             prepared.requiresFirstInsecureTransportAcknowledgement
+        voiceMemoDeliveryPolicy = prepared.plan.profile.voiceMemoDeliveryPolicy
         items = prepared.plan.items.map { item in
             DeadlineDeliveryConfirmationItem(
                 itemIndex: item.itemIndex,
@@ -91,7 +94,8 @@ nonisolated struct DeadlineDeliveryConfirmation: Equatable, Sendable {
                 resolution: export.resolutionLimit,
                 c2paConsequence: prepared.c2paConsequences.indices.contains(item.itemIndex)
                     ? prepared.c2paConsequences[item.itemIndex]
-                    : .none
+                    : .none,
+                voiceMemoFilename: item.voiceMemo?.outputFilename
             )
         }
     }
@@ -700,6 +704,30 @@ final class DeadlineDeliveryProductionSession {
             return revisions
         }.value
 
+        let currentVoiceMemoRevisions = try await Task.detached(priority: .userInitiated) {
+            var revisions: [SourceImageRevision?] = []
+            revisions.reserveCapacity(preparation.preflightRequest.items.count)
+            for item in preparation.preflightRequest.items {
+                guard case let .available(preflightMemo, profileIdentifier) = item.voiceMemo else {
+                    revisions.append(nil)
+                    continue
+                }
+                let repository = VoiceMemoCompanionRepository()
+                let lookup = try repository.lookup(for: item.sourceURL)
+                guard case let .available(association) = lookup,
+                      association.profileIdentifier == profileIdentifier,
+                      association.memoURL.standardizedFileURL.resolvingSymlinksInPath()
+                        == preflightMemo.canonicalURL.standardizedFileURL.resolvingSymlinksInPath()
+                else { throw DeadlineDeliveryExecutionError.stalePreflight }
+                let revision = try await SourceImageRevision.capture(at: association.memoURL)
+                guard try repository.lookup(for: item.sourceURL) == lookup else {
+                    throw DeadlineDeliveryExecutionError.stalePreflight
+                }
+                revisions.append(revision)
+            }
+            return revisions
+        }.value
+
         let planningItems = try currentRevisions.indices.map { index in
             guard let preflightRevision = preparation.preflightSourceRevisions[index] else {
                 throw DeadlineDeliveryExecutionError.stalePreflight
@@ -709,7 +737,10 @@ final class DeadlineDeliveryProductionSession {
                 currentSourceRevision: currentRevisions[index],
                 resolvedMetadata: currentMetadata[index],
                 preflightDevelopSnapshot: preparation.preflightDevelopSnapshots[index],
-                currentDevelopSnapshot: currentDevelopSnapshots[index]
+                currentDevelopSnapshot: currentDevelopSnapshots[index],
+                preflightVoiceMemoRevision: preparation.preflightRequest.items[index]
+                    .voiceMemo.availableRevision,
+                currentVoiceMemoRevision: currentVoiceMemoRevisions[index]
             )
         }
         let plan = try DeliveryPlanningService().makePlan(DeliveryPlanningRequest(

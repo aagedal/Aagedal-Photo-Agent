@@ -34,6 +34,10 @@ nonisolated enum DeadlineRemediationDestination: Equatable, Sendable {
              .remotePathHasUnresolvedVariables:
             return .profileSettings
 
+        case .voiceMemoExcluded, .voiceMemoIncluded, .voiceMemoUnavailable:
+            guard let imageURL else { return .profileSettings }
+            return .caption(imageURL: imageURL, field: nil)
+
         case let .metadataValidation(_, field), let .unresolvedVariable(field):
             guard let imageURL else { return nil }
             return .caption(imageURL: imageURL, field: field)
@@ -121,6 +125,7 @@ nonisolated struct DeadlineWorkspaceRow: Identifiable, Equatable, Sendable {
     let warningCount: Int
     let informationCount: Int
     let issues: [DeadlinePreflightIssue]
+    let voiceMemoSummary: String
 }
 
 /// Ready-to-render projection built when progress arrives, never from SwiftUI's body traversal.
@@ -162,6 +167,7 @@ nonisolated struct DeadlineWorkspaceState: Equatable, Sendable {
     let readyCount: Int
     let writeStrategySummary: String
     let destinationSummary: String
+    let voiceMemoPolicySummary: String
     let nextIssue: DeadlinePreflightIssue?
 
     var selectedImageCount: Int { rows.count }
@@ -198,6 +204,7 @@ nonisolated struct DeadlineWorkspaceState: Equatable, Sendable {
         nextIssue = report.nextIssue
         writeStrategySummary = Self.writeStrategySummary(request.profile.metadataWriteStrategy)
         destinationSummary = Self.destinationSummary(request.profile.destination)
+        voiceMemoPolicySummary = request.profile.voiceMemoDeliveryPolicy.title
 
         let renameEntries = Dictionary(uniqueKeysWithValues: (report.renamePlan?.entries ?? []).map {
             ($0.itemIndex, $0)
@@ -221,10 +228,31 @@ nonisolated struct DeadlineWorkspaceState: Equatable, Sendable {
                 blockerCount: blockers,
                 warningCount: warnings,
                 informationCount: information,
-                issues: imageReport.issues
+                issues: imageReport.issues,
+                voiceMemoSummary: Self.voiceMemoSummary(
+                    request.items[imageReport.imageIndex].voiceMemo,
+                    policy: request.profile.voiceMemoDeliveryPolicy
+                )
             )
         }
         readyCount = rows.count { $0.readiness == .ready }
+    }
+
+    private static func voiceMemoSummary(
+        _ snapshot: DeadlineVoiceMemoSnapshot,
+        policy: DeadlineVoiceMemoDeliveryPolicy
+    ) -> String {
+        switch (policy, snapshot) {
+        case (.exclude, .available): "Voice memo: excluded"
+        case (.exclude, _): "Voice memo: not delivered"
+        case (_, .available(let revision, _)): "Voice memo: include \(revision.filenameAtCreation)"
+        case (.includeWhenAvailable, .none): "Voice memo: none"
+        case (.includeWhenAvailable, .missing): "Voice memo: missing, skipped"
+        case (.includeWhenAvailable, .invalid): "Voice memo: unverified, skipped"
+        case (.require, .none): "Voice memo: required, none found"
+        case (.require, .missing): "Voice memo: required, missing"
+        case (.require, .invalid): "Voice memo: required, unverified"
+        }
     }
 
     func rows(matching filter: DeadlineWorkspaceFilter) -> [DeadlineWorkspaceRow] {

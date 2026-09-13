@@ -329,6 +329,7 @@ nonisolated struct DeliveryReceiptSummaryGenerator: Sendable {
             $0.metadataVerification.outcome == .failed
         }
         let warningCount = receipt.acceptedWarningIdentifiers.count
+        let voiceMemoCount = receipt.items.count { $0.voiceMemo != nil }
         let date = ISO8601DateFormatter().string(from: receipt.completedAt)
 
         return [
@@ -337,6 +338,7 @@ nonisolated struct DeliveryReceiptSummaryGenerator: Sendable {
             "Profile: \(receipt.profileIdentifier.uuidString.lowercased())",
             "Destination: \(receipt.destination.identifier) \(receipt.destination.path)",
             "Transport: \(receipt.destination.transportSecurity?.evidenceDescription ?? "legacy receipt; not recorded")",
+            "Voice memos: \(receipt.voiceMemoDeliveryPolicy.title); delivered: \(voiceMemoCount)",
             "Items: \(receipt.items.count); upload acknowledged: \(uploadCount); remote size matched: \(remoteMatchCount)",
             "Metadata verification failures: \(verificationFailureCount); accepted warnings: \(warningCount)",
             "App: \(receipt.applicationVersion.marketingVersion) (\(receipt.applicationVersion.buildNumber))",

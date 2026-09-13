@@ -78,8 +78,10 @@ These are material product and evidence boundaries, not a list of unfinished int
   remain literal. The supported Description, Extended Description, Headline and Instructions
   destinations are enforced, and a dedicated affected-image
   preview shows exact Append/Replace changes before confirmation; one invalid authority refuses the
-  entire transcript batch before mutation. Native/relaunch application evidence and delivery
-  integration remain incomplete.
+  entire transcript batch before mutation. Deadline profiles explicitly exclude WAV companions,
+  include proven companions when available, or require one for every image. Included audio is
+  exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Native/
+  relaunch application and real-server image-plus-WAV delivery evidence remain incomplete.
   Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
   and broader camera workflows remain unverified. General Move reports separate XMP/editorial

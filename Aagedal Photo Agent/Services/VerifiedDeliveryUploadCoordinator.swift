@@ -10,6 +10,7 @@ nonisolated struct DeliveryVerifiedStagedArtifact: Equatable, Sendable {
     let expectedByteCount: Int64
     let expectedSHA256: String
     let renderSettings: DeliveryRenderSettings
+    let voiceMemo: DeliveryVerifiedStagedVoiceMemo?
 
     fileprivate init(
         itemIndex: Int,
@@ -17,7 +18,8 @@ nonisolated struct DeliveryVerifiedStagedArtifact: Equatable, Sendable {
         localURL: URL,
         expectedByteCount: Int64,
         expectedSHA256: String,
-        renderSettings: DeliveryRenderSettings
+        renderSettings: DeliveryRenderSettings,
+        voiceMemo: DeliveryVerifiedStagedVoiceMemo? = nil
     ) {
         self.itemIndex = itemIndex
         self.stageInputFingerprint = stageInputFingerprint
@@ -25,7 +27,15 @@ nonisolated struct DeliveryVerifiedStagedArtifact: Equatable, Sendable {
         self.expectedByteCount = expectedByteCount
         self.expectedSHA256 = expectedSHA256
         self.renderSettings = renderSettings
+        self.voiceMemo = voiceMemo
     }
+}
+
+nonisolated struct DeliveryVerifiedStagedVoiceMemo: Equatable, Sendable {
+    let outputFilename: String
+    let localURL: URL
+    let expectedByteCount: Int64
+    let expectedSHA256: String
 }
 
 nonisolated struct DeliveryVerifiedStagedBatch: Equatable, Sendable {
@@ -127,13 +137,56 @@ nonisolated struct DeliveryVerifiedStagedBatch: Equatable, Sendable {
                 localURL: localURL,
                 expectedByteCount: Int64(byteCount),
                 expectedSHA256: stagedSHA256,
-                renderSettings: renderSettings
+                renderSettings: renderSettings,
+                voiceMemo: try validatedVoiceMemo(
+                    planItem: item,
+                    stagedItem: staged,
+                    directory: directory
+                )
             ))
         }
         return Self(
             batchIdentifier: stagingResult.batchID,
             planFingerprint: plan.fingerprint,
             artifacts: artifacts
+        )
+    }
+
+    private static func validatedVoiceMemo(
+        planItem: DeliveryPlanStageItem,
+        stagedItem: DeliveryStagingItemResult,
+        directory: URL
+    ) throws -> DeliveryVerifiedStagedVoiceMemo? {
+        guard let planned = planItem.voiceMemo else {
+            guard stagedItem.voiceMemoStagedRelativePath == nil,
+                  stagedItem.voiceMemoStagedByteCount == nil,
+                  stagedItem.voiceMemoStagedSHA256 == nil else {
+                throw DeliveryUploadPreflightError.stagingArtifactMismatch(
+                    itemIndex: planItem.itemIndex
+                )
+            }
+            return nil
+        }
+        guard stagedItem.voiceMemoStagedRelativePath == planned.stagedRelativePath,
+              let byteCount = stagedItem.voiceMemoStagedByteCount,
+              Int64(byteCount) == planned.sourceRevision.byteCount,
+              let sha256 = stagedItem.voiceMemoStagedSHA256,
+              sha256 == planned.sourceRevision.sha256,
+              isValidSHA256(sha256) else {
+            throw DeliveryUploadPreflightError.stagingArtifactMismatch(itemIndex: planItem.itemIndex)
+        }
+        let localURL = directory.appendingPathComponent(
+            planned.stagedRelativePath,
+            isDirectory: false
+        ).standardizedFileURL.resolvingSymlinksInPath()
+        guard localURL.isFileURL, localURL.deletingLastPathComponent() == directory else {
+            throw DeliveryUploadPreflightError.unsafeStagedArtifact(itemIndex: planItem.itemIndex)
+        }
+        return DeliveryVerifiedStagedVoiceMemo(
+            outputFilename: planned.outputFilename,
+            localURL: localURL,
+            expectedByteCount: Int64(byteCount),
+            expectedSHA256: sha256
         )
     }
 }
@@ -185,6 +238,9 @@ nonisolated struct DeliveryUploadItemResult: Codable, Equatable, Sendable {
     var uploadAcknowledgement: DeliveryUploadAcknowledgement
     var remoteConfirmation: DeliveryRemoteFileConfirmation
     var failure: DeliveryUploadItemFailure?
+    var voiceMemoLocalEvidence: DeliveryUploadFileEvidence? = nil
+    var voiceMemoUploadAcknowledgement: DeliveryUploadAcknowledgement? = nil
+    var voiceMemoRemoteConfirmation: DeliveryRemoteFileConfirmation? = nil
 }
 
 nonisolated enum DeliveryUploadBatchStatus: String, Codable, Equatable, Sendable {
@@ -201,6 +257,29 @@ nonisolated struct DeliveryUploadCheckpointItem: Codable, Equatable, Sendable {
     let localEvidence: DeliveryUploadFileEvidence
     let uploadAcknowledgedAt: Date
     let remoteConfirmation: DeliveryRemoteFileConfirmation
+    let voiceMemoLocalEvidence: DeliveryUploadFileEvidence?
+    let voiceMemoUploadAcknowledgedAt: Date?
+    let voiceMemoRemoteConfirmation: DeliveryRemoteFileConfirmation?
+
+    init(
+        itemIndex: Int,
+        stageInputFingerprint: String,
+        localEvidence: DeliveryUploadFileEvidence,
+        uploadAcknowledgedAt: Date,
+        remoteConfirmation: DeliveryRemoteFileConfirmation,
+        voiceMemoLocalEvidence: DeliveryUploadFileEvidence? = nil,
+        voiceMemoUploadAcknowledgedAt: Date? = nil,
+        voiceMemoRemoteConfirmation: DeliveryRemoteFileConfirmation? = nil
+    ) {
+        self.itemIndex = itemIndex
+        self.stageInputFingerprint = stageInputFingerprint
+        self.localEvidence = localEvidence
+        self.uploadAcknowledgedAt = uploadAcknowledgedAt
+        self.remoteConfirmation = remoteConfirmation
+        self.voiceMemoLocalEvidence = voiceMemoLocalEvidence
+        self.voiceMemoUploadAcknowledgedAt = voiceMemoUploadAcknowledgedAt
+        self.voiceMemoRemoteConfirmation = voiceMemoRemoteConfirmation
+    }
 }
 
 nonisolated struct DeliveryUploadCheckpoint: Codable, Equatable, Sendable {
@@ -363,6 +442,11 @@ private nonisolated enum DeliveryUploadInternalInspectionError: Error {
     case fileChangedDuringInspection
 }
 
+private nonisolated struct DeliveryUploadArtifactEvidence: Sendable {
+    let image: DeliveryUploadFileEvidence
+    let voiceMemo: DeliveryUploadFileEvidence?
+}
+
 /// Sequential verified upload orchestration. Cancellation is observed only before the first file
 /// or after a file has completed upload and optional remote-stat inspection. In-flight transport
 /// work runs in an unstructured task so cancellation of the caller cannot interrupt a file.
@@ -410,10 +494,15 @@ actor VerifiedDeliveryUploadCoordinator {
                 itemIndex: $0.itemIndex,
                 stageInputFingerprint: $0.stageInputFingerprint,
                 stage: .queued,
-                localEvidence: evidence[$0.itemIndex],
+                localEvidence: evidence[$0.itemIndex].image,
                 uploadAcknowledgement: DeliveryUploadAcknowledgement(status: .notAttempted),
                 remoteConfirmation: .notRequested,
-                failure: nil
+                failure: nil,
+                voiceMemoLocalEvidence: evidence[$0.itemIndex].voiceMemo,
+                voiceMemoUploadAcknowledgement: evidence[$0.itemIndex].voiceMemo == nil
+                    ? nil : DeliveryUploadAcknowledgement(status: .notAttempted),
+                voiceMemoRemoteConfirmation: evidence[$0.itemIndex].voiceMemo == nil
+                    ? nil : .notRequested
             )
         }
         try applyResumeCheckpoint(request.resumeCheckpoint, request: request, results: &results)
@@ -433,7 +522,7 @@ actor VerifiedDeliveryUploadCoordinator {
 
             let index = item.itemIndex
             let artifact = request.stagedBatch.artifacts[index]
-            let originalEvidence = evidence[index]
+            let originalEvidence = evidence[index].image
             let freshEvidence: DeliveryUploadFileEvidence
             do {
                 freshEvidence = try await fileInspector.inspect(artifact.localURL)
@@ -546,6 +635,103 @@ actor VerifiedDeliveryUploadCoordinator {
                 }
             }
 
+
+            if let memo = artifact.voiceMemo,
+               let originalMemoEvidence = evidence[index].voiceMemo {
+                if cancellationRequested || Task.isCancelled {
+                    results[index].stage = .cancelled
+                    cancelQueuedItems(&results)
+                    await publish(progress, request: request, currentItemIndex: index, results: results)
+                    return result(.cancelled, request: request, results: results)
+                }
+                let freshMemoEvidence: DeliveryUploadFileEvidence
+                do {
+                    freshMemoEvidence = try await fileInspector.inspect(memo.localURL)
+                } catch {
+                    results[index].stage = .failed
+                    results[index].failure = DeliveryUploadItemFailure(
+                        code: .localArtifactInspectionFailed
+                    )
+                    await publish(progress, request: request, currentItemIndex: index, results: results)
+                    return result(.failed, request: request, results: results)
+                }
+                guard freshMemoEvidence == originalMemoEvidence,
+                      freshMemoEvidence.byteCount == memo.expectedByteCount,
+                      freshMemoEvidence.sha256 == memo.expectedSHA256 else {
+                    results[index].stage = .failed
+                    results[index].failure = DeliveryUploadItemFailure(code: .localArtifactChanged)
+                    await publish(progress, request: request, currentItemIndex: index, results: results)
+                    return result(.failed, request: request, results: results)
+                }
+                let memoTransfer = DeliveryUploadTransfer(
+                    connectionIdentifier: request.plan.destination.connectionIdentifier,
+                    remoteDirectory: request.plan.destination.resolvedRemotePath,
+                    outputFilename: memo.outputFilename,
+                    localURL: memo.localURL,
+                    expectedByteCount: freshMemoEvidence.byteCount,
+                    expectedSHA256: freshMemoEvidence.sha256
+                )
+                results[index].stage = .uploading
+                await publish(progress, request: request, currentItemIndex: index, results: results)
+                do {
+                    try await runUncancelled { [transport] in
+                        try await transport.upload(memoTransfer)
+                    }
+                } catch {
+                    results[index].stage = .failed
+                    results[index].failure = DeliveryUploadItemFailure(code: .uploadRejected)
+                    await publish(progress, request: request, currentItemIndex: index, results: results)
+                    return result(.failed, request: request, results: results)
+                }
+                results[index].voiceMemoUploadAcknowledgement = DeliveryUploadAcknowledgement(
+                    status: .protocolAcknowledged,
+                    acknowledgedAt: now()
+                )
+                if request.remoteStatPolicy == .attemptIfAvailable {
+                    results[index].stage = .remoteConfirming
+                    await publish(progress, request: request, currentItemIndex: index, results: results)
+                    let checkedAt = now()
+                    let observation: DeliveryRemoteStatObservation
+                    if let remoteStat = transport.remoteStat {
+                        do {
+                            observation = try await runUncancelled {
+                                try await remoteStat(memoTransfer)
+                            }
+                        } catch {
+                            observation = .unavailable
+                        }
+                    } else {
+                        observation = .unavailable
+                    }
+                    switch observation {
+                    case .unavailable:
+                        results[index].voiceMemoRemoteConfirmation = .unavailable(checkedAt: checkedAt)
+                    case .missing:
+                        results[index].voiceMemoRemoteConfirmation = .missing(checkedAt: checkedAt)
+                        results[index].stage = .failed
+                        results[index].failure = DeliveryUploadItemFailure(code: .remoteFileMissing)
+                        await publish(progress, request: request, currentItemIndex: index, results: results)
+                        return result(.failed, request: request, results: results)
+                    case .exists(byteCount: nil):
+                        results[index].voiceMemoRemoteConfirmation = .existsSizeUnknown(checkedAt: checkedAt)
+                    case let .exists(byteCount: .some(observed)) where observed == freshMemoEvidence.byteCount:
+                        results[index].voiceMemoRemoteConfirmation = .sizeMatches(
+                            checkedAt: checkedAt,
+                            observedByteCount: observed
+                        )
+                    case let .exists(byteCount: .some(observed)):
+                        results[index].voiceMemoRemoteConfirmation = .sizeMismatch(
+                            checkedAt: checkedAt,
+                            observedByteCount: observed
+                        )
+                        results[index].stage = .failed
+                        results[index].failure = DeliveryUploadItemFailure(code: .remoteByteCountMismatch)
+                        await publish(progress, request: request, currentItemIndex: index, results: results)
+                        return result(.failed, request: request, results: results)
+                    }
+                }
+            }
+
             results[index].stage = .sent
             await publish(progress, request: request, currentItemIndex: index, results: results)
         }
@@ -555,7 +741,7 @@ actor VerifiedDeliveryUploadCoordinator {
 
     private func validateAndInspect(
         _ request: DeliveryUploadRequest
-    ) async throws -> [DeliveryUploadFileEvidence] {
+    ) async throws -> [DeliveryUploadArtifactEvidence] {
         do {
             try DeliveryPlanningService.validateFrozenPlan(request.plan)
         } catch {
@@ -571,7 +757,7 @@ actor VerifiedDeliveryUploadCoordinator {
             throw DeliveryUploadPreflightError.stagingItemCountMismatch
         }
 
-        var evidence: [DeliveryUploadFileEvidence] = []
+        var evidence: [DeliveryUploadArtifactEvidence] = []
         evidence.reserveCapacity(request.plan.items.count)
         for item in request.plan.items {
             try checkCancellation()
@@ -609,7 +795,30 @@ actor VerifiedDeliveryUploadCoordinator {
                     itemIndex: item.itemIndex
                 )
             }
-            evidence.append(inspected)
+            let memoEvidence: DeliveryUploadFileEvidence?
+            if let memo = artifact.voiceMemo {
+                do {
+                    let inspectedMemo = try await fileInspector.inspect(memo.localURL)
+                    guard inspectedMemo.byteCount == memo.expectedByteCount,
+                          inspectedMemo.sha256 == memo.expectedSHA256 else {
+                        throw DeliveryUploadPreflightError.artifactEvidenceMismatch(
+                            itemIndex: item.itemIndex
+                        )
+                    }
+                    memoEvidence = inspectedMemo
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as DeliveryUploadPreflightError {
+                    throw error
+                } catch {
+                    throw DeliveryUploadPreflightError.artifactInspectionFailed(
+                        itemIndex: item.itemIndex
+                    )
+                }
+            } else {
+                memoEvidence = nil
+            }
+            evidence.append(DeliveryUploadArtifactEvidence(image: inspected, voiceMemo: memoEvidence))
         }
         return evidence
     }
@@ -645,6 +854,23 @@ actor VerifiedDeliveryUploadCoordinator {
                 throw DeliveryUploadPreflightError.invalidResumeCheckpoint
             }
             let current = results[saved.itemIndex]
+            let memoCheckpointIsValid: Bool
+            if let expectedMemo = current.voiceMemoLocalEvidence {
+                memoCheckpointIsValid = saved.voiceMemoLocalEvidence == expectedMemo
+                    && saved.voiceMemoUploadAcknowledgedAt != nil
+                    && saved.voiceMemoRemoteConfirmation != nil
+                    && Self.isValidSHA256(expectedMemo.sha256)
+                    && expectedMemo.byteCount >= 0
+                    && Self.isSuccessfulRemoteConfirmation(saved.voiceMemoRemoteConfirmation!)
+                    && Self.hasCoherentTimestamp(
+                        saved.voiceMemoRemoteConfirmation!,
+                        uploadAcknowledgedAt: saved.voiceMemoUploadAcknowledgedAt!
+                    )
+            } else {
+                memoCheckpointIsValid = saved.voiceMemoLocalEvidence == nil
+                    && saved.voiceMemoUploadAcknowledgedAt == nil
+                    && saved.voiceMemoRemoteConfirmation == nil
+            }
             guard saved.stageInputFingerprint == current.stageInputFingerprint,
                   saved.localEvidence == current.localEvidence,
                   Self.isValidSHA256(saved.localEvidence.sha256),
@@ -653,7 +879,7 @@ actor VerifiedDeliveryUploadCoordinator {
                   Self.hasCoherentTimestamp(
                       saved.remoteConfirmation,
                       uploadAcknowledgedAt: saved.uploadAcknowledgedAt
-                  ) else {
+                  ), memoCheckpointIsValid else {
                 throw DeliveryUploadPreflightError.invalidResumeCheckpoint
             }
             results[saved.itemIndex].stage = .sent
@@ -662,6 +888,11 @@ actor VerifiedDeliveryUploadCoordinator {
                 acknowledgedAt: saved.uploadAcknowledgedAt
             )
             results[saved.itemIndex].remoteConfirmation = saved.remoteConfirmation
+            results[saved.itemIndex].voiceMemoUploadAcknowledgement =
+                saved.voiceMemoUploadAcknowledgedAt.map {
+                    DeliveryUploadAcknowledgement(status: .protocolAcknowledged, acknowledgedAt: $0)
+                }
+            results[saved.itemIndex].voiceMemoRemoteConfirmation = saved.voiceMemoRemoteConfirmation
         }
     }
 
@@ -698,12 +929,20 @@ actor VerifiedDeliveryUploadCoordinator {
                   let acknowledgedAt = item.uploadAcknowledgement.acknowledgedAt else {
                 return nil
             }
+            let memoAcknowledgedAt = item.voiceMemoUploadAcknowledgement?.acknowledgedAt
+            if item.voiceMemoLocalEvidence != nil,
+               item.voiceMemoUploadAcknowledgement?.status != .protocolAcknowledged {
+                return nil
+            }
             return DeliveryUploadCheckpointItem(
                 itemIndex: item.itemIndex,
                 stageInputFingerprint: item.stageInputFingerprint,
                 localEvidence: localEvidence,
                 uploadAcknowledgedAt: acknowledgedAt,
-                remoteConfirmation: item.remoteConfirmation
+                remoteConfirmation: item.remoteConfirmation,
+                voiceMemoLocalEvidence: item.voiceMemoLocalEvidence,
+                voiceMemoUploadAcknowledgedAt: memoAcknowledgedAt,
+                voiceMemoRemoteConfirmation: item.voiceMemoRemoteConfirmation
             )
         }
         return DeliveryUploadBatchResult(

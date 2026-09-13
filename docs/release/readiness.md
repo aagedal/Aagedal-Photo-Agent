@@ -1,14 +1,22 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution and pre-mutation application preview pass automated verification; delivery, authentic native voice-memo evidence, cloud and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, pre-mutation application preview and explicit verified WAV delivery pass automated verification; authentic native/real-server voice-memo evidence, cloud and broader release gates remain.
 **Updated:** 2026-09-13
-**Latest implementation state:** Cycle 26 voice-memo transcript application preview (47 focused and 84 adjacent tests plus 2,889 tests in the final serial run passed; repository checks passed; independent review and native/relaunch application not run).
+**Latest implementation state:** Cycle 27 visible voice-memo delivery policy (123 focused tests plus 2,896 tests in the final serial run passed; repository checks passed; independent review, native/relaunch and real-server delivery not run).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable and cycle 26 adds compatible-target enforcement plus its pre-mutation preview.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable, cycle 26 adds compatible-target enforcement plus its pre-mutation preview and cycle 27 adds explicit verified WAV delivery.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 27 visible voice-memo delivery policy](cycle-27-voice-memo-delivery-policy-2026-09-13.md)
+adds profile-level exclude, include-when-available and require-for-every-image choices with safe
+legacy exclusion. Preflight, confirmation, exact frozen planning, verified staging, sequential
+upload, resumable checkpoints and schema-3 receipts carry the disposition without silent omission.
+Activity and exported summaries retain only anonymous audio evidence. The focused 123-test run,
+2,896-test serial suite and repository validation pass. Independent review, native/relaunch and
+disposable real-server image-plus-WAV evidence remain open.
 
 [Cycle 26 voice-memo transcript application preview](cycle-26-voice-memo-variable-preview-2026-09-13.md)
 preflights and revalidates every transcript-bearing photo before showing exact Append/Replace
@@ -286,8 +294,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    exact-WAV validation, editable review, serialized provenance, explicit approval and edit-triggered
    revocation, exact-approved shared transcript-variable resolution with retry revalidation, and
    compatible-target exact affected-image Append/Replace preview with zero-write batch refusal.
-   Next add the visible Deadline WAV delivery policy/receipt and complete the injected and native
-   offline/Sony/application matrix.
+   Cycle 27 adds the visible Deadline WAV delivery policy/receipt and exact verified execution.
+   Next complete the injected and native offline/Sony/application matrix plus native and real-server
+   image-plus-WAV delivery.
 6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
@@ -304,9 +313,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required features | Open | Transcription, reviewed variables and delivery; authentic reassociation/archive evidence; inventory dispositions |
+| Required features | Open | Transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 26: 2,889 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 27: 2,896 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |

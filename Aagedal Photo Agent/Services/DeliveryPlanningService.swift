@@ -158,6 +158,21 @@ nonisolated struct DeliveryPlanningService: Sendable {
                 metadata.longitude = nil
             }
 
+
+            let voiceMemo = try frozenVoiceMemo(
+                policy: request.currentProfile.voiceMemoDeliveryPolicy,
+                preflightSnapshot: preflightItem.voiceMemo,
+                input: itemInput,
+                outputImageFilename: outputFilename,
+                itemIndex: index
+            )
+            if let voiceMemo {
+                let memoKey = voiceMemo.outputFilename.precomposedStringWithCanonicalMapping.lowercased()
+                guard outputNames.insert(memoKey).inserted else {
+                    throw DeliveryPlanningError.duplicateOutputFilename(voiceMemo.outputFilename)
+                }
+            }
+
             let draft = DeliveryPlanStageItem(
                 itemIndex: index,
                 sourceRevision: itemInput.currentSourceRevision,
@@ -166,7 +181,8 @@ nonisolated struct DeliveryPlanningService: Sendable {
                 stagedRelativePath: outputFilename,
                 isHDR: preflightItem.source.isHDR,
                 developSnapshot: itemInput.currentDevelopSnapshot,
-                stageInputFingerprint: ""
+                stageInputFingerprint: "",
+                voiceMemo: voiceMemo
             )
             let stageFingerprint = try Self.stageFingerprint(
                 for: draft,
@@ -180,7 +196,8 @@ nonisolated struct DeliveryPlanningService: Sendable {
                 stagedRelativePath: draft.stagedRelativePath,
                 isHDR: draft.isHDR,
                 developSnapshot: draft.developSnapshot,
-                stageInputFingerprint: stageFingerprint
+                stageInputFingerprint: stageFingerprint,
+                voiceMemo: draft.voiceMemo
             ))
         }
 
@@ -209,7 +226,7 @@ nonisolated struct DeliveryPlanningService: Sendable {
     }
 
     static func validateFrozenPlan(_ plan: DeliveryPlan) throws {
-        guard plan.schemaVersion == DeliveryPlan.currentSchemaVersion,
+        guard (1 ... DeliveryPlan.currentSchemaVersion).contains(plan.schemaVersion),
               !plan.items.isEmpty,
               plan.preflight.blockerCount == 0 else {
             throw DeliveryPlanningError.persistedPlanInvalid
@@ -255,6 +272,20 @@ nonisolated struct DeliveryPlanningService: Sendable {
                   item.developSnapshot?.validate() != false else {
                 throw DeliveryPlanningError.persistedPlanInvalid
             }
+            if let voiceMemo = item.voiceMemo {
+                guard plan.profile.voiceMemoDeliveryPolicy != .exclude,
+                      isValidSourceRevision(voiceMemo.sourceRevision),
+                      voiceMemo.sourceRevision.canonicalURL.pathExtension.lowercased() == "wav",
+                      voiceMemo.outputFilename == voiceMemo.stagedRelativePath,
+                      isValidOutputFilename(voiceMemo.outputFilename),
+                      outputs.insert(
+                          voiceMemo.outputFilename.precomposedStringWithCanonicalMapping.lowercased()
+                      ).inserted else {
+                    throw DeliveryPlanningError.persistedPlanInvalid
+                }
+            } else if plan.profile.voiceMemoDeliveryPolicy == .require {
+                throw DeliveryPlanningError.persistedPlanInvalid
+            }
             if plan.renderAndWrite.gpsPolicy == .remove,
                item.resolvedMetadata.latitude != nil || item.resolvedMetadata.longitude != nil {
                 throw DeliveryPlanningError.persistedPlanInvalid
@@ -268,9 +299,17 @@ nonisolated struct DeliveryPlanningService: Sendable {
                 throw DeliveryPlanningError.persistedPlanInvalid
             }
         }
+        let currentFingerprint = try planFingerprint(for: plan)
+        let legacyFingerprint = try legacyPlanFingerprint(for: plan)
+        let fingerprintMatchesCurrent = plan.schemaVersion == DeliveryPlan.currentSchemaVersion
+            && plan.fingerprint == currentFingerprint
+        let fingerprintMatchesLegacy = plan.schemaVersion == 1
+            && plan.profile.voiceMemoDeliveryPolicy == .exclude
+            && plan.items.allSatisfy { $0.voiceMemo == nil }
+            && plan.fingerprint == legacyFingerprint
         guard plan.preflight.imageResults.count == plan.items.count,
               plan.preflight.imageResults.enumerated().allSatisfy({ $0.offset == $0.element.imageIndex }),
-              plan.fingerprint == (try planFingerprint(for: plan)) else {
+              fingerprintMatchesCurrent || fingerprintMatchesLegacy else {
             throw DeliveryPlanningError.invalidFingerprint
         }
     }
@@ -358,6 +397,50 @@ nonisolated struct DeliveryPlanningService: Sendable {
         guard input.currentDevelopSnapshot?.settings == expectedDevelopSettings else {
             throw DeliveryPlanningError.invalidDevelopSnapshot(itemIndex: itemIndex)
         }
+        let expectedMemoRevision = preflightItem.voiceMemo.availableRevision
+        guard input.preflightVoiceMemoRevision == expectedMemoRevision else {
+            throw DeliveryPlanningError.preflightResultMismatch
+        }
+        if let currentMemo = input.currentVoiceMemoRevision,
+           let preflightMemo = input.preflightVoiceMemoRevision {
+            guard currentMemo.canonicalURL.standardizedFileURL.resolvingSymlinksInPath()
+                    == preflightMemo.canonicalURL.standardizedFileURL.resolvingSymlinksInPath(),
+                  preflightMemo.relationship(to: currentMemo) == .exactRevision else {
+                throw DeliveryPlanningError.sourceChangedAfterPreflight(itemIndex: itemIndex)
+            }
+        } else if input.currentVoiceMemoRevision != input.preflightVoiceMemoRevision {
+            throw DeliveryPlanningError.sourceChangedAfterPreflight(itemIndex: itemIndex)
+        }
+    }
+
+    private func frozenVoiceMemo(
+        policy: DeadlineVoiceMemoDeliveryPolicy,
+        preflightSnapshot: DeadlineVoiceMemoSnapshot,
+        input: DeliveryPlanningItemInput,
+        outputImageFilename: String,
+        itemIndex: Int
+    ) throws -> DeliveryPlanVoiceMemo? {
+        guard policy != .exclude else { return nil }
+        guard case .available = preflightSnapshot,
+              let revision = input.currentVoiceMemoRevision else {
+            if policy == .require {
+                throw DeliveryPlanningError.preflightResultMismatch
+            }
+            return nil
+        }
+        guard revision.canonicalURL.pathExtension.lowercased() == "wav" else {
+            throw DeliveryPlanningError.invalidOutputFilename(itemIndex: itemIndex)
+        }
+        let output = URL(fileURLWithPath: outputImageFilename)
+            .deletingPathExtension().lastPathComponent + ".WAV"
+        guard Self.isValidOutputFilename(output) else {
+            throw DeliveryPlanningError.invalidOutputFilename(itemIndex: itemIndex)
+        }
+        return DeliveryPlanVoiceMemo(
+            sourceRevision: revision,
+            outputFilename: output,
+            stagedRelativePath: output
+        )
     }
 
     private func resolvedExport(
@@ -508,7 +591,8 @@ nonisolated struct DeliveryPlanningService: Sendable {
             stagedRelativePath: item.stagedRelativePath,
             isHDR: item.isHDR,
             developSnapshot: item.developSnapshot,
-            renderAndWrite: renderAndWrite
+            renderAndWrite: renderAndWrite,
+            voiceMemo: item.voiceMemo
         ))
     }
 
@@ -516,6 +600,21 @@ nonisolated struct DeliveryPlanningService: Sendable {
         try fingerprint(PlanFingerprintPayload(
             schemaVersion: plan.schemaVersion,
             profile: plan.profile,
+            preflight: plan.preflight,
+            renderAndWrite: plan.renderAndWrite,
+            destination: plan.destination,
+            acceptedWarningIDs: plan.acceptedWarningIDs,
+            items: plan.items
+        ))
+    }
+
+    /// Schema-1 plans embedded a schema-1 Deadline profile. Profile decoding now safely upgrades
+    /// that nested value to schema 2 with an excluded WAV policy; this compatibility fingerprint
+    /// preserves already-verified retained workflows without granting them audio authority.
+    static func legacyPlanFingerprint(for plan: DeliveryPlan) throws -> String {
+        try fingerprint(LegacyPlanFingerprintPayload(
+            schemaVersion: plan.schemaVersion,
+            profile: LegacyDeadlineProfileFingerprintPayload(plan.profile),
             preflight: plan.preflight,
             renderAndWrite: plan.renderAndWrite,
             destination: plan.destination,
@@ -541,6 +640,7 @@ private nonisolated struct StageFingerprintPayload: Encodable {
     let isHDR: Bool
     let developSnapshot: DevelopVersionSnapshot?
     let renderAndWrite: DeliveryRenderWriteSnapshot
+    let voiceMemo: DeliveryPlanVoiceMemo?
 }
 
 private nonisolated struct PlanFingerprintPayload: Encodable {
@@ -551,4 +651,43 @@ private nonisolated struct PlanFingerprintPayload: Encodable {
     let destination: DeliveryDestinationSnapshot
     let acceptedWarningIDs: [String]
     let items: [DeliveryPlanStageItem]
+}
+
+private nonisolated struct LegacyPlanFingerprintPayload: Encodable {
+    let schemaVersion: Int
+    let profile: LegacyDeadlineProfileFingerprintPayload
+    let preflight: DeliveryPreflightResultSnapshot
+    let renderAndWrite: DeliveryRenderWriteSnapshot
+    let destination: DeliveryDestinationSnapshot
+    let acceptedWarningIDs: [String]
+    let items: [DeliveryPlanStageItem]
+}
+
+private nonisolated struct LegacyDeadlineProfileFingerprintPayload: Encodable {
+    let schemaVersion = 1
+    let id: UUID
+    let name: String
+    let validationProfile: DeadlineValidationProfileSource?
+    let captionFields: DeadlineCaptionFieldConfiguration
+    let metadataTemplate: DeadlineMetadataTemplateConfiguration?
+    let requiredLists: [DeadlineResourceReference]
+    let rename: DeadlineRenameConfiguration?
+    let export: DeadlineExportConfigurationSource?
+    let destination: DeadlineDestinationConfiguration?
+    let gpsPolicy: DeadlineGPSPolicy
+    let metadataWriteStrategy: DeadlineMetadataWriteStrategy
+
+    init(_ profile: DeadlineProfile) {
+        id = profile.id
+        name = profile.name
+        validationProfile = profile.validationProfile
+        captionFields = profile.captionFields
+        metadataTemplate = profile.metadataTemplate
+        requiredLists = profile.requiredLists
+        rename = profile.rename
+        export = profile.export
+        destination = profile.destination
+        gpsPolicy = profile.gpsPolicy
+        metadataWriteStrategy = profile.metadataWriteStrategy
+    }
 }

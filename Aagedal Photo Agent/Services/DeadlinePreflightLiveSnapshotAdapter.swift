@@ -247,22 +247,53 @@ nonisolated struct DeadlineLiveSourceRevisionCapture: Sendable {
     }
 }
 
+nonisolated struct DeadlineLiveVoiceMemoCapture: Sendable {
+    let capture: @Sendable (URL) async throws -> DeadlineVoiceMemoSnapshot
+
+    static let live = Self { imageURL in
+        do {
+            let repository = VoiceMemoCompanionRepository()
+            let first = try repository.lookup(for: imageURL)
+            switch first {
+            case .none:
+                return .none
+            case let .missing(record):
+                return .missing(filename: record.memoFilename)
+            case let .available(association):
+                let revision = try await SourceImageRevision.capture(at: association.memoURL)
+                guard try repository.lookup(for: imageURL) == first else { return .invalid }
+                return .available(
+                    revision: revision,
+                    profileIdentifier: association.profileIdentifier
+                )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return .invalid
+        }
+    }
+}
+
 /// Converts live application/store facts into one immutable request projection. It performs no
 /// network probe and does not inspect or expose connection credentials.
 nonisolated struct DeadlinePreflightLiveSnapshotAdapter: Sendable {
     private let fileSystem: DeadlineLiveFileSystem
     private let productionExportCapabilities: @Sendable () -> DeadlineExportCapabilitySnapshot
     private let sourceRevisionCapture: DeadlineLiveSourceRevisionCapture
+    private let voiceMemoCapture: DeadlineLiveVoiceMemoCapture
 
     init(
         fileSystem: DeadlineLiveFileSystem = .live,
         sourceRevisionCapture: DeadlineLiveSourceRevisionCapture = .live,
+        voiceMemoCapture: DeadlineLiveVoiceMemoCapture = .live,
         productionExportCapabilities: @escaping @Sendable () -> DeadlineExportCapabilitySnapshot = {
             DeliveryStagingProductionCapabilities.deadlinePreflightSnapshot
         }
     ) {
         self.fileSystem = fileSystem
         self.sourceRevisionCapture = sourceRevisionCapture
+        self.voiceMemoCapture = voiceMemoCapture
         self.productionExportCapabilities = productionExportCapabilities
     }
 
@@ -286,9 +317,13 @@ nonisolated struct DeadlinePreflightLiveSnapshotAdapter: Sendable {
             estimatedRequiredBytes: request.estimatedRequiredBytes,
             connectionIdentifiers: request.connectionIdentifiers
         ))
-        let items = try request.items.map { item in
+        var items = try request.items.map { item in
             try Task.checkCancellation()
             return sourceSnapshot(item, profile: request.profile)
+        }
+        for index in items.indices {
+            try Task.checkCancellation()
+            items[index].voiceMemo = try await voiceMemoCapture.capture(items[index].sourceURL)
         }
         var sourceRevisions: [SourceImageRevision?] = []
         sourceRevisions.reserveCapacity(items.count)

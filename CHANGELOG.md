@@ -32,6 +32,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   affected-image sheet shows exact Append/Replace before-and-after values before confirmation.
   Cancel writes nothing; one invalid transcript authority refuses the complete batch before any
   mutation. Approval by itself never changes an IPTC field.
+- Deadline profiles now explicitly exclude voice-memo WAVs, include proven companions when
+  available, or require one for every image. Preflight and confirmation show the disposition;
+  included WAVs are identity-bound into the frozen plan, copied and hash-verified in staging,
+  uploaded with resumable evidence, and represented in privacy-safe local receipts.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.
@@ -69,6 +73,9 @@ upload the current image from Photo Agent.
 - Delivery receipts and retained workflows remain local rather than iCloud-synced. Credentials and
   editorial metadata values are excluded from Activity summaries; workflow/staging cleanup requires
   explicit confirmation.
+- Voice-memo delivery defaults to exclusion for migrated profiles. Optional and required inclusion
+  accepts only a persisted, exact-revision WAV relationship; matching adjacent filenames alone are
+  never delivery authority.
 
 ### Reliability and compatibility
 
