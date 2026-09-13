@@ -5,6 +5,7 @@ import Speech
 nonisolated enum VoiceMemoTranscriptionAssetStatus: Equatable, Sendable {
     case unsupported
     case needsDownload
+    case reservationLimitReached
     case downloading
     case installed
 }
@@ -13,6 +14,22 @@ nonisolated struct VoiceMemoTranscriptionAvailability: Equatable, Sendable {
     let selectedLocale: Locale?
     let supportedLocales: [Locale]
     let status: VoiceMemoTranscriptionAssetStatus
+    let reservedLocales: [Locale]
+    let maximumReservedLocales: Int
+
+    init(
+        selectedLocale: Locale?,
+        supportedLocales: [Locale],
+        status: VoiceMemoTranscriptionAssetStatus,
+        reservedLocales: [Locale] = [],
+        maximumReservedLocales: Int = 0
+    ) {
+        self.selectedLocale = selectedLocale
+        self.supportedLocales = supportedLocales
+        self.status = status
+        self.reservedLocales = reservedLocales
+        self.maximumReservedLocales = maximumReservedLocales
+    }
 }
 
 nonisolated struct VoiceMemoTranscriptDraft: Equatable, Sendable {
@@ -72,10 +89,14 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
     case unsupportedLanguage
     case languageDownloadRequired
     case languageDownloadIncomplete
+    case languageDownloadFailed
+    case languageReservationLimitReached(maximum: Int)
     case relationshipUnavailable
     case sourceChanged
+    case audioUnreadable
     case emptyAudio
     case noSpeech
+    case recognitionFailed
 
     var errorDescription: String? {
         switch self {
@@ -87,15 +108,118 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
             return "Download the selected on-device language before transcribing."
         case .languageDownloadIncomplete:
             return "The language download did not finish. Check the network connection and try again."
+        case .languageDownloadFailed:
+            return "The on-device language could not be downloaded. Check the network connection and try again."
+        case .languageReservationLimitReached(let maximum):
+            return "Apple on-device speech can reserve at most \(maximum) language\(maximum == 1 ? "" : "s") for this app. Release an unused language, then try again."
         case .relationshipUnavailable:
             return "The saved voice-memo relationship is no longer available. Refresh it before transcribing."
         case .sourceChanged:
             return "The photo, voice memo, or relationship changed while transcribing. The result was discarded."
+        case .audioUnreadable:
+            return "The associated WAV could not be opened as supported audio. Playback remains available."
         case .emptyAudio:
             return "The associated WAV contains no audio samples."
         case .noSpeech:
             return "No speech was recognized in the voice memo."
+        case .recognitionFailed:
+            return "Apple on-device speech could not finish this transcription. The existing reviewed transcript was not changed."
         }
+    }
+}
+
+/// One analyzer run split into independently injectable lifecycle operations. The result consumer
+/// begins before audio analysis; finalization runs only when analysis reports a last sample; and
+/// every failure or cancellation drains the shared teardown operation.
+nonisolated struct VoiceMemoRecognitionSession: Sendable {
+    struct AnalysisCompletion: Sendable {
+        let finalize: @Sendable () async throws -> Void
+    }
+
+    let consumeFinalSegments: @Sendable () async throws -> [String]
+    let analyze: @Sendable () async throws -> AnalysisCompletion?
+    let cancelAndFinish: @Sendable () async -> Void
+}
+
+private actor VoiceMemoRecognitionCleanup {
+    private var hasStarted = false
+
+    func run(_ cancelAndFinish: @Sendable () async -> Void) async {
+        guard !hasStarted else { return }
+        hasStarted = true
+        await cancelAndFinish()
+    }
+}
+
+nonisolated enum VoiceMemoRecognitionPipeline {
+    static func transcribe(
+        session: VoiceMemoRecognitionSession,
+        isolation: isolated (any Actor)? = #isolation
+    ) async throws -> String {
+        let cleanup = VoiceMemoRecognitionCleanup()
+        let consumer = Task<[String], Error> {
+            try await session.consumeFinalSegments()
+        }
+
+        do {
+            let completion = try await withTaskCancellationHandler {
+                try await session.analyze()
+            } onCancel: {
+                consumer.cancel()
+                Task { await cleanup.run(session.cancelAndFinish) }
+            }
+            try Task.checkCancellation()
+            guard let completion else {
+                throw VoiceMemoTranscriptionError.emptyAudio
+            }
+            try await completion.finalize()
+            let segments = try await consumer.value
+            try Task.checkCancellation()
+            let text = segments
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
+            return text
+        } catch is CancellationError {
+            consumer.cancel()
+            await cleanup.run(session.cancelAndFinish)
+            _ = try? await consumer.value
+            throw CancellationError()
+        } catch let error as VoiceMemoTranscriptionError {
+            consumer.cancel()
+            await cleanup.run(session.cancelAndFinish)
+            _ = try? await consumer.value
+            throw error
+        } catch {
+            consumer.cancel()
+            await cleanup.run(session.cancelAndFinish)
+            _ = try? await consumer.value
+            throw VoiceMemoTranscriptionError.recognitionFailed
+        }
+    }
+}
+
+private actor VoiceMemoOneShotRecognitionBridge {
+    private var result: Result<String, Error>?
+    private var waiters: [CheckedContinuation<Result<String, Error>, Never>] = []
+
+    func consume() async throws -> String {
+        let value: Result<String, Error>
+        if let result {
+            value = result
+        } else {
+            value = await withCheckedContinuation { waiters.append($0) }
+        }
+        return try value.get()
+    }
+
+    func publish(_ value: Result<String, Error>) {
+        guard result == nil else { return }
+        result = value
+        waiters.forEach { $0.resume(returning: value) }
+        waiters.removeAll()
     }
 }
 
@@ -105,8 +229,87 @@ nonisolated struct VoiceMemoTranscriptionRuntime: Sendable {
     let supportedLocales: @Sendable () async -> [Locale]
     let resolveLocale: @Sendable (Locale) async -> Locale?
     let assetStatus: @Sendable (Locale) async -> VoiceMemoTranscriptionAssetStatus
+    let reservedLocales: @Sendable () async -> [Locale]
+    let maximumReservedLocales: @Sendable () -> Int
+    let reserveLocale: @Sendable (Locale) async throws -> Void
+    let releaseLocale: @Sendable (Locale) async -> Bool
     let installAssets: @Sendable (Locale) async throws -> Void
-    let transcribe: @Sendable (URL, Locale) async throws -> String
+    let makeRecognitionSession: @Sendable (URL, Locale) async throws -> VoiceMemoRecognitionSession
+
+    init(
+        isAvailable: @escaping @Sendable () async -> Bool,
+        supportedLocales: @escaping @Sendable () async -> [Locale],
+        resolveLocale: @escaping @Sendable (Locale) async -> Locale?,
+        assetStatus: @escaping @Sendable (Locale) async -> VoiceMemoTranscriptionAssetStatus,
+        reservedLocales: @escaping @Sendable () async -> [Locale] = { [] },
+        maximumReservedLocales: @escaping @Sendable () -> Int = { .max },
+        reserveLocale: @escaping @Sendable (Locale) async throws -> Void = { _ in },
+        releaseLocale: @escaping @Sendable (Locale) async -> Bool = { _ in false },
+        installAssets: @escaping @Sendable (Locale) async throws -> Void,
+        makeRecognitionSession: @escaping @Sendable (
+            URL, Locale
+        ) async throws -> VoiceMemoRecognitionSession
+    ) {
+        self.isAvailable = isAvailable
+        self.supportedLocales = supportedLocales
+        self.resolveLocale = resolveLocale
+        self.assetStatus = assetStatus
+        self.reservedLocales = reservedLocales
+        self.maximumReservedLocales = maximumReservedLocales
+        self.reserveLocale = reserveLocale
+        self.releaseLocale = releaseLocale
+        self.installAssets = installAssets
+        self.makeRecognitionSession = makeRecognitionSession
+    }
+
+    /// Convenience for service tests whose recognition boundary is intentionally one-shot. The
+    /// production runtime and lifecycle tests use `makeRecognitionSession` so analysis,
+    /// finalization, result consumption and cancellation remain independently observable.
+    init(
+        isAvailable: @escaping @Sendable () async -> Bool,
+        supportedLocales: @escaping @Sendable () async -> [Locale],
+        resolveLocale: @escaping @Sendable (Locale) async -> Locale?,
+        assetStatus: @escaping @Sendable (Locale) async -> VoiceMemoTranscriptionAssetStatus,
+        reservedLocales: @escaping @Sendable () async -> [Locale] = { [] },
+        maximumReservedLocales: @escaping @Sendable () -> Int = { .max },
+        reserveLocale: @escaping @Sendable (Locale) async throws -> Void = { _ in },
+        releaseLocale: @escaping @Sendable (Locale) async -> Bool = { _ in false },
+        installAssets: @escaping @Sendable (Locale) async throws -> Void,
+        transcribe: @escaping @Sendable (URL, Locale) async throws -> String
+    ) {
+        self.init(
+            isAvailable: isAvailable,
+            supportedLocales: supportedLocales,
+            resolveLocale: resolveLocale,
+            assetStatus: assetStatus,
+            reservedLocales: reservedLocales,
+            maximumReservedLocales: maximumReservedLocales,
+            reserveLocale: reserveLocale,
+            releaseLocale: releaseLocale,
+            installAssets: installAssets,
+            makeRecognitionSession: { url, locale in
+                let bridge = VoiceMemoOneShotRecognitionBridge()
+                return VoiceMemoRecognitionSession(
+                    consumeFinalSegments: {
+                        [try await bridge.consume()]
+                    },
+                    analyze: {
+                        do {
+                            let text = try await transcribe(url, locale)
+                            await bridge.publish(.success(text))
+                            return VoiceMemoRecognitionSession.AnalysisCompletion(finalize: {})
+                        } catch {
+                            await bridge.publish(.failure(error))
+                            throw error
+                        }
+                    },
+                    cancelAndFinish: {
+                        await bridge.publish(.failure(CancellationError()))
+                    }
+                )
+            }
+        )
+    }
 
     static let appleOnDevice = VoiceMemoTranscriptionRuntime(
         isAvailable: { SpeechTranscriber.isAvailable },
@@ -122,9 +325,12 @@ nonisolated struct VoiceMemoTranscriptionRuntime: Sendable {
             @unknown default: return .unsupported
             }
         },
+        reservedLocales: { await AssetInventory.reservedLocales },
+        maximumReservedLocales: { AssetInventory.maximumReservedLocales },
+        reserveLocale: { locale in _ = try await AssetInventory.reserve(locale: locale) },
+        releaseLocale: { locale in await AssetInventory.release(reservedLocale: locale) },
         installAssets: { locale in
             let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-            _ = try await AssetInventory.reserve(locale: locale)
             if await AssetInventory.status(forModules: [transcriber]) == .installed { return }
             guard let request = try await AssetInventory.assetInstallationRequest(
                 supporting: [transcriber]
@@ -136,57 +342,50 @@ nonisolated struct VoiceMemoTranscriptionRuntime: Sendable {
                 throw VoiceMemoTranscriptionError.languageDownloadIncomplete
             }
         },
-        transcribe: { url, locale in
-            try await AppleVoiceMemoTranscriber.transcribe(url: url, locale: locale)
+        makeRecognitionSession: { url, locale in
+            do {
+                return try AppleVoiceMemoRecognitionSession(url: url, locale: locale).session
+            } catch {
+                throw VoiceMemoTranscriptionError.audioUnreadable
+            }
         }
     )
 }
 
-private nonisolated enum AppleVoiceMemoTranscriber {
-    static func transcribe(url: URL, locale: Locale) async throws -> String {
-        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        let audioFile = try AVAudioFile(forReading: url)
+private nonisolated final class AppleVoiceMemoRecognitionSession: @unchecked Sendable {
+    private let transcriber: SpeechTranscriber
+    private let analyzer: SpeechAnalyzer
+    private let audioFile: AVAudioFile
 
-        let consumer = Task<[String], Error> {
-            var finalSegments: [String] = []
-            for try await result in transcriber.results {
-                try Task.checkCancellation()
-                guard result.isFinal else { continue }
-                let text = String(result.text.characters)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { finalSegments.append(text) }
-            }
-            return finalSegments
-        }
+    init(url: URL, locale: Locale) throws {
+        transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+        analyzer = SpeechAnalyzer(modules: [transcriber])
+        audioFile = try AVAudioFile(forReading: url)
+    }
 
-        do {
-            let lastSample = try await withTaskCancellationHandler {
-                try await analyzer.analyzeSequence(from: audioFile)
-            } onCancel: {
-                consumer.cancel()
-                Task { await analyzer.cancelAndFinishNow() }
-            }
-            try Task.checkCancellation()
-            guard let lastSample else {
-                consumer.cancel()
-                await analyzer.cancelAndFinishNow()
-                _ = try? await consumer.value
-                throw VoiceMemoTranscriptionError.emptyAudio
-            }
-            try await analyzer.finalizeAndFinish(through: lastSample)
-            let segments = try await consumer.value
-            try Task.checkCancellation()
-            let text = segments.joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
-            return text
-        } catch {
-            consumer.cancel()
-            await analyzer.cancelAndFinishNow()
-            _ = try? await consumer.value
-            throw error
-        }
+    var session: VoiceMemoRecognitionSession {
+        VoiceMemoRecognitionSession(
+            consumeFinalSegments: { [self] in
+                var finalSegments: [String] = []
+                for try await result in transcriber.results {
+                    try Task.checkCancellation()
+                    guard result.isFinal else { continue }
+                    let text = String(result.text.characters)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty { finalSegments.append(text) }
+                }
+                return finalSegments
+            },
+            analyze: { [self] in
+                guard let lastSample = try await analyzer.analyzeSequence(from: audioFile) else {
+                    return nil
+                }
+                return VoiceMemoRecognitionSession.AnalysisCompletion { [self] in
+                    try await analyzer.finalizeAndFinish(through: lastSample)
+                }
+            },
+            cancelAndFinish: { [self] in await analyzer.cancelAndFinishNow() }
+        )
     }
 }
 
@@ -259,23 +458,58 @@ actor VoiceMemoTranscriptionService {
               let selected = await runtime.resolveLocale(preferredLocale) else {
             return .init(selectedLocale: nil, supportedLocales: supported, status: .unsupported)
         }
-        let status = await runtime.assetStatus(selected)
-        return .init(selectedLocale: selected, supportedLocales: supported, status: status)
+        let reserved = await runtime.reservedLocales()
+        let maximum = max(0, runtime.maximumReservedLocales())
+        let isReserved = await isEquivalentLocaleReserved(selected, in: reserved)
+        var status = await runtime.assetStatus(selected)
+        if status == .needsDownload, !isReserved, reserved.count >= maximum {
+            status = .reservationLimitReached
+        }
+        return .init(
+            selectedLocale: selected,
+            supportedLocales: supported,
+            status: status,
+            reservedLocales: reserved,
+            maximumReservedLocales: maximum
+        )
     }
 
     func downloadLanguage(_ locale: Locale) async throws -> VoiceMemoTranscriptionAvailability {
         try Task.checkCancellation()
-        guard await runtime.isAvailable(),
-              let selected = await runtime.resolveLocale(locale) else {
+        let readiness = await availability(preferredLocale: locale)
+        guard let selected = readiness.selectedLocale else {
             throw VoiceMemoTranscriptionError.unsupportedLanguage
         }
-        try await runtime.installAssets(selected)
+        if readiness.status == .reservationLimitReached {
+            throw VoiceMemoTranscriptionError.languageReservationLimitReached(
+                maximum: readiness.maximumReservedLocales
+            )
+        }
+        do {
+            try await runtime.reserveLocale(selected)
+            try Task.checkCancellation()
+            try await runtime.installAssets(selected)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as VoiceMemoTranscriptionError {
+            throw error
+        } catch {
+            throw VoiceMemoTranscriptionError.languageDownloadFailed
+        }
         try Task.checkCancellation()
         let result = await availability(preferredLocale: selected)
         guard result.status == .installed else {
             throw VoiceMemoTranscriptionError.languageDownloadIncomplete
         }
         return result
+    }
+
+    func releaseLanguage(
+        _ locale: Locale,
+        preferredLocale: Locale
+    ) async -> VoiceMemoTranscriptionAvailability {
+        _ = await runtime.releaseLocale(locale)
+        return await availability(preferredLocale: preferredLocale)
     }
 
     func transcribe(imageURL: URL, locale: Locale) async throws -> VoiceMemoTranscriptDraft {
@@ -295,7 +529,7 @@ actor VoiceMemoTranscriptionService {
         }
         switch readiness.status {
         case .installed: break
-        case .needsDownload, .downloading:
+        case .needsDownload, .reservationLimitReached, .downloading:
             throw VoiceMemoTranscriptionError.languageDownloadRequired
         case .unsupported:
             throw VoiceMemoTranscriptionError.unavailable
@@ -303,7 +537,8 @@ actor VoiceMemoTranscriptionService {
 
         let before = try await captureRevision(association.memoURL)
         try Task.checkCancellation()
-        let text = try await runtime.transcribe(association.memoURL, selected)
+        let session = try await runtime.makeRecognitionSession(association.memoURL, selected)
+        let text = try await VoiceMemoRecognitionPipeline.transcribe(session: session)
         try Task.checkCancellation()
         let after = try await captureRevision(association.memoURL)
         guard before.relationship(to: after) == .exactRevision,
@@ -457,5 +692,16 @@ actor VoiceMemoTranscriptionService {
             throw VoiceMemoTranscriptionError.sourceChanged
         }
         return association
+    }
+
+    private func isEquivalentLocaleReserved(_ selected: Locale, in reserved: [Locale]) async -> Bool {
+        for locale in reserved {
+            if locale.identifier == selected.identifier { return true }
+            if let equivalent = await runtime.resolveLocale(locale),
+               equivalent.identifier == selected.identifier {
+                return true
+            }
+        }
+        return false
     }
 }

@@ -457,6 +457,202 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(probe.installCount == 1)
     }
 
+    @Test("reservation capacity blocks download until an explicit language release")
+    func reservationCapacity() async throws {
+        let selectedLocale = locale
+        let reservedLocale = Locale(identifier: "nb-NO")
+        let probe = VoiceMemoLanguageReservationProbe(
+            status: .needsDownload,
+            reservedLocales: [reservedLocale]
+        )
+        let service = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale, reservedLocale] },
+                resolveLocale: { requested in requested },
+                assetStatus: { _ in probe.status },
+                reservedLocales: { probe.reservedLocales },
+                maximumReservedLocales: { 1 },
+                reserveLocale: { probe.reserve($0) },
+                releaseLocale: { probe.release($0) },
+                installAssets: { _ in probe.install() },
+                transcribe: { _, _ in "Transcript" }
+            ),
+            startAccess: { _ in false }
+        )
+
+        let full = await service.availability(preferredLocale: selectedLocale)
+        #expect(full.status == .reservationLimitReached)
+        #expect(full.reservedLocales.map(\.identifier) == [reservedLocale.identifier])
+        await #expect(throws: VoiceMemoTranscriptionError.languageReservationLimitReached(maximum: 1)) {
+            _ = try await service.downloadLanguage(selectedLocale)
+        }
+        #expect(probe.installCount == 0)
+
+        let released = await service.releaseLanguage(
+            reservedLocale,
+            preferredLocale: selectedLocale
+        )
+        #expect(released.status == .needsDownload)
+        let installed = try await service.downloadLanguage(selectedLocale)
+        #expect(installed.status == .installed)
+        #expect(probe.releasedLocaleIdentifiers == [reservedLocale.identifier])
+        #expect(probe.installCount == 1)
+    }
+
+    @Test("offline asset failure and incomplete installation stay explicit")
+    func assetInstallationFailures() async {
+        let selectedLocale = locale
+        let failed = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in .needsDownload },
+                installAssets: { _ in throw VoiceMemoTranscriptionTestError.injected },
+                transcribe: { _, _ in "Unused" }
+            ),
+            startAccess: { _ in false }
+        )
+        await #expect(throws: VoiceMemoTranscriptionError.languageDownloadFailed) {
+            _ = try await failed.downloadLanguage(selectedLocale)
+        }
+
+        let incomplete = service(status: .needsDownload)
+        await #expect(throws: VoiceMemoTranscriptionError.languageDownloadIncomplete) {
+            _ = try await incomplete.downloadLanguage(selectedLocale)
+        }
+    }
+
+    @Test("cancelling a language install cannot advance into a later state")
+    func cancelledAssetInstallation() async throws {
+        let selectedLocale = locale
+        let gate = VoiceMemoTranscriptionGate()
+        defer { Task { await gate.open() } }
+        let service = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in .needsDownload },
+                installAssets: { _ in await gate.wait() },
+                transcribe: { _, _ in "Must never run" }
+            ),
+            startAccess: { _ in false }
+        )
+
+        let task = Task { try await service.downloadLanguage(selectedLocale) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await gate.hasWaiter)
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test("empty analysis cancels and drains its result consumer")
+    func emptyAnalysis() async {
+        let probe = VoiceMemoRecognitionLifecycleProbe()
+        let session = VoiceMemoRecognitionSession(
+            consumeFinalSegments: {
+                try await Task.sleep(for: .seconds(30))
+                return []
+            },
+            analyze: { nil },
+            cancelAndFinish: { probe.cancel() }
+        )
+
+        await #expect(throws: VoiceMemoTranscriptionError.emptyAudio) {
+            _ = try await VoiceMemoRecognitionPipeline.transcribe(session: session)
+        }
+        #expect(probe.cancelCount == 1)
+    }
+
+    @Test("consumer and finalization failures become privacy-safe recognition failures", arguments: [false, true])
+    func recognitionFailures(consumerFails: Bool) async {
+        let probe = VoiceMemoRecognitionLifecycleProbe()
+        let session = VoiceMemoRecognitionSession(
+            consumeFinalSegments: {
+                if consumerFails { throw VoiceMemoTranscriptionTestError.injected }
+                return ["Not publishable"]
+            },
+            analyze: {
+                VoiceMemoRecognitionSession.AnalysisCompletion {
+                    probe.finalize()
+                    if !consumerFails { throw VoiceMemoTranscriptionTestError.injected }
+                }
+            },
+            cancelAndFinish: { probe.cancel() }
+        )
+
+        await #expect(throws: VoiceMemoTranscriptionError.recognitionFailed) {
+            _ = try await VoiceMemoRecognitionPipeline.transcribe(session: session)
+        }
+        #expect(probe.finalizeCount == 1)
+        #expect(probe.cancelCount == 1)
+    }
+
+    @Test("long recognition cancellation finishes the analyzer before returning")
+    func longRecognitionCancellation() async throws {
+        let probe = VoiceMemoRecognitionLifecycleProbe()
+        let gate = VoiceMemoTranscriptionGate()
+        defer { Task { await gate.open() } }
+        let session = VoiceMemoRecognitionSession(
+            consumeFinalSegments: {
+                try await Task.sleep(for: .seconds(30))
+                return ["Late result"]
+            },
+            analyze: {
+                await gate.wait()
+                try Task.checkCancellation()
+                return VoiceMemoRecognitionSession.AnalysisCompletion { probe.finalize() }
+            },
+            cancelAndFinish: {
+                probe.cancel()
+                await gate.open()
+            }
+        )
+
+        let task = Task { try await VoiceMemoRecognitionPipeline.transcribe(session: session) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await gate.hasWaiter)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(probe.cancelCount == 1)
+        #expect(probe.finalizeCount == 0)
+    }
+
+    @Test("malformed audio is an explicit non-destructive service failure")
+    func malformedAudio() async {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let selectedLocale = locale
+        let service = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in .installed },
+                installAssets: { _ in },
+                makeRecognitionSession: { _, _ in
+                    throw VoiceMemoTranscriptionError.audioUnreadable
+                }
+            ),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            startAccess: { _ in false }
+        )
+
+        await #expect(throws: VoiceMemoTranscriptionError.audioUnreadable) {
+            _ = try await service.transcribe(imageURL: imageURL, locale: selectedLocale)
+        }
+    }
+
     @Test("transcription binds a trimmed draft to exact WAV identity and runs off MainActor")
     @MainActor
     func exactDraft() async throws {
@@ -569,6 +765,7 @@ struct CaptionVoiceMemoTranscriptionTests {
         )
         #expect(source.contains("caption.voiceMemo.transcriptionLanguage"))
         #expect(source.contains("caption.voiceMemo.downloadLanguage"))
+        #expect(source.contains("caption.voiceMemo.releaseLanguage"))
         #expect(source.contains("caption.voiceMemo.cancelTranscription"))
         #expect(source.contains("caption.voiceMemo.transcriptDraft"))
         #expect(source.contains("caption.voiceMemo.approveTranscript"))
@@ -867,6 +1064,66 @@ nonisolated private final class VoiceMemoTranscriptionProbe: @unchecked Sendable
             storedStatus = .installed
         }
     }
+}
+
+nonisolated private enum VoiceMemoTranscriptionTestError: Error {
+    case injected
+}
+
+nonisolated private final class VoiceMemoLanguageReservationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedStatus: VoiceMemoTranscriptionAssetStatus
+    private var storedReservedLocales: [Locale]
+    private var storedReleasedLocaleIdentifiers: [String] = []
+    private var storedInstallCount = 0
+
+    init(status: VoiceMemoTranscriptionAssetStatus, reservedLocales: [Locale]) {
+        storedStatus = status
+        storedReservedLocales = reservedLocales
+    }
+
+    var status: VoiceMemoTranscriptionAssetStatus { lock.withLock { storedStatus } }
+    var reservedLocales: [Locale] { lock.withLock { storedReservedLocales } }
+    var releasedLocaleIdentifiers: [String] { lock.withLock { storedReleasedLocaleIdentifiers } }
+    var installCount: Int { lock.withLock { storedInstallCount } }
+
+    func reserve(_ locale: Locale) {
+        lock.withLock {
+            if !storedReservedLocales.contains(where: { $0.identifier == locale.identifier }) {
+                storedReservedLocales.append(locale)
+            }
+        }
+    }
+
+    func release(_ locale: Locale) -> Bool {
+        lock.withLock {
+            guard let index = storedReservedLocales.firstIndex(where: {
+                $0.identifier == locale.identifier
+            }) else { return false }
+            storedReservedLocales.remove(at: index)
+            storedReleasedLocaleIdentifiers.append(locale.identifier)
+            return true
+        }
+    }
+
+    func install() {
+        lock.withLock {
+            storedInstallCount += 1
+            storedStatus = .installed
+        }
+    }
+}
+
+nonisolated private final class VoiceMemoRecognitionLifecycleProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCancelCount = 0
+    private var storedFinalizeCount = 0
+
+    var cancelCount: Int { lock.withLock { storedCancelCount } }
+    var finalizeCount: Int { lock.withLock { storedFinalizeCount } }
+
+    func cancel() { lock.withLock { storedCancelCount += 1 } }
+    func finalize() { lock.withLock { storedFinalizeCount += 1 } }
 }
 
 nonisolated private final class VoiceMemoRevisionSequence: @unchecked Sendable {

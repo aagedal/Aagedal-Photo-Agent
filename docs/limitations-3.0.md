@@ -80,7 +80,9 @@ These are material product and evidence boundaries, not a list of unfinished int
   preview shows exact Append/Replace changes before confirmation; one invalid authority refuses the
   entire transcript batch before mutation. Deadline profiles explicitly exclude WAV companions,
   include proven companions when available, or require one for every image. Included audio is
-  exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Native/
+  exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Injected
+  malformed/empty/finalization/install-cancellation and speech-language reservation-limit handling
+  is covered, including explicit release-before-download recovery. Native/offline, authorized-Sony,
   relaunch application and real-server image-plus-WAV delivery evidence remain incomplete.
   Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery

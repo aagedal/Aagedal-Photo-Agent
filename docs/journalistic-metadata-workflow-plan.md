@@ -838,6 +838,14 @@ terminal evidence. Activity and exports show only privacy-safe anonymous audio f
 [cycle 27 evidence](release/cycle-27-voice-memo-delivery-policy-2026-09-13.md). Native/relaunch and
 real-server delivery evidence remains open under the broader release gates.
 
+**Coordinator cycle 28 — 2026-09-13:** Recognition now has injectable result-consumption, analysis,
+finalization and cancellation/finish phases. Empty, malformed, analyzer, consumer, finalization and
+language-install failures remain explicit and non-destructive; long cancellation drains the analyzer
+once. Caption detects Apple speech-language reservation exhaustion and offers explicit release before
+retrying download. The exact final focused 18-test run, complete 2,903-test serial suite and repository
+validation pass; see [cycle 28 evidence](release/cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md).
+Native/offline, authorized-Sony, relaunch/application and accessibility evidence remains open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

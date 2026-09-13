@@ -23,8 +23,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   WAV identities are reassociated into a verified adjacent copy; duplicate, changed and missing
   results remain explicit and selected source files are preserved.
 - Caption can explicitly transcribe an associated WAV with Apple on-device speech. Language assets
-  are shown and downloaded only on request, work is cancellable, and the exact WAV is revalidated
-  before an editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
+  are shown and downloaded only on request, work is cancellable, and exhausted speech-language
+  reservations can be released explicitly before retrying. Malformed/empty audio, recognition and
+  language-install failures remain non-destructive, and the exact WAV is revalidated before an
+  editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
   bound app sidecar record; editing revokes approval. The carrier-neutral
   `{voiceMemoTranscript}` template variable resolves only that exact approved review and revalidates
   it before metadata writes or retries. Application is limited to Description, Extended Description,

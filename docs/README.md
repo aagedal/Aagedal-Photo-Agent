@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 27: visible voice-memo delivery policy](release/cycle-27-voice-memo-delivery-policy-2026-09-13.md). Deadline profiles explicitly exclude WAVs, include proven companions when available, or require one per image. The choice is visible in preflight, frozen confirmation and privacy-safe receipts; included audio is exact-revision-bound, staged, hash-verified, uploaded and checkpointed. The focused 123-test run, 2,896-test serial suite and repository checks pass. Native/relaunch, real-server, transcription-failure and wider release gates remain open.
+**Latest improvement continuation:** [Cycle 28: voice-memo transcription failure matrix](release/cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md). Recognition now exposes injectable analysis, result-consumption, finalization and single-teardown boundaries; malformed/empty/recognition/install failures stay explicit and non-destructive. Caption also exposes Apple speech-language reservation exhaustion and an explicit release-before-download recovery path. The final focused 18-test run, 2,903-test serial suite and repository checks pass. Native/offline, authorized-Sony, relaunch/application, accessibility, real-server and wider release gates remain open.
 
 ## Portfolio
 

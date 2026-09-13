@@ -92,6 +92,27 @@ final class CaptionVoiceMemoTranscriptModel {
         await work.value
     }
 
+    func releaseLanguage(identifier: String) async {
+        guard !isDownloading, !isTranscribing else { return }
+        startOperation()
+        let requested = generation
+        isChecking = true
+        errorMessage = nil
+        let locale = Locale(identifier: identifier)
+        let preferred = Locale(identifier: selectedLocaleIdentifier)
+        let work = Task { [service] in
+            let result = await service.releaseLanguage(locale, preferredLocale: preferred)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.generation == requested else { return }
+                self.availability = result
+                self.isChecking = false
+            }
+        }
+        task = work
+        await work.value
+    }
+
     func transcribe() async {
         guard let imageURL, !isDownloading, !isTranscribing else { return }
         startOperation()

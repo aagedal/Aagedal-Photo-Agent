@@ -574,11 +574,15 @@ the Apple on-device recognition foundation. [Cycle 24](cycle-24-voice-memo-trans
 adds serialized exact-WAV-bound generated/reviewed persistence, explicit approval, edit-triggered
 revocation, unknown/newer-schema protection and survival across ordinary save cleanup, copy and
 relocation. Cycle 25 adds exact-approved shared metadata-variable resolution, and cycle 26 adds its
-compatible-target, whole-batch preflight and exact affected-image preview. Native application
-evidence, the broader injected failure matrix and native/offline/Sony evidence remain incomplete.
+compatible-target, whole-batch preflight and exact affected-image preview. [Cycle 28](cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md)
+adds independently injectable result/analysis/finalization/teardown phases, explicit malformed,
+empty, recognition and installation failures, noncooperative cancellation coverage, device-reported
+reservation capacity and an explicit release-before-download recovery path. Native application,
+offline/relaunch and authorized-Sony evidence remain incomplete.
 
-**Smallest next action/evidence:** Complete malformed/empty/finalization/install-cancellation and
-reservation-limit tests, then run native offline and authorized-Sony recognition/relaunch drills.
+**Smallest next action/evidence:** Run an installed-language transcription offline in the built app,
+relaunch and verify persisted review/application read-back; then repeat malformed, empty, silent,
+long-cancellation and reservation recovery with authorized Sony WAV material.
 
 ### J-VOICE-VARIABLE
 

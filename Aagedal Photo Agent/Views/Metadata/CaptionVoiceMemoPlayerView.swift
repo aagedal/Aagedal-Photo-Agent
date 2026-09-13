@@ -244,6 +244,18 @@ struct CaptionVoiceMemoPlayerView: View {
                     }
                     .disabled(transcriptModel.isDownloading)
                     .accessibilityIdentifier("caption.voiceMemo.downloadLanguage")
+                case .reservationLimitReached:
+                    Menu("Release Speech Language", systemImage: "externaldrive.badge.minus") {
+                        ForEach(availability.reservedLocales, id: \.identifier) { locale in
+                            Button("Release \(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)") {
+                                Task {
+                                    await transcriptModel.releaseLanguage(identifier: locale.identifier)
+                                }
+                            }
+                        }
+                    }
+                    .help("Apple on-device speech has no free language reservation for this app")
+                    .accessibilityIdentifier("caption.voiceMemo.releaseLanguage")
                 case .downloading:
                     Text("Language downloading…").foregroundStyle(.secondary)
                 case .unsupported:
