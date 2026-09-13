@@ -363,6 +363,67 @@ struct CaptionVoiceMemoPlaybackTests {
         #expect(model.pendingReplacement == nil)
         #expect(!model.isWorking)
     }
+
+    @Test("Moved-relationship search stays off MainActor and balances both scopes")
+    func reassociationWorkerOwnership() async throws {
+        let probe = CaptionVoiceMemoRecoveryProbe()
+        let location = URL(fileURLWithPath: "/selected/folder", isDirectory: true)
+        let image = association.imageURL
+        let service = CaptionVoiceMemoReassociationService(
+            discover: { selected, owner in
+                #expect(!Thread.isMainThread)
+                probe.record("discover:\(selected.lastPathComponent):\(owner.lastPathComponent)")
+                return .sourceChanged([selected.appendingPathComponent(".old.voice-memo.json")])
+            },
+            commit: { _, _ in
+                Issue.record("Changed discovery must never commit")
+                throw CancellationError()
+            },
+            startAccess: { url in probe.record("access:\(url.path)"); return true },
+            stopAccess: { url in probe.record("release:\(url.path)") }
+        )
+
+        #expect(try await service.reassociate(searchLocation: location, imageURL: image)
+                == .sourceChanged(relationshipCount: 1))
+        #expect(probe.events.filter { $0.hasPrefix("access:") }.count == 2)
+        #expect(probe.events.filter { $0.hasPrefix("release:") }.count == 2)
+        #expect(probe.events.contains("discover:folder:a.jpg"))
+    }
+
+    @Test("Leaving a photo during moved-relationship discovery cannot publish or commit")
+    @MainActor
+    func reassociationNavigationCancellation() async throws {
+        let probe = CaptionVoiceMemoRecoveryProbe()
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let location = URL(fileURLWithPath: "/selected/folder", isDirectory: true)
+        let image = association.imageURL
+        let service = CaptionVoiceMemoReassociationService(
+            discover: { _, _ in
+                probe.record("blocked")
+                _ = gate.wait(timeout: .now() + 10)
+                return .notFound
+            },
+            commit: { _, _ in
+                probe.record("commit")
+                throw CancellationError()
+            }
+        )
+        let model = CaptionVoiceMemoReassociationModel(service: service)
+        let search = Task { await model.search(location, for: image) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !probe.events.contains("blocked"), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.events.contains("blocked"))
+        model.cancel()
+        gate.signal()
+
+        #expect(!(await search.value))
+        #expect(!probe.events.contains("commit"))
+        #expect(model.result == nil)
+        #expect(!model.isWorking)
+    }
 }
 
 nonisolated private enum CaptionVoiceMemoTestContext {

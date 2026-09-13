@@ -475,3 +475,136 @@ final class CaptionVoiceMemoRecoveryModel {
         errorMessage = nil
     }
 }
+
+nonisolated enum CaptionVoiceMemoReassociationResult: Equatable, Sendable {
+    case reassociated(VoiceMemoCompanionRepository.ReassociationReceipt)
+    case ambiguous(candidateCount: Int)
+    case sourceChanged(relationshipCount: Int)
+    case notFound
+}
+
+/// Owns directory enumeration, hashing and the eventual relationship transaction on one
+/// retained utility executor. The picker scope remains active across discovery and commit.
+actor CaptionVoiceMemoReassociationService {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    typealias Discover = @Sendable (
+        URL, URL
+    ) throws -> VoiceMemoCompanionRepository.ReassociationDiscovery
+    typealias Commit = @Sendable (
+        VoiceMemoCompanionRepository.ReassociationCandidate, URL
+    ) throws -> VoiceMemoCompanionRepository.ReassociationReceipt
+
+    private let discover: Discover
+    private let commit: Commit
+    private let startAccess: @Sendable (URL) -> Bool
+    private let stopAccess: @Sendable (URL) -> Void
+
+    init(
+        filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.caption-voice-memo-reassociation", qos: .utility
+        ),
+        discover: @escaping Discover = {
+            try VoiceMemoCompanionRepository().discoverReassociation(for: $1, in: [$0])
+        },
+        commit: @escaping Commit = {
+            try VoiceMemoCompanionRepository().commitReassociation($0, to: $1)
+        },
+        startAccess: @escaping @Sendable (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
+        stopAccess: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
+    ) {
+        self.filesystemQueue = filesystemQueue
+        self.discover = discover
+        self.commit = commit
+        self.startAccess = startAccess
+        self.stopAccess = stopAccess
+    }
+
+    func reassociate(searchLocation: URL, imageURL: URL) throws -> CaptionVoiceMemoReassociationResult {
+        try Task.checkCancellation()
+        let imageFolder = imageURL.deletingLastPathComponent()
+        let searchAccess = startAccess(searchLocation)
+        let imageAccess = startAccess(imageFolder)
+        defer {
+            if imageAccess { stopAccess(imageFolder) }
+            if searchAccess { stopAccess(searchLocation) }
+        }
+
+        let discovery = try discover(searchLocation, imageURL)
+        try Task.checkCancellation()
+        switch discovery {
+        case .exact(let candidate):
+            return .reassociated(try commit(candidate, imageURL))
+        case .ambiguous(let candidates):
+            return .ambiguous(candidateCount: candidates.count)
+        case .sourceChanged(let relationships):
+            return .sourceChanged(relationshipCount: relationships.count)
+        case .notFound:
+            return .notFound
+        }
+    }
+}
+
+@MainActor @Observable
+final class CaptionVoiceMemoReassociationModel {
+    private(set) var isWorking = false
+    private(set) var result: CaptionVoiceMemoReassociationResult?
+    private(set) var errorMessage: String?
+    @ObservationIgnored private let service: CaptionVoiceMemoReassociationService
+    @ObservationIgnored private var task: Task<CaptionVoiceMemoReassociationResult, Error>?
+    @ObservationIgnored private var generation: UInt64 = 0
+
+    init(service: CaptionVoiceMemoReassociationService = CaptionVoiceMemoReassociationService()) {
+        self.service = service
+    }
+
+    func search(_ location: URL, for imageURL: URL) async -> Bool {
+        cancel()
+        generation &+= 1
+        let requested = generation
+        isWorking = true
+        let work = Task { [service] in
+            try await service.reassociate(searchLocation: location, imageURL: imageURL)
+        }
+        task = work
+        do {
+            let outcome = try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard requested == generation, !Task.isCancelled else { return false }
+            task = nil
+            isWorking = false
+            result = outcome
+            return if case .reassociated = outcome { true } else { false }
+        } catch is CancellationError {
+            guard requested == generation else { return false }
+            task = nil
+            isWorking = false
+            return false
+        } catch {
+            guard requested == generation else { return false }
+            task = nil
+            isWorking = false
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func reportPickerError(_ error: Error) {
+        errorMessage = error.localizedDescription
+    }
+
+    func cancel() {
+        generation &+= 1
+        task?.cancel()
+        task = nil
+        isWorking = false
+        result = nil
+        errorMessage = nil
+    }
+}

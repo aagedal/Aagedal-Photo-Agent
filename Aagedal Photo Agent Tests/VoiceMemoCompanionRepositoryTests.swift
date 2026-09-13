@@ -951,6 +951,170 @@ struct VoiceMemoCompanionRepositoryTests {
         })
     }
 
+    @Test("Exact moved relationship discovery commits an independent adjacent bundle")
+    func exactRelationshipReassociation() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let sourceRecord = repository.recordURL(for: fixture.image)
+        var sourceObject = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: sourceRecord)) as? [String: Any]
+        )
+        sourceObject["future"] = ["keep": true]
+        try JSONSerialization.data(withJSONObject: sourceObject).write(to: sourceRecord, options: .atomic)
+
+        let relocatedFolder = fixture.root.appendingPathComponent("relocated", isDirectory: true)
+        try FileManager.default.createDirectory(at: relocatedFolder, withIntermediateDirectories: false)
+        let relocatedImage = relocatedFolder.appendingPathComponent("renamed-photo.ARW")
+        try FileManager.default.copyItem(at: fixture.image, to: relocatedImage)
+
+        let discovery = try repository.discoverReassociation(
+            for: relocatedImage,
+            in: [fixture.root]
+        )
+        guard case .exact(let candidate) = discovery else {
+            Issue.record("Expected one exact relationship candidate")
+            return
+        }
+        let receipt = try repository.commitReassociation(candidate, to: relocatedImage)
+        let relocatedMemo = relocatedFolder.appendingPathComponent("renamed-photo.WAV")
+
+        #expect(receipt.sourceRelationshipURL == sourceRecord)
+        #expect(receipt.sourceMemoURL == fixture.memo)
+        #expect(try Data(contentsOf: fixture.memo) == Data("wav".utf8))
+        #expect(try Data(contentsOf: relocatedMemo) == Data("wav".utf8))
+        #expect(try repository.lookup(for: fixture.image) == .available(fixture.association))
+        #expect(try repository.lookup(for: relocatedImage) == .available(VoiceMemoAssociation(
+            profileIdentifier: fixture.association.profileIdentifier,
+            imageURL: relocatedImage,
+            memoURL: relocatedMemo
+        )))
+        let destinationObject = try #require(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: repository.recordURL(for: relocatedImage))
+            ) as? [String: Any]
+        )
+        #expect(destinationObject["provenance"] as? String == "exactReassociation")
+        #expect((destinationObject["future"] as? [String: Any])?["keep"] as? Bool == true)
+        #expect((destinationObject["imageDiscoveryHint"] as? [String: Any])?["canonicalPath"] as? String
+                == relocatedImage.path)
+    }
+
+    @Test("Duplicate exact records or WAVs remain ambiguous")
+    func duplicateRelationshipDiscoveryIsAmbiguous() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let duplicate = fixture.root.appendingPathComponent("duplicate", isDirectory: true)
+        try FileManager.default.createDirectory(at: duplicate, withIntermediateDirectories: false)
+        try FileManager.default.copyItem(
+            at: repository.recordURL(for: fixture.image),
+            to: duplicate.appendingPathComponent(repository.recordURL(for: fixture.image).lastPathComponent)
+        )
+        try FileManager.default.copyItem(
+            at: fixture.memo,
+            to: duplicate.appendingPathComponent("other-name.WAV")
+        )
+        let target = fixture.root.appendingPathComponent("target.ARW")
+        try FileManager.default.copyItem(at: fixture.image, to: target)
+
+        guard case .ambiguous(let candidates) = try repository.discoverReassociation(
+            for: target,
+            in: [fixture.root]
+        ) else {
+            Issue.record("Duplicate exact candidates must fail closed")
+            return
+        }
+        #expect(candidates.count == 4)
+        #expect(!FileManager.default.fileExists(atPath: repository.recordURL(for: target).path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("target.WAV").path))
+    }
+
+    @Test("Changed and missing relationship searches are distinct")
+    func changedAndMissingRelationshipDiscovery() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let changed = fixture.root.appendingPathComponent("changed.ARW")
+        try Data("different photo".utf8).write(to: changed)
+        guard case .sourceChanged(let relationships) = try repository.discoverReassociation(
+            for: changed,
+            in: [repository.recordURL(for: fixture.image)]
+        ) else {
+            Issue.record("An explicitly selected mismatched relationship must report changed bytes")
+            return
+        }
+        #expect(relationships == [repository.recordURL(for: fixture.image)])
+
+        let empty = fixture.root.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: false)
+        #expect(try repository.discoverReassociation(for: changed, in: [empty]) == .notFound)
+    }
+
+    @Test("A destination collision preserves every selected reassociation source")
+    func reassociationCollisionPreservesSources() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(fixture.association)
+        let destination = fixture.root.appendingPathComponent("destination.ARW")
+        try FileManager.default.copyItem(at: fixture.image, to: destination)
+        guard case .exact(let candidate) = try repository.discoverReassociation(
+            for: destination,
+            in: [fixture.root]
+        ) else {
+            Issue.record("Expected exact relationship before collision")
+            return
+        }
+        let collision = fixture.root.appendingPathComponent("destination.WAV")
+        try Data("unrelated".utf8).write(to: collision)
+        let relationshipBefore = try Data(contentsOf: candidate.relationshipURL)
+
+        #expect(throws: VoiceMemoCompanionRepository.RepositoryError.copyDestinationExists("destination.WAV")) {
+            try repository.commitReassociation(candidate, to: destination)
+        }
+        #expect(try Data(contentsOf: candidate.relationshipURL) == relationshipBefore)
+        #expect(try Data(contentsOf: candidate.memoURL) == Data("wav".utf8))
+        #expect(try Data(contentsOf: collision) == Data("unrelated".utf8))
+        #expect(!FileManager.default.fileExists(atPath: repository.recordURL(for: destination).path))
+    }
+
+    @Test("A relationship install failure removes the owned reassociation copy")
+    func reassociationInstallFailureRollsBack() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let systemRepository = VoiceMemoCompanionRepository()
+        try systemRepository.save(fixture.association)
+        let destinationFolder = fixture.root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: false)
+        let destination = destinationFolder.appendingPathComponent("photo.ARW")
+        try FileManager.default.copyItem(at: fixture.image, to: destination)
+        guard case .exact(let candidate) = try systemRepository.discoverReassociation(
+            for: destination,
+            in: [fixture.root]
+        ) else {
+            Issue.record("Expected exact relationship before injected failure")
+            return
+        }
+        let probe = FailNthInstallCopyIO(failingOnInstall: 2)
+        let repository = VoiceMemoCompanionRepository(copyIO: probe.io)
+        let sourceRecordBefore = try Data(contentsOf: candidate.relationshipURL)
+
+        #expect(throws: InjectedWriteFailure.failure) {
+            try repository.commitReassociation(candidate, to: destination)
+        }
+        #expect(try Data(contentsOf: candidate.relationshipURL) == sourceRecordBefore)
+        #expect(try Data(contentsOf: candidate.memoURL) == Data("wav".utf8))
+        #expect(!FileManager.default.fileExists(atPath: destinationFolder.appendingPathComponent("photo.WAV").path))
+        #expect(!FileManager.default.fileExists(atPath: repository.recordURL(for: destination).path))
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath: destinationFolder.path)).contains {
+            $0.hasPrefix(".voice-memo-reassociation-")
+        })
+    }
+
     private func successfulCopy(
         source: URL,
         destination: URL,
@@ -1067,6 +1231,31 @@ struct VoiceMemoCompanionRepositoryTests {
 
         func remove(at url: URL) throws {
             try system.remove(at: url)
+        }
+    }
+
+    nonisolated private final class FailNthInstallCopyIO: @unchecked Sendable {
+        private let failingOnInstall: Int
+        private let lock = NSLock()
+        private var installCount = 0
+
+        init(failingOnInstall: Int) {
+            self.failingOnInstall = failingOnInstall
+        }
+
+        var io: VoiceMemoCompanionCopyIO {
+            VoiceMemoCompanionCopyIO(
+                copy: { try FileManager.default.copyItem(at: $0, to: $1) },
+                install: { [self] source, destination in
+                    let current = lock.withLock {
+                        installCount += 1
+                        return installCount
+                    }
+                    if current == failingOnInstall { throw InjectedWriteFailure.failure }
+                    try FileManager.default.moveItem(at: source, to: destination)
+                },
+                remove: { try FileManager.default.removeItem(at: $0) }
+            )
         }
     }
 

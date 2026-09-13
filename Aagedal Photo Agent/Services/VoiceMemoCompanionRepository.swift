@@ -135,7 +135,15 @@ nonisolated enum VoiceMemoCompanionProvenance: String, Codable, Equatable, Senda
     case capturedAssociation
     case archiveDerivative
     case exactRecovery
+    case exactReassociation
     case explicitReplacement
+}
+
+/// Non-authoritative hints that make a moved relationship easier to classify. The content
+/// identity remains the only evidence that can authorize reassociation.
+nonisolated struct VoiceMemoCompanionDiscoveryHint: Codable, Equatable, Sendable {
+    let canonicalPath: String
+    let fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier?
 }
 
 nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
@@ -148,6 +156,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
     let imageIdentity: VoiceMemoCompanionContentIdentity?
     let memoIdentity: VoiceMemoCompanionContentIdentity?
     let provenance: VoiceMemoCompanionProvenance?
+    let imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint?
     /// Reserved for the reviewed-transcript slice. Recovery only retains an approval when the
     /// selected WAV is byte-for-byte identical to the revision on which it was approved.
     let approvedTranscriptMemoSHA256: String?
@@ -159,6 +168,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         imageIdentity: VoiceMemoCompanionContentIdentity? = nil,
         memoIdentity: VoiceMemoCompanionContentIdentity? = nil,
         provenance: VoiceMemoCompanionProvenance? = nil,
+        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint? = nil,
         approvedTranscriptMemoSHA256: String? = nil
     ) {
         self.init(
@@ -169,6 +179,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
             imageIdentity: imageIdentity,
             memoIdentity: memoIdentity,
             provenance: provenance,
+            imageDiscoveryHint: imageDiscoveryHint,
             approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
         )
     }
@@ -181,6 +192,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         imageIdentity: VoiceMemoCompanionContentIdentity?,
         memoIdentity: VoiceMemoCompanionContentIdentity?,
         provenance: VoiceMemoCompanionProvenance?,
+        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint?,
         approvedTranscriptMemoSHA256: String?
     ) {
         self.schemaVersion = schemaVersion
@@ -190,12 +202,14 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         self.imageIdentity = imageIdentity
         self.memoIdentity = memoIdentity
         self.provenance = provenance
+        self.imageDiscoveryHint = imageDiscoveryHint
         self.approvedTranscriptMemoSHA256 = approvedTranscriptMemoSHA256
     }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, profileIdentifier, imageFilename, memoFilename
-        case imageIdentity, memoIdentity, provenance, approvedTranscriptMemoSHA256
+        case imageIdentity, memoIdentity, provenance, imageDiscoveryHint
+        case approvedTranscriptMemoSHA256
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +231,9 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         provenance = try container.decodeIfPresent(
             VoiceMemoCompanionProvenance.self, forKey: .provenance
         )
+        imageDiscoveryHint = try container.decodeIfPresent(
+            VoiceMemoCompanionDiscoveryHint.self, forKey: .imageDiscoveryHint
+        )
         approvedTranscriptMemoSHA256 = try container.decodeIfPresent(
             String.self, forKey: .approvedTranscriptMemoSHA256
         )
@@ -231,6 +248,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
             imageIdentity: imageIdentity,
             memoIdentity: memoIdentity,
             provenance: provenance,
+            imageDiscoveryHint: imageDiscoveryHint,
             approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
         )
     }
@@ -281,6 +299,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         case trashOutcomeUncertain(String)
         case recoveryNotNeeded
         case recoveryRequiresReplacementConfirmation
+        case reassociationDestinationAlreadyOwned
 
         var errorDescription: String? {
             switch self {
@@ -320,6 +339,8 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 return "This photo already has an available voice memo. Refresh Caption before trying recovery again."
             case .recoveryRequiresReplacementConfirmation:
                 return "The selected WAV cannot be proven to be the previously associated audio. Confirm an explicit replacement to continue."
+            case .reassociationDestinationAlreadyOwned:
+                return "This photo already has a voice-memo relationship. Refresh Caption before searching for a moved relationship."
             }
         }
     }
@@ -346,6 +367,32 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         let association: VoiceMemoAssociation
         let kind: RecoveryKind
         let invalidatedTranscriptApproval: Bool
+    }
+
+    struct ReassociationCandidate: Equatable, Sendable {
+        let relationshipURL: URL
+        let memoURL: URL
+        let profileIdentifier: String
+        fileprivate let relationshipBytes: Data
+        fileprivate let imageIdentity: VoiceMemoCompanionContentIdentity
+        fileprivate let memoIdentity: VoiceMemoCompanionContentIdentity
+    }
+
+    enum ReassociationDiscovery: Equatable, Sendable {
+        case exact(ReassociationCandidate)
+        /// More than one relationship and/or WAV contains the same proven identities.
+        case ambiguous([ReassociationCandidate])
+        /// A path, resource identifier, or explicit single-record selection points at a
+        /// relationship whose recorded photo bytes differ from the current photo.
+        case sourceChanged([URL])
+        /// No complete relationship and matching WAV were found in the selected locations.
+        case notFound
+    }
+
+    struct ReassociationReceipt: Equatable, Sendable {
+        let association: VoiceMemoAssociation
+        let sourceRelationshipURL: URL
+        let sourceMemoURL: URL
     }
 
     /// Immutable source evidence retained while a derivative RAW archive is rendered and signed.
@@ -562,6 +609,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             imageIdentity: contentIdentity(for: context.imageRevision),
             memoIdentity: context.candidateIdentity,
             provenance: exact ? .exactRecovery : .explicitReplacement,
+            imageDiscoveryHint: discoveryHint(
+                for: context.imageURL,
+                revision: context.imageRevision
+            ),
             approvedTranscriptMemoSHA256: approval
         )
         let updatedBytes = try mergedRecoveryRecordBytes(
@@ -608,6 +659,225 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             association: association,
             kind: context.kind,
             invalidatedTranscriptApproval: context.invalidatesTranscriptApproval
+        )
+    }
+
+    /// Searches only caller-authorized files or folders for a relationship whose persisted
+    /// image and WAV identities match the current photo. Filenames and location hints can
+    /// classify a changed source, but can never produce an exact candidate.
+    func discoverReassociation(
+        for imageURL: URL,
+        in candidateLocations: [URL]
+    ) throws -> ReassociationDiscovery {
+        try Task.checkCancellation()
+        let image = imageURL.standardizedFileURL
+        let imageRevision = try copyRevision(at: image)
+        let imageIdentity = contentIdentity(for: imageRevision)
+        let files = try reassociationFiles(in: candidateLocations)
+        let relationshipURLs = files.filter {
+            $0.lastPathComponent.hasPrefix(".")
+                && $0.lastPathComponent.hasSuffix(Self.recordSuffix)
+        }
+        let wavURLs = files.filter { $0.pathExtension.lowercased() == "wav" }
+        var exact: [ReassociationCandidate] = []
+        var changed: [URL] = []
+        var memoRevisions: [URL: CopyRevision] = [:]
+
+        for relationshipURL in relationshipURLs {
+            try Task.checkCancellation()
+            guard let relationshipBytes = try? Data(contentsOf: relationshipURL),
+                  let record = try? decodedRecord(
+                    relationshipBytes,
+                    expectedImageFilename: nil
+                  ) else {
+                continue
+            }
+
+            guard record.imageIdentity == imageIdentity else {
+                if relationshipURLs.count == 1
+                    || record.imageFilename == image.lastPathComponent
+                    || record.imageDiscoveryHint?.canonicalPath == image.path
+                    || (record.imageDiscoveryHint?.fileResourceIdentifier != nil
+                        && record.imageDiscoveryHint?.fileResourceIdentifier
+                            == imageRevision.snapshot.fileResourceIdentifier) {
+                    changed.append(relationshipURL)
+                }
+                continue
+            }
+            guard let memoIdentity = record.memoIdentity else {
+                changed.append(relationshipURL)
+                continue
+            }
+
+            let preferredMemo = relationshipURL.deletingLastPathComponent()
+                .appendingPathComponent(record.memoFilename)
+                .standardizedFileURL
+            let candidates = wavURLs.filter {
+                (try? $0.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]))
+                    .map { $0.isRegularFile == true && Int64($0.fileSize ?? -1) == memoIdentity.byteCount }
+                    ?? false
+            }.sorted {
+                let leftPriority = $0.standardizedFileURL == preferredMemo ? 0
+                    : ($0.lastPathComponent == record.memoFilename ? 1 : 2)
+                let rightPriority = $1.standardizedFileURL == preferredMemo ? 0
+                    : ($1.lastPathComponent == record.memoFilename ? 1 : 2)
+                if leftPriority != rightPriority { return leftPriority < rightPriority }
+                return $0.path.localizedStandardCompare($1.path) == .orderedAscending
+            }
+
+            for memoURL in candidates {
+                try Task.checkCancellation()
+                let canonicalMemo = memoURL.standardizedFileURL.resolvingSymlinksInPath()
+                let revision: CopyRevision
+                if let cached = memoRevisions[canonicalMemo] {
+                    revision = cached
+                } else {
+                    guard let captured = try? copyRevision(at: canonicalMemo) else { continue }
+                    memoRevisions[canonicalMemo] = captured
+                    revision = captured
+                }
+                guard contentIdentity(for: revision) == memoIdentity else { continue }
+                exact.append(ReassociationCandidate(
+                    relationshipURL: relationshipURL.standardizedFileURL,
+                    memoURL: canonicalMemo,
+                    profileIdentifier: record.profileIdentifier,
+                    relationshipBytes: relationshipBytes,
+                    imageIdentity: imageIdentity,
+                    memoIdentity: memoIdentity
+                ))
+            }
+        }
+
+        exact.sort {
+            if $0.relationshipURL.path != $1.relationshipURL.path {
+                return $0.relationshipURL.path.localizedStandardCompare($1.relationshipURL.path)
+                    == .orderedAscending
+            }
+            return $0.memoURL.path.localizedStandardCompare($1.memoURL.path) == .orderedAscending
+        }
+        if exact.count == 1, let candidate = exact.first { return .exact(candidate) }
+        if exact.count > 1 { return .ambiguous(exact) }
+        if !changed.isEmpty {
+            return .sourceChanged(Array(Set(changed)).sorted {
+                $0.path.localizedStandardCompare($1.path) == .orderedAscending
+            })
+        }
+        return .notFound
+    }
+
+    /// Copies a proven memo beside the current photo and installs a rewritten relationship
+    /// exclusively. The selected relationship and WAV remain untouched. Every source is
+    /// revalidated before commit and rollback removes only operation-owned destinations.
+    @discardableResult
+    func commitReassociation(
+        _ candidate: ReassociationCandidate,
+        to imageURL: URL
+    ) throws -> ReassociationReceipt {
+        try Task.checkCancellation()
+        let image = imageURL.standardizedFileURL
+        switch try lookup(for: image) {
+        case .none: break
+        case .available, .missing: throw RepositoryError.reassociationDestinationAlreadyOwned
+        }
+
+        let relationshipBytes = try Data(contentsOf: candidate.relationshipURL)
+        guard relationshipBytes == candidate.relationshipBytes else {
+            throw RepositoryError.copySourceChanged
+        }
+        let record = try decodedRecord(relationshipBytes, expectedImageFilename: nil)
+        guard record.profileIdentifier == candidate.profileIdentifier,
+              record.imageIdentity == candidate.imageIdentity,
+              record.memoIdentity == candidate.memoIdentity else {
+            throw RepositoryError.copySourceChanged
+        }
+        let imageRevision = try copyRevision(at: image)
+        let memoRevision = try copyRevision(at: candidate.memoURL)
+        guard contentIdentity(for: imageRevision) == candidate.imageIdentity,
+              contentIdentity(for: memoRevision) == candidate.memoIdentity else {
+            throw RepositoryError.copySourceChanged
+        }
+
+        let destinationMemo = image.deletingPathExtension()
+            .appendingPathExtension(candidate.memoURL.pathExtension)
+        let destinationRecord = recordURL(for: image)
+        let sourceMemo = candidate.memoURL.standardizedFileURL.resolvingSymlinksInPath()
+        let memoAlreadyAdjacent = sourceMemo == destinationMemo.standardizedFileURL.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: destinationRecord.path),
+              memoAlreadyAdjacent || !fm.fileExists(atPath: destinationMemo.path) else {
+            let occupied = fm.fileExists(atPath: destinationRecord.path)
+                ? destinationRecord : destinationMemo
+            throw RepositoryError.copyDestinationExists(occupied.lastPathComponent)
+        }
+
+        let staging = image.deletingLastPathComponent()
+            .appendingPathComponent(".voice-memo-reassociation-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: staging) }
+        let stagedMemo = staging.appendingPathComponent(destinationMemo.lastPathComponent)
+        if !memoAlreadyAdjacent {
+            try copyIO.copy(sourceMemo, stagedMemo)
+            guard candidate.memoIdentity.sha256
+                == (try SourceImageRevisionCaptureIO.system.hash(stagedMemo)).lowercaseHexString else {
+                throw RepositoryError.copySourceChanged
+            }
+        }
+
+        let updated = VoiceMemoCompanionRecord(
+            profileIdentifier: record.profileIdentifier,
+            imageFilename: image.lastPathComponent,
+            memoFilename: destinationMemo.lastPathComponent,
+            imageIdentity: candidate.imageIdentity,
+            memoIdentity: candidate.memoIdentity,
+            provenance: .exactReassociation,
+            imageDiscoveryHint: discoveryHint(for: image, revision: imageRevision),
+            approvedTranscriptMemoSHA256: record.approvedTranscriptMemoSHA256
+        )
+        let updatedBytes = try mergedRecoveryRecordBytes(original: relationshipBytes, updated: updated)
+        let stagedRecord = staging.appendingPathComponent(destinationRecord.lastPathComponent)
+        try updatedBytes.write(to: stagedRecord, options: .atomic)
+
+        try Task.checkCancellation()
+        guard try Data(contentsOf: candidate.relationshipURL) == relationshipBytes,
+              contentIdentity(for: try copyRevision(at: image)) == candidate.imageIdentity,
+              contentIdentity(for: try copyRevision(at: sourceMemo)) == candidate.memoIdentity,
+              !fm.fileExists(atPath: destinationRecord.path),
+              memoAlreadyAdjacent || !fm.fileExists(atPath: destinationMemo.path) else {
+            throw RepositoryError.copySourceChanged
+        }
+
+        var installed: [URL] = []
+        let association = VoiceMemoAssociation(
+            profileIdentifier: record.profileIdentifier,
+            imageURL: VoiceMemoAssociationService.canonicalURL(image),
+            memoURL: VoiceMemoAssociationService.canonicalURL(destinationMemo)
+        )
+        do {
+            if !memoAlreadyAdjacent {
+                try copyIO.install(stagedMemo, destinationMemo)
+                installed.append(destinationMemo)
+            }
+            try copyIO.install(stagedRecord, destinationRecord)
+            installed.append(destinationRecord)
+            guard try Data(contentsOf: destinationRecord) == updatedBytes,
+                  contentIdentity(for: try copyRevision(at: destinationMemo)) == candidate.memoIdentity,
+                  try lookup(for: image) == .available(association) else {
+                throw RepositoryError.copySourceChanged
+            }
+        } catch {
+            var residuals: [String] = []
+            for destination in installed.reversed() {
+                do { try copyIO.remove(destination) }
+                catch { residuals.append(destination.path) }
+            }
+            if !residuals.isEmpty { throw RepositoryError.copyRollbackFailed(residuals) }
+            throw error
+        }
+
+        return ReassociationReceipt(
+            association: association,
+            sourceRelationshipURL: candidate.relationshipURL,
+            sourceMemoURL: candidate.memoURL
         )
     }
 
@@ -894,13 +1164,15 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         memoURL: URL,
         provenance: VoiceMemoCompanionProvenance
     ) throws -> VoiceMemoCompanionRecord {
-        VoiceMemoCompanionRecord(
+        let imageRevision = try copyRevision(at: imageURL)
+        return VoiceMemoCompanionRecord(
             profileIdentifier: profileIdentifier,
             imageFilename: imageURL.lastPathComponent,
             memoFilename: memoURL.lastPathComponent,
-            imageIdentity: contentIdentity(for: try copyRevision(at: imageURL)),
+            imageIdentity: contentIdentity(for: imageRevision),
             memoIdentity: contentIdentity(for: try copyRevision(at: memoURL)),
-            provenance: provenance
+            provenance: provenance,
+            imageDiscoveryHint: discoveryHint(for: imageURL, revision: imageRevision)
         )
     }
 
@@ -1403,7 +1675,13 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         at url: URL,
         expectedImageFilename: String?
     ) throws -> VoiceMemoCompanionRecord {
-        let data = try Data(contentsOf: url)
+        try decodedRecord(Data(contentsOf: url), expectedImageFilename: expectedImageFilename)
+    }
+
+    private func decodedRecord(
+        _ data: Data,
+        expectedImageFilename: String?
+    ) throws -> VoiceMemoCompanionRecord {
         let record: VoiceMemoCompanionRecord
         do {
             record = try JSONDecoder().decode(VoiceMemoCompanionRecord.self, from: data)
@@ -1421,6 +1699,55 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             throw RepositoryError.invalidRecord
         }
         return record
+    }
+
+    private func discoveryHint(
+        for url: URL,
+        revision: CopyRevision
+    ) -> VoiceMemoCompanionDiscoveryHint {
+        VoiceMemoCompanionDiscoveryHint(
+            canonicalPath: VoiceMemoAssociationService.canonicalURL(url).path,
+            fileResourceIdentifier: revision.snapshot.fileResourceIdentifier
+        )
+    }
+
+    private func reassociationFiles(in locations: [URL]) throws -> [URL] {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
+        var result: [URL] = []
+        var seen = Set<URL>()
+
+        func appendRegular(_ url: URL) {
+            let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
+            guard seen.insert(canonical).inserted,
+                  let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true else { return }
+            result.append(canonical)
+        }
+
+        for location in locations where location.isFileURL {
+            try Task.checkCancellation()
+            let values = try location.resourceValues(forKeys: Set(keys))
+            if values.isRegularFile == true {
+                appendRegular(location)
+                continue
+            }
+            guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            guard let enumerator = fm.enumerator(
+                at: location,
+                includingPropertiesForKeys: keys,
+                options: [.skipsPackageDescendants],
+                errorHandler: { _, _ in true }
+            ) else { continue }
+            for case let fileURL as URL in enumerator {
+                try Task.checkCancellation()
+                appendRegular(fileURL)
+            }
+        }
+        return result.sorted {
+            $0.path.localizedStandardCompare($1.path) == .orderedAscending
+        }
     }
 
     private func write(_ record: VoiceMemoCompanionRecord, to url: URL) throws {

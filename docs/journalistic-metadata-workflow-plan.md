@@ -663,9 +663,9 @@ hands-on focus/IME/VoiceOver/visual checks remain explicit.
 ### Sony Alpha voice memos — ingest foundation implemented for 3.0
 
 **Status:** flexible one/two-source ILCE-1 v4.00 ingest is implemented, with companion lifecycle
-slices through adjacent missing-memo recovery. Compatibility with other Sony bodies/firmware,
-general relocated-source discovery and later transcript/delivery stages remain gated by additional
-samples and follow-up implementation.
+slices through user-scoped exact relationship reassociation. Compatibility with other Sony bodies/
+firmware, authentic native/physical-volume validation and later transcript/delivery stages remain
+gated by additional samples and follow-up implementation.
 
 - [x] Obtain private test samples from Sony ILCE-1 firmware v4.00. Document the on-card directory
   layout, WAV naming/association rules, audio
@@ -769,6 +769,16 @@ selected source is copied, never moved, and verified staging/exclusive install/r
 navigation cancellation have automated coverage. See
 [cycle 21 evidence](release/cycle-21-voice-memo-recovery-2026-09-13.md). The lifecycle checkbox
 remains open for general relocated-photo/record discovery and real Sony/native-volume evidence.
+
+**Coordinator cycle 22 — 2026-09-13:** Caption can search a user-selected folder for a moved hidden
+relationship and WAV. Only a unique photo+audio content-identity match commits; duplicate exact,
+changed and missing outcomes remain explicit, while filenames and the new optional path/resource
+hint are non-authoritative. The selected relationship and WAV remain intact as a private staged
+copy and rewritten adjacent record install exclusively with source revalidation, verified read-back,
+owned rollback, opaque-field preservation and navigation cancellation. The 51 affected tests,
+2,866-test serial suite and repository validation pass; see
+[cycle 22 evidence](release/cycle-22-voice-memo-reassociation-2026-09-13.md). The lifecycle checkbox
+remains open for authentic Sony/native picker, archive and physical-volume evidence.
 
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text

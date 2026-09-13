@@ -6,7 +6,9 @@ The RAW archive portion is implemented at `3a49c0e` and recorded in
 is implemented at `d876330` with archive identity/picker ownership follow-ups `6b8100b` and
 `026d4f2`, and recorded in
 [cycle 21](cycle-21-voice-memo-recovery-2026-09-13.md). General relocated-photo/relationship
-discovery remains unimplemented. The broader
+discovery and exact-copy transaction are implemented in
+[cycle 22](cycle-22-voice-memo-reassociation-2026-09-13.md). Authentic native/Sony/volume
+evidence remains open. The broader
 [Sony lifecycle criterion](../journalistic-metadata-workflow-plan.md#sony-alpha-voice-memos--ingest-foundation-implemented-for-30)
 therefore remains open.
 
@@ -121,11 +123,11 @@ autoplay, and prevents cancelled or superseded Caption sessions from publishing 
 Exact recovery retains a future approval only when its audio hash matches; replacement removes the
 binding. Schema-1 records remain schema 1 until the explicit replacement succeeds.
 
-General reassociation remains separate: discover a relocated photo and relationship only within
-user-selected candidate locations, represent exact/ambiguous/changed/missing states, refresh durable
-resource/path hints after verified commit, and never let a pure Develop geometry reassociation
-authorize memo relinking. Duplicate exact candidates and relocated record ownership still require a
-designed UI and transaction.
+General reassociation is now separate and explicit: Caption searches only a user-selected folder,
+represents exact/ambiguous/changed/missing states, and refreshes the durable resource/path hint only
+inside the verified commit. A pure Develop geometry reassociation cannot authorize memo relinking.
+Duplicate exact candidates fail closed and ask for a narrower folder; a unique exact relationship
+and WAV are copied into an independently verified adjacent bundle while selected sources remain.
 
 The repository requires an adjacent memo and image. When an explicitly selected memo is
 elsewhere, make a verified independent adjacent copy with exclusive collision handling;

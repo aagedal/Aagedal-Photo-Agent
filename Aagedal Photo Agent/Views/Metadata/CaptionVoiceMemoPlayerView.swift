@@ -6,9 +6,12 @@ struct CaptionVoiceMemoPlayerView: View {
     let imageURL: URL?
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
+    @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
     @State private var refreshID = UUID()
     @State private var isSelectingRecoveryMemo = false
+    @State private var isSelectingRelationshipFolder = false
     @State private var recoveryImageURL: URL?
+    @State private var reassociationImageURL: URL?
 
     private struct Request: Equatable {
         let imageURL: URL?
@@ -38,7 +41,15 @@ struct CaptionVoiceMemoPlayerView: View {
             case .idle, .loading:
                 Text("Checking voice memo…").foregroundStyle(.secondary)
             case .none:
-                Text("No associated voice memo").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("No associated voice memo").foregroundStyle(.secondary)
+                    Button("Find moved relationship…", systemImage: "folder.badge.questionmark") {
+                        reassociationImageURL = imageURL
+                        isSelectingRelationshipFolder = true
+                    }
+                    .disabled(reassociationModel.isWorking || imageURL == nil)
+                    .accessibilityIdentifier("caption.voiceMemo.findRelationship")
+                }
             case .missing(let filename):
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Voice memo missing: \(filename).")
@@ -83,6 +94,16 @@ struct CaptionVoiceMemoPlayerView: View {
             } else if let error = recoveryModel.errorMessage {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
             }
+            if reassociationModel.isWorking {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking selected folder…").foregroundStyle(.secondary)
+                }
+            } else if let message = reassociationStatusMessage {
+                Text(message)
+                    .foregroundStyle(reassociationModel.errorMessage == nil ? .orange : .red)
+                    .textSelection(.enabled)
+            }
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -114,6 +135,27 @@ struct CaptionVoiceMemoPlayerView: View {
                 }
             }
         }
+        .fileImporter(
+            isPresented: $isSelectingRelationshipFolder,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let requestedImageURL = reassociationImageURL else { return }
+            reassociationImageURL = nil
+            switch result {
+            case .success(let urls):
+                guard let location = urls.first else { return }
+                Task {
+                    if await reassociationModel.search(location, for: requestedImageURL) {
+                        refreshID = UUID()
+                    }
+                }
+            case .failure(let error):
+                if (error as? CocoaError)?.code != .userCancelled {
+                    reassociationModel.reportPickerError(error)
+                }
+            }
+        }
         .alert(
             "Use replacement voice memo?",
             isPresented: Binding(
@@ -138,18 +180,39 @@ struct CaptionVoiceMemoPlayerView: View {
         }
         .onChange(of: imageURL) {
             recoveryModel.cancel()
+            reassociationModel.cancel()
             isSelectingRecoveryMemo = false
+            isSelectingRelationshipFolder = false
             recoveryImageURL = nil
+            reassociationImageURL = nil
         }
         .onDisappear {
             model.stop()
             recoveryModel.cancel()
+            reassociationModel.cancel()
             recoveryImageURL = nil
+            reassociationImageURL = nil
         }
     }
 
     private func time(_ seconds: TimeInterval) -> String {
         let total = Int(min(max(0, seconds), 86_400 * 365))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private var reassociationStatusMessage: String? {
+        if let error = reassociationModel.errorMessage { return error }
+        switch reassociationModel.result {
+        case .reassociated:
+            return "The moved voice-memo relationship was verified and restored."
+        case .ambiguous(let count):
+            return "Found \(count) exact relationship candidates. Choose a narrower folder so one location owns the relationship."
+        case .sourceChanged:
+            return "The selected relationship points to different photo bytes. It was not attached."
+        case .notFound:
+            return "No relationship with the exact photo and WAV bytes was found in the selected folder."
+        case nil:
+            return nil
+        }
     }
 }

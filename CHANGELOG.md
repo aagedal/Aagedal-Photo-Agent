@@ -19,6 +19,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Voice-memo relationships now retain photo and WAV content identity. Caption can recover a missing
   adjacent memo from a user-selected WAV, automatically accepting exact bytes or requiring explicit
   replacement confirmation when bytes changed or a legacy relationship has no historical proof.
+- Caption can find a moved voice-memo relationship inside a user-selected folder. Exact photo and
+  WAV identities are reassociated into a verified adjacent copy; duplicate, changed and missing
+  results remain explicit and selected source files are preserved.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.
@@ -77,8 +80,10 @@ upload the current image from Photo Agent.
   filename, duration and missing/unavailable state. Navigation stops playback; no transcription
   or metadata mutation occurs implicitly. A missing memo can be located from Caption; verified exact
   bytes restore automatically, while changed or legacy candidates require an explicit destructive
-  replacement confirmation. Duplicate preserves a verified image/WAV relationship in independent
-  copies with collision protection and rollback on failure.
+  replacement confirmation. A photo without an adjacent record can search a selected folder for an
+  exact moved relationship; filename-only, changed, duplicate and missing candidates are never
+  adopted. Duplicate preserves a verified image/WAV relationship in independent copies with
+  collision protection and rollback on failure.
 - Import now creates the destination reveal folder before handing it to the browser, preventing a
   transient “Couldn’t Open Folder” error at the start of a memory-card import.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the

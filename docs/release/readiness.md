@@ -1,14 +1,22 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional RAW voice-memo archive preservation and verified adjacent memo recovery are committed and pass automated verification; general source discovery, native archive/cloud and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation and the transactional voice-memo archive/recovery/reassociation lifecycle are committed and pass automated verification; authentic native archive/reassociation, cloud and broader release gates remain.
 **Updated:** 2026-09-13
-**Latest implementation commits:** `d876330`, `6b8100b`, `026d4f2` (2,859 tests passed in the final serial run and repository checks passed; independent review and native recovery/archive validation not run for cycle 21).
+**Latest implementation state:** Cycle 22 moved-relationship discovery and reassociation (2,866 tests passed in the final serial run and repository checks passed; independent review and native picker/Sony/volume validation not run).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation and cycle 21 adds identity-bound adjacent memo recovery.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery and cycle 22 adds exact moved-relationship reassociation.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 22 voice-memo reassociation](cycle-22-voice-memo-reassociation-2026-09-13.md) adds a
+Caption folder picker for moved hidden relationships. One exact photo/WAV identity pair commits a
+verified adjacent copy and rewritten record; duplicate exact, changed and missing results fail
+closed. Path/resource hints remain non-authoritative, selected sources and opaque record fields are
+preserved, and exclusive installation has owned rollback plus stale-navigation rejection. The 51
+affected tests, exact 2,866-test serial suite and repository validation pass. Native picker,
+authorized Sony media, relaunch/accessibility and physical-volume evidence remain open.
 
 [Cycle 21 voice-memo recovery](cycle-21-voice-memo-recovery-2026-09-13.md) adds compatible
 schema-2 photo/WAV identities and provenance, then lets Caption recover a persisted missing memo
@@ -237,9 +245,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 4. Complete general Sony companion source reassociation using the source-backed
    [archive design](voice-memo-archive-design.md). Cycle 20 implements shared transactional RAW
    archive preservation and cycle 21 implements identities plus adjacent missing-memo recovery.
-   Add user-scoped relocated-photo/record discovery with explicit ambiguous/changed states. Exercise
-   real JPEG XL/TIFF/DNG, DNG Converter, C2PA and physical-volume interruption/playback cases;
-   schema-1 filename hints alone cannot establish historical identity.
+   Cycle 22 adds user-scoped relocated-photo/record discovery with explicit ambiguous/changed/missing
+   states and an exact-copy transaction. Exercise it with the native picker and authorized Sony
+   samples, then cover real JPEG XL/TIFF/DNG, DNG Converter, C2PA and physical-volume interruption/
+   playback cases; schema-1 filename hints alone cannot establish historical identity.
 5. Implement cancellable local transcription with explicit language/model/offline state,
    review-before-apply and transcript provenance, following the [SDK-backed design](voice-memo-transcription-design.md).
    Integrate reviewed transcript variables and visible Deadline WAV delivery policy/receipt.
@@ -259,9 +268,9 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required features | Open | General relocated-source discovery, transcription, reviewed variables and delivery; inventory dispositions |
+| Required features | Open | Transcription, reviewed variables and delivery; authentic reassociation/archive evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 21: 2,859 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 22: 2,866 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
