@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 30: native voice-memo approval](release/cycle-30-voice-memo-native-approval-2026-09-13.md). The dedicated native fixture now passes complete reviewed-text editing, relaunch and approval while preserving the relationship and WAV bytes. Canonical ISO-8601 verification fixes false corruption for production subsecond timestamps, and the macOS 27 smoke harness plus Browser no-results focus path are hardened. The 2,905-test serial suite, all 9 UI smoke tests and repository checks pass; offline, authorized-Sony, application/read-back, accessibility, real-server and wider release gates remain open.
+**Latest improvement continuation:** [Cycle 31: native voice-memo application](release/cycle-31-voice-memo-native-application-2026-09-13.md). A disposable built-app fixture now cancels Replace with Escape without changing the image or sidecar, confirms Append with Return, persists the approved transcript through all four supported destinations and reads the metadata back after relaunch while preserving the relationship and WAV. The 2,906-test serial suite, all 10 UI smoke tests and repository checks pass; offline, authorized-Sony, broader accessibility, real-server and wider release gates remain open.
 
 ## Portfolio
 

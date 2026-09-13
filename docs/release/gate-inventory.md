@@ -577,19 +577,21 @@ relocation. Cycle 25 adds exact-approved shared metadata-variable resolution, an
 compatible-target, whole-batch preflight and exact affected-image preview. [Cycle 28](cycle-28-voice-memo-transcription-failure-matrix-2026-09-13.md)
 adds independently injectable result/analysis/finalization/teardown phases, explicit malformed,
 empty, recognition and installation failures, noncooperative cancellation coverage, device-reported
-reservation capacity and an explicit release-before-download recovery path. Native application,
-offline/relaunch and authorized-Sony evidence remain incomplete. [Cycle 29](cycle-29-voice-memo-review-edit-durability-2026-09-13.md)
+reservation capacity and an explicit release-before-download recovery path. At that checkpoint,
+native application, offline/relaunch and authorized-Sony evidence remained incomplete. [Cycle 29](cycle-29-voice-memo-review-edit-durability-2026-09-13.md)
 serializes incremental post-approval edits toward the latest complete durable review, waits for that
 boundary before photo/locale changes and blocks replacement transcription while it saves. Its native
 edit/relaunch test is completed by [cycle 30](cycle-30-voice-memo-native-approval-2026-09-13.md):
 the built app preserves complete reviewed text, revokes and restores approval correctly across
 relaunch, then persists approval without changing the relationship or WAV. Canonical encoded
 verification also prevents subsecond production timestamps from causing false post-write corruption.
+[Cycle 31](cycle-31-voice-memo-native-application-2026-09-13.md) then exercises the built app's
+exact variable preview, Escape cancellation, Return confirmation, four supported destinations and
+normal metadata read-back after relaunch while preserving the relationship and WAV bytes.
 
 **Smallest next action/evidence:** Run an installed-language transcription offline in the built app,
-relaunch and verify the persisted review. Then verify transcript application/read-back and repeat
-malformed, empty, silent, long-cancellation and reservation recovery with authorized Sony WAV
-material.
+relaunch and verify the persisted review. Then repeat malformed, empty, silent, long-cancellation
+and reservation recovery with authorized Sony WAV material.
 
 ### J-VOICE-VARIABLE
 
@@ -607,12 +609,15 @@ the token to Description, Extended Description, Headline and Instructions and ad
 pre-mutation preview.
 It shows exact Append/Replace before/after values for every affected photo and field; Cancel writes
 nothing, while one invalid authority refuses the complete batch before any executor mutation.
-Confirm reuses the frozen requests and revalidates the complete authority set. Native/relaunch
-application and accessibility evidence remain incomplete, so the authoritative checkbox stays open.
+Confirm reuses the frozen requests and revalidates the complete authority set. [Cycle 31](cycle-31-voice-memo-native-application-2026-09-13.md)
+verifies in the built app that Escape cancels without changing image or sidecar bytes, Return confirms
+Append into Headline, Description, Extended Description and Instructions, and normal read-back survives
+relaunch with exact relationship/WAV preservation. Broader VoiceOver/accessibility and authentic-Sony
+evidence remain incomplete, so the authoritative checkbox stays open.
 
-**Smallest next action/evidence:** Exercise missing, unapproved, stale and approved Append/Replace
-cases in the built app; cancel and confirm with keyboard/VoiceOver, then relaunch and verify normal
-metadata read-back and zero-write refusal evidence.
+**Smallest next action/evidence:** Exercise missing, unapproved and stale whole-batch refusal plus
+multi-image selection in the built app, then complete VoiceOver traversal/announcement evidence with
+the native sheet.
 
 ### J-VOICE-DELIVERY
 

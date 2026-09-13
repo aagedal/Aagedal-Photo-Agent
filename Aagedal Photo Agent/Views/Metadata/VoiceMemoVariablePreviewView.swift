@@ -4,11 +4,13 @@ struct VoiceMemoVariablePreviewView: View {
     let preview: VoiceMemoVariableBatchPreview
     let onConfirm: () -> Void
     let onCancel: () -> Void
+    @FocusState private var isConfirmFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Review Voice-Memo Transcript Changes")
                 .font(.title2.weight(.semibold))
+                .accessibilityIdentifier("voiceMemoTranscript.preview")
 
             Text("\(preview.action.rawValue) will change \(preview.affectedFieldCount) \(preview.affectedFieldCount == 1 ? "field" : "fields") across \(preview.affectedImageCount) \(preview.affectedImageCount == 1 ? "photo" : "photos"). Nothing is written until you confirm.")
                 .foregroundStyle(.secondary)
@@ -67,15 +69,20 @@ struct VoiceMemoVariablePreviewView: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("voiceMemoTranscript.cancel")
                 Button("Confirm and Write", action: onConfirm)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(preview.affectedImageCount == 0)
+                    .focused($isConfirmFocused)
+                    .accessibilityIdentifier("voiceMemoTranscript.confirm")
             }
         }
         .padding(20)
         .frame(minWidth: 680, minHeight: 420)
-        .accessibilityIdentifier("voiceMemoTranscript.preview")
+        .onAppear {
+            isConfirmFocused = preview.affectedImageCount > 0
+        }
     }
 
     private func valueLine(_ label: String, value: String) -> some View {

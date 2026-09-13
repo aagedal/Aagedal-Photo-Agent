@@ -147,7 +147,7 @@ struct ContentView: View {
     }
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
-    @State private var templateViewModel = TemplateViewModel()
+    @State private var templateViewModel: TemplateViewModel
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var ftpViewModel = FTPViewModel()
     @State private var advancedExportSession: AdvancedExportSession?
@@ -268,6 +268,9 @@ struct ContentView: View {
         _panes = State(initialValue: panesModel)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
+        _templateViewModel = State(initialValue: TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: uiTestLaunchConfiguration.templateRootURL)
+        ))
         _settingsViewModel = State(initialValue: settingsViewModel)
         if uiTestLaunchConfiguration.isEnabled,
            let profileStoreURL = uiTestLaunchConfiguration.profileStoreURL {
@@ -1406,6 +1409,21 @@ struct ContentView: View {
         }
 
         guard let folderURL = configuration.folderURL else { return }
+        if configuration.templateRootURL != nil {
+            let fixtureID = UUID(uuidString: "00000000-0000-0000-0000-000000000031")!
+            let template = MetadataTemplate(
+                id: fixtureID,
+                name: "UI Smoke Voice Memo",
+                fields: [
+                    .init(fieldKey: "title", templateValue: VoiceMemoTranscriptVariablePolicy.token),
+                    .init(fieldKey: "description", templateValue: VoiceMemoTranscriptVariablePolicy.token),
+                    .init(fieldKey: "extendedDescription", templateValue: VoiceMemoTranscriptVariablePolicy.token),
+                    .init(fieldKey: "instructions", templateValue: VoiceMemoTranscriptVariablePolicy.token),
+                ],
+                processInstantly: true
+            )
+            _ = await templateViewModel.saveTemplate(template)
+        }
         openFolderInActivePane(folderURL, addToOpenFolders: false)
 
         for _ in 0..<200 where browserViewModel.isLoading {

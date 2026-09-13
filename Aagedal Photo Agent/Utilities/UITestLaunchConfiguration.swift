@@ -23,6 +23,7 @@ struct UITestLaunchConfiguration {
     let destinationURL: URL?
     let profileStoreURL: URL?
     let knownPeopleRootURL: URL?
+    let templateRootURL: URL?
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -43,6 +44,9 @@ struct UITestLaunchConfiguration {
         // has no side effects and keeps the production storage override opt-in.
         knownPeopleRootURL = isEnabled
             ? value(after: "--ui-test-known-people-root").map { URL(fileURLWithPath: $0) }
+            : nil
+        templateRootURL = isEnabled
+            ? value(after: "--ui-test-template-root").map { URL(fileURLWithPath: $0) }
             : nil
     }
 }

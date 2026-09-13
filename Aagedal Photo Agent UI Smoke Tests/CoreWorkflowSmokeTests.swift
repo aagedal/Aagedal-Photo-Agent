@@ -153,6 +153,64 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testApprovedVoiceMemoAppliesOnlyAfterPreviewAndReadsBackAcrossRelaunch() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(includePendingMetadata: true)
+        let templateRoot = try makeVoiceMemoTemplateRoot()
+        let originalImage = try Data(contentsOf: fixture.imageURL)
+        let originalRelationship = try Data(contentsOf: fixture.relationshipURL)
+        let originalMemo = try Data(contentsOf: fixture.memoURL)
+        let originalSidecar = try Data(contentsOf: fixture.sidecarURL)
+        launch(workflow: "caption", folder: fixture.folder, templateRoot: templateRoot)
+
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+
+        openVoiceMemoTemplate(action: "Replace…")
+        let cancelledPreview = app.descendants(matching: .any)["voiceMemoTranscript.preview"]
+        XCTAssertTrue(cancelledPreview.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Replace will change 4 fields across 1 photo. Nothing is written until you confirm."].exists)
+        let cancel = app.buttons["voiceMemoTranscript.cancel"]
+        XCTAssertTrue(cancel.exists)
+        XCTAssertEqual(cancel.label, "Cancel")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(cancelledPreview.waitForExistence(timeout: 5))
+        XCTAssertEqual(try Data(contentsOf: fixture.imageURL), originalImage)
+        XCTAssertEqual(try Data(contentsOf: fixture.sidecarURL), originalSidecar)
+
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, templateRoot: templateRoot)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+
+        openVoiceMemoTemplate(action: "Append…")
+        let confirmedPreview = app.descendants(matching: .any)["voiceMemoTranscript.preview"]
+        XCTAssertTrue(confirmedPreview.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Append will change 4 fields across 1 photo. Nothing is written until you confirm."].exists)
+        for field in ["Headline", "Description", "Extended Description", "Instructions"] {
+            XCTAssertTrue(app.staticTexts[field].exists, "Missing \(field) from transcript preview")
+        }
+        let confirm = app.buttons["voiceMemoTranscript.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertEqual(confirm.label, "Confirm and Write")
+        confirm.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForAppliedVoiceMemoMetadata(at: fixture.sidecarURL))
+        XCTAssertFalse(confirmedPreview.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(try Data(contentsOf: fixture.imageURL), originalImage)
+        XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
+        XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
+
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, templateRoot: templateRoot)
+        let headline = app.textFields["metadata.input.title"]
+        let description = app.descendants(matching: .any)["metadata.input.description"]
+        XCTAssertTrue(headline.waitForExistence(timeout: 15))
+        XCTAssertTrue(description.waitForExistence(timeout: 10))
+        XCTAssertEqual(headline.value as? String, appliedHeadline)
+        XCTAssertEqual(description.value as? String, appliedDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+    }
+
+    @MainActor
     func testBatchRenameOpensPreparedPreviewForSelection() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "batch-rename", folder: photos)
@@ -205,7 +263,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         source: URL? = nil,
         destination: URL? = nil,
         profileStore: URL? = nil,
-        knownPeopleRoot: URL? = nil
+        knownPeopleRoot: URL? = nil,
+        templateRoot: URL? = nil
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -223,8 +282,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-destination", destination)
         append("--ui-test-profile-store", profileStore)
         append("--ui-test-known-people-root", knownPeopleRoot)
+        append("--ui-test-template-root", templateRoot)
         app.launch()
         reopenMainWindowIfNeeded()
+    }
+
+    @MainActor
+    private func openVoiceMemoTemplate(action: String) {
+        let applyTemplate = app.descendants(matching: .any)["caption.applyTemplate"]
+        XCTAssertTrue(applyTemplate.waitForExistence(timeout: 10))
+        applyTemplate.click()
+        let actionButton = app.descendants(matching: .any)[action]
+        XCTAssertTrue(actionButton.waitForExistence(timeout: 5))
+        actionButton.click()
+        let template = app.buttons["UI Smoke Voice Memo, 4 fields"]
+        XCTAssertTrue(template.waitForExistence(timeout: 10))
+        template.click()
     }
 
     @MainActor
@@ -260,12 +333,13 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
     private struct VoiceMemoFixture {
         let folder: URL
+        let imageURL: URL
         let memoURL: URL
         let relationshipURL: URL
         let sidecarURL: URL
     }
 
-    private func makeApprovedVoiceMemoFolder() throws -> VoiceMemoFixture {
+    private func makeApprovedVoiceMemoFolder(includePendingMetadata: Bool = false) throws -> VoiceMemoFixture {
         let folder = fixtureRoot.appendingPathComponent(
             "ApprovedVoiceMemo-\(UUID().uuidString)",
             isDirectory: true
@@ -297,7 +371,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let sidecarDirectory = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
         try FileManager.default.createDirectory(at: sidecarDirectory, withIntermediateDirectories: true)
         let sidecarURL = sidecarDirectory.appendingPathComponent("\(imageName).meta.json")
-        try writeJSON([
+        var sidecar: [String: Any] = [
             "schemaVersion": 1,
             "sourceFile": imageName,
             "voiceMemoTranscript": [
@@ -315,15 +389,59 @@ final class CoreWorkflowSmokeTests: XCTestCase {
                 "reviewedText": "Approved UI smoke review",
                 "approvedAt": "2026-09-13T12:01:00Z",
             ],
-        ], to: sidecarURL)
+        ]
+        if includePendingMetadata {
+            sidecar["pendingChanges"] = true
+            sidecar["metadata"] = [
+                "title": initialHeadline,
+                "description": initialDescription,
+                "extendedDescription": initialExtendedDescription,
+                "instructions": initialInstructions,
+            ]
+        }
+        try writeJSON(sidecar, to: sidecarURL)
 
         return VoiceMemoFixture(
             folder: folder,
+            imageURL: imageURL,
             memoURL: memoURL,
             relationshipURL: relationshipURL,
             sidecarURL: sidecarURL
         )
     }
+
+    private func makeVoiceMemoTemplateRoot() throws -> URL {
+        let root = fixtureRoot.appendingPathComponent("Templates", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    @MainActor
+    private func waitForAppliedVoiceMemoMetadata(at sidecarURL: URL) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            guard let data = try? Data(contentsOf: sidecarURL),
+                  let graph = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  graph["pendingChanges"] as? Bool == false,
+                  let metadata = graph["metadata"] as? [String: Any] else { return false }
+            return metadata["title"] as? String == self.appliedHeadline
+                && metadata["description"] as? String == self.appliedDescription
+                && metadata["extendedDescription"] as? String == self.appliedExtendedDescription
+                && metadata["instructions"] as? String == self.appliedInstructions
+        }
+        expectation(for: predicate, evaluatedWith: NSObject())
+        waitForExpectations(timeout: 20)
+        return predicate.evaluate(with: NSObject())
+    }
+
+    private var transcriptText: String { "Approved UI smoke review" }
+    private var initialHeadline: String { "Existing headline" }
+    private var initialDescription: String { "Existing description" }
+    private var initialExtendedDescription: String { "Existing extended description" }
+    private var initialInstructions: String { "Existing instructions" }
+    private var appliedHeadline: String { "\(initialHeadline) \(transcriptText)" }
+    private var appliedDescription: String { "\(initialDescription) \(transcriptText)" }
+    private var appliedExtendedDescription: String { "\(initialExtendedDescription) \(transcriptText)" }
+    private var appliedInstructions: String { "\(initialInstructions) \(transcriptText)" }
 
     @MainActor
     private func waitForTranscript(_ text: String, approved: Bool, at sidecarURL: URL) -> Bool {

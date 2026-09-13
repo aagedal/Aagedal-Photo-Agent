@@ -81,7 +81,10 @@ These are material product and evidence boundaries, not a list of unfinished int
   remain literal. The supported Description, Extended Description, Headline and Instructions
   destinations are enforced, and a dedicated affected-image
   preview shows exact Append/Replace changes before confirmation; one invalid authority refuses the
-  entire transcript batch before mutation. Deadline profiles explicitly exclude WAV companions,
+  entire transcript batch before mutation. A disposable native fixture verifies Escape cancellation,
+  Return confirmation, all four destinations and persisted metadata read-back after relaunch; this is
+  narrow workflow evidence rather than a complete VoiceOver/accessibility gate. Deadline profiles
+  explicitly exclude WAV companions,
   include proven companions when available, or require one for every image. Included audio is
   exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Injected
   malformed/empty/finalization/install-cancellation and speech-language reservation-limit handling

@@ -37,7 +37,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   Headline and Instructions, and an
   affected-image sheet shows exact Append/Replace before-and-after values before confirmation.
   Cancel writes nothing; one invalid transcript authority refuses the complete batch before any
-  mutation. Approval by itself never changes an IPTC field.
+  mutation. The native workflow now verifies keyboard Cancel/Confirm, all four supported metadata
+  destinations and ordinary read-back after relaunch. Approval by itself never changes an IPTC field.
 - Deadline profiles now explicitly exclude voice-memo WAVs, include proven companions when
   available, or require one for every image. Preflight and confirmation show the disposition;
   included WAVs are identity-bound into the frozen plan, copied and hash-verified in staging,

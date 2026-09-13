@@ -868,6 +868,17 @@ no-results state. The complete 2,905-test serial suite, all 9 UI smoke tests and
 pass; see [cycle 30 evidence](release/cycle-30-voice-memo-native-approval-2026-09-13.md). Offline,
 authorized-Sony, application/read-back, accessibility and real-server evidence remains open.
 
+**Coordinator cycle 31 — 2026-09-13:** A disposable native product fixture now installs an isolated
+four-field transcript template, previews exact Replace and Append operations, cancels with Escape
+without changing the JPEG or sidecar, confirms with Return, and persists the approved transcript
+through Headline, Description, Extended Description and Instructions. Relaunch proves normal metadata
+read-back while the relationship and WAV remain byte exact. The run exposed and fixed a focus-loss
+debounce that could capture later template mutations despite there being no outstanding editor change;
+the isolated template root remains available only through the gated UI-test launch contract. The
+complete 2,906-test serial suite, all 10 UI smoke tests and repository validation pass; see
+[cycle 31 evidence](release/cycle-31-voice-memo-native-application-2026-09-13.md). Offline,
+authorized-Sony, broader accessibility and real-server evidence remains open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

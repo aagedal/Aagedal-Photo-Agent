@@ -731,6 +731,7 @@ struct CaptionWorkspaceView: View {
                     Button("Replace…") { applyTemplateAfterFlush(append: false) }
                     Button("Append…") { applyTemplateAfterFlush(append: true) }
                 }
+                .accessibilityIdentifier("caption.applyTemplate")
                 .disabled(session.currentURL == nil || session.isTransitioning)
                 .focused($focusedAction, equals: .applyTemplate)
 

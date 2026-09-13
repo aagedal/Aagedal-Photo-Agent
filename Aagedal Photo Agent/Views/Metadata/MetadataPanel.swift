@@ -1403,6 +1403,9 @@ struct MetadataPanel: View {
             guard oldValue != nil, oldValue != newValue else { return }
             flushBufferedFields()
             commitDebounceTask?.cancel()
+            // Do not let an otherwise empty focus-loss debounce capture a later programmatic
+            // mutation, such as an instant template's unresolved variable placeholders.
+            guard viewModel.hasUnpersistedEditorChanges else { return }
             commitDebounceTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(200))
                 guard !Task.isCancelled else { return }
@@ -3486,6 +3489,7 @@ private struct BufferedTextField: View {
     var body: some View {
         let isFocused = focusedField.wrappedValue == focusKey
         TextField(placeholder, text: $localText, axis: .vertical)
+            .accessibilityIdentifier("metadata.input.\(focusKey)")
             .lineLimit(lineLimit)
             .textFieldStyle(.roundedBorder)
             .font(.body)
