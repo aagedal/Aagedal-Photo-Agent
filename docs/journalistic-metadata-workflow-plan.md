@@ -803,6 +803,19 @@ Thirteen focused tests pass; see [cycle 24 evidence](release/cycle-24-voice-memo
 The broad transcription checkbox remains open for the injected/native failure matrix, variable
 application and Deadline delivery integration.
 
+**Coordinator cycle 25 — 2026-09-13:** The shared template/variable engine now exposes
+`{voiceMemoTranscript}` through an immutable approval context. Resolution loads only explicitly
+approved reviewed text after revalidating the current persisted relationship and exact WAV hash,
+byte count and association profile; batch photos resolve independently, and retained retries repeat
+that validation before entering the metadata write executor. Missing, unapproved, stale or changed
+approval fails the affected photo without a metadata write. Transcript text is substituted last, so
+braces within spoken or edited text remain literal instead of executing nested variables. The token
+is documented in the shared variable catalog and uses the existing explicit Append/Replace template
+path and normal history/write boundary. The 55-test focused run, 2,886-test serial suite and repository
+validation pass; see [cycle 25 evidence](release/cycle-25-voice-memo-transcript-variable-2026-09-13.md).
+The broad variable checkbox remains open for a dedicated affected-image preview, compatible-target
+presentation and native/relaunch application evidence.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

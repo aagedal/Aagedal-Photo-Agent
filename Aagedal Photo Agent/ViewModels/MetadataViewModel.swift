@@ -372,6 +372,7 @@ final class MetadataViewModel {
     @ObservationIgnored private let variableWriteExecutor: (@Sendable (VariableMetadataWriteRequest) async -> VariableMetadataWriteResult)?
     @ObservationIgnored private let variableOptions: @MainActor () -> VariableMetadataOptions
     @ObservationIgnored private let variableResolver: @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata
+    @ObservationIgnored private let voiceMemoTranscriptContextLoader: @Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext
     @ObservationIgnored private var geocodingTask: Task<Void, Never>?
     @ObservationIgnored private var batchMetadataByURL: [URL: IPTCMetadata] = [:]
 
@@ -401,6 +402,9 @@ final class MetadataViewModel {
         variableResolver: @escaping @MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata = {
             try await VariableMetadataResolver.resolve($0)
         },
+        voiceMemoTranscriptContextLoader: @escaping @Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext = { imageURL in
+            try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: imageURL)
+        },
         primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator = .shared,
         primaryDevelopExecutor: (@Sendable (PrimaryDevelopWriteRequest) async -> PrimaryDevelopWriteResult)? = nil
     ) {
@@ -420,6 +424,7 @@ final class MetadataViewModel {
         self.variableRecoveryBeforeDiscard = variableRecoveryBeforeDiscard
         self.variableOptions = variableOptions
         self.variableResolver = variableResolver
+        self.voiceMemoTranscriptContextLoader = voiceMemoTranscriptContextLoader
         self.primaryDevelopLifecycle = primaryDevelopLifecycle
         self.primaryDevelopExecutor = primaryDevelopExecutor
     }
@@ -2784,7 +2789,7 @@ final class MetadataViewModel {
         processVariablesForImages(images)
     }
 
-    private static let variablePattern = /(?:\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|number|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}|\(number\))/
+    private static let variablePattern = /(?:\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|voiceMemoTranscript|number|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}|\(number\))/
 
     /// Checks whether any text field, keyword, or person in editingMetadata contains variable placeholders.
     var hasVariables: Bool {
@@ -2839,12 +2844,17 @@ final class MetadataViewModel {
         let selection = selectedURLs
         let folder = currentFolderURL
         let loadID = metadataLoadRequestID
-        let input = VariableMetadataResolutionInput(metadata: original, imageURL: imageURL,
-            filename: filename, sequenceIndex: sequenceIndex, options: variableOptions())
+        let options = variableOptions()
         let generation = batchProcessGeneration + 1
         batchProcessTask?.cancel()
         batchProcessTask = Task {
             do {
+                let transcriptContext: VoiceMemoTranscriptVariableContext? = if
+                    VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(original)
+                { try await voiceMemoTranscriptContextLoader(imageURL) } else { nil }
+                let input = VariableMetadataResolutionInput(metadata: original, imageURL: imageURL,
+                    filename: filename, sequenceIndex: sequenceIndex, options: options,
+                    voiceMemoTranscriptContext: transcriptContext)
                 let resolved = try await variableResolver(input)
                 guard !Task.isCancelled, batchProcessGeneration == generation,
                       metadataLoadRequestID == loadID, selectedURLs == selection,
@@ -3328,12 +3338,17 @@ final class MetadataViewModel {
                 batchLocationsShownMutation: batchInput.locations, batchImageSupplierMutation: batchInput.suppliers,
                 keywordsMode: batchInput.keywordsMode, personMode: batchInput.personMode)
         }
+        let transcriptContext: VoiceMemoTranscriptVariableContext? = if
+            VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(local)
+        { try await voiceMemoTranscriptContextLoader(url) } else { nil }
         let resolved = try await variableResolver(.init(metadata: local, imageURL: url,
-            filename: url.lastPathComponent, sequenceIndex: admission.sequenceIndex, options: options))
+            filename: url.lastPathComponent, sequenceIndex: admission.sequenceIndex,
+            options: options, voiceMemoTranscriptContext: transcriptContext))
         try Task.checkCancellation()
         return try VariableMetadataWriteRequest.capture(original: original, resolved: resolved,
             baselineSidecar: input.baselineSidecar, imageURL: url, folderURL: folder,
-            requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url), creationEvidence: input.evidence)
+            requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url),
+            creationEvidence: input.evidence, voiceMemoTranscriptContext: transcriptContext)
     }
 
     private func startVariableBatch(images: [ImageFile],
@@ -3452,6 +3467,12 @@ final class MetadataViewModel {
                     else { throw VariableConflictRecoveryError.obsoleteReview }
                     if let admission { retainedVariableAdmissions.removeAll { $0.id == admission.id } }
                     if let request {
+                        if let expected = request.voiceMemoTranscriptContext {
+                            let current = try await voiceMemoTranscriptContextLoader(url)
+                            guard current == expected else {
+                                throw VoiceMemoTranscriptVariableError.approvalChanged
+                            }
+                        }
                         // Retain before the first possible commit. Even a JSON readback failure
                         // must keep the identical operation/receipt available to the Retry action.
                         if !retainedVariableWrites.contains(where: { $0.id == request.id }) {

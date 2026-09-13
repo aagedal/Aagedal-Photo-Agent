@@ -613,6 +613,77 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect((await storage.load())?.approvedAt == nil)
     }
 
+    @Test("metadata variable context requires and revalidates exact approval")
+    func approvedVariableContext() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let approval = Date(timeIntervalSince1970: 200)
+        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
+            sourceImageFilename: imageURL.lastPathComponent,
+            sourceMemoFilename: memoURL.lastPathComponent,
+            memoByteCount: stable.byteCount,
+            memoSHA256: stable.sha256,
+            associationProfileIdentifier: found.profileIdentifier,
+            localeIdentifier: locale.identifier,
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generatedText: "Generated text",
+            reviewedText: "  Approved reviewed text  ",
+            approvedAt: approval
+        ))
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) },
+            startAccess: { _ in false }
+        )
+
+        let context = try await service.approvedVariableContext(imageURL: imageURL)
+        #expect(context.reviewedText == "Approved reviewed text")
+        #expect(context.approvedAt == approval)
+        try await service.validateVariableContext(context, imageURL: imageURL)
+
+        var changed = try #require(await storage.load())
+        changed.reviewedText = "A later approved edit"
+        _ = await storage.save(changed)
+        await #expect(throws: VoiceMemoTranscriptVariableError.approvalChanged) {
+            try await service.validateVariableContext(context, imageURL: imageURL)
+        }
+    }
+
+    @Test("unapproved transcript cannot authorize a metadata variable")
+    func unapprovedVariableContext() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
+            sourceImageFilename: imageURL.lastPathComponent,
+            sourceMemoFilename: memoURL.lastPathComponent,
+            memoByteCount: stable.byteCount,
+            memoSHA256: stable.sha256,
+            associationProfileIdentifier: found.profileIdentifier,
+            localeIdentifier: locale.identifier,
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generatedText: "Generated text",
+            reviewedText: "Edited but not approved"
+        ))
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            startAccess: { _ in false }
+        )
+
+        await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
+            _ = try await service.approvedVariableContext(imageURL: imageURL)
+        }
+    }
+
     @Test("a failed replacement leaves the previously approved transcript visible")
     @MainActor
     func failedReplacementRetainsApprovedRecord() async throws {

@@ -38,6 +38,7 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
     let originalMetadata: IPTCMetadata
     let replay: MetadataSidecarReplayRequest
     let baselineSidecar: MetadataSidecar?
+    let voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?
     fileprivate let receipt: VariableMetadataWriteReceipt
     var sidecar: MetadataSidecar { replay.sidecar }
     /// A verified JSON preparation has already retained this captured intent durably.
@@ -69,6 +70,7 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
     static func capture(original: IPTCMetadata, resolved: IPTCMetadata,
         baselineSidecar: MetadataSidecar?, imageURL: URL, folderURL: URL,
         requestedMode: MetadataWriteMode, creationEvidence: MetadataSidecarReplayCreationEvidence,
+        voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil,
         timestamp: Date = Date()
     ) throws -> Self? {
         guard resolved.cameraRaw == original.cameraRaw,
@@ -95,7 +97,9 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
             baselineHistory: baselineSidecar?.history ?? [], baselineRecordExisted: baselineSidecar != nil,
             changes: changes, imageURL: imageURL, folderURL: folderURL, creationEvidence: creationEvidence)
         return Self(id: UUID(), imageURL: imageURL, folderURL: folderURL, requestedMode: requestedMode, originalMetadata: original,
-            replay: replay, baselineSidecar: baselineSidecar, receipt: .init(evidence: creationEvidence))
+            replay: replay, baselineSidecar: baselineSidecar,
+            voiceMemoTranscriptContext: voiceMemoTranscriptContext,
+            receipt: .init(evidence: creationEvidence))
     }
 }
 

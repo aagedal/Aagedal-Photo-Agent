@@ -573,8 +573,9 @@ Do not spend release time implementing excluded conditional analyzers.
 the Apple on-device recognition foundation. [Cycle 24](cycle-24-voice-memo-transcript-review-2026-09-13.md)
 adds serialized exact-WAV-bound generated/reviewed persistence, explicit approval, edit-triggered
 revocation, unknown/newer-schema protection and survival across ordinary save cleanup, copy and
-relocation. The broader injected failure matrix, metadata-variable application and native/offline/Sony
-evidence remain incomplete.
+relocation. Cycle 25 adds exact-approved shared metadata-variable resolution; its dedicated preview,
+native application evidence, the broader injected failure matrix and native/offline/Sony evidence
+remain incomplete.
 
 **Smallest next action/evidence:** Complete malformed/empty/finalization/install-cancellation and
 reservation-limit tests, then run native offline and authorized-Sony recognition/relaunch drills.
@@ -589,9 +590,17 @@ reservation-limit tests, then run native offline and authorized-Sony recognition
   Extended Description, or another compatible field without silently overwriting existing text.
 ```
 
-**Current status:** The baseline shared variable engine has no voiceMemoTranscript integration.
+**Current status:** [Cycle 25](cycle-25-voice-memo-transcript-variable-2026-09-13.md) adds
+`{voiceMemoTranscript}` to the shared variable catalog/interpolator and existing explicit
+Append/Replace template path. Only reviewed text with current exact-WAV-bound approval resolves;
+missing, unapproved, stale or changed authority fails before metadata execution, retained retries
+revalidate, batch photos remain independent and transcript braces are literal. A dedicated
+affected-image preview, compatible-target presentation and native/relaunch application evidence
+remain incomplete, so the authoritative checkbox stays open.
 
-**Smallest next action/evidence:** Expose reviewed transcript through the shared carrier-neutral variable resolver; cover compatible targets, absent/unreviewed text and preservation of existing field values.
+**Smallest next action/evidence:** Add a pre-mutation affected-image preview showing compatible
+destination fields plus exact Append/Replace results, then exercise native/relaunch application and
+normal metadata read-back for missing, unapproved, stale and approved cases.
 
 ### J-VOICE-DELIVERY
 

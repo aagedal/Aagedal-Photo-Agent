@@ -78,6 +78,23 @@ private actor VariableCallerFirstResolutionFailure {
     func resume() { gate?.resume(); gate = nil }
 }
 
+private actor VariableTranscriptContextProbe {
+    private var values: [URL: [VoiceMemoTranscriptVariableContext]]
+    private(set) var calls: [URL] = []
+
+    init(values: [URL: [VoiceMemoTranscriptVariableContext]]) { self.values = values }
+
+    func load(_ url: URL) throws -> VoiceMemoTranscriptVariableContext {
+        calls.append(url)
+        guard var available = values[url], let first = available.first else {
+            throw VoiceMemoTranscriptVariableError.missing
+        }
+        if available.count > 1 { available.removeFirst() }
+        values[url] = available
+        return first
+    }
+}
+
 @Suite("Variable caller immutable requests and outcomes", .serialized)
 struct VariableMetadataCallerTests {
     @MainActor
@@ -103,7 +120,8 @@ struct VariableMetadataCallerTests {
                            mode: MetadataWriteMode = .historyOnly,
                            loadedSnapshots: [URL: VariableMetadataInputSnapshot]? = nil,
                            lifecycle: VariableDraftLifecycleCoordinator = VariableDraftLifecycleCoordinator(),
-                           resolver: (@MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata)? = nil) -> MetadataViewModel {
+                           resolver: (@MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata)? = nil,
+                           transcriptLoader: (@Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext)? = nil) -> MetadataViewModel {
         let capturedOptions = options(mode)
         let loadedInputs = loadedSnapshots ?? snapshots
         let loadedFacts = Dictionary(uniqueKeysWithValues: loadedInputs.map { url, input in
@@ -120,7 +138,10 @@ struct VariableMetadataCallerTests {
                 return input
             }, variableWriteExecutor: { await executor.execute($0) },
             variableLifecycleCoordinator: lifecycle, variableOptions: { capturedOptions },
-            variableResolver: resolver ?? { VariableMetadataResolver.resolveText($0.metadata, input: $0) })
+            variableResolver: resolver ?? { VariableMetadataResolver.resolveText($0.metadata, input: $0) },
+            voiceMemoTranscriptContextLoader: transcriptLoader ?? { _ in
+                throw VoiceMemoTranscriptVariableError.missing
+            })
     }
 
     @MainActor
@@ -464,6 +485,75 @@ struct VariableMetadataCallerTests {
         #expect(requests[0].sidecar.metadata.instructions?.contains("one 1") == true)
         #expect(requests[1].sidecar.metadata.organisationsShownCodes.first?.contains("two 2") == true)
         #expect(requests[0].sidecar.metadata.organisationsShownNames.first?.contains("one 1") == true)
+    }
+
+    @Test("Approved transcript variables resolve independently per photo and revalidate before writes")
+    @MainActor
+    func approvedTranscriptPerPhoto() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/variables-transcript")
+        let urls = ["one.jpg", "two.jpg"].map { folder.appendingPathComponent($0) }
+        let inputs = Dictionary(uniqueKeysWithValues: urls.map {
+            ($0, snapshot($0, metadata: IPTCMetadata(description: "Existing")))
+        })
+        func context(_ text: String, hash: Character) -> VoiceMemoTranscriptVariableContext {
+            .init(reviewedText: text, approvedAt: Date(timeIntervalSince1970: 200),
+                memoByteCount: 20, memoSHA256: String(repeating: String(hash), count: 64),
+                associationProfileIdentifier: "sony-test")
+        }
+        let first = context("First reviewed {date}", hash: "a")
+        let second = context("Second reviewed words", hash: "b")
+        let probe = VariableTranscriptContextProbe(values: [urls[0]: [first], urls[1]: [second]])
+        let executor = VariableCallerExecutor()
+        let model = makeModel(inputs, executor: executor,
+            transcriptLoader: { try await probe.load($0) })
+        model.currentFolderURL = folder
+        model.selectedURLs = urls
+        model.selectedCount = 2
+
+        model.applyTemplateFieldsAndProcessVariables(
+            ["description": "{voiceMemoTranscript}"],
+            to: urls.map { ImageFile(url: $0) }
+        )
+        await model.waitForVariableProcessing()
+
+        let requests = await executor.requests
+        try #require(requests.count == 2)
+        #expect(requests[0].sidecar.metadata.description == "First reviewed {date}")
+        #expect(requests[1].sidecar.metadata.description == "Second reviewed words")
+        #expect(requests[0].voiceMemoTranscriptContext == first)
+        #expect(requests[1].voiceMemoTranscriptContext == second)
+        #expect(await probe.calls == [urls[0], urls[0], urls[1], urls[1]])
+    }
+
+    @Test("Changed transcript approval blocks metadata before executor mutation")
+    @MainActor
+    func changedTranscriptApprovalBlocksWrite() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/variables-transcript-changed")
+        let url = folder.appendingPathComponent("one.jpg")
+        let input = snapshot(url, metadata: IPTCMetadata(description: "Existing caption"))
+        let approved = VoiceMemoTranscriptVariableContext(
+            reviewedText: "Approved text", approvedAt: Date(timeIntervalSince1970: 200),
+            memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "sony-test"
+        )
+        let changed = VoiceMemoTranscriptVariableContext(
+            reviewedText: "Changed approval", approvedAt: Date(timeIntervalSince1970: 201),
+            memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "sony-test"
+        )
+        let probe = VariableTranscriptContextProbe(values: [url: [approved, changed]])
+        let executor = VariableCallerExecutor()
+        let model = makeModel([url: input], executor: executor,
+            transcriptLoader: { try await probe.load($0) })
+        try await load(model, url: url)
+        model.applyTemplateFieldsAndProcessVariables(
+            ["description": "{voiceMemoTranscript}"],
+            to: [ImageFile(url: url)]
+        )
+        await model.waitForVariableProcessing()
+
+        #expect(await executor.requests.isEmpty)
+        #expect(model.variableBatchOutcome?.attention?.message.contains("transcript changed") == true)
     }
 
     @Test("A selected stale physical baseline cannot overwrite an independent newer field")

@@ -32,6 +32,37 @@ nonisolated struct VoiceMemoTranscriptDraft: Equatable, Sendable {
     var isApproved: Bool { approvedAt != nil }
 }
 
+/// The complete immutable authority used by metadata-variable processing. Keeping the reviewed
+/// text together with its approval and WAV identity lets a retained write revalidate the same
+/// approval immediately before a retry rather than trusting a filename or previously loaded text.
+nonisolated struct VoiceMemoTranscriptVariableContext: Equatable, Sendable {
+    let reviewedText: String
+    let approvedAt: Date
+    let memoByteCount: Int64
+    let memoSHA256: String
+    let associationProfileIdentifier: String
+}
+
+nonisolated enum VoiceMemoTranscriptVariableError: LocalizedError, Equatable, Sendable {
+    case missing
+    case notApproved
+    case sourceChanged
+    case approvalChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .missing:
+            return "This photo has no reviewed voice-memo transcript. Transcribe and approve it before processing {voiceMemoTranscript}."
+        case .notApproved:
+            return "This photo's voice-memo transcript is not approved. Review and approve it before processing {voiceMemoTranscript}."
+        case .sourceChanged:
+            return "The approved voice-memo transcript no longer matches the current WAV relationship and bytes. No transcript text was applied."
+        case .approvalChanged:
+            return "The approved voice-memo transcript changed before metadata could be written. No transcript text was applied; review the current approval and try again."
+        }
+    }
+}
+
 nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendable {
     case unavailable
     case unsupportedLanguage
@@ -318,6 +349,40 @@ actor VoiceMemoTranscriptionService {
             reviewedText: record.reviewedText,
             approvedAt: record.approvedAt
         )
+    }
+
+    /// Loads only explicitly approved text after `loadPersistedDraft` has revalidated the exact
+    /// current relationship and WAV bytes. Generated or merely edited drafts cannot resolve a
+    /// metadata variable.
+    func approvedVariableContext(imageURL: URL) async throws -> VoiceMemoTranscriptVariableContext {
+        let loaded: VoiceMemoTranscriptDraft?
+        do { loaded = try await loadPersistedDraft(imageURL: imageURL) }
+        catch VoiceMemoTranscriptionError.sourceChanged {
+            throw VoiceMemoTranscriptVariableError.sourceChanged
+        }
+        guard let draft = loaded else {
+            throw VoiceMemoTranscriptVariableError.missing
+        }
+        guard let approvedAt = draft.approvedAt else {
+            throw VoiceMemoTranscriptVariableError.notApproved
+        }
+        let reviewed = draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reviewed.isEmpty else { throw VoiceMemoTranscriptVariableError.notApproved }
+        return .init(
+            reviewedText: reviewed,
+            approvedAt: approvedAt,
+            memoByteCount: draft.memoByteCount,
+            memoSHA256: draft.memoSHA256,
+            associationProfileIdentifier: draft.associationProfileIdentifier
+        )
+    }
+
+    func validateVariableContext(
+        _ expected: VoiceMemoTranscriptVariableContext,
+        imageURL: URL
+    ) async throws {
+        let current = try await approvedVariableContext(imageURL: imageURL)
+        guard current == expected else { throw VoiceMemoTranscriptVariableError.approvalChanged }
     }
 
     func approve(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {

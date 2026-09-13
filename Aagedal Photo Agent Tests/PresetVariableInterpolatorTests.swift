@@ -18,6 +18,48 @@ struct PresetVariableInterpolatorTests {
         #expect(result == "")
     }
 
+    @Test("Approved voice memo transcript resolves as literal text")
+    func approvedVoiceMemoTranscriptIsLiteral() {
+        let reviewed = "Spoken {date} and {field:description} stay literal"
+        let context = VoiceMemoTranscriptVariableContext(
+            reviewedText: reviewed,
+            approvedAt: Date(timeIntervalSince1970: 1),
+            memoByteCount: 2,
+            memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "test"
+        )
+        let result = interpolator.resolve(
+            "Prefix {voiceMemoTranscript} suffix",
+            voiceMemoTranscriptContext: context
+        )
+
+        #expect(result == "Prefix \(reviewed) suffix")
+    }
+
+    @Test("Voice memo transcript remains unresolved without approved context")
+    func missingVoiceMemoTranscriptContextRemainsUnresolved() {
+        #expect(interpolator.resolve("{voiceMemoTranscript}") == "{voiceMemoTranscript}")
+    }
+
+    @Test("Approved voice memo context propagates through recursive field references")
+    func voiceMemoTranscriptResolvesThroughFieldReference() {
+        var metadata = IPTCMetadata()
+        metadata.event = "Memo: {voiceMemoTranscript}"
+        let context = VoiceMemoTranscriptVariableContext(
+            reviewedText: "Reviewed words",
+            approvedAt: Date(timeIntervalSince1970: 1),
+            memoByteCount: 2,
+            memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "test"
+        )
+
+        #expect(interpolator.resolve(
+            "{field:event}",
+            existingMetadata: metadata,
+            voiceMemoTranscriptContext: context
+        ) == "Memo: Reviewed words")
+    }
+
     @Test("Sports number caption token supports parenthesized and catalog spellings")
     func sportsNumberToken() {
         var metadata = IPTCMetadata()

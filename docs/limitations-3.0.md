@@ -72,8 +72,11 @@ These are material product and evidence boundaries, not a list of unfinished int
   moved relationship; duplicate, changed and missing results are not adopted. Native validation of
   that workflow remains incomplete. Caption can explicitly use Apple on-device speech after an
   explicit language download, show an exact-WAV-bound editable draft, and persist generated/reviewed
-  provenance only after explicit approval. Editing revokes approval. Transcript variables, metadata
-  application and delivery integration remain incomplete.
+  provenance only after explicit approval. Editing revokes approval. The shared
+  `{voiceMemoTranscript}` variable can place that reviewed text through an explicit template/variable
+  operation and revalidates the exact approval before each metadata write; braces in transcript text
+  remain literal. A dedicated affected-image preview, native/relaunch application evidence and
+  delivery integration remain incomplete.
   Move/Reject stage verified copies before retiring originals; this requires temporary
   disk space and is not a process-crash-atomic multi-file operation. Physical cross-volume/recovery
   and broader camera workflows remain unverified. General Move reports separate XMP/editorial

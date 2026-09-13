@@ -142,6 +142,12 @@ enum VariableCatalog {
         example: "landscape, sunset, mountains"
     ),
     VariableDefinition(
+        variable: "{voiceMemoTranscript}",
+        category: "Shortcuts",
+        description: "Reviewed text from the explicitly approved transcript for this photo's exact associated WAV. Missing, unapproved, or changed audio blocks the affected photo.",
+        example: "The approved spoken caption"
+    ),
+    VariableDefinition(
         variable: "(number)",
         category: "Shortcuts",
         description: "Confirmed jersey or bib number for the current photo. Multiple trusted numbers are comma-separated. {number} is accepted as an alias.",

@@ -148,13 +148,16 @@ struct PresetVariableInterpolator: Sendable {
     /// - `{gps:city}` / `{gps:country}` — reverse-geocoded place names
     /// - `{seq}` — 1-based sequence number for batch processing
     /// - `{seq:N}` — zero-padded sequence number (e.g., `{seq:3}` produces "001", "002", …)
+    /// - `{voiceMemoTranscript}` — reviewed text from an explicitly approved, exact-audio-bound
+    ///   voice-memo transcript context. Without that context the token remains unresolved.
     /// - `{field:FIELDNAME}` — value from existing metadata (case-insensitive, matches key or label)
     func resolve(
         _ template: String,
         filename: String = "",
         existingMetadata: IPTCMetadata? = nil,
         sequenceIndex: Int = 1,
-        initials: String = ""
+        initials: String = "",
+        voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil
     ) -> String {
         resolve(
             template,
@@ -162,6 +165,7 @@ struct PresetVariableInterpolator: Sendable {
             existingMetadata: existingMetadata,
             sequenceIndex: sequenceIndex,
             initials: initials,
+            voiceMemoTranscriptContext: voiceMemoTranscriptContext,
             visitedFields: []
         )
     }
@@ -175,6 +179,7 @@ struct PresetVariableInterpolator: Sendable {
         existingMetadata: IPTCMetadata?,
         sequenceIndex: Int,
         initials: String,
+        voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?,
         visitedFields: Set<String>
     ) -> String {
         var result = template
@@ -223,8 +228,18 @@ struct PresetVariableInterpolator: Sendable {
             filename: filename,
             sequenceIndex: sequenceIndex,
             initials: initials,
+            voiceMemoTranscriptContext: voiceMemoTranscriptContext,
             visitedFields: visitedFields
         )
+
+        // Resolve this last. Reviewed speech is literal user-approved content: braces spoken or
+        // typed into it must never become executable template syntax in the same interpolation.
+        if let voiceMemoTranscriptContext {
+            result = result.replacingOccurrences(
+                of: "{voiceMemoTranscript}",
+                with: voiceMemoTranscriptContext.reviewedText
+            )
+        }
 
         return result
     }
@@ -373,6 +388,7 @@ struct PresetVariableInterpolator: Sendable {
         filename: String,
         sequenceIndex: Int,
         initials: String,
+        voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?,
         visitedFields: Set<String>
     ) -> String {
         var result = template
@@ -392,6 +408,7 @@ struct PresetVariableInterpolator: Sendable {
                     existingMetadata: metadata,
                     sequenceIndex: sequenceIndex,
                     initials: initials,
+                    voiceMemoTranscriptContext: voiceMemoTranscriptContext,
                     visitedFields: visitedFields.union([key])
                 )
             }

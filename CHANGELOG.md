@@ -25,7 +25,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Caption can explicitly transcribe an associated WAV with Apple on-device speech. Language assets
   are shown and downloaded only on request, work is cancellable, and the exact WAV is revalidated
   before an editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
-  bound app sidecar record; editing revokes approval. Approval never changes an IPTC field by itself.
+  bound app sidecar record; editing revokes approval. The carrier-neutral
+  `{voiceMemoTranscript}` template variable resolves only that exact approved review and revalidates
+  it before metadata writes or retries. Approval by itself never changes an IPTC field.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.

@@ -44,6 +44,7 @@ struct VariableMetadataResolutionInput: Sendable {
     let filename: String
     let sequenceIndex: Int
     let options: VariableMetadataOptions
+    var voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil
 }
 
 /// Local transformation shared by the displayed editor and folder processing. It never reads
@@ -51,6 +52,10 @@ struct VariableMetadataResolutionInput: Sendable {
 enum VariableMetadataResolver {
     static func resolve(_ input: VariableMetadataResolutionInput) async throws -> IPTCMetadata {
         try Task.checkCancellation()
+        if requiresApprovedVoiceMemoTranscript(input.metadata),
+           input.voiceMemoTranscriptContext == nil {
+            throw VoiceMemoTranscriptVariableError.missing
+        }
         let interpolator = PresetVariableInterpolator()
         let gps = await interpolator.resolvingGPSPlaceVariables(in: input.metadata)
         try Task.checkCancellation()
@@ -68,7 +73,9 @@ enum VariableMetadataResolver {
         func scalar(_ value: String?) -> String? {
             guard let value, !value.isEmpty else { return value }
             let resolved = interpolator.resolve(value, filename: input.filename,
-                existingMetadata: reference, sequenceIndex: input.sequenceIndex, initials: input.options.initials)
+                existingMetadata: reference, sequenceIndex: input.sequenceIndex,
+                initials: input.options.initials,
+                voiceMemoTranscriptContext: input.voiceMemoTranscriptContext)
             return resolved.isEmpty ? nil : resolved
         }
         func list(_ values: [String], keywords: Bool = false) -> [String] {
@@ -119,6 +126,12 @@ enum VariableMetadataResolver {
         if input.options.addJobIDToKeywords, let job = result.jobId, !job.isEmpty,
            !result.keywords.contains(job) { result.keywords.append(job) }
         return result
+    }
+
+    static func requiresApprovedVoiceMemoTranscript(_ metadata: IPTCMetadata) -> Bool {
+        guard let data = try? JSONEncoder().encode(metadata),
+              let document = String(data: data, encoding: .utf8) else { return false }
+        return document.contains("{voiceMemoTranscript}")
     }
 
     private static func sportsNumber(for imageURL: URL) async -> String {

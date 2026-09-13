@@ -263,7 +263,12 @@ final class TemplateViewModel {
     }
 
     /// Resolves a template's variables and returns field key-value pairs ready for application.
-    func resolveTemplate(_ template: MetadataTemplate, filename: String = "", existingMetadata: IPTCMetadata? = nil) -> [String: String] {
+    func resolveTemplate(
+        _ template: MetadataTemplate,
+        filename: String = "",
+        existingMetadata: IPTCMetadata? = nil,
+        voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil
+    ) -> [String: String] {
         var result: [String: String] = [:]
         for field in template.fields {
             // Structured supplier JSON is an atomic typed payload. Its object braces are not
@@ -273,7 +278,8 @@ final class TemplateViewModel {
                 : interpolator.resolve(
                     field.templateValue,
                     filename: filename,
-                    existingMetadata: existingMetadata
+                    existingMetadata: existingMetadata,
+                    voiceMemoTranscriptContext: voiceMemoTranscriptContext
                 )
             result[field.fieldKey] = resolved
         }
