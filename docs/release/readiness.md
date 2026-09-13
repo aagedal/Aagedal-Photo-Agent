@@ -1,14 +1,22 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval and exact-approved transcript-variable resolution pass automated verification; affected-image preview/delivery, authentic native voice-memo evidence, cloud and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution and pre-mutation application preview pass automated verification; delivery, authentic native voice-memo evidence, cloud and broader release gates remain.
 **Updated:** 2026-09-13
-**Latest implementation state:** Cycle 25 exact-approved voice-memo transcript variable (55 focused interpolator/transcript/variable-caller tests and 2,886 tests in the final serial run passed; repository checks passed; independent review and native/relaunch application not run).
+**Latest implementation state:** Cycle 26 voice-memo transcript application preview (47 focused and 84 adjacent tests plus 2,889 tests in the final serial run passed; repository checks passed; independent review and native/relaunch application not run).
 **Latest native evidence:** Cycle 18 imported, cancelled and replaced the cross-repository golden directory in a disposable root; exported byte-exact directory and valid STORED ZIP forms; confirmed same-library identity/count copy; retained rollback evidence; and quit cleanly. Earlier cycle 15 Primary/Develop recovery evidence remains valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval and cycle 25 adds the exact-approved shared transcript variable.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable and cycle 26 adds compatible-target enforcement plus its pre-mutation preview.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 26 voice-memo transcript application preview](cycle-26-voice-memo-variable-preview-2026-09-13.md)
+preflights and revalidates every transcript-bearing photo before showing exact Append/Replace
+before/after values. The four supported editorial-prose destinations are enforced in the model and
+template editor. Cancel executes no write; one invalid authority refuses the complete batch before mutation;
+Confirm uses the frozen requests and checks the authority set again. The focused 47-test run,
+adjacent 84-test regression, 2,889-test serial suite and repository validation pass. Native/relaunch
+application, accessibility, transcription failure breadth and Deadline WAV policy remain open.
 
 [Cycle 25 exact-approved voice-memo transcript variable](cycle-25-voice-memo-transcript-variable-2026-09-13.md)
 adds `{voiceMemoTranscript}` to the shared catalog and interpolator. Per-photo resolution accepts only
@@ -274,11 +282,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    samples, then cover real JPEG XL/TIFF/DNG, DNG Converter, C2PA and physical-volume interruption/
    playback cases; schema-1 filename hints alone cannot establish historical identity.
 5. Continue the local transcription slice following the [SDK-backed design](voice-memo-transcription-design.md).
-   Cycles 23–25 implement explicit runtime language/asset state, download, cancellable analysis,
+   Cycles 23–26 implement explicit runtime language/asset state, download, cancellable analysis,
    exact-WAV validation, editable review, serialized provenance, explicit approval and edit-triggered
-   revocation, plus exact-approved shared transcript-variable resolution with retry revalidation.
-   Next add the dedicated affected-image Append/Replace preview and visible Deadline WAV delivery
-   policy/receipt. Complete the injected and native offline/Sony/application matrix.
+   revocation, exact-approved shared transcript-variable resolution with retry revalidation, and
+   compatible-target exact affected-image Append/Replace preview with zero-write batch refusal.
+   Next add the visible Deadline WAV delivery policy/receipt and complete the injected and native
+   offline/Sony/application matrix.
 6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
@@ -297,7 +306,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Transcription, reviewed variables and delivery; authentic reassociation/archive evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 22: 2,866 tests and repository checks passed | Packaging and exact-candidate release checks remain |
+| Automated regression and package | Cycle 26: 2,889 tests and repository checks passed | Packaging and exact-candidate release checks remain |
 | Computer-use workflows | Narrow native lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |

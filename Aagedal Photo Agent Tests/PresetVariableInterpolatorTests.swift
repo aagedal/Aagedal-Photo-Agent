@@ -41,6 +41,22 @@ struct PresetVariableInterpolatorTests {
         #expect(interpolator.resolve("{voiceMemoTranscript}") == "{voiceMemoTranscript}")
     }
 
+    @Test("Voice memo transcript destinations reject typed and repeatable fields")
+    func voiceMemoTranscriptDestinationPolicy() throws {
+        #expect(VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: "description"))
+        #expect(VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: "instructions"))
+        #expect(!VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: "keywords"))
+        #expect(!VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: "dateCreated"))
+        #expect(!VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: "source"))
+
+        var metadata = IPTCMetadata(description: "{voiceMemoTranscript}")
+        #expect(try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: metadata) == [.description])
+        metadata.keywords = ["{voiceMemoTranscript}"]
+        #expect(throws: VoiceMemoTranscriptVariableError.incompatibleDestinations([.keywords])) {
+            try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: metadata)
+        }
+    }
+
     @Test("Approved voice memo context propagates through recursive field references")
     func voiceMemoTranscriptResolvesThroughFieldReference() {
         var metadata = IPTCMetadata()

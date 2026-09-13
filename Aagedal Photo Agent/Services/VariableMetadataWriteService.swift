@@ -39,6 +39,8 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
     let replay: MetadataSidecarReplayRequest
     let baselineSidecar: MetadataSidecar?
     let voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext?
+    let voiceMemoTranscriptDestinationFields: [MetadataFieldID]
+    let voiceMemoVariablePreviewAction: VoiceMemoVariablePreviewAction
     fileprivate let receipt: VariableMetadataWriteReceipt
     var sidecar: MetadataSidecar { replay.sidecar }
     /// A verified JSON preparation has already retained this captured intent durably.
@@ -71,6 +73,8 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
         baselineSidecar: MetadataSidecar?, imageURL: URL, folderURL: URL,
         requestedMode: MetadataWriteMode, creationEvidence: MetadataSidecarReplayCreationEvidence,
         voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil,
+        voiceMemoTranscriptDestinationFields: [MetadataFieldID] = [],
+        voiceMemoVariablePreviewAction: VoiceMemoVariablePreviewAction = .processExisting,
         timestamp: Date = Date()
     ) throws -> Self? {
         guard resolved.cameraRaw == original.cameraRaw,
@@ -99,6 +103,8 @@ nonisolated struct VariableMetadataWriteRequest: Sendable {
         return Self(id: UUID(), imageURL: imageURL, folderURL: folderURL, requestedMode: requestedMode, originalMetadata: original,
             replay: replay, baselineSidecar: baselineSidecar,
             voiceMemoTranscriptContext: voiceMemoTranscriptContext,
+            voiceMemoTranscriptDestinationFields: voiceMemoTranscriptDestinationFields,
+            voiceMemoVariablePreviewAction: voiceMemoVariablePreviewAction,
             receipt: .init(evidence: creationEvidence))
     }
 }

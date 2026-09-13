@@ -27,7 +27,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   before an editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
   bound app sidecar record; editing revokes approval. The carrier-neutral
   `{voiceMemoTranscript}` template variable resolves only that exact approved review and revalidates
-  it before metadata writes or retries. Approval by itself never changes an IPTC field.
+  it before metadata writes or retries. Application is limited to Description, Extended Description,
+  Headline and Instructions, and an
+  affected-image sheet shows exact Append/Replace before-and-after values before confirmation.
+  Cancel writes nothing; one invalid transcript authority refuses the complete batch before any
+  mutation. Approval by itself never changes an IPTC field.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.

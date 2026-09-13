@@ -188,19 +188,22 @@ final class MetadataViewModel {
         let batchBaseline: IPTCMetadata?
         let options: VariableMetadataOptions
         let sequenceIndex: Int
+        let previewAction: VoiceMemoVariablePreviewAction
         var cachedInput: VariableMetadataInputSnapshot?
 
         init(id: UUID, imageURL: URL, folderURL: URL, editorCheckpoint: CaptionConflictEditorCheckpoint?, loadID: UUID?,
              requiresPersistence: Bool, selectedURLs: [URL], edited: IPTCMetadata,
              previous: IPTCMetadata?, expectedRecord: MetadataSidecar?, referenceSource: MetadataReferenceSource,
              hasEditorInput: Bool, batchInput: VariableCapturedBatchInput?, batchBaseline: IPTCMetadata?,
-             options: VariableMetadataOptions, sequenceIndex: Int) {
+             options: VariableMetadataOptions, sequenceIndex: Int,
+             previewAction: VoiceMemoVariablePreviewAction) {
             self.id = id; self.imageURL = imageURL; self.folderURL = folderURL
             self.editorCheckpoint = editorCheckpoint; self.loadID = loadID; self.requiresPersistence = requiresPersistence
             self.selectedURLs = selectedURLs; self.edited = edited; self.previous = previous
             self.expectedRecord = expectedRecord; self.referenceSource = referenceSource
             self.hasEditorInput = hasEditorInput; self.batchInput = batchInput; self.batchBaseline = batchBaseline
             self.options = options; self.sequenceIndex = sequenceIndex
+            self.previewAction = previewAction
         }
     }
     private var retainedVariableAdmissions: [VariableAdmission] = [] {
@@ -218,6 +221,13 @@ final class MetadataViewModel {
     @ObservationIgnored private var variableQuiescenceWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var variableFailures: [String: String] = [:]
     @ObservationIgnored private var retainedVariableOrigins: [UUID: VariableAdmission] = [:]
+    private struct PendingVoiceMemoVariablePreview {
+        let id: UUID
+        let folderURL: URL
+        let requestIDs: [UUID]
+    }
+    @ObservationIgnored private var pendingVoiceMemoVariablePreviewState: PendingVoiceMemoVariablePreview?
+    private(set) var voiceMemoVariablePreview: VoiceMemoVariableBatchPreview?
     @ObservationIgnored private let variableRecoveryExportAccess: CaptionConflictExportAccess
     @ObservationIgnored private let variableRecoveryBeforeDiscard: @Sendable () async -> Void
     @ObservationIgnored private let variableLifecycleOwnerID = UUID()
@@ -2786,7 +2796,7 @@ final class MetadataViewModel {
         }
         // Capture the batch mutation with the variable request. Awaited JSON preparation saves
         // the complete per-photo result; no separate fire-and-forget literal write can race it.
-        processVariablesForImages(images)
+        startVariableBatch(images: images, previewAction: append ? .append : .replace)
     }
 
     private static let variablePattern = /(?:\{(date|date:[^}]+|dateCreated|dateCreated:[^}]+|dateCaptured|dateCaptured:[^}]+|filename|initials|persons|keywords|voiceMemoTranscript|number|gps|gps:city|gps:country|latitude|longitude|field:[^}]+|seq|seq:\d+)\}|\(number\))/
@@ -2872,14 +2882,52 @@ final class MetadataViewModel {
     /// Capture live template/editor inputs once. Multi-photo literals are folded into each
     /// immutable local input and durably prepared together with the resolved substitutions.
     func processVariablesForImages(_ images: [ImageFile]) {
-        startVariableBatch(images: images)
+        startVariableBatch(images: images, previewAction: .processExisting)
     }
 
     func processVariablesInFolder(images: [ImageFile]) {
-        startVariableBatch(images: images)
+        startVariableBatch(images: images, previewAction: .processExisting)
+    }
+
+    func confirmVoiceMemoVariablePreview(_ previewID: UUID) {
+        guard !isProcessingFolder,
+              let state = pendingVoiceMemoVariablePreviewState,
+              state.id == previewID,
+              voiceMemoVariablePreview?.id == previewID else { return }
+        let ids = Set(state.requestIDs)
+        let requests = retainedVariableWrites.filter { ids.contains($0.id) }
+        guard requests.count == ids.count else {
+            cancelVoiceMemoVariablePreview(previewID)
+            saveError = "The reviewed transcript preview is no longer current. Prepare it again."
+            return
+        }
+        let action = voiceMemoVariablePreview?.action ?? .processExisting
+        pendingVoiceMemoVariablePreviewState = nil
+        voiceMemoVariablePreview = nil
+        startVariableBatch(images: [], retryRequests: requests, retryFolder: state.folderURL,
+            previewAction: action, voiceMemoPreviewConfirmed: true)
+    }
+
+    func cancelVoiceMemoVariablePreview(_ previewID: UUID) {
+        guard let state = pendingVoiceMemoVariablePreviewState, state.id == previewID else { return }
+        let ids = Set(state.requestIDs)
+        retainedVariableWrites.removeAll { ids.contains($0.id) }
+        for id in ids {
+            retainedVariableOrigins.removeValue(forKey: id)
+            retainedVariableEditorCheckpoints.removeValue(forKey: id)
+        }
+        pendingVoiceMemoVariablePreviewState = nil
+        voiceMemoVariablePreview = nil
+        variableProcessingStatus = "Voice-memo transcript application was cancelled; no metadata was written."
+        variableProcessingHadFailures = false
+        synchronizeVariableLifecycleRetention()
     }
 
     func retryVariableWrites() {
+        guard voiceMemoVariablePreview == nil else {
+            saveError = "Confirm or cancel the voice-memo transcript preview before retrying variable writes."
+            return
+        }
         if retainedVariableWrites.isEmpty && retainedVariableAdmissions.isEmpty && !variableDiscardedEditorCheckpoints.isEmpty {
             guard variableRecoveryOwnerID == nil, !isProcessingFolder else { return }
             batchProcessTask = Task {
@@ -2892,7 +2940,8 @@ final class MetadataViewModel {
         let folderKey = Self.variablePhotoKey(folder)
         let requests = retainedVariableWrites.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
         let admissions = retainedVariableAdmissions.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
-        startVariableBatch(images: [], retryRequests: requests, retryAdmissions: admissions, retryFolder: folder)
+        startVariableBatch(images: [], retryRequests: requests, retryAdmissions: admissions, retryFolder: folder,
+            previewAction: .processExisting)
     }
 
     func waitForVariableProcessing() async { await batchProcessTask?.value }
@@ -3338,9 +3387,15 @@ final class MetadataViewModel {
                 batchLocationsShownMutation: batchInput.locations, batchImageSupplierMutation: batchInput.suppliers,
                 keywordsMode: batchInput.keywordsMode, personMode: batchInput.personMode)
         }
-        let transcriptContext: VoiceMemoTranscriptVariableContext? = if
-            VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(local)
-        { try await voiceMemoTranscriptContextLoader(url) } else { nil }
+        let transcriptDestinations: [MetadataFieldID]
+        let transcriptContext: VoiceMemoTranscriptVariableContext?
+        if VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(local) {
+            transcriptDestinations = try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: local)
+            transcriptContext = try await voiceMemoTranscriptContextLoader(url)
+        } else {
+            transcriptDestinations = []
+            transcriptContext = nil
+        }
         let resolved = try await variableResolver(.init(metadata: local, imageURL: url,
             filename: url.lastPathComponent, sequenceIndex: admission.sequenceIndex,
             options: options, voiceMemoTranscriptContext: transcriptContext))
@@ -3348,14 +3403,22 @@ final class MetadataViewModel {
         return try VariableMetadataWriteRequest.capture(original: original, resolved: resolved,
             baselineSidecar: input.baselineSidecar, imageURL: url, folderURL: folder,
             requestedMode: options.mode(hasC2PA: input.hasC2PA, imageURL: url),
-            creationEvidence: input.evidence, voiceMemoTranscriptContext: transcriptContext)
+            creationEvidence: input.evidence, voiceMemoTranscriptContext: transcriptContext,
+            voiceMemoTranscriptDestinationFields: transcriptDestinations,
+            voiceMemoVariablePreviewAction: admission.previewAction)
     }
 
     private func startVariableBatch(images: [ImageFile],
                                     retryRequests: [VariableMetadataWriteRequest] = [],
-                                    retryAdmissions: [VariableAdmission] = [], retryFolder: URL? = nil) {
+                                    retryAdmissions: [VariableAdmission] = [], retryFolder: URL? = nil,
+                                    previewAction: VoiceMemoVariablePreviewAction,
+                                    voiceMemoPreviewConfirmed: Bool = false) {
         guard variableRecoveryOwnerID == nil else {
             saveError = "Finish or cancel the variable conflict review before starting or retrying variable processing."
+            return
+        }
+        guard voiceMemoVariablePreview == nil else {
+            saveError = "Confirm or cancel the voice-memo transcript preview before starting another variable operation."
             return
         }
         guard let folder = retryFolder ?? currentFolderURL,
@@ -3413,7 +3476,8 @@ final class MetadataViewModel {
                     selectedURLs: selected, edited: edited, previous: previous,
                     expectedRecord: selectedExpectedRecord, referenceSource: selectedSource,
                     hasEditorInput: hasEditorInput, batchInput: batchInput,
-                    batchBaseline: selectedBatchBaselines[url], options: options, sequenceIndex: index + 1)
+                    batchBaseline: selectedBatchBaselines[url], options: options, sequenceIndex: index + 1,
+                    previewAction: previewAction)
             }
             retainedVariableAdmissions.append(contentsOf: admissions)
         }
@@ -3450,36 +3514,138 @@ final class MetadataViewModel {
                 }
                 return .init(metadata: iptcMetadataFromDict(dictionary), hasC2PA: TechnicalMetadata.dictHasC2PA(dictionary))
             })
-            var results: [VariableMetadataPhotoOutcome] = []
-            var acknowledgedBatchMetadata = selectedBatchBaselines
-            var acknowledgedPending: [URL: Bool] = [:]
-            var cancelled = false
+            // Resolve every source and approval before the first write. Transcript batches are
+            // all-or-nothing at this admission boundary: one missing/stale approval must not
+            // leave an earlier photo silently written before the user sees the failure.
+            var plannedRequests: [String: VariableMetadataWriteRequest] = [:]
+            var planningResults: [String: VariableMetadataPhotoOutcome] = [:]
+            var transcriptBatch = false
             for url in urls {
-                if Task.isCancelled { cancelled = true; break }
-                var item = VariableMetadataPhotoOutcome(imageURL: url)
+                if Task.isCancelled { break }
+                let key = Self.variablePhotoKey(url)
+                let explicitRetry = retryRequests.first { Self.variablePhotoKey($0.imageURL) == key }
+                let admission = admissions.first { Self.variablePhotoKey($0.imageURL) == key }
                 do {
-                    let key = Self.variablePhotoKey(url)
-                    let explicitRetry = retryRequests.first { Self.variablePhotoKey($0.imageURL) == key }
-                    let admission = admissions.first { Self.variablePhotoKey($0.imageURL) == key }
                     let request: VariableMetadataWriteRequest?
                     if let explicitRetry { request = explicitRetry }
                     else if let admission { request = try await captureVariableAdmission(admission) }
                     else { throw VariableConflictRecoveryError.obsoleteReview }
                     if let admission { retainedVariableAdmissions.removeAll { $0.id == admission.id } }
-                    if let request {
+                    guard let request else {
+                        planningResults[key] = .init(imageURL: url, unchanged: true)
+                        continue
+                    }
+                    transcriptBatch = transcriptBatch || request.voiceMemoTranscriptContext != nil
+                    plannedRequests[key] = request
+                    if !retainedVariableWrites.contains(where: { $0.id == request.id }) {
+                        retainedVariableWrites.append(request)
+                        if let admission { retainedVariableOrigins[request.id] = admission }
+                        if let checkpoint = admission?.editorCheckpoint {
+                            retainedVariableEditorCheckpoints[request.id] = checkpoint
+                        }
+                    }
+                } catch {
+                    if error is VoiceMemoTranscriptVariableError { transcriptBatch = true }
+                    planningResults[key] = .init(imageURL: url,
+                        failure: error is CancellationError ? nil : error.localizedDescription,
+                        wasCancelled: error is CancellationError)
+                }
+                if batchProcessGeneration == generation {
+                    folderProcessProgress = "Preparing \(planningResults.count + plannedRequests.count)/\(urls.count)"
+                }
+            }
+
+            // Revalidate the entire authority set together before either preview publication or
+            // execution. A changed approval invalidates the complete transcript batch.
+            if !Task.isCancelled {
+                for request in plannedRequests.values {
+                    guard let expected = request.voiceMemoTranscriptContext else { continue }
+                    do {
+                        let current = try await voiceMemoTranscriptContextLoader(request.imageURL)
+                        guard current == expected else { throw VoiceMemoTranscriptVariableError.approvalChanged }
+                    } catch {
+                        planningResults[Self.variablePhotoKey(request.imageURL)] = .init(
+                            imageURL: request.imageURL,
+                            failure: error is CancellationError ? nil : error.localizedDescription,
+                            wasCancelled: error is CancellationError
+                        )
+                    }
+                }
+            }
+
+            let planningWasCancelled = Task.isCancelled || planningResults.values.contains(where: \.wasCancelled)
+            let planningFailures = planningResults.values.filter { !$0.completed }
+            if transcriptBatch && (!planningFailures.isEmpty || planningWasCancelled) {
+                let refusal = "No metadata was written because every photo in a voice-memo transcript batch must pass preview validation together."
+                var refusedResults: [VariableMetadataPhotoOutcome] = []
+                for url in urls {
+                    let key = Self.variablePhotoKey(url)
+                    if let failure = planningResults[key], !failure.completed {
+                        refusedResults.append(failure)
+                    } else if plannedRequests[key] != nil {
+                        refusedResults.append(.init(imageURL: url, failure: refusal))
+                    } else {
+                        refusedResults.append(planningResults[key] ?? .init(imageURL: url, unchanged: true))
+                    }
+                }
+                await reconcileVariableDiscardedEditors()
+                guard batchProcessGeneration == generation else { return }
+                let outcome = VariableMetadataBatchOutcome(requestID: batchID, folderURL: folder,
+                    results: refusedResults, unattemptedURLs: [], wasCancelled: planningWasCancelled)
+                variableBatchOutcome = outcome
+                variableProcessingHadFailures = true
+                variableProcessingStatus = "Voice-memo transcript preview refused; 0 photos were written."
+                if metadataLoadRequestID == loadID, selectedURLs == selected, currentFolderURL == folder,
+                   editingMetadata == edited { saveError = outcome.attention?.message }
+                return
+            }
+
+            if transcriptBatch && !voiceMemoPreviewConfirmed {
+                let requests = urls.compactMap { plannedRequests[Self.variablePhotoKey($0)] }
+                let previewID = UUID()
+                let rows = requests.map { request in
+                    let transcriptFields = Set(request.voiceMemoTranscriptDestinationFields)
+                    let fields = MetadataFieldID.allCases.compactMap { field -> VoiceMemoVariablePreviewField? in
+                        let before = field.textValue(in: request.originalMetadata) ?? ""
+                        let after = field.textValue(in: request.sidecar.metadata) ?? ""
+                        guard before != after else { return nil }
+                        return .init(field: field, before: before, after: after,
+                            isTranscriptDestination: transcriptFields.contains(field))
+                    }
+                    return VoiceMemoVariablePreviewRow(imageURL: request.imageURL,
+                        writeDestination: request.requestedMode.displayName, fields: fields)
+                }
+                pendingVoiceMemoVariablePreviewState = .init(id: previewID, folderURL: folder,
+                    requestIDs: requests.map(\.id))
+                voiceMemoVariablePreview = .init(id: previewID, folderURL: folder,
+                    action: requests.first?.voiceMemoVariablePreviewAction ?? previewAction, rows: rows)
+                variableProcessingStatus = "Review the exact voice-memo transcript changes before writing."
+                variableProcessingHadFailures = false
+                return
+            }
+
+            var results: [VariableMetadataPhotoOutcome] = []
+            var acknowledgedBatchMetadata = selectedBatchBaselines
+            var acknowledgedPending: [URL: Bool] = [:]
+            var cancelled = planningWasCancelled
+            for url in urls {
+                if Task.isCancelled { cancelled = true; break }
+                let key = Self.variablePhotoKey(url)
+                if let plannedResult = planningResults[key] {
+                    let failureKey = Self.variablePhotoKey(url)
+                    if plannedResult.completed { variableFailures.removeValue(forKey: failureKey) }
+                    else { variableFailures[failureKey] = plannedResult.failure ?? "Variable persistence did not complete." }
+                    results.append(plannedResult)
+                    if plannedResult.wasCancelled { cancelled = true; break }
+                    continue
+                }
+                var item = VariableMetadataPhotoOutcome(imageURL: url)
+                do {
+                    if let request = plannedRequests[key] {
                         if let expected = request.voiceMemoTranscriptContext {
                             let current = try await voiceMemoTranscriptContextLoader(url)
                             guard current == expected else {
                                 throw VoiceMemoTranscriptVariableError.approvalChanged
-                            }
-                        }
-                        // Retain before the first possible commit. Even a JSON readback failure
-                        // must keep the identical operation/receipt available to the Retry action.
-                        if !retainedVariableWrites.contains(where: { $0.id == request.id }) {
-                            retainedVariableWrites.append(request)
-                            if let admission { retainedVariableOrigins[request.id] = admission }
-                            if let checkpoint = admission?.editorCheckpoint {
-                                retainedVariableEditorCheckpoints[request.id] = checkpoint
                             }
                         }
                         let editorCheckpoint = retainedVariableEditorCheckpoints[request.id]
@@ -3531,7 +3697,7 @@ final class MetadataViewModel {
                             originalImageMetadata = actualReference
                             saveError = editorXMPWriteBaseline?.failure
                         }
-                    } else { item.unchanged = true }
+                    } else { throw VariableConflictRecoveryError.obsoleteReview }
                 } catch {
                     item.wasCancelled = error is CancellationError
                     item.failure = item.wasCancelled ? nil : error.localizedDescription
@@ -3549,7 +3715,8 @@ final class MetadataViewModel {
                 results: results, unattemptedURLs: Array(urls.dropFirst(results.count)), wasCancelled: cancelled)
             // A retry owns earlier per-photo values, not a newly edited batch buffer.
             // Leave that buffer available for explicit reconciliation/reload.
-            if !isRetry, selected.count > 1, Set(selected).isSubset(of: Set(urls)),
+            if (!isRetry || voiceMemoPreviewConfirmed), selected.count > 1,
+               Set(selected).isSubset(of: Set(urls)),
                selected.allSatisfy({ acknowledgedPending[$0] != nil }),
                metadataLoadRequestID == loadID, currentFolderURL == folder,
                selectedURLs == selected, editingMetadata == edited {

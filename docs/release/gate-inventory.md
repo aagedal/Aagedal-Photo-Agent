@@ -573,9 +573,9 @@ Do not spend release time implementing excluded conditional analyzers.
 the Apple on-device recognition foundation. [Cycle 24](cycle-24-voice-memo-transcript-review-2026-09-13.md)
 adds serialized exact-WAV-bound generated/reviewed persistence, explicit approval, edit-triggered
 revocation, unknown/newer-schema protection and survival across ordinary save cleanup, copy and
-relocation. Cycle 25 adds exact-approved shared metadata-variable resolution; its dedicated preview,
-native application evidence, the broader injected failure matrix and native/offline/Sony evidence
-remain incomplete.
+relocation. Cycle 25 adds exact-approved shared metadata-variable resolution, and cycle 26 adds its
+compatible-target, whole-batch preflight and exact affected-image preview. Native application
+evidence, the broader injected failure matrix and native/offline/Sony evidence remain incomplete.
 
 **Smallest next action/evidence:** Complete malformed/empty/finalization/install-cancellation and
 reservation-limit tests, then run native offline and authorized-Sony recognition/relaunch drills.
@@ -590,17 +590,18 @@ reservation-limit tests, then run native offline and authorized-Sony recognition
   Extended Description, or another compatible field without silently overwriting existing text.
 ```
 
-**Current status:** [Cycle 25](cycle-25-voice-memo-transcript-variable-2026-09-13.md) adds
-`{voiceMemoTranscript}` to the shared variable catalog/interpolator and existing explicit
-Append/Replace template path. Only reviewed text with current exact-WAV-bound approval resolves;
-missing, unapproved, stale or changed authority fails before metadata execution, retained retries
-revalidate, batch photos remain independent and transcript braces are literal. A dedicated
-affected-image preview, compatible-target presentation and native/relaunch application evidence
-remain incomplete, so the authoritative checkbox stays open.
+**Current status:** [Cycle 25](cycle-25-voice-memo-transcript-variable-2026-09-13.md) adds exact-
+approved shared resolution. [Cycle 26](cycle-26-voice-memo-variable-preview-2026-09-13.md) restricts
+the token to Description, Extended Description, Headline and Instructions and adds the dedicated
+pre-mutation preview.
+It shows exact Append/Replace before/after values for every affected photo and field; Cancel writes
+nothing, while one invalid authority refuses the complete batch before any executor mutation.
+Confirm reuses the frozen requests and revalidates the complete authority set. Native/relaunch
+application and accessibility evidence remain incomplete, so the authoritative checkbox stays open.
 
-**Smallest next action/evidence:** Add a pre-mutation affected-image preview showing compatible
-destination fields plus exact Append/Replace results, then exercise native/relaunch application and
-normal metadata read-back for missing, unapproved, stale and approved cases.
+**Smallest next action/evidence:** Exercise missing, unapproved, stale and approved Append/Replace
+cases in the built app; cancel and confirm with keyboard/VoiceOver, then relaunch and verify normal
+metadata read-back and zero-write refusal evidence.
 
 ### J-VOICE-DELIVERY
 

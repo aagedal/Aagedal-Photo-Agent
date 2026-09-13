@@ -47,14 +47,77 @@ struct VariableMetadataResolutionInput: Sendable {
     var voiceMemoTranscriptContext: VoiceMemoTranscriptVariableContext? = nil
 }
 
+enum VoiceMemoTranscriptVariablePolicy {
+    static let token = "{voiceMemoTranscript}"
+
+    /// Editorial prose destinations that can carry a transcript without coercing it into a
+    /// controlled vocabulary, credit/name, identifier, date, URI, or repeatable-list value.
+    static let compatibleDestinationFields: Set<MetadataFieldID> = [
+        .headline, .description, .extendedDescription, .instructions
+    ]
+
+    static func isCompatible(templateFieldKey: String) -> Bool {
+        guard let field = MetadataFieldID(rawValue: templateFieldKey) else { return false }
+        return compatibleDestinationFields.contains(field)
+    }
+
+    static func destinationFields(in metadata: IPTCMetadata) -> [MetadataFieldID] {
+        MetadataFieldID.allCases.filter {
+            $0.textValue(in: metadata)?.contains(token) == true
+        }
+    }
+
+    static func validateDestinations(in metadata: IPTCMetadata) throws -> [MetadataFieldID] {
+        let destinations = destinationFields(in: metadata)
+        let incompatible = destinations.filter { !compatibleDestinationFields.contains($0) }
+        guard incompatible.isEmpty else {
+            throw VoiceMemoTranscriptVariableError.incompatibleDestinations(incompatible)
+        }
+        return destinations
+    }
+}
+
+enum VoiceMemoVariablePreviewAction: String, Equatable, Sendable {
+    case append = "Append"
+    case replace = "Replace"
+    case processExisting = "Process Existing Variables"
+}
+
+struct VoiceMemoVariablePreviewField: Identifiable, Equatable, Sendable {
+    var id: MetadataFieldID { field }
+    let field: MetadataFieldID
+    let before: String
+    let after: String
+    let isTranscriptDestination: Bool
+}
+
+struct VoiceMemoVariablePreviewRow: Identifiable, Equatable, Sendable {
+    var id: URL { imageURL }
+    let imageURL: URL
+    let writeDestination: String
+    let fields: [VoiceMemoVariablePreviewField]
+}
+
+struct VoiceMemoVariableBatchPreview: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let folderURL: URL
+    let action: VoiceMemoVariablePreviewAction
+    let rows: [VoiceMemoVariablePreviewRow]
+
+    var affectedImageCount: Int { rows.filter { !$0.fields.isEmpty }.count }
+    var affectedFieldCount: Int { rows.reduce(0) { $0 + $1.fields.count } }
+}
+
 /// Local transformation shared by the displayed editor and folder processing. It never reads
 /// selection or changes a live editor while geocoding/roster work is suspended.
 enum VariableMetadataResolver {
     static func resolve(_ input: VariableMetadataResolutionInput) async throws -> IPTCMetadata {
         try Task.checkCancellation()
-        if requiresApprovedVoiceMemoTranscript(input.metadata),
-           input.voiceMemoTranscriptContext == nil {
-            throw VoiceMemoTranscriptVariableError.missing
+        if requiresApprovedVoiceMemoTranscript(input.metadata) {
+            _ = try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: input.metadata)
+            if input.voiceMemoTranscriptContext == nil {
+                throw VoiceMemoTranscriptVariableError.missing
+            }
         }
         let interpolator = PresetVariableInterpolator()
         let gps = await interpolator.resolvingGPSPlaceVariables(in: input.metadata)

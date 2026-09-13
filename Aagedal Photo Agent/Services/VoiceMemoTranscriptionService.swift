@@ -48,6 +48,7 @@ nonisolated enum VoiceMemoTranscriptVariableError: LocalizedError, Equatable, Se
     case notApproved
     case sourceChanged
     case approvalChanged
+    case incompatibleDestinations([MetadataFieldID])
 
     var errorDescription: String? {
         switch self {
@@ -59,6 +60,9 @@ nonisolated enum VoiceMemoTranscriptVariableError: LocalizedError, Equatable, Se
             return "The approved voice-memo transcript no longer matches the current WAV relationship and bytes. No transcript text was applied."
         case .approvalChanged:
             return "The approved voice-memo transcript changed before metadata could be written. No transcript text was applied; review the current approval and try again."
+        case .incompatibleDestinations(let fields):
+            let names = fields.map(\.displayName).joined(separator: ", ")
+            return "The voice-memo transcript cannot be inserted into: \(names). Choose Description, Extended Description, Headline, or Instructions."
         }
     }
 }

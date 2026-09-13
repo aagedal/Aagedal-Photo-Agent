@@ -1,0 +1,93 @@
+import SwiftUI
+
+struct VoiceMemoVariablePreviewView: View {
+    let preview: VoiceMemoVariableBatchPreview
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Review Voice-Memo Transcript Changes")
+                .font(.title2.weight(.semibold))
+
+            Text("\(preview.action.rawValue) will change \(preview.affectedFieldCount) \(preview.affectedFieldCount == 1 ? "field" : "fields") across \(preview.affectedImageCount) \(preview.affectedImageCount == 1 ? "photo" : "photos"). Nothing is written until you confirm.")
+                .foregroundStyle(.secondary)
+
+            Label(
+                "Supported transcript destinations are Description, Extended Description, Headline, and Instructions.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.callout)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(preview.rows) { row in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(row.imageURL.lastPathComponent)
+                                    .font(.headline)
+                                Spacer()
+                                Text(row.writeDestination)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            ForEach(row.fields) { field in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(field.field.displayName)
+                                            .font(.subheadline.weight(.semibold))
+                                        if field.isTranscriptDestination {
+                                            Text("Transcript destination")
+                                                .font(.caption2.weight(.medium))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(.blue.opacity(0.12), in: Capsule())
+                                        }
+                                    }
+                                    valueLine("Before", value: field.before)
+                                    valueLine("After", value: field.after)
+                                }
+                                .padding(.top, 2)
+                            }
+                        }
+                        .padding(12)
+                        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                        .accessibilityElement(children: .contain)
+                    }
+                }
+            }
+            .frame(minHeight: 220, maxHeight: 520)
+
+            Text("Every approved transcript and associated WAV will be checked again before the batch starts. If any photo fails that check, no photo in this transcript batch is written.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Confirm and Write", action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(preview.affectedImageCount == 0)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 680, minHeight: 420)
+        .accessibilityIdentifier("voiceMemoTranscript.preview")
+    }
+
+    private func valueLine(_ label: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .frame(width: 48, alignment: .trailing)
+                .foregroundStyle(.secondary)
+            Text(value.isEmpty ? "Empty" : value)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.callout)
+        .accessibilityElement(children: .combine)
+    }
+}

@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-12
+**Last reviewed:** 2026-09-13
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,14 +28,14 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 25: exact approved voice-memo transcript variable](release/cycle-25-voice-memo-transcript-variable-2026-09-13.md). The shared variable engine now resolves `{voiceMemoTranscript}` only from an exact-WAV-bound approved review, revalidates retained writes, and treats transcript braces literally. The focused 55-test run, 2,886-test serial suite and repository checks pass. Dedicated affected-image preview, native/relaunch application, transcription failure breadth, delivery policy and wider release gates remain open.
+**Latest improvement continuation:** [Cycle 26: voice-memo transcript application preview](release/cycle-26-voice-memo-variable-preview-2026-09-13.md). Transcript-bearing batches now restrict application to Description, Extended Description, Headline and Instructions, resolve and revalidate every photo before mutation, and show exact affected-image Append/Replace results. Cancel writes nothing and one invalid approval refuses the complete batch. The focused 47-test run, adjacent 84-test regression, 2,889-test serial suite and repository checks pass. Native/relaunch application, transcription failure breadth, delivery policy and wider release gates remain open.
 
 ## Portfolio
 
 | Initiative | Detailed plan | Status | Current gate |
 | --- | --- | --- | --- |
 | Investigation and review foundations | [Working release plan](v2.3/README.md) and [delivery checklist](v2.3/delivery-plan.md) | Core implementation complete; automated orientation/view/report transform coverage expanded; release hardening remains | Close manual fixture/color, accessibility, display/HDR, performance, security, recovery, and packaging gates |
-| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest, persisted relationships, transactional rename, independent Duplicate, companion-aware Move/Reject, recoverable memo Trash, RAW archive preservation, explicit Caption playback/recovery, exact moved-relationship reassociation, Apple on-device editable transcription, exact-WAV-bound reviewed approval persistence, and the exact-approved `{voiceMemoTranscript}` variable are implemented | Complete transcript affected-image preview and delivery policy plus native Sony/archive/reassociation/transcription/application evidence, broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
+| Journalistic metadata workflow | [Implementation plan](journalistic-metadata-workflow-plan.md) | Caption, unified metadata-field customization, Batch Rename, Deadline preflight/delivery and information hierarchy, typed editorial metadata, schema migration, preservation, verification, and recovery are implemented; Headline and every localized Title alternative round-trip independently; ILCE-1 v4.00 one/two-source RAW/JPEG voice-memo ingest, persisted relationships, transactional rename, independent Duplicate, companion-aware Move/Reject, recoverable memo Trash, RAW archive preservation, explicit Caption playback/recovery, exact moved-relationship reassociation, Apple on-device editable transcription, exact-WAV-bound reviewed approval persistence, and the compatible-target, exact-previewed `{voiceMemoTranscript}` variable are implemented | Complete voice-memo delivery policy plus native Sony/archive/reassociation/transcription/application evidence, broader Sony samples, external interoperability, real-server, device, accessibility, and first-use Deadline drills |
 | SunCalc-style solar overlay | [Implementation plan](suncalc-plan.md) | Calculation, persistence, controls, equivalent live-map rendering, immutable report evidence, and the supported-arm64 automated boundary matrix are implemented; interactive release validation remains | Validate live and reported rays across actual map styles, camera interactions, rapid time changes, offline behavior, and accessibility paths |
 
 ## Default delivery order

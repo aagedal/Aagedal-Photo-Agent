@@ -97,60 +97,70 @@ struct TemplateEditorView: View {
             }
 
             ForEach($viewModel.editingTemplate.fields) { $field in
-                HStack {
-                    Picker("", selection: $field.fieldKey) {
-                        ForEach(availableFieldsForPicker(currentKey: field.fieldKey), id: \.key) { f in
-                            Text(f.label).tag(f.key)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Picker("", selection: $field.fieldKey) {
+                            ForEach(availableFieldsForPicker(currentKey: field.fieldKey), id: \.key) { f in
+                                Text(f.label).tag(f.key)
+                            }
                         }
-                    }
-                    .labelsHidden()
-                    .frame(width: 120)
+                        .labelsHidden()
+                        .frame(width: 120)
 
-                    if field.fieldKey == "digitalSourceType" {
-                        // Digital Source Type is an enum — offer its cases as a
-                        // dropdown rather than free text. The template stores the
-                        // short raw value for compatibility with existing template JSON.
-                        Picker("", selection: Binding(
-                            get: { DigitalSourceType(metadataValue: $field.templateValue.wrappedValue) },
-                            set: { $field.templateValue.wrappedValue = $0?.rawValue ?? "" }
-                        )) {
-                            Text("None").tag(nil as DigitalSourceType?)
-                            ForEach(DigitalSourceType.allCases, id: \.self) { type in
-                                Text(type.displayName).tag(type as DigitalSourceType?)
+                        if field.fieldKey == "digitalSourceType" {
+                            // Digital Source Type is an enum — offer its cases as a
+                            // dropdown rather than free text. The template stores the
+                            // short raw value for compatibility with existing template JSON.
+                            Picker("", selection: Binding(
+                                get: { DigitalSourceType(metadataValue: $field.templateValue.wrappedValue) },
+                                set: { $field.templateValue.wrappedValue = $0?.rawValue ?? "" }
+                            )) {
+                                Text("None").tag(nil as DigitalSourceType?)
+                                ForEach(DigitalSourceType.allCases, id: \.self) { type in
+                                    Text(type.displayName).tag(type as DigitalSourceType?)
+                                }
                             }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if field.fieldKey == "urgency" {
-                        Picker("", selection: Binding(
-                            get: { Int($field.templateValue.wrappedValue) },
-                            set: { $field.templateValue.wrappedValue = $0.map(String.init) ?? "" }
-                        )) {
-                            Text("None").tag(nil as Int?)
-                            ForEach(1...8, id: \.self) { urgency in
-                                Text(urgency == 1 ? "1 — Most urgent" : urgency == 8 ? "8 — Least urgent" : String(urgency))
-                                    .tag(urgency as Int?)
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if field.fieldKey == "urgency" {
+                            Picker("", selection: Binding(
+                                get: { Int($field.templateValue.wrappedValue) },
+                                set: { $field.templateValue.wrappedValue = $0.map(String.init) ?? "" }
+                            )) {
+                                Text("None").tag(nil as Int?)
+                                ForEach(1...8, id: \.self) { urgency in
+                                    Text(urgency == 1 ? "1 — Most urgent" : urgency == 8 ? "8 — Least urgent" : String(urgency))
+                                        .tag(urgency as Int?)
+                                }
                             }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            let fieldID = field.id
+                            templateValueField(for: $field, fieldID: fieldID)
+
+                            variableMenu(for: $field)
                         }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
+
                         let fieldID = field.id
-                        templateValueField(for: $field, fieldID: fieldID)
-
-                        variableMenu(for: $field)
+                        Button {
+                            viewModel.editingTemplate.fields.removeAll { $0.id == fieldID }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
                     }
-
-                    let fieldID = field.id
-                    Button {
-                        viewModel.editingTemplate.fields.removeAll { $0.id == fieldID }
-                    } label: {
-                        Image(systemName: "minus.circle")
+                    if field.templateValue.contains(VoiceMemoTranscriptVariablePolicy.token),
+                       !VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: field.fieldKey) {
+                        Label("Choose a free-text field before using the voice-memo transcript.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
                             .foregroundStyle(.red)
+                            .padding(.leading, 128)
                     }
-                    .buttonStyle(.plain)
                 }
             }
 
@@ -276,6 +286,12 @@ struct TemplateEditorView: View {
                             insertVariable(variable.variable, into: field)
                         }
                         .help(variable.description)
+                        .disabled(
+                            variable.variable == VoiceMemoTranscriptVariablePolicy.token
+                                && !VoiceMemoTranscriptVariablePolicy.isCompatible(
+                                    templateFieldKey: field.wrappedValue.fieldKey
+                                )
+                        )
                     }
                 }
             }

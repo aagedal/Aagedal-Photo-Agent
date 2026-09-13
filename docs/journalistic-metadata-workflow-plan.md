@@ -816,6 +816,18 @@ validation pass; see [cycle 25 evidence](release/cycle-25-voice-memo-transcript-
 The broad variable checkbox remains open for a dedicated affected-image preview, compatible-target
 presentation and native/relaunch application evidence.
 
+**Coordinator cycle 26 — 2026-09-13:** Transcript-bearing variable batches now resolve every photo
+and revalidate the complete exact-WAV-bound authority set before any mutation. A dedicated sheet
+shows the explicit Append/Replace action, every affected image and write destination, and exact
+before/after values for all changed fields; transcript destinations are marked. Confirm uses those
+frozen requests and revalidates them again, Cancel writes nothing, and one missing, unapproved,
+stale or changed transcript refuses the whole batch with zero hidden partial writes. The template
+editor permits the token only in the four supported editorial-prose destinations and reports stored
+incompatible uses. The focused 47-test run, adjacent 84-test regression, complete 2,889-test serial
+suite and repository validation pass; see
+[cycle 26 evidence](release/cycle-26-voice-memo-variable-preview-2026-09-13.md). The broad variable
+checkbox remains open only for native/relaunch/read-back and accessibility evidence.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

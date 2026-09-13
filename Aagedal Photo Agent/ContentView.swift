@@ -422,6 +422,20 @@ struct ContentView: View {
 
     private var contentWithSheets: some View {
         contentBase
+            .sheet(item: Binding(
+                get: { metadataViewModel.voiceMemoVariablePreview },
+                set: { newValue in
+                    if newValue == nil, let current = metadataViewModel.voiceMemoVariablePreview {
+                        metadataViewModel.cancelVoiceMemoVariablePreview(current.id)
+                    }
+                }
+            )) { preview in
+                VoiceMemoVariablePreviewView(
+                    preview: preview,
+                    onConfirm: { metadataViewModel.confirmVoiceMemoVariablePreview(preview.id) },
+                    onCancel: { metadataViewModel.cancelVoiceMemoVariablePreview(preview.id) }
+                )
+            }
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingPrimaryDevelopRecovery) {
                 PrimaryDevelopRecoveryHost(viewModel: metadataViewModel)
