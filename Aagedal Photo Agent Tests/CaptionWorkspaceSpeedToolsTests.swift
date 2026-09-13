@@ -571,8 +571,142 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(source.contains("caption.voiceMemo.downloadLanguage"))
         #expect(source.contains("caption.voiceMemo.cancelTranscription"))
         #expect(source.contains("caption.voiceMemo.transcriptDraft"))
-        #expect(source.contains("It is not saved to metadata"))
-        #expect(!source.contains("saveVoiceMemoTranscript"))
+        #expect(source.contains("caption.voiceMemo.approveTranscript"))
+        #expect(source.contains("It does not change Description or any other IPTC field"))
+    }
+
+    @Test("approval and edit revocation persist generated and reviewed provenance")
+    @MainActor
+    func approvalRoundTrip() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let storage = VoiceMemoTranscriptStorageProbe()
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed, transcript: "Generated words"),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) },
+            now: { Date(timeIntervalSince1970: 500) },
+            startAccess: { _ in false }
+        )
+        var draft = try await service.transcribe(imageURL: imageURL, locale: locale)
+        draft.reviewedText = "Human-reviewed words"
+
+        let approved = try await service.approve(draft)
+        #expect(approved.approvedAt == Date(timeIntervalSince1970: 500))
+        #expect(approved.generatedText == "Generated words")
+        #expect(approved.reviewedText == "Human-reviewed words")
+        #expect((await storage.load())?.approvedAt == approved.approvedAt)
+        #expect(try await service.loadPersistedDraft(imageURL: imageURL) == approved)
+
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        model.updateReviewedText("Edited after approval")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isSavingReview, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.draft?.isApproved == false)
+        #expect(model.draft?.reviewedText == "Edited after approval")
+        #expect((await storage.load())?.reviewedText == "Edited after approval")
+        #expect((await storage.load())?.approvedAt == nil)
+    }
+
+    @Test("a failed replacement leaves the previously approved transcript visible")
+    @MainActor
+    func failedReplacementRetainsApprovedRecord() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
+            sourceImageFilename: imageURL.lastPathComponent,
+            sourceMemoFilename: memoURL.lastPathComponent,
+            memoByteCount: stable.byteCount,
+            memoSHA256: stable.sha256,
+            associationProfileIdentifier: found.profileIdentifier,
+            localeIdentifier: locale.identifier,
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generatedText: "Original generated text",
+            reviewedText: "Approved review",
+            approvedAt: Date(timeIntervalSince1970: 200)
+        ))
+        let service = VoiceMemoTranscriptionService(
+            runtime: runtime(status: .installed, transcript: "   "),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) },
+            startAccess: { _ in false }
+        )
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        #expect(model.draft?.isApproved == true)
+
+        await model.transcribe()
+
+        #expect(model.draft?.reviewedText == "Approved review")
+        #expect(model.draft?.isApproved == true)
+        #expect(model.errorMessage != nil)
+        #expect((await storage.load())?.reviewedText == "Approved review")
+    }
+
+    @Test("cancelling a replacement retains the previously approved transcript")
+    @MainActor
+    func cancelledReplacementRetainsApprovedRecord() async throws {
+        let found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let gate = VoiceMemoTranscriptionGate()
+        defer { Task { await gate.open() } }
+        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
+            sourceImageFilename: imageURL.lastPathComponent,
+            sourceMemoFilename: memoURL.lastPathComponent,
+            memoByteCount: stable.byteCount,
+            memoSHA256: stable.sha256,
+            associationProfileIdentifier: found.profileIdentifier,
+            localeIdentifier: locale.identifier,
+            provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100),
+            generatedText: "Original generated text",
+            reviewedText: "Approved review",
+            approvedAt: Date(timeIntervalSince1970: 200)
+        ))
+        let selectedLocale = locale
+        let service = VoiceMemoTranscriptionService(
+            runtime: VoiceMemoTranscriptionRuntime(
+                isAvailable: { true },
+                supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale },
+                assetStatus: { _ in .installed },
+                installAssets: { _ in },
+                transcribe: { _, _ in
+                    await gate.wait()
+                    return "Cancelled replacement"
+                }
+            ),
+            lookup: { _ in .available(found) },
+            captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) },
+            startAccess: { _ in false }
+        )
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        let replacement = Task { await model.transcribe() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        model.cancel()
+        await gate.open()
+        await replacement.value
+
+        #expect(model.draft?.reviewedText == "Approved review")
+        #expect(model.draft?.isApproved == true)
+        #expect((await storage.load())?.reviewedText == "Approved review")
+        #expect((await storage.load())?.approvedAt != nil)
     }
 
     private var association: VoiceMemoAssociation {
@@ -691,6 +825,21 @@ private actor VoiceMemoTranscriptionGate {
         waiter?.resume()
         waiter = nil
         hasWaiter = false
+    }
+}
+
+private actor VoiceMemoTranscriptStorageProbe {
+    private var record: VoiceMemoTranscriptRecord?
+
+    init(record: VoiceMemoTranscriptRecord? = nil) {
+        self.record = record
+    }
+
+    func load() -> VoiceMemoTranscriptRecord? { record }
+
+    func save(_ replacement: VoiceMemoTranscriptRecord) -> VoiceMemoTranscriptRecord {
+        record = replacement
+        return replacement
     }
 }
 

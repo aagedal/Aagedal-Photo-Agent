@@ -456,6 +456,109 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
     }
 }
 
+/// App-owned review state for one exact voice-memo revision. This remains a top-level
+/// metadata-sidecar extension rather than editorial IPTC metadata, so approval never writes
+/// a caption field by itself.
+nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let sourceImageFilename: String
+    let sourceMemoFilename: String
+    let memoByteCount: Int64
+    let memoSHA256: String
+    let associationProfileIdentifier: String
+    let localeIdentifier: String
+    let provider: String
+    let providerModel: String
+    let generatedAt: Date
+    let generatedText: String
+    var reviewedText: String
+    var approvedAt: Date?
+
+    var isApproved: Bool { approvedAt != nil }
+
+    init(
+        sourceImageFilename: String,
+        sourceMemoFilename: String,
+        memoByteCount: Int64,
+        memoSHA256: String,
+        associationProfileIdentifier: String,
+        localeIdentifier: String,
+        provider: String,
+        providerModel: String,
+        generatedAt: Date,
+        generatedText: String,
+        reviewedText: String,
+        approvedAt: Date? = nil
+    ) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.sourceImageFilename = sourceImageFilename
+        self.sourceMemoFilename = sourceMemoFilename
+        self.memoByteCount = memoByteCount
+        self.memoSHA256 = memoSHA256
+        self.associationProfileIdentifier = associationProfileIdentifier
+        self.localeIdentifier = localeIdentifier
+        self.provider = provider
+        self.providerModel = providerModel
+        self.generatedAt = generatedAt
+        self.generatedText = generatedText
+        self.reviewedText = reviewedText
+        self.approvedAt = approvedAt
+    }
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, sourceImageFilename, sourceMemoFilename
+        case memoByteCount, memoSHA256, associationProfileIdentifier
+        case localeIdentifier, provider, providerModel, generatedAt
+        case generatedText, reviewedText, approvedAt
+    }
+
+    static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue))
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .schemaVersion)
+        guard version == Self.currentSchemaVersion else {
+            throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+                document: "voice-memo transcript",
+                found: version,
+                supported: Self.currentSchemaVersion
+            )
+        }
+        schemaVersion = version
+        sourceImageFilename = try container.decode(String.self, forKey: .sourceImageFilename)
+        sourceMemoFilename = try container.decode(String.self, forKey: .sourceMemoFilename)
+        memoByteCount = try container.decode(Int64.self, forKey: .memoByteCount)
+        memoSHA256 = try container.decode(String.self, forKey: .memoSHA256)
+        associationProfileIdentifier = try container.decode(
+            String.self, forKey: .associationProfileIdentifier
+        )
+        localeIdentifier = try container.decode(String.self, forKey: .localeIdentifier)
+        provider = try container.decode(String.self, forKey: .provider)
+        providerModel = try container.decode(String.self, forKey: .providerModel)
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        generatedText = try container.decode(String.self, forKey: .generatedText)
+        reviewedText = try container.decode(String.self, forKey: .reviewedText)
+        approvedAt = try container.decodeIfPresent(Date.self, forKey: .approvedAt)
+
+        guard memoByteCount >= 0,
+              memoSHA256.count == 64,
+              memoSHA256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              !associationProfileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !localeIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !providerModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !generatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .memoSHA256,
+                in: container,
+                debugDescription: "Voice-memo transcript provenance is incomplete or invalid."
+            )
+        }
+    }
+}
+
 extension Array where Element == MetadataHistoryEntry {
     nonisolated mutating func trimToHistoryLimit() {
         let limit = MetadataSidecar.historyLimit

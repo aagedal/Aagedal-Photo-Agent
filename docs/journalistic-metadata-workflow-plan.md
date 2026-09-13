@@ -793,6 +793,16 @@ suite and repository validation pass; see
 transcription checkbox remains open until durable reviewed state and the remaining failure/native
 matrix are complete.
 
+**Coordinator cycle 24 — 2026-09-13:** Caption now persists explicitly approved generated/reviewed
+transcript provenance as a versioned top-level app-sidecar extension bound to the exact current WAV
+SHA-256, byte count and association profile. Loading and approval revalidate current relationship and
+audio evidence; editing approved text revokes approval, while a failed replacement retains the prior
+approved record. Ordinary metadata saves/finalization/refresh cleanup, same-schema unknown fields,
+copy and relocation preserve the extension; newer nested schemas remain byte-for-byte read-only.
+Thirteen focused tests pass; see [cycle 24 evidence](release/cycle-24-voice-memo-transcript-review-2026-09-13.md).
+The broad transcription checkbox remains open for the injected/native failure matrix, variable
+application and Deadline delivery integration.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

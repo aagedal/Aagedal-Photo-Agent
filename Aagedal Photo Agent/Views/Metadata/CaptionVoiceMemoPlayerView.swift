@@ -278,13 +278,32 @@ struct CaptionVoiceMemoPlayerView: View {
             ))
             .font(.body)
             .frame(minHeight: 70, maxHeight: 130)
+            .disabled(transcriptModel.isSavingReview)
             .overlay {
                 RoundedRectangle(cornerRadius: 5)
                     .stroke(.separator, lineWidth: 1)
             }
             .accessibilityLabel("Voice memo transcript draft")
             .accessibilityIdentifier("caption.voiceMemo.transcriptDraft")
-            Text("Generated locally in \(draft.localeIdentifier). Review or edit the text here. It is not saved to metadata until the reviewed-transcript workflow is implemented.")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(draft.isApproved
+                     ? "Reviewed and approved for this exact WAV. Editing revokes approval."
+                     : "Generated locally in \(draft.localeIdentifier). Review the text, then approve it explicitly.")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                if transcriptModel.isSavingReview {
+                    ProgressView().controlSize(.small)
+                }
+                Button(draft.isApproved ? "Approved" : "Approve Transcript",
+                       systemImage: draft.isApproved ? "checkmark.seal.fill" : "checkmark.seal") {
+                    Task { await transcriptModel.approve() }
+                }
+                .disabled(draft.isApproved || transcriptModel.isSavingReview
+                          || draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("caption.voiceMemo.approveTranscript")
+            }
+            Text("Approval stores transcript provenance in the app sidecar only. It does not change Description or any other IPTC field.")
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         }

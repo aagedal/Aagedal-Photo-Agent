@@ -6,6 +6,7 @@ private nonisolated let sidecarLogger = Logger(subsystem: "com.aagedal.photo-age
 struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
+    nonisolated static let voiceMemoTranscriptFieldName = "voiceMemoTranscript"
     /// Small JSON reads are cheap individually, but one task per sidecar creates thousands
     /// of queued jobs for large event folders. Bound admission to the Dispatch worker so
     /// cancellation stops queued reads and other metadata transactions can make progress.
@@ -186,6 +187,38 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated func loadOwnedSidecarForMutation(for imageURL: URL, in folderURL: URL) throws -> MetadataSidecar? {
         try ownedRecords(for: imageURL, in: folderURL).first
+    }
+
+    /// Reads the app-owned transcript extension without making it part of the whole-record
+    /// `MetadataSidecar` codec. Keeping it opaque to ordinary saves prevents an older app-side
+    /// record from implicitly clearing review state it did not load.
+    nonisolated func loadVoiceMemoTranscript(
+        for imageURL: URL,
+        in folderURL: URL
+    ) throws -> VoiceMemoTranscriptRecord? {
+        let owned = try carrierSnapshots(for: imageURL, in: folderURL).filter(\.isOwned)
+        guard let carrier = owned.first else { return nil }
+        _ = try decodeOwnedRecords([carrier])
+        guard let object = try JSONSerialization.jsonObject(with: carrier.data) as? [String: Any],
+              let graph = object[Self.voiceMemoTranscriptFieldName] else { return nil }
+        guard JSONSerialization.isValidJSONObject(graph) else { throw invalidOwnership(carrier.url) }
+        let data = try JSONSerialization.data(withJSONObject: graph)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(VoiceMemoTranscriptRecord.self, from: data)
+    }
+
+    @MetadataSidecarFilesystemActor
+    func loadVoiceMemoTranscriptSerialized(
+        for imageURL: URL,
+        in folderURL: URL
+    ) async throws -> VoiceMemoTranscriptRecord? {
+        try Task.checkCancellation()
+        return try await MetadataIOCoordinator.shared.withLock(
+            MetadataIOKey.key(for: imageURL)
+        ) { @MetadataSidecarFilesystemActor in
+            try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL)
+        }
     }
 
     @MetadataSidecarFilesystemActor
@@ -385,6 +418,80 @@ struct MetadataSidecarService: Sendable {
     }
 
     // MARK: - Save
+
+    /// Replaces only the versioned transcript extension while retaining the complete editorial
+    /// record and every unknown top-level or nested extension. The operation shares the same
+    /// per-photo lock and Dispatch executor as metadata/history writes.
+    @MetadataSidecarFilesystemActor
+    func saveVoiceMemoTranscriptSerialized(
+        _ transcript: VoiceMemoTranscriptRecord,
+        for imageURL: URL,
+        in folderURL: URL,
+        beforeCommit: @escaping @Sendable () throws -> Void = {}
+    ) async throws -> VoiceMemoTranscriptRecord {
+        try Task.checkCancellation()
+        guard transcript.schemaVersion == VoiceMemoTranscriptRecord.currentSchemaVersion else {
+            throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+                document: "voice-memo transcript",
+                found: transcript.schemaVersion,
+                supported: VoiceMemoTranscriptRecord.currentSchemaVersion
+            )
+        }
+        return try await MetadataIOCoordinator.shared.withLock(
+            MetadataIOKey.key(for: imageURL)
+        ) { @MetadataSidecarFilesystemActor in
+            // Decode first so a newer nested transcript is rejected before lastModified or any
+            // other carrier byte is touched.
+            _ = try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL)
+            let existing = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
+            let carrier = existing ?? MetadataSidecar(sourceFile: imageURL.lastPathComponent)
+            try beforeCommit()
+            _ = try self.saveSidecar(carrier, for: imageURL, in: folderURL)
+
+            let currentURL = self.sidecarFileURL(for: imageURL, in: folderURL)
+            let currentData = try Data(contentsOf: currentURL)
+            let patched = try Self.replacingVoiceMemoTranscript(
+                in: currentData,
+                with: transcript,
+                sourceURL: currentURL
+            )
+            guard try Data(contentsOf: currentURL) == currentData else {
+                throw self.ownershipChanged(currentURL)
+            }
+            try patched.write(to: currentURL, options: .atomic)
+            guard let installed = try self.loadVoiceMemoTranscript(
+                for: imageURL,
+                in: folderURL
+            ), installed == transcript else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return installed
+        }
+    }
+
+    private nonisolated static func replacingVoiceMemoTranscript(
+        in carrierData: Data,
+        with transcript: VoiceMemoTranscriptRecord,
+        sourceURL: URL
+    ) throws -> Data {
+        guard var carrier = try JSONSerialization.jsonObject(with: carrierData) as? [String: Any] else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: sourceURL.path])
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let encoded = try encoder.encode(transcript)
+        guard var replacement = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: sourceURL.path])
+        }
+        if let old = carrier[voiceMemoTranscriptFieldName] as? [String: Any] {
+            for (key, value) in old where !VoiceMemoTranscriptRecord.persistedJSONFieldNames.contains(key) {
+                replacement[key] = value
+            }
+        }
+        carrier[voiceMemoTranscriptFieldName] = replacement
+        return try JSONSerialization.data(withJSONObject: carrier, options: [.prettyPrinted, .sortedKeys])
+    }
 
     nonisolated enum OrientationDraftMutation {
         case preserve
@@ -1193,6 +1300,27 @@ struct MetadataSidecarService: Sendable {
                   (try? self.contentTokens(for: snapshot.imageURL, in: snapshot.folderURL)) == snapshot.tokens else {
                 return false
             }
+            let carriers = try self.carrierSnapshots(
+                for: snapshot.imageURL,
+                in: snapshot.folderURL
+            ).filter(\.isOwned)
+            if carriers.contains(where: { Self.hasOpaqueTopLevelFields(in: $0.data) }) {
+                guard var retained = try self.loadOwnedSidecarForMutation(
+                    for: snapshot.imageURL,
+                    in: snapshot.folderURL
+                ) else { return false }
+                retained.pendingChanges = false
+                retained.imageMetadataSnapshot = retained.metadata
+                retained.history = []
+                retained.orientationDraft = nil
+                _ = try self.saveSidecar(
+                    retained,
+                    for: snapshot.imageURL,
+                    in: snapshot.folderURL,
+                    orientationMutation: .replace(expected: nil, with: nil)
+                )
+                return true
+            }
             try self.deleteSidecar(for: snapshot.imageURL, in: snapshot.folderURL)
             return true
         }
@@ -1218,6 +1346,11 @@ struct MetadataSidecarService: Sendable {
                 guard let records = try? self.ownedRecords(for: imageURL, in: folderURL), !records.isEmpty else { return false }
                 for record in records {
                     guard !record.pendingChanges, record.history.isEmpty else { return false }
+                }
+                guard let carriers = try? self.carrierSnapshots(for: imageURL, in: folderURL)
+                    .filter(\.isOwned),
+                      !carriers.contains(where: { Self.hasOpaqueTopLevelFields(in: $0.data) }) else {
+                    return false
                 }
                 beforeRevisionCheck(attempt)
                 await Task.yield()
@@ -1439,6 +1572,13 @@ struct MetadataSidecarService: Sendable {
             withJSONObject: encoded,
             options: [.prettyPrinted, .sortedKeys]
         )) ?? encodedData
+    }
+
+    private nonisolated static func hasOpaqueTopLevelFields(in data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true
+        }
+        return object.keys.contains { !MetadataSidecar.persistedJSONFieldNames.contains($0) }
     }
 
     /// Internal field-write evidence; callers already hold the photo transaction lock.

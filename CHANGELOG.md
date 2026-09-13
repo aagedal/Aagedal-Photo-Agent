@@ -24,7 +24,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   results remain explicit and selected source files are preserved.
 - Caption can explicitly transcribe an associated WAV with Apple on-device speech. Language assets
   are shown and downloaded only on request, work is cancellable, and the exact WAV is revalidated
-  before an editable draft is shown. Draft text is not yet persisted or applied to metadata.
+  before an editable draft is shown. Reviewed text can now be approved into a versioned, exact-WAV-
+  bound app sidecar record; editing revokes approval. Approval never changes an IPTC field by itself.
 - Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel
   inspection, photo/map annotations, measurement, timeline evidence, map context, offline
   solar-position directions, portable projects, and immutable PDF reports.
@@ -87,8 +88,9 @@ upload the current image from Photo Agent.
   exact moved relationship; filename-only, changed, duplicate and missing candidates are never
   adopted. Duplicate preserves a verified image/WAV relationship in independent copies with
   collision protection and rollback on failure. Apple on-device transcription is an explicit,
-  cancellable action with a language picker and separate asset download; its editable result remains
-  an in-memory draft until reviewed-transcript persistence and metadata application are implemented.
+  cancellable action with a language picker and separate asset download. Its editable result remains
+  in memory until explicitly approved; approved generated/reviewed provenance survives ordinary
+  metadata saves, cleanup, copy and relocation without being applied to an IPTC field automatically.
 - Import now creates the destination reveal folder before handing it to the browser, preventing a
   transient “Couldn’t Open Folder” error at the start of a memory-card import.
 - Replaced the thumbnail toolbar's bound sort picker with an explicitly titled sort menu so the

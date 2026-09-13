@@ -27,6 +27,9 @@ nonisolated struct VoiceMemoTranscriptDraft: Equatable, Sendable {
     let generatedAt: Date
     let generatedText: String
     var reviewedText: String
+    var approvedAt: Date?
+
+    var isApproved: Bool { approvedAt != nil }
 }
 
 nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendable {
@@ -162,10 +165,16 @@ actor VoiceMemoTranscriptionService {
 
     typealias Lookup = @Sendable (URL) throws -> VoiceMemoCompanionRepository.Lookup
     typealias CaptureRevision = @Sendable (URL) async throws -> SourceImageRevision
+    typealias LoadTranscript = @Sendable (URL, URL) async throws -> VoiceMemoTranscriptRecord?
+    typealias SaveTranscript = @Sendable (
+        VoiceMemoTranscriptRecord, URL, URL
+    ) async throws -> VoiceMemoTranscriptRecord
 
     private let runtime: VoiceMemoTranscriptionRuntime
     private let lookup: Lookup
     private let captureRevision: CaptureRevision
+    private let loadTranscript: LoadTranscript
+    private let saveTranscript: SaveTranscript
     private let now: @Sendable () -> Date
     private let startAccess: @Sendable (URL) -> Bool
     private let stopAccess: @Sendable (URL) -> Void
@@ -177,6 +186,16 @@ actor VoiceMemoTranscriptionService {
         ),
         lookup: @escaping Lookup = { try VoiceMemoCompanionRepository().lookup(for: $0) },
         captureRevision: @escaping CaptureRevision = { try await SourceImageRevision.capture(at: $0) },
+        loadTranscript: @escaping LoadTranscript = { imageURL, folderURL in
+            try await MetadataSidecarService().loadVoiceMemoTranscriptSerialized(
+                for: imageURL, in: folderURL
+            )
+        },
+        saveTranscript: @escaping SaveTranscript = { transcript, imageURL, folderURL in
+            try await MetadataSidecarService().saveVoiceMemoTranscriptSerialized(
+                transcript, for: imageURL, in: folderURL
+            )
+        },
         now: @escaping @Sendable () -> Date = Date.init,
         startAccess: @escaping @Sendable (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
         stopAccess: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
@@ -185,6 +204,8 @@ actor VoiceMemoTranscriptionService {
         self.filesystemQueue = filesystemQueue
         self.lookup = lookup
         self.captureRevision = captureRevision
+        self.loadTranscript = loadTranscript
+        self.saveTranscript = saveTranscript
         self.now = now
         self.startAccess = startAccess
         self.stopAccess = stopAccess
@@ -267,7 +288,105 @@ actor VoiceMemoTranscriptionService {
             providerModel: "System managed; exact version unavailable",
             generatedAt: now(),
             generatedText: normalized,
-            reviewedText: normalized
+            reviewedText: normalized,
+            approvedAt: nil
         )
+    }
+
+    func loadPersistedDraft(imageURL: URL) async throws -> VoiceMemoTranscriptDraft? {
+        try Task.checkCancellation()
+        let image = imageURL.standardizedFileURL
+        let folder = image.deletingLastPathComponent()
+        guard let record = try await loadTranscript(image, folder) else { return nil }
+        let association = try await validatedAssociation(
+            for: image,
+            memoSHA256: record.memoSHA256,
+            memoByteCount: record.memoByteCount,
+            profileIdentifier: record.associationProfileIdentifier
+        )
+        return VoiceMemoTranscriptDraft(
+            imageURL: image,
+            memoURL: association.memoURL,
+            memoByteCount: record.memoByteCount,
+            memoSHA256: record.memoSHA256,
+            associationProfileIdentifier: record.associationProfileIdentifier,
+            localeIdentifier: record.localeIdentifier,
+            provider: record.provider,
+            providerModel: record.providerModel,
+            generatedAt: record.generatedAt,
+            generatedText: record.generatedText,
+            reviewedText: record.reviewedText,
+            approvedAt: record.approvedAt
+        )
+    }
+
+    func approve(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
+        let approvedAt = now()
+        var approved = draft
+        approved.approvedAt = approvedAt
+        return try await persist(approved)
+    }
+
+    func revokeApproval(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
+        var revoked = draft
+        revoked.approvedAt = nil
+        return try await persist(revoked)
+    }
+
+    private func persist(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
+        try Task.checkCancellation()
+        let image = draft.imageURL.standardizedFileURL
+        let association = try await validatedAssociation(
+            for: image,
+            memoSHA256: draft.memoSHA256,
+            memoByteCount: draft.memoByteCount,
+            profileIdentifier: draft.associationProfileIdentifier
+        )
+        let normalizedReview = draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedReview.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
+        var persistedDraft = draft
+        persistedDraft.reviewedText = normalizedReview
+        let record = VoiceMemoTranscriptRecord(
+            sourceImageFilename: image.lastPathComponent,
+            sourceMemoFilename: association.memoURL.lastPathComponent,
+            memoByteCount: draft.memoByteCount,
+            memoSHA256: draft.memoSHA256,
+            associationProfileIdentifier: draft.associationProfileIdentifier,
+            localeIdentifier: draft.localeIdentifier,
+            provider: draft.provider,
+            providerModel: draft.providerModel,
+            generatedAt: draft.generatedAt,
+            generatedText: draft.generatedText,
+            reviewedText: normalizedReview,
+            approvedAt: draft.approvedAt
+        )
+        _ = try await saveTranscript(record, image, image.deletingLastPathComponent())
+        try Task.checkCancellation()
+        _ = try await validatedAssociation(
+            for: image,
+            memoSHA256: draft.memoSHA256,
+            memoByteCount: draft.memoByteCount,
+            profileIdentifier: draft.associationProfileIdentifier
+        )
+        return persistedDraft
+    }
+
+    private func validatedAssociation(
+        for imageURL: URL,
+        memoSHA256: String,
+        memoByteCount: Int64,
+        profileIdentifier: String
+    ) async throws -> VoiceMemoAssociation {
+        guard case .available(let association) = try lookup(imageURL),
+              association.profileIdentifier == profileIdentifier else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        let revision = try await captureRevision(association.memoURL)
+        guard revision.sha256 == memoSHA256,
+              revision.byteCount == memoByteCount,
+              case .available(association) = try lookup(imageURL) else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        return association
     }
 }

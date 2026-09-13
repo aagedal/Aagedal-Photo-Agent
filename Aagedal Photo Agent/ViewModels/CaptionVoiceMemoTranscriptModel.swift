@@ -8,6 +8,7 @@ final class CaptionVoiceMemoTranscriptModel {
     private(set) var isChecking = false
     private(set) var isDownloading = false
     private(set) var isTranscribing = false
+    private(set) var isSavingReview = false
     private(set) var errorMessage: String?
     var selectedLocaleIdentifier = Locale.current.identifier
 
@@ -23,19 +24,26 @@ final class CaptionVoiceMemoTranscriptModel {
     func load(_ imageURL: URL?) async {
         cancel(resetDraft: true)
         self.imageURL = imageURL?.standardizedFileURL
-        guard imageURL != nil else { return }
+        guard let imageURL = self.imageURL else { return }
         generation &+= 1
         let requested = generation
         isChecking = true
         errorMessage = nil
         let work = Task { [service, selectedLocaleIdentifier] in
+            var saved: VoiceMemoTranscriptDraft?
+            var loadError: String?
+            do { saved = try await service.loadPersistedDraft(imageURL: imageURL) }
+            catch is CancellationError { return }
+            catch { loadError = error.localizedDescription }
             let result = await service.availability(
                 preferredLocale: Locale(identifier: selectedLocaleIdentifier)
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard self.generation == requested else { return }
+                self.draft = saved
                 self.availability = result
+                self.errorMessage = loadError
                 if let selected = result.selectedLocale {
                     self.selectedLocaleIdentifier = selected.identifier
                 }
@@ -118,8 +126,70 @@ final class CaptionVoiceMemoTranscriptModel {
 
     func updateReviewedText(_ text: String) {
         guard var draft else { return }
+        let approved = draft.isApproved
+        let previous = draft
         draft.reviewedText = text
+        if approved { draft.approvedAt = nil }
         self.draft = draft
+        guard approved else { return }
+
+        isSavingReview = true
+        errorMessage = nil
+        let requested = generation
+        Task { [service] in
+            do {
+                let saved = try await service.revokeApproval(draft)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard self.generation == requested else { return }
+                    self.draft = saved
+                    self.isSavingReview = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    if self.generation == requested { self.isSavingReview = false }
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.generation == requested else { return }
+                    self.draft = previous
+                    self.errorMessage = "The edit was not kept because transcript approval could not be revoked. "
+                        + error.localizedDescription
+                    self.isSavingReview = false
+                }
+            }
+        }
+    }
+
+    func approve() async {
+        guard let draft, !isSavingReview, !isDownloading, !isTranscribing else { return }
+        startOperation()
+        let requested = generation
+        isSavingReview = true
+        errorMessage = nil
+        let work = Task { [service] in
+            do {
+                let saved = try await service.approve(draft)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard self.generation == requested else { return }
+                    self.draft = saved
+                    self.isSavingReview = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    if self.generation == requested { self.isSavingReview = false }
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.generation == requested else { return }
+                    self.errorMessage = error.localizedDescription
+                    self.isSavingReview = false
+                }
+            }
+        }
+        task = work
+        await work.value
     }
 
     func cancel(resetDraft: Bool = false) {
@@ -129,6 +199,7 @@ final class CaptionVoiceMemoTranscriptModel {
         isChecking = false
         isDownloading = false
         isTranscribing = false
+        isSavingReview = false
         errorMessage = nil
         if resetDraft {
             availability = nil

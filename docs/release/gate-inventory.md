@@ -570,15 +570,14 @@ Do not spend release time implementing excluded conditional analyzers.
 ```
 
 **Current status:** [Cycle 23](cycle-23-voice-memo-transcription-foundation-2026-09-13.md) implements
-the first Apple on-device slice: runtime language/asset state, explicit download, cancellable analysis,
-exact-WAV and association revalidation, stale-navigation rejection, distinct generated/reviewed text,
-and an editable in-memory draft that cannot write metadata. Durable review/approval, sidecar survival,
-the broader injected failure matrix and native/offline/Sony evidence remain incomplete.
+the Apple on-device recognition foundation. [Cycle 24](cycle-24-voice-memo-transcript-review-2026-09-13.md)
+adds serialized exact-WAV-bound generated/reviewed persistence, explicit approval, edit-triggered
+revocation, unknown/newer-schema protection and survival across ordinary save cleanup, copy and
+relocation. The broader injected failure matrix, metadata-variable application and native/offline/Sony
+evidence remain incomplete.
 
-**Smallest next action/evidence:** Persist the source-bound generated/reviewed provenance through the
-existing serialized sidecar transaction, add explicit approval/revocation, prove unrelated save/history/
-move/archive paths preserve it, and complete malformed/empty/finalization/install-cancellation tests before
-native offline and authorized-Sony recognition drills.
+**Smallest next action/evidence:** Complete malformed/empty/finalization/install-cancellation and
+reservation-limit tests, then run native offline and authorized-Sony recognition/relaunch drills.
 
 ### J-VOICE-VARIABLE
 
