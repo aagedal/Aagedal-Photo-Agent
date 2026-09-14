@@ -33,7 +33,7 @@ deadline-driven journalistic metadata work, with one clear product promise:
 
 > From card to picture desk — captioned, standards-checked, and delivered with proof.
 
-This plan covers five connected initiatives:
+This plan covers six connected initiatives:
 
 1. A dedicated **Caption Workspace** for fast, image-by-image metadata work.
 2. Stronger **IPTC standards coverage and interoperability guarantees**.
@@ -42,6 +42,9 @@ This plan covers five connected initiatives:
    delivery into one resumable workflow.
 5. **Sony Alpha voice-memo support**, which keeps camera-recorded WAV companions associated with
    their images and makes a reviewed transcript available to metadata templates.
+6. A local **MCP automation server**, which exposes the existing verified face, template,
+   transcription, and IPTC workflows to AI clients without giving a model an unreviewed path around
+   Photo Agent's preservation and conflict checks.
 
 The order below is deliberate. Standards and validation become shared infrastructure; Caption
 Workspace and Batch Rename then use that infrastructure; Deadline Mode composes all three rather
@@ -79,12 +82,20 @@ than reimplementing their rules.
 - Machine-readable delivery receipts and resumable activity history.
 - Sony Alpha camera voice-memo WAV ingest, image association, local transcription, and an explicit
   metadata-variable path into Description or Extended Description.
+- An opt-in, locally launched MCP server for explicit photo/folder targets, long-running operation
+  status, metadata inspection, template application, transcription, and revision-bound IPTC patches.
+- Apple on-device speech and the same FFmpeg binary with built-in whisper.cpp used by Aagedal Media
+  Converter as selectable local transcription providers. FFmpeg-backed input may use an allowlisted
+  set of its supported audio containers/codecs rather than requiring a separate pre-conversion step.
 
 ### Deferred
 
 - A full catalog/DAM or cross-folder database.
 - Multi-user live collaboration and server-side assignment management.
 - Free-form AI caption generation.
+- An embedded llama.cpp runtime, downloadable general-purpose GGUF models, or an in-app generative
+  proofreading provider. MCP-connected models may propose changes through the guarded IPTC patch
+  workflow in 3.0; integrated local-LLM inference is a 3.1 feature.
 - Production claims for C2PA signing until the existing experimental implementation is verified
   end to end against external validators and trusted signing identities.
 - Every specialist stock, artwork, licensing, and accessibility field in IPTC Extension. The model
@@ -1412,6 +1423,123 @@ receipt/terminal-manifest crash window on relaunch.
 - [ ] Manual send to test FTP and SFTP servers, then inspect delivered files in Bridge and Photo
   Mechanic.
 
+## Phase 5A — local MCP automation and FFmpeg Whisper transcription
+
+**Exit gate:** a signed, opt-in local MCP server can invoke the existing Photo Agent workflows for
+explicitly authorized folders and photos; every mutation uses the same immutable intent,
+source-revision, preservation, conflict, verification, cancellation, and recovery boundaries as the
+interactive app. Apple Speech and FFmpeg's embedded whisper.cpp both feed the existing editable,
+reviewable transcript workflow without implicitly approving or applying text to IPTC fields.
+
+### MCP transport and authority
+
+- [ ] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex and
+  ChatGPT desktop. STDOUT must contain newline-delimited JSON-RPC messages only; diagnostics go to
+  STDERR. Do not expose a listening network service in 3.0.
+- [ ] Keep MCP disabled by default and provide an explicit Settings surface explaining local data
+  access, mutation authority, activity retention, and how to copy/install the client configuration.
+- [ ] Restrict the server to explicitly authorized folder roots. Canonicalize paths, reject aliases,
+  symlink escapes, special files, hidden app-owned staging as input, and targets outside the granted
+  roots before reading private metadata or starting work.
+- [ ] Define one shared automation facade over production services rather than scripting SwiftUI or
+  depending on the current UI selection. Every request carries explicit folder/photo URLs.
+- [ ] Coordinate MCP and GUI operations on the same photo/folder. A second process must not bypass
+  the metadata coordinator, face-scan/rename quiescence, retained-write ownership, or transaction
+  reservations; refuse unsafe overlap instead of relying on last-writer-wins behavior.
+- [ ] Declare accurate MCP tool behavior/annotations so clients can distinguish read-only inspection
+  from filesystem and metadata mutations. Photo Agent's own authorization and conflict checks remain
+  authoritative even when a client is configured to auto-approve a tool.
+- [ ] Treat filenames, IPTC text, transcript text, template values, and model-produced strings as
+  untrusted data. Never interpret returned metadata as MCP instructions or leak values through logs,
+  errors, operation history, or tool descriptions.
+
+### Tool and operation contract
+
+- [ ] Implement read-only capability and discovery tools for server version, supported formats,
+  authorized roots, metadata templates, Develop templates, transcription providers, and provider
+  readiness. Identify templates by stable UUID, not display name.
+- [ ] Implement `get_photo_metadata` for explicit photo URLs. Return typed descriptive IPTC values,
+  their effective source/carrier, pending/conflict state, and opaque revision tokens for the source,
+  app sidecar, and XMP evidence required by a later write. Bound batch and text output sizes.
+- [ ] Implement `start_face_scan` for one authorized folder, with incremental/full-scan intent,
+  face-model readiness, rename-quiescence checks, and an operation identifier. It must not silently
+  download a face model or replace an active scan.
+- [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
+  per-photo variable resolution, stable template identity, exact affected-field preview, and the
+  existing all-or-nothing authority checks before any mutation.
+- [ ] Implement Develop-template application for an explicit photo set. Resolve each target's
+  decoder/as-shot state independently, regenerate layer identifiers, honor the template's crop
+  policy, preserve unrelated XMP, invalidate relevant caches, and use the retained Primary Develop
+  write/recovery path rather than copying one image's transient editor state across the batch.
+- [ ] Implement batch voice transcription for explicit photos. Return one durable operation with
+  per-photo progress/outcomes, support cancellation, revalidate each associated audio revision, and
+  publish editable drafts only. Transcription must never imply review, approval, template expansion,
+  or an IPTC write.
+- [ ] Implement a two-phase IPTC proofreading boundary: `prepare_iptc_patch` accepts field-level
+  proposed changes and exact read tokens, then returns normalized before/after values, validation,
+  preservation warnings, and an immutable expiring plan; `commit_iptc_patch` consumes that exact
+  plan and refuses any source/JSON/XMP/approval drift before verified semantic read-back.
+- [ ] Limit direct MCP IPTC patches to registered descriptive fields and typed operations. Reject
+  unknown field identifiers and whole-document replacement; do not let a model overwrite Camera Raw,
+  C2PA, technical metadata, unedited XMP namespaces, transcript provenance, or app-private records.
+- [ ] Implement `get_operation_status` and `cancel_operation` for face scans, template batches,
+  transcription, and IPTC commits. Status must distinguish queued/running/completed/cancelled,
+  verified success, definite failure, partial/uncertain mutation, retained recovery, and stale plan.
+
+### FFmpeg Whisper provider
+
+- [ ] Replace the photo-only FFmpeg artifact with the exact reproducible Aagedal Media Converter
+  FFmpeg build that statically includes whisper.cpp, while proving that all currently supported Photo
+  Agent AVIF/JPEG XL/image decoding and encoding capabilities remain present.
+- [ ] Record the expanded FFmpeg artifact, upstream revisions, build recipe, architectures,
+  capabilities, SHA-256, signing/notarization treatment, license, and notices in the bundled-component
+  manifest and release validation. Measure the installed and compressed update-size change.
+- [ ] Adapt the Media Converter Whisper model definitions, download lifecycle, subprocess deadline,
+  cancellation, path escaping/redaction, and FFmpeg progress handling behind Photo Agent's
+  transcription-provider protocol rather than creating a second standalone whisper.cpp executable.
+- [ ] Use the FFmpeg `whisper` filter's JSON output as canonical inference output, retaining segment
+  timing/language evidence while deriving the editable plain-text draft. Persist exact provider,
+  FFmpeg/whisper build, model identifier/hash, language/translation settings, and generation time.
+- [ ] Harden curated model delivery to Photo Agent's component standard: versioned signed descriptor,
+  exact byte count and SHA-256, bounded download, regular-file/path containment checks, atomic install,
+  verified receipt, cancellation cleanup, update/rollback/removal, and explicit user initiation.
+- [ ] Support explicitly imported custom compatible models through a retained security-scoped
+  bookmark and clear unverifiable/custom provenance; never represent a custom model as a curated or
+  signed Photo Agent component.
+- [ ] Generalize associated-audio admission through an explicit allowlist backed by the bundled
+  FFmpeg build (initially WAV, MP3, M4A/AAC, FLAC, and Ogg/Opus). Preserve the existing exact-byte
+  relationship, copy/move/archive/recovery/delivery, collision, and approval-revocation guarantees for
+  every admitted format; a matching basename alone remains non-authoritative.
+- [ ] Keep Apple on-device speech available. Provider choice is explicit and persisted; an unavailable
+  provider reports actionable readiness without silently switching providers or downloading assets.
+
+### Verification
+
+- [ ] Protocol tests cover initialize, tool discovery, structured success/error results, malformed
+  JSON-RPC, unsupported methods/versions, notification behavior, EOF, cancellation, output bounds,
+  and the rule that no non-protocol bytes reach STDOUT.
+- [ ] Tool-contract tests cover unauthorized roots, traversal/symlink/special-file rejection,
+  stale revision/plan refusal, concurrent GUI/MCP conflicts, duplicate requests, client disconnect,
+  app/MCP relaunch, and privacy-safe diagnostics.
+- [ ] Mutation fault injection proves no silent partial batch success and verifies exact recovery
+  evidence across prepare, sidecar/XMP/image write, face persistence, Develop persistence, transcript
+  publication, read-back, and cancellation boundaries.
+- [ ] Whisper fixtures cover every admitted audio container, mono/stereo/sample-rate conversion,
+  empty/malformed/no-speech audio, Unicode/Nordic output, automatic and explicit language, optional
+  VAD, GPU-unavailable fallback, timeout, cancellation, source replacement, and deterministic parsing
+  of FFmpeg JSON output.
+- [ ] Model lifecycle tests cover descriptor/signature/hash/size mismatch, interrupted or superseded
+  downloads, disk full, alias/retargeting attempts, atomic install, verified reuse, rollback, removal,
+  update, custom model access loss, and offline installed-model transcription.
+- [ ] Run native end-to-end checks from at least one real MCP client: metadata read; prepared and
+  cancelled IPTC proofread; confirmed/read-back patch; metadata and Develop template batches; face
+  scan progress/cancellation; Apple and Whisper transcript drafts; stale-source refusal; relaunch; and
+  concurrent GUI activity. Preserve exact before/after fixture identities and do not use private photos.
+- [ ] Update Settings/help, README, privacy disclosure, component/license inventory, CHANGELOG,
+  limitations, manual testing checklist, and release packaging/omission validators. State clearly
+  that MCP-connected AI and Whisper output are suggestions/drafts until explicitly confirmed or
+  approved, and that 3.0 does not embed a general-purpose LLM.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support
@@ -1517,6 +1645,9 @@ Each milestone is independently useful and should be releasable without waiting 
 3. **Rename release:** recipe engine, full preview, artifact-safe execution, and presets.
 4. **Deadline preview:** profiles, readiness dashboard, and Fix Next Issue, without transmission.
 5. **Verified delivery:** frozen plan, staging, read-back, upload confirmation, and receipt.
+6. **Local AI automation:** signed opt-in STDIO MCP tools over the verified workflow services,
+   followed by FFmpeg Whisper as an additional local transcript provider. llama.cpp/GGUF remains
+   outside 3.0.
 
 Do not hide incomplete foundations behind feature flags and call a milestone complete. A phase is
 complete only when model, persistence, migration, error states, tests, accessibility, documentation,
@@ -1535,6 +1666,10 @@ and a dated manual validation note are present.
 | Provenance | No C2PA, valid/trusted, valid/untrusted, invalid, protected source |
 | Failure | Permission, disk full, collision, source changed, cancellation, network loss, app relaunch |
 | Interop | Reopen in Photo Agent, current Bridge, current Photo Mechanic, IPTC test service |
+| MCP | STDIO initialize/list/call, authorized and rejected roots, client approval modes, disconnect/relaunch, bounded output |
+| Automation concurrency | GUI idle/active, duplicate calls, stale plans, overlapping photos/folders, cancellation and retained recovery |
+| Transcription provider | Apple Speech, FFmpeg Whisper, unavailable/offline, installed/downloaded/custom model, provider change |
+| Audio input | WAV, MP3, M4A/AAC, FLAC, Ogg/Opus, malformed/empty, replaced during inference |
 
 ## Product success criteria
 
@@ -1549,6 +1684,11 @@ and a dated manual validation note are present.
   frozen delivery plan.
 - The app can publish an honest, reproducible IPTC field-support and interoperability report.
 - No test or manual validation finds silent loss of unrelated metadata.
+- A local MCP client can inspect metadata and automate the supported batch workflows without using
+  current UI selection or bypassing Photo Agent's preview, revision, preservation, and read-back
+  guarantees.
+- Apple Speech and FFmpeg Whisper produce source-bound editable transcript drafts with honest
+  provider/model provenance; neither provider implicitly approves text or changes IPTC metadata.
 
 ## Decisions to confirm during Phase 0
 
@@ -1565,3 +1705,9 @@ Defaults below allow implementation to proceed unless evidence supports changing
    unless explicitly requested. **Default: privacy-preserving.**
 6. **C2PA:** warn and preserve existing credentials where possible, but keep signing outside the
    production Deadline Mode promise until separately verified. **Default: experimental only.**
+7. **MCP transport:** ship a signed, local STDIO server that is disabled until explicitly enabled;
+   do not add a listening HTTP service in 3.0. **Default: bundled STDIO.**
+8. **Local AI runtime:** reuse Aagedal Media Converter's FFmpeg build with embedded whisper.cpp and
+   its model lifecycle as the second transcription provider. Defer llama.cpp and general-purpose
+   GGUF proofreading to 3.1; MCP-connected models use the two-phase IPTC patch workflow meanwhile.
+   **Default: Whisper in 3.0, llama.cpp/GGUF in 3.1.**

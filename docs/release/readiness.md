@@ -1,6 +1,6 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification; installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Newly approved mandatory 3.0 scope adds an opt-in local STDIO MCP server and Aagedal Media Converter's FFmpeg build with embedded whisper.cpp as a second transcription provider; those additions are planned but not implemented. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-14
 **Latest implementation state:** Cycle 33 voice-memo accessibility and offline prerequisite (2,907 tests in the serial run, the focused native accessibility test and repository checks passed; the preview now exports exact summary/photo/field semantics and privacy-safe typed lifecycle announcements). The production-recognizer drill reaches the explicit language-download state and skips because English on-device speech is not installed. Independent review, spoken VoiceOver and offline/Sony evidence remain open. Cycle 31's 10-test pass remains the latest complete UI-smoke-target result because later whole-target attempts encountered desktop/menu focus instability.
 **Latest native evidence:** Cycle 33 observes the two-photo/eight-field preview accessibility tree and keyboard cancellation in a single built-app launch. Cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
@@ -291,8 +291,9 @@ review, exact automated results, native interactions, artifact hashes and limita
 The [Caption follow-up](cycle-03-caption-baseline-2026-09-10.md) records cycle 3
 source, 111 focused tests, 2,449 full tests, native unchanged-draft byte checks and real edits.
 The [gate inventory](gate-inventory.md) preserves all 61 unchecked baseline criteria with
-classifications and concrete next actions. Current authoritative plans contain 60 unchecked criteria
-(9 audit, 23 investigation, 22 journalistic, 6 solar). Playback's narrow implementation criterion is checked;
+classifications and concrete next actions. Current authoritative plans contain 86 unchecked criteria
+(9 audit, 23 investigation, 48 journalistic, 6 solar) after the newly approved MCP/Whisper phase was
+added. Playback's narrow implementation criterion is checked;
 broad lifecycle, real-sample and accessibility gates remain open. The audit remains 66/75 and
 investigation delivery 119/142. No final release candidate was offered for acceptance.
 
@@ -356,15 +357,16 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    authority refusal and two distinct approved reviews applied as eight exact field changes. Continue
    native offline/Sony drills plus VoiceOver evidence and native and real-server image-plus-WAV
    delivery.
-6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
+6. Implement the newly approved mandatory [Phase 5A MCP/Whisper scope](../journalistic-metadata-workflow-plan.md#phase-5a--local-mcp-automation-and-ffmpeg-whisper-transcription): a signed opt-in STDIO MCP entry point over shared production services; explicit authorized roots and photo targets; operation status/cancellation; face scan, metadata/Develop template and batch transcription tools; revision-bound metadata reads and two-phase IPTC patch commits; and the Aagedal Media Converter FFmpeg build with embedded whisper.cpp plus hardened model delivery. Preserve Apple Speech and the existing review/approval boundary. llama.cpp and general GGUF inference remain 3.1.
+7. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
    real Sony, long error scrolling, face-group Trash, Bridge/Photo Mechanic, disposable transports,
    accessibility/IME/display, solar/reports and measured performance. Narrow evidence is not a full gate.
-7. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
+8. Establish missing hardware/model-lifecycle/privacy/remote-CI evidence. Qualified legal review
    and protected remote branch enforcement remain external prerequisites. Complete independent
    work before an actionable blocker handoff; do not silently move mandatory gates to acceptance.
-8. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
+9. Once unconditional gates pass, obtain independent readiness review, build/launch the exact
    candidate, finalize and visually verify the [HTML checklist](manual-testing-checklist.html),
    then follow [the coordinator protocol](coordinator.md) before notifying for acceptance.
 
@@ -372,14 +374,14 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 | Gate | Current disposition | Required evidence |
 | --- | --- | --- |
-| Required features | Open | Transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
+| Required features | Open | MCP/Whisper implementation and verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
 | Automated regression and package | Cycle 32: 2,907 serial tests, focused native batch test and repository checks passed; cycle 31 retains the latest complete 10-test UI run | Complete UI target rerun, packaging and exact-candidate release checks remain |
 | Computer-use workflows | Native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
 | External interoperability/transport | Open | Actual Bridge/Photo Mechanic and disposable FTP/FTPS/SFTP evidence |
-| Model distribution/offline lifecycle | Open | Required signed artifact/server/install/offline/update/rollback evidence |
+| Model distribution/offline lifecycle | Open | Required AuraFace and Whisper signed artifact/server/install/offline/update/rollback evidence |
 | Privacy/legal/remote CI | External dependency | Qualified review and authorized remote configuration evidence |
 | Final user acceptance | Not started | Candidate-specific HTML results after readiness decision |
 | Signing/notarization/distribution | After applicable gates | Separate authorization and release-plan evidence |
