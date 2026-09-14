@@ -588,10 +588,14 @@ verification also prevents subsecond production timestamps from causing false po
 [Cycle 31](cycle-31-voice-memo-native-application-2026-09-13.md) then exercises the built app's
 exact variable preview, Escape cancellation, Return confirmation, four supported destinations and
 normal metadata read-back after relaunch while preserving the relationship and WAV bytes.
+[Cycle 33](cycle-33-voice-memo-accessibility-offline-prerequisite-2026-09-14.md) adds a gated
+production-recognizer/relaunch drill. It reaches the explicit Download Language state and skips
+because the English on-device speech asset is not installed; the app does not install that
+system-managed prerequisite implicitly.
 
-**Smallest next action/evidence:** Run an installed-language transcription offline in the built app,
-relaunch and verify the persisted review. Then repeat malformed, empty, silent, long-cancellation
-and reservation recovery with authorized Sony WAV material.
+**Smallest next action/evidence:** Explicitly install the English Apple on-device speech language,
+disconnect networking, rerun the gated built-app drill and retain its relaunch evidence. Then repeat
+malformed, empty, silent, long-cancellation and reservation recovery with authorized Sony WAV material.
 
 ### J-VOICE-VARIABLE
 
@@ -617,9 +621,15 @@ extends the built-app path to a two-photo selection: a missing, unapproved or st
 refuses the complete batch with every image, sidecar, relationship and WAV byte unchanged, while two
 approved reviews produce an exact eight-field preview and persist each photo's own text. VoiceOver and
 authentic-Sony evidence remain incomplete, so the authoritative checkbox stays open.
+[Cycle 33](cycle-33-voice-memo-accessibility-offline-prerequisite-2026-09-14.md) moves accessibility
+focus to the preview heading, exports stable exact summary/photo/field groups and adds privacy-safe
+typed preview/refusal/cancel/success/failure announcements. Its one-launch native accessibility-tree
+test observes both photos and all eight fields. Actual spoken VoiceOver traversal and announcement
+observation remains incomplete, so the authoritative checkbox stays open.
 
-**Smallest next action/evidence:** Complete VoiceOver traversal and announcement evidence for the
-multi-image native preview and refusal result, then repeat with authorized Sony material.
+**Smallest next action/evidence:** Observe and record actual VoiceOver traversal and spoken status
+announcements for the multi-image native preview and refusal result, then repeat with authorized Sony
+material.
 
 ### J-VOICE-DELIVERY
 

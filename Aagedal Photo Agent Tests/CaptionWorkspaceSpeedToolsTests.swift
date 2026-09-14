@@ -770,6 +770,28 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(source.contains("caption.voiceMemo.transcriptDraft"))
         #expect(source.contains("caption.voiceMemo.approveTranscript"))
         #expect(source.contains("It does not change Description or any other IPTC field"))
+
+        let preview = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Metadata/VoiceMemoVariablePreviewView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(preview.contains("@AccessibilityFocusState"))
+        #expect(preview.contains("voiceMemoTranscript.summary"))
+        #expect(preview.contains("voiceMemoTranscript.photo."))
+        #expect(preview.contains("voiceMemoTranscript.field."))
+        #expect(preview.contains("AccessibilityAnnouncementCenter.post(.information(.voiceMemoTranscriptPreview))"))
+
+        let metadataModel = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/ViewModels/MetadataViewModel.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(metadataModel.contains(".failure(.voiceMemoTranscriptRefused)"))
+        #expect(metadataModel.contains(".success(.voiceMemoTranscriptApplied)"))
+        #expect(metadataModel.contains(".cancellation(.voiceMemoTranscriptApplication)"))
     }
 
     @Test("approval and edit revocation persist generated and reviewed provenance")

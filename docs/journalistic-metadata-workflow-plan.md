@@ -889,6 +889,18 @@ see [cycle 32 evidence](release/cycle-32-voice-memo-batch-application-2026-09-14
 target attempt was interrupted by unrelated desktop focus, so cycle 31 retains the latest complete
 10-test whole-target result. Offline, authorized-Sony, VoiceOver and real-server evidence remains open.
 
+**Coordinator cycle 33 — 2026-09-14:** The transcript-application sheet now moves accessibility
+focus to its heading, exposes stable exact summary/photo/field semantics and posts fixed privacy-safe
+typed announcements for preview, refusal, cancel, success and failure. A dedicated one-launch native
+test observes both photos, all eight field groups and the exact summary, then closes with Escape. A
+new opt-in built-app drill creates disposable local speech and exercises the production on-device
+recognizer through review, approval and relaunch; on this Mac it reaches the explicit Download
+Language state and skips because the English speech asset is not installed. The complete 2,907-test
+serial suite and repository validation pass; see
+[cycle 33 evidence](release/cycle-33-voice-memo-accessibility-offline-prerequisite-2026-09-14.md).
+Actual spoken VoiceOver observation, completed offline recognition, authorized-Sony and real-server
+evidence remain open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

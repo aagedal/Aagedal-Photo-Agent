@@ -93,6 +93,9 @@ struct AccessibilityKeyboardAuditTests {
         #expect(announcements.contains(.success(.templateSaved)))
         #expect(announcements.contains(.failure(.templateSave)))
         #expect(announcements.contains(.cancellation(.templateEditing)))
+        #expect(announcements.contains(.information(.voiceMemoTranscriptPreview)))
+        #expect(announcements.contains(.failure(.voiceMemoTranscriptRefused)))
+        #expect(announcements.contains(.success(.voiceMemoTranscriptApplied)))
         #expect(announcements.contains(.recovery(.contentCredentialsInspection)))
 
         for announcement in announcements {
@@ -111,6 +114,7 @@ struct AccessibilityKeyboardAuditTests {
 
         for path in [
             "Aagedal Photo Agent/Views/Metadata/CaptionWorkspaceView.swift",
+            "Aagedal Photo Agent/Views/Metadata/VoiceMemoVariablePreviewView.swift",
             "Aagedal Photo Agent/Views/Templates/TemplateEditorView.swift",
             "Aagedal Photo Agent/Views/Templates/DevelopTemplateListView.swift",
             "Aagedal Photo Agent/Views/Browser/C2PADetailSheet.swift",

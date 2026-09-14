@@ -153,6 +153,55 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testInstalledLanguageTranscribesLocalSpeechAndPersistsReviewAcrossRelaunch() throws {
+        guard ProcessInfo.processInfo.environment["APA_RUN_NATIVE_SPEECH"] == "1" else {
+            throw XCTSkip("Set APA_RUN_NATIVE_SPEECH=1 for the installed-language release drill")
+        }
+        let fixture = try makeSyntheticSpeechVoiceMemoFolder()
+        let originalRelationship = try Data(contentsOf: fixture.relationshipURL)
+        let originalMemo = try Data(contentsOf: fixture.memoURL)
+        launch(workflow: "caption", folder: fixture.folder, localeIdentifier: "en_US")
+
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
+        let transcribe = app.buttons["caption.voiceMemo.transcribe"]
+        if !transcribe.waitForExistence(timeout: 10) {
+            if app.buttons["caption.voiceMemo.downloadLanguage"].exists {
+                throw XCTSkip("The English Apple on-device speech asset is not installed on this Mac")
+            }
+            throw XCTSkip("Apple on-device speech is unavailable for the disposable English fixture")
+        }
+
+        transcribe.click()
+        let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 45))
+        let generated = (draft.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        XCTAssertFalse(generated.isEmpty)
+        XCTAssertTrue(generated.localizedCaseInsensitiveContains("photo"), "Unexpected transcript: \(generated)")
+
+        draft.click()
+        draft.typeKey("a", modifierFlags: .command)
+        draft.typeText(syntheticReviewedTranscript)
+        let approval = app.buttons["caption.voiceMemo.approveTranscript"]
+        XCTAssertTrue(approval.waitForExistence(timeout: 5))
+        XCTAssertTrue(approval.isEnabled)
+        approval.click()
+        XCTAssertTrue(waitForTranscript(
+            syntheticReviewedTranscript,
+            approved: true,
+            at: fixture.sidecarURL
+        ))
+
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, localeIdentifier: "en_US")
+        let relaunchedDraft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(relaunchedDraft.waitForExistence(timeout: 15))
+        XCTAssertEqual(relaunchedDraft.value as? String, syntheticReviewedTranscript)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].isEnabled)
+        XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
+        XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
+    }
+
+    @MainActor
     func testApprovedVoiceMemoAppliesOnlyAfterPreviewAndReadsBackAcrossRelaunch() throws {
         let fixture = try makeApprovedVoiceMemoFolder(includePendingMetadata: true)
         let templateRoot = try makeVoiceMemoTemplateRoot()
@@ -261,6 +310,40 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testVoiceMemoBatchPreviewExportsAccessibleStructure() throws {
+        let templateRoot = try makeVoiceMemoTemplateRoot()
+        let fixture = try makeVoiceMemoBatch(authorities: [.approved, .approved])
+        launch(workflow: "voice-memo-variable-batch", folder: fixture.folder, templateRoot: templateRoot)
+        XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 15))
+        openBrowserVoiceMemoTemplate()
+
+        XCTAssertTrue(app.descendants(matching: .any)["voiceMemoTranscript.preview"].waitForExistence(timeout: 15))
+        let summary = app.descendants(matching: .any)["voiceMemoTranscript.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        XCTAssertEqual(summary.label, "Transcript change summary")
+        XCTAssertEqual(
+            summary.value as? String,
+            "Replace will change 8 fields across 2 photos. Nothing is written until you confirm."
+        )
+        for item in fixture.items {
+            let photo = app.descendants(matching: .any)[
+                "voiceMemoTranscript.photo.\(item.imageURL.lastPathComponent)"
+            ]
+            XCTAssertTrue(photo.exists)
+            XCTAssertTrue(photo.label.contains("4 changed fields"))
+            for field in ["title", "description", "extendedDescription", "instructions"] {
+                XCTAssertTrue(app.descendants(matching: .any)[
+                    "voiceMemoTranscript.field.\(item.imageURL.lastPathComponent).\(field)"
+                ].exists)
+            }
+        }
+        XCTAssertTrue(app.buttons["voiceMemoTranscript.confirm"].exists)
+        XCTAssertTrue(app.buttons["voiceMemoTranscript.cancel"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertFalse(app.descendants(matching: .any)["voiceMemoTranscript.preview"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testBatchRenameOpensPreparedPreviewForSelection() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "batch-rename", folder: photos)
@@ -314,7 +397,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         destination: URL? = nil,
         profileStore: URL? = nil,
         knownPeopleRoot: URL? = nil,
-        templateRoot: URL? = nil
+        templateRoot: URL? = nil,
+        localeIdentifier: String? = nil
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -326,6 +410,9 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             // Argument-domain defaults are process-only and keep this workflow away
             // from the user's iCloud-routed Known People store.
             app.launchArguments += ["-knownPeople.iCloudEnabled", "NO"]
+        }
+        if let localeIdentifier {
+            app.launchArguments += ["-AppleLocale", localeIdentifier]
         }
         append("--ui-test-folder", folder)
         append("--ui-test-source", source)
@@ -490,6 +577,57 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         )
     }
 
+    @MainActor
+    private func makeSyntheticSpeechVoiceMemoFolder() throws -> VoiceMemoFixture {
+        let folder = fixtureRoot.appendingPathComponent(
+            "SyntheticSpeechVoiceMemo-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let imageName = "spoken-review.jpg"
+        let memoName = "spoken-review.WAV"
+        let imageURL = folder.appendingPathComponent(imageName)
+        let memoURL = folder.appendingPathComponent(memoName)
+        let imageData = try makeJPEG(index: 3)
+        try imageData.write(to: imageURL, options: .atomic)
+
+        guard let synthesizer = NSSpeechSynthesizer(voice: NSSpeechSynthesizer.defaultVoice),
+              synthesizer.startSpeaking("Local photo memo for the picture desk.", to: memoURL) else {
+            throw XCTSkip("Could not create the disposable local speech fixture")
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while synthesizer.isSpeaking, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        guard !synthesizer.isSpeaking,
+              let memoData = try? Data(contentsOf: memoURL),
+              memoData.count > 44 else {
+            synthesizer.stopSpeaking()
+            throw XCTSkip("The disposable local speech fixture did not finish rendering")
+        }
+
+        let relationshipURL = folder.appendingPathComponent(".\(imageName).voice-memo.json")
+        try writeJSON([
+            "schemaVersion": 2,
+            "profileIdentifier": "ui-smoke",
+            "imageFilename": imageName,
+            "memoFilename": memoName,
+            "imageIdentity": ["byteCount": imageData.count, "sha256": sha256(imageData)],
+            "memoIdentity": ["byteCount": memoData.count, "sha256": sha256(memoData)],
+            "provenance": "capturedAssociation",
+        ], to: relationshipURL)
+
+        let sidecarDirectory = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: sidecarDirectory, withIntermediateDirectories: true)
+        return VoiceMemoFixture(
+            folder: folder,
+            imageURL: imageURL,
+            memoURL: memoURL,
+            relationshipURL: relationshipURL,
+            sidecarURL: sidecarDirectory.appendingPathComponent("\(imageName).meta.json")
+        )
+    }
+
     private func makeVoiceMemoBatch(authorities: [TranscriptAuthority]) throws -> VoiceMemoBatchFixture {
         let folder = fixtureRoot.appendingPathComponent(
             "VoiceMemoBatch-\(UUID().uuidString)",
@@ -616,6 +754,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     private var transcriptText: String { "Approved UI smoke review" }
+    private var syntheticReviewedTranscript: String { "Reviewed local speech after native transcription" }
     private var initialHeadline: String { "Existing headline" }
     private var initialDescription: String { "Existing description" }
     private var initialExtendedDescription: String { "Existing extended description" }

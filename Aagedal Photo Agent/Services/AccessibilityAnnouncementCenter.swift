@@ -10,17 +10,25 @@ nonisolated enum AppAccessibilityAnnouncement: Equatable, Sendable {
         case templateSaved = "Template saved."
         case contentCredentialsLoaded = "Content Credentials inspection completed."
         case contentCredentialsNotFound = "No Content Credentials were found."
+        case voiceMemoTranscriptApplied = "Voice-memo transcript application completed."
     }
 
     nonisolated enum Failure: String, CaseIterable, Sendable {
         case templateSave = "Template wasn’t saved. Your edits are still here. Retry the save or save a new copy."
         case contentCredentialsInspection = "Content Credentials could not be inspected. Retry is available."
         case contentCredentialsValidation = "Content Credentials validation could not be completed. Retry is available."
+        case voiceMemoTranscriptRefused = "Voice-memo transcript application was refused. No photos were written."
+        case voiceMemoTranscriptApplication = "Voice-memo transcript application did not complete. Review the status and retry."
     }
 
     nonisolated enum Cancellation: String, CaseIterable, Sendable {
         case templateEditing = "Template editing cancelled."
         case contentCredentialsInspection = "Content Credentials inspection cancelled."
+        case voiceMemoTranscriptApplication = "Voice-memo transcript application cancelled. No photos were written."
+    }
+
+    nonisolated enum Information: String, CaseIterable, Sendable {
+        case voiceMemoTranscriptPreview = "Voice-memo transcript changes are ready to review. Nothing has been written."
     }
 
     nonisolated enum Recovery: String, CaseIterable, Sendable {
@@ -32,6 +40,7 @@ nonisolated enum AppAccessibilityAnnouncement: Equatable, Sendable {
     case success(Success)
     case failure(Failure)
     case cancellation(Cancellation)
+    case information(Information)
     case recovery(Recovery)
 
     var spokenText: String {
@@ -39,6 +48,7 @@ nonisolated enum AppAccessibilityAnnouncement: Equatable, Sendable {
         case .success(let announcement): announcement.rawValue
         case .failure(let announcement): announcement.rawValue
         case .cancellation(let announcement): announcement.rawValue
+        case .information(let announcement): announcement.rawValue
         case .recovery(let announcement): announcement.rawValue
         }
     }
@@ -47,6 +57,7 @@ nonisolated enum AppAccessibilityAnnouncement: Equatable, Sendable {
         Success.allCases.map(Self.success)
             + Failure.allCases.map(Self.failure)
             + Cancellation.allCases.map(Self.cancellation)
+            + Information.allCases.map(Self.information)
             + Recovery.allCases.map(Self.recovery)
     }
 }

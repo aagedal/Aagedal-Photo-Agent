@@ -5,15 +5,20 @@ struct VoiceMemoVariablePreviewView: View {
     let onConfirm: () -> Void
     let onCancel: () -> Void
     @FocusState private var isConfirmFocused: Bool
+    @AccessibilityFocusState private var isHeadingAccessibilityFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Review Voice-Memo Transcript Changes")
                 .font(.title2.weight(.semibold))
                 .accessibilityIdentifier("voiceMemoTranscript.preview")
+                .accessibilityFocused($isHeadingAccessibilityFocused)
 
-            Text("\(preview.action.rawValue) will change \(preview.affectedFieldCount) \(preview.affectedFieldCount == 1 ? "field" : "fields") across \(preview.affectedImageCount) \(preview.affectedImageCount == 1 ? "photo" : "photos"). Nothing is written until you confirm.")
+            Text(summaryText)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("Transcript change summary")
+                .accessibilityValue(summaryText)
+                .accessibilityIdentifier("voiceMemoTranscript.summary")
 
             Label(
                 "Supported transcript destinations are Description, Extended Description, Headline, and Instructions.",
@@ -51,11 +56,21 @@ struct VoiceMemoVariablePreviewView: View {
                                     valueLine("After", value: field.after)
                                 }
                                 .padding(.top, 2)
+                                .accessibilityElement(children: .contain)
+                                .accessibilityIdentifier(
+                                    "voiceMemoTranscript.field.\(row.imageURL.lastPathComponent).\(field.field.rawValue)"
+                                )
                             }
                         }
                         .padding(12)
                         .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
                         .accessibilityElement(children: .contain)
+                        .accessibilityLabel(
+                            "\(row.imageURL.lastPathComponent), \(row.writeDestination), \(row.fields.count) changed \(row.fields.count == 1 ? "field" : "fields")"
+                        )
+                        .accessibilityIdentifier(
+                            "voiceMemoTranscript.photo.\(row.imageURL.lastPathComponent)"
+                        )
                     }
                 }
             }
@@ -82,6 +97,8 @@ struct VoiceMemoVariablePreviewView: View {
         .frame(minWidth: 680, minHeight: 420)
         .onAppear {
             isConfirmFocused = preview.affectedImageCount > 0
+            isHeadingAccessibilityFocused = true
+            AccessibilityAnnouncementCenter.post(.information(.voiceMemoTranscriptPreview))
         }
     }
 
@@ -96,5 +113,12 @@ struct VoiceMemoVariablePreviewView: View {
         }
         .font(.callout)
         .accessibilityElement(children: .combine)
+    }
+
+    private var summaryText: String {
+        "\(preview.action.rawValue) will change \(preview.affectedFieldCount) "
+            + "\(preview.affectedFieldCount == 1 ? "field" : "fields") across "
+            + "\(preview.affectedImageCount) \(preview.affectedImageCount == 1 ? "photo" : "photos"). "
+            + "Nothing is written until you confirm."
     }
 }

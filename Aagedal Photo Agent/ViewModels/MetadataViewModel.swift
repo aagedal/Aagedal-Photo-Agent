@@ -2920,6 +2920,7 @@ final class MetadataViewModel {
         voiceMemoVariablePreview = nil
         variableProcessingStatus = "Voice-memo transcript application was cancelled; no metadata was written."
         variableProcessingHadFailures = false
+        AccessibilityAnnouncementCenter.post(.cancellation(.voiceMemoTranscriptApplication))
         synchronizeVariableLifecycleRetention()
     }
 
@@ -3595,6 +3596,7 @@ final class MetadataViewModel {
                 variableBatchOutcome = outcome
                 variableProcessingHadFailures = true
                 variableProcessingStatus = "Voice-memo transcript preview refused; 0 photos were written."
+                AccessibilityAnnouncementCenter.post(.failure(.voiceMemoTranscriptRefused))
                 if metadataLoadRequestID == loadID, selectedURLs == selected, currentFolderURL == folder,
                    editingMetadata == edited { saveError = outcome.attention?.message }
                 return
@@ -3731,6 +3733,13 @@ final class MetadataViewModel {
             variableBatchOutcome = outcome
             variableProcessingHadFailures = outcome.attention != nil
             variableProcessingStatus = "Variable processing: \(results.filter { $0.writeResult?.physicalResult?.completed == true }.count) written, \(results.filter { $0.writeResult?.savedToHistory == true }.count) saved to history, \(results.filter(\.unchanged).count) unchanged, \(results.filter { !$0.completed }.count) incomplete."
+            if transcriptBatch {
+                AccessibilityAnnouncementCenter.post(
+                    outcome.attention == nil
+                        ? .success(.voiceMemoTranscriptApplied)
+                        : .failure(.voiceMemoTranscriptApplication)
+                )
+            }
             if metadataLoadRequestID == loadID, selectedURLs == selected, currentFolderURL == folder, editingMetadata == edited {
                 saveError = outcome.attention?.message
             }
