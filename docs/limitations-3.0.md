@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 known limitations
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-09-13
+**Last reviewed:** 2026-09-15
 
 These are material product and evidence boundaries, not a list of unfinished internal tasks.
 
@@ -104,6 +104,20 @@ These are material product and evidence boundaries, not a list of unfinished int
 Face detection uses Apple Vision and face matching uses the optional packaged AuraFace CoreML model. A
 build without that model reports face recognition as unavailable and must not advertise scans as working.
 This is separate from the unapproved AI-origin analyzer described above.
+
+## Local automation boundary
+
+- Local MCP automation is off by default, uses a bundled STDIO helper, and opens no network listener.
+  Only explicitly selected, unchanged folder roots are eligible. The current implementation exposes
+  read-only capability/root/path-admission tools; production metadata, Develop, face, transcription,
+  status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
+  the server.
+- Folder authorization limits Photo Agent, not the connected client's own filesystem or network access.
+  Tool results can contain sensitive paths and, once metadata inspection is added, editorial values. The
+  connected client has its own privacy, retention, confirmation, and network behavior.
+- The bundled helper and strict admission tests do not yet constitute native end-to-end evidence from a
+  real MCP client. Cross-process GUI/MCP operation coordination, disconnect/relaunch/fault injection, and
+  complete protocol coverage remain open release gates.
 
 ## Privacy and legal readiness
 

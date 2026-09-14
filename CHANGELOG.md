@@ -10,6 +10,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added the first local automation foundation: a separately signed, hardened-runtime STDIO MCP
+  executable bundled with the app. Automation is off by default; Settings manages explicit folder
+  grants and a copyable Codex install command. The initial server exposes read-only capability,
+  authorized-root and path-admission tools, rejects aliases/links, traversal, special files,
+  changed roots and Photo Agent private folders, and never opens a network listener. Production
+  metadata, face, template, transcription and mutation tools remain unavailable until their shared
+  operation/recovery boundaries are implemented.
 - Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
   shared-memo handling. Destination metadata is protected from orphan-sidecar collisions, and
   toolbar actions have independent accessibility identities.

@@ -1433,12 +1433,12 @@ reviewable transcript workflow without implicitly approving or applying text to 
 
 ### MCP transport and authority
 
-- [ ] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex and
+- [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex and
   ChatGPT desktop. STDOUT must contain newline-delimited JSON-RPC messages only; diagnostics go to
   STDERR. Do not expose a listening network service in 3.0.
-- [ ] Keep MCP disabled by default and provide an explicit Settings surface explaining local data
+- [x] Keep MCP disabled by default and provide an explicit Settings surface explaining local data
   access, mutation authority, activity retention, and how to copy/install the client configuration.
-- [ ] Restrict the server to explicitly authorized folder roots. Canonicalize paths, reject aliases,
+- [x] Restrict the server to explicitly authorized folder roots. Canonicalize paths, reject aliases,
   symlink escapes, special files, hidden app-owned staging as input, and targets outside the granted
   roots before reading private metadata or starting work.
 - [ ] Define one shared automation facade over production services rather than scripting SwiftUI or
@@ -1446,10 +1446,10 @@ reviewable transcript workflow without implicitly approving or applying text to 
 - [ ] Coordinate MCP and GUI operations on the same photo/folder. A second process must not bypass
   the metadata coordinator, face-scan/rename quiescence, retained-write ownership, or transaction
   reservations; refuse unsafe overlap instead of relying on last-writer-wins behavior.
-- [ ] Declare accurate MCP tool behavior/annotations so clients can distinguish read-only inspection
+- [x] Declare accurate MCP tool behavior/annotations so clients can distinguish read-only inspection
   from filesystem and metadata mutations. Photo Agent's own authorization and conflict checks remain
   authoritative even when a client is configured to auto-approve a tool.
-- [ ] Treat filenames, IPTC text, transcript text, template values, and model-produced strings as
+- [x] Treat filenames, IPTC text, transcript text, template values, and model-produced strings as
   untrusted data. Never interpret returned metadata as MCP instructions or leak values through logs,
   errors, operation history, or tool descriptions.
 
@@ -1539,6 +1539,18 @@ reviewable transcript workflow without implicitly approving or applying text to 
   limitations, manual testing checklist, and release packaging/omission validators. State clearly
   that MCP-connected AI and Whisper output are suggestions/drafts until explicitly confirmed or
   approved, and that 3.0 does not embed a general-purpose LLM.
+
+**Progress — 2026-09-15:** [Cycle 34](release/cycle-34-mcp-transport-authority-2026-09-15.md)
+adds a separate arm64 hardened-runtime `photo-agent-mcp` executable to the signed app bundle. Its
+sequential STDIO transport emits newline-delimited JSON-RPC only, negotiates the current MCP lifecycle,
+and initially exposes three accurately annotated read-only capability/authorization tools. Automation
+is off by default. Settings owns the complete enablement/root record and Codex install command; the
+helper reloads it for every call. Admission accepts only existing canonical regular files/directories
+under an unchanged explicitly selected root and rejects root replacement, traversal, symlinks, Finder
+aliases, hard links, special files and Photo Agent private folders. Nine focused tests, including the
+exact bundled helper launch and signature/runtime inspection, pass. Production metadata/Develop/face/
+transcription facades, cross-process operation reservations, status/cancellation, two-phase IPTC writes,
+the FFmpeg Whisper provider, full protocol/fault coverage and native client validation remain open.
 
 ## Phase 6 — migration and release hardening
 

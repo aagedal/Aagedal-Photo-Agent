@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C5A000000000000000000002 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* main.swift */; };
+		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
+		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1B9FF71903054DC7BE54A5E5 /* VariableConflictRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */; };
@@ -162,6 +166,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		C5A00000000000000000000F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C5A000000000000000000008;
+			remoteInfo = "Photo Agent MCP";
+		};
 		88530002139060FF0EA7D219 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
@@ -179,6 +190,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C5A000000000000000000001 /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		C5A000000000000000000003 /* photo-agent-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "photo-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C5A000000000000000000005 /* MCPServerCore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPServerCore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPServerCore.swift"; sourceTree = SOURCE_ROOT; };
+		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -359,6 +374,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		C5A00000000000000000000A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8E0556B02F28C3F600BCFB49 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -385,9 +407,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		C5A000000000000000000004 /* PhotoAgent MCP */ = {
+			isa = PBXGroup;
+			children = (
+				C5A000000000000000000001 /* main.swift */,
+				C5A000000000000000000005 /* MCPServerCore.swift */,
+			);
+			path = "PhotoAgent MCP";
+			sourceTree = "<group>";
+		};
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
+				C5A000000000000000000011 /* MCPServerCoreTests.swift */,
 				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
 				F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */,
 				A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */,
@@ -547,6 +579,7 @@
 				8E0557412F29098D00BCFB49 /* README.md */,
 				8E05576D2F2A149800BCFB49 /* TODO.md */,
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
+				C5A000000000000000000004 /* PhotoAgent MCP */,
 				8E0556B42F28C3F600BCFB49 /* Products */,
 				025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */,
 				F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */,
@@ -557,6 +590,7 @@
 			isa = PBXGroup;
 			children = (
 				8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */,
+				C5A000000000000000000003 /* photo-agent-mcp */,
 				0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */,
 				F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */,
 			);
@@ -574,6 +608,22 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		C5A000000000000000000008 /* Photo Agent MCP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */;
+			buildPhases = (
+				C5A000000000000000000009 /* Sources */,
+				C5A00000000000000000000A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Photo Agent MCP";
+			productName = "photo-agent-mcp";
+			productReference = C5A000000000000000000003 /* photo-agent-mcp */;
+			productType = "com.apple.product-type.tool";
+		};
 		8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8E0556BE2F28C3F900BCFB49 /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent" */;
@@ -581,11 +631,13 @@
 				8E0556AF2F28C3F600BCFB49 /* Sources */,
 				8E0556B02F28C3F600BCFB49 /* Frameworks */,
 				8E0556B12F28C3F600BCFB49 /* Resources */,
+				C5A00000000000000000000B /* Copy MCP Helper */,
 				8E05580A2F9EC00000BCFB49 /* Sign Bundled Binaries */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				C5A000000000000000000010 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
@@ -641,6 +693,9 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
+					C5A000000000000000000008 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 					8E0556B22F28C3F600BCFB49 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -668,12 +723,27 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				C5A000000000000000000008 /* Photo Agent MCP */,
 				8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */,
 				DB6EB8B3A46DC2147D8DE710 /* Aagedal Photo Agent Tests */,
 				F00D00000000000000000008 /* Aagedal Photo Agent UI Smoke Tests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C5A00000000000000000000B /* Copy MCP Helper */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */,
+			);
+			name = "Copy MCP Helper";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		8E0556B12F28C3F600BCFB49 /* Resources */ = {
@@ -721,10 +791,20 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C5A000000000000000000009 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5A000000000000000000002 /* main.swift in Sources */,
+				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		32D292541781394DC612E9B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */,
 				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,
 				F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */,
 				A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */,
@@ -895,6 +975,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		C5A000000000000000000010 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C5A000000000000000000008 /* Photo Agent MCP */;
+			targetProxy = C5A00000000000000000000F /* PBXContainerItemProxy */;
+		};
 		2974ADFA266F2A27871845CC /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = "Aagedal Photo Agent";
@@ -910,6 +995,41 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		C5A00000000000000000000C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "photo-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C5A00000000000000000000D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_NAME = "photo-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		56C3E2B22B2BF8584C9A038F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1202,6 +1322,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C5A00000000000000000000C /* Debug */,
+				C5A00000000000000000000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		8E0556AE2F28C3F600BCFB49 /* Build configuration list for PBXProject "Aagedal Photo Agent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

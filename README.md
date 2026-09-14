@@ -99,6 +99,16 @@ Headline writes do not create, clear, or replace `dc:title` or IIM Object Name. 
 Photo Mechanic, and remaining licensed-container round trips are still limited to the evidence named in
 the support table and validation records.
 
+### Local Automation (3.0 foundation)
+
+- A separately built, hardened-runtime `photo-agent-mcp` helper is bundled for local STDIO MCP clients;
+  it does not listen on the network.
+- Automation is disabled by default. Settings → Automation manages explicit folder grants and provides a
+  copyable `codex mcp add` command.
+- The current foundation exposes read-only server/root/path-admission tools with strict canonical-path,
+  identity, link, special-file, and private-store refusal. Production metadata, template, face,
+  transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
+
 ### Face Recognition
 
 Rebuilt for 2.0 around a bundled on-device AuraFace (ArcFace) model, with eye-aligned crops and **improved, fully editable face grouping** — review groups, merge or split people, and drag faces between groups.

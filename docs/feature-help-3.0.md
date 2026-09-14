@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 feature guide
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-09-10
+**Last reviewed:** 2026-09-15
 
 This guide covers the new 3.0 investigation, comparison, versioning, caption, rename, and deadline
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
@@ -64,8 +64,22 @@ folder. Shared audio remains available to surviving photos. In Finder's Trash, u
 on the complete folder, keep its contents together, and open that folder in Photo Agent.
 If an operation reports an issue, open **Details** for all affected paths and recovery guidance.
 
-Archive/source reassociation, transcription and delivery integration remain under
-development; consult the limitations before using those operations on memo-bearing photos.
+Archive, source reassociation, reviewed Apple on-device transcription, transcript-template application,
+and explicit WAV delivery policy are implemented with the boundaries described below and in Known
+Limitations. FFmpeg Whisper transcription remains under development.
+
+## Connect a local automation client
+
+Open **Settings → Automation**. Local automation is off by default. Add only the folders a client should
+be able to address, enable the local server, and copy the displayed Codex install command. The bundled
+`photo-agent-mcp` process communicates through STDIO and does not listen on the network. Removing a folder
+or disabling automation applies to later calls from an already connected client.
+
+The initial server exposes read-only capability, authorized-root, and path-admission tools. It rejects
+relative/traversal paths, symlinks, Finder aliases, hard links, special files, changed folder identities,
+Photo Agent private folders, and targets outside the selected roots. Metadata, face scan, template,
+transcription, and IPTC mutation tools are not yet exposed. Returned paths and later metadata values can be
+sensitive and are subject to the connected client's privacy and retention policy.
 
 ## Recover a deleted template
 

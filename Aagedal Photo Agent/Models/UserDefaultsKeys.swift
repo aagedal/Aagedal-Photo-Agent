@@ -1,6 +1,10 @@
 import Foundation
 
 nonisolated enum UserDefaultsKeys {
+    // MARK: - Local automation
+    /// Versioned enablement and authorized-root record shared with the bundled STDIO helper.
+    static let mcpAuthorizationConfiguration = "automation.mcp.authorization.v1"
+
     // MARK: - External Editor
     static let defaultExternalEditor = "defaultExternalEditor"
     static let defaultEditDestination = "defaultEditDestination"

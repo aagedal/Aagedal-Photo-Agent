@@ -115,6 +115,7 @@ struct SettingsView: View {
         case signing
         case sync
         case updates
+        case automation
         case shortcuts
         case licenses
 
@@ -139,6 +140,7 @@ struct SettingsView: View {
             case .signing: return "Signing"
             case .sync: return "iCloud Sync"
             case .updates: return "Updates"
+            case .automation: return "Automation"
             case .shortcuts: return "Shortcuts"
             case .licenses: return "Licenses"
             }
@@ -163,6 +165,7 @@ struct SettingsView: View {
             case .signing: return "signature"
             case .sync: return "icloud"
             case .updates: return "arrow.triangle.2.circlepath"
+            case .automation: return "terminal"
             case .shortcuts: return "keyboard"
             case .licenses: return "doc.text"
             }
@@ -200,6 +203,7 @@ struct SettingsView: View {
                 Section("Application") {
                     row(.sync)
                     row(.updates)
+                    row(.automation)
                     row(.shortcuts)
                     row(.licenses)
                 }
@@ -297,6 +301,7 @@ struct SettingsView: View {
         case .signing: signingTab
         case .sync: syncTab
         case .updates: updatesTab
+        case .automation: AutomationSettingsView()
         case .shortcuts: KeyboardShortcutsSettingsView()
         case .licenses: LicensesSettingsView()
         }

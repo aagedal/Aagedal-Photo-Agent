@@ -1,7 +1,7 @@
 # Aagedal Photo Agent privacy
 
 **Status:** 3.0 release-candidate draft; external legal/privacy review pending  
-**Last reviewed:** 2026-08-25
+**Last reviewed:** 2026-09-15
 
 Aagedal Photo Agent is a native macOS application. Photo browsing, metadata editing, Develop rendering,
 analysis, face detection, face matching when its model is packaged, and solar-position calculations run on
@@ -43,6 +43,20 @@ People data back to local storage but does not by itself delete the existing iCl
 database while sync is enabled if you intend to remove that synced database, and review other devices or
 exports separately.
 
+## Optional local automation
+
+The bundled MCP server is disabled by default and uses only STDIO with the local client process; it does
+not open a listening network port. Enabling it does not itself grant photo access. You select each
+authorized folder separately in Settings, can remove a grant at any time, and can disable the server
+without deleting the folder list. The helper reloads enablement and grants for every tool call and refuses
+changed roots, paths outside those roots, links/aliases, special files, and hidden Photo Agent stores.
+
+An authorized local AI client can receive filenames, paths, and metadata returned by tools and may apply
+its own retention or network policy to that content. Review the client's privacy settings before connecting
+it. The initial 3.0 implementation stage exposes read-only capability and authorization inspection only;
+it does not retain those checks in Activity. Mutation tools will remain unavailable until they use Photo
+Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.
+
 ## Network features
 
 Photo Agent accesses a network only for a feature that needs it, including:
@@ -83,6 +97,8 @@ before distribution.
 - Delete folder-local hidden analysis/version data with the photo folder only if you no longer need it.
   Application Support fallback data, exported reports/projects, iCloud copies, backups, and files on
   delivery servers are separate copies and may require separate deletion.
+- Remove local automation folder grants or turn off the MCP server in Settings → Automation. Also remove
+  the server from each connected client if you no longer want that client to launch the helper.
 
 ## Contact and review status
 
