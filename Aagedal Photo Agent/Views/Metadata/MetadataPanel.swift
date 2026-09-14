@@ -1240,6 +1240,7 @@ struct MetadataPanel: View {
         }
         .frame(maxWidth: .infinity)
         .accessibilityIdentifier("metadata.panel")
+        .accessibilityValue(viewModel.variableProcessingStatus ?? "")
         .environment(\.metadataEditorBuffers, editorBuffers)
         .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
         .environment(\.metadataEditorCurrentLoadID, { viewModel.editorBufferLoadID })
@@ -2651,6 +2652,7 @@ struct MetadataPanel: View {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(viewModel.variableProcessingHadFailures ? .red : .secondary)
+                    .accessibilityIdentifier("metadata.variableProcessingStatus")
             }
 
             HStack(spacing: 12) {

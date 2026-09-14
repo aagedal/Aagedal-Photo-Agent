@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-13
+**Last reviewed:** 2026-09-14
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 31: native voice-memo application](release/cycle-31-voice-memo-native-application-2026-09-13.md). A disposable built-app fixture now cancels Replace with Escape without changing the image or sidecar, confirms Append with Return, persists the approved transcript through all four supported destinations and reads the metadata back after relaunch while preserving the relationship and WAV. The 2,906-test serial suite, all 10 UI smoke tests and repository checks pass; offline, authorized-Sony, broader accessibility, real-server and wider release gates remain open.
+**Latest improvement continuation:** [Cycle 32: voice-memo batch application](release/cycle-32-voice-memo-batch-application-2026-09-14.md). The built app now refuses an entire two-photo selection when one transcript authority is missing, unapproved or stale, preserving every image, sidecar, relationship and WAV byte, then applies two distinct approved reviews as eight exact field changes. The 2,907-test serial suite, focused native batch test and repository checks pass; cycle 31 remains the latest complete 10-test UI-smoke-target pass because an unrelated foreground app interrupted this cycle's whole-target attempt. Offline, authorized-Sony, VoiceOver, real-server and wider release gates remain open.
 
 ## Portfolio
 

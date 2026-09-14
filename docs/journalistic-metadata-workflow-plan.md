@@ -879,6 +879,16 @@ complete 2,906-test serial suite, all 10 UI smoke tests and repository validatio
 [cycle 31 evidence](release/cycle-31-voice-memo-native-application-2026-09-13.md). Offline,
 authorized-Sony, broader accessibility and real-server evidence remains open.
 
+**Coordinator cycle 32 — 2026-09-14:** The native application fixture now selects two photos and
+proves all-or-nothing authority enforcement for missing, unapproved and stale transcript records.
+Each invalid launch reports zero writes and preserves both complete JPEG/sidecar/relationship/WAV
+bundles byte for byte. A valid launch previews eight exact field changes, applies each photo's own
+approved review through all four supported destinations and preserves both relationship records and
+WAVs. The complete 2,907-test serial suite, focused native batch test and repository validation pass;
+see [cycle 32 evidence](release/cycle-32-voice-memo-batch-application-2026-09-14.md). The whole UI
+target attempt was interrupted by unrelated desktop focus, so cycle 31 retains the latest complete
+10-test whole-target result. Offline, authorized-Sony, VoiceOver and real-server evidence remains open.
+
 **Exit gate:** supported Sony voice memos survive card-to-folder ingest and file operations without
 loss or misassociation; transcription is local, cancellable, and reviewable; and the approved text
 can be inserted through the shared metadata-variable path with no implicit metadata overwrite.

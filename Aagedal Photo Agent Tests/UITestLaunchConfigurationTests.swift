@@ -56,4 +56,13 @@ struct UITestLaunchConfigurationTests {
         ])
         #expect(production.templateRootURL == nil)
     }
+
+    @Test("Voice-memo variable batch workflow is explicit")
+    func voiceMemoVariableBatchWorkflow() {
+        let configuration = UITestLaunchConfiguration(arguments: [
+            "Aagedal Photo Agent", "--ui-testing",
+            "--ui-test-workflow", "voice-memo-variable-batch",
+        ])
+        #expect(configuration.workflow == .voiceMemoVariableBatch)
+    }
 }

@@ -1433,7 +1433,7 @@ struct ContentView: View {
         if workflow == .openFolder || workflow == .recoveryError { return }
         guard !browserViewModel.visibleImages.isEmpty else { return }
 
-        let selection = workflow == .batchRename
+        let selection = workflow == .batchRename || workflow == .voiceMemoVariableBatch
             ? Array(browserViewModel.visibleImages.prefix(2))
             : Array(browserViewModel.visibleImages.prefix(1))
         let selectedURLs = Set(selection.map(\.url))
@@ -1443,6 +1443,8 @@ struct ContentView: View {
         switch workflow {
         case .caption:
             openCaptionWorkspace()
+        case .voiceMemoVariableBatch:
+            break
         case .batchRename:
             browserViewModel.renameSelected()
         case .deadline:

@@ -612,12 +612,14 @@ nothing, while one invalid authority refuses the complete batch before any execu
 Confirm reuses the frozen requests and revalidates the complete authority set. [Cycle 31](cycle-31-voice-memo-native-application-2026-09-13.md)
 verifies in the built app that Escape cancels without changing image or sidecar bytes, Return confirms
 Append into Headline, Description, Extended Description and Instructions, and normal read-back survives
-relaunch with exact relationship/WAV preservation. Broader VoiceOver/accessibility and authentic-Sony
-evidence remain incomplete, so the authoritative checkbox stays open.
+relaunch with exact relationship/WAV preservation. [Cycle 32](cycle-32-voice-memo-batch-application-2026-09-14.md)
+extends the built-app path to a two-photo selection: a missing, unapproved or stale second authority
+refuses the complete batch with every image, sidecar, relationship and WAV byte unchanged, while two
+approved reviews produce an exact eight-field preview and persist each photo's own text. VoiceOver and
+authentic-Sony evidence remain incomplete, so the authoritative checkbox stays open.
 
-**Smallest next action/evidence:** Exercise missing, unapproved and stale whole-batch refusal plus
-multi-image selection in the built app, then complete VoiceOver traversal/announcement evidence with
-the native sheet.
+**Smallest next action/evidence:** Complete VoiceOver traversal and announcement evidence for the
+multi-image native preview and refusal result, then repeat with authorized Sony material.
 
 ### J-VOICE-DELIVERY
 

@@ -211,6 +211,56 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testVoiceMemoBatchRefusesInvalidAuthorityThenAppliesTwoApprovedTranscripts() throws {
+        let templateRoot = try makeVoiceMemoTemplateRoot()
+
+        for invalidAuthority in [TranscriptAuthority.missing, .unapproved, .stale] {
+            let fixture = try makeVoiceMemoBatch(authorities: [.approved, invalidAuthority])
+            let originalImages = try fixture.items.map { try Data(contentsOf: $0.imageURL) }
+            let originalSidecars = try fixture.items.map { try Data(contentsOf: $0.sidecarURL) }
+            let originalRelationships = try fixture.items.map { try Data(contentsOf: $0.relationshipURL) }
+            let originalMemos = try fixture.items.map { try Data(contentsOf: $0.memoURL) }
+
+            launch(workflow: "voice-memo-variable-batch", folder: fixture.folder, templateRoot: templateRoot)
+            XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 15))
+            openBrowserVoiceMemoTemplate()
+
+            let panel = app.descendants(matching: .any)["metadata.panel"]
+            XCTAssertTrue(waitForValue(panel, containing: "0 photos were written"))
+            XCTAssertFalse(app.descendants(matching: .any)["voiceMemoTranscript.preview"].exists)
+            for (index, item) in fixture.items.enumerated() {
+                XCTAssertEqual(try Data(contentsOf: item.imageURL), originalImages[index])
+                XCTAssertEqual(try Data(contentsOf: item.sidecarURL), originalSidecars[index])
+                XCTAssertEqual(try Data(contentsOf: item.relationshipURL), originalRelationships[index])
+                XCTAssertEqual(try Data(contentsOf: item.memoURL), originalMemos[index])
+            }
+            app.terminate()
+        }
+
+        let fixture = try makeVoiceMemoBatch(authorities: [.approved, .approved])
+        let originalImages = try fixture.items.map { try Data(contentsOf: $0.imageURL) }
+        let originalRelationships = try fixture.items.map { try Data(contentsOf: $0.relationshipURL) }
+        let originalMemos = try fixture.items.map { try Data(contentsOf: $0.memoURL) }
+        launch(workflow: "voice-memo-variable-batch", folder: fixture.folder, templateRoot: templateRoot)
+        XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 15))
+        openBrowserVoiceMemoTemplate()
+
+        let preview = app.descendants(matching: .any)["voiceMemoTranscript.preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Replace will change 8 fields across 2 photos. Nothing is written until you confirm."].exists)
+        let confirm = app.buttons["voiceMemoTranscript.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForAppliedVoiceMemoBatch(fixture.items))
+        XCTAssertFalse(preview.waitForExistence(timeout: 5))
+        for (index, item) in fixture.items.enumerated() {
+            XCTAssertNotEqual(try Data(contentsOf: item.imageURL), originalImages[index])
+            XCTAssertEqual(try Data(contentsOf: item.relationshipURL), originalRelationships[index])
+            XCTAssertEqual(try Data(contentsOf: item.memoURL), originalMemos[index])
+        }
+    }
+
+    @MainActor
     func testBatchRenameOpensPreparedPreviewForSelection() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "batch-rename", folder: photos)
@@ -301,6 +351,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    private func openBrowserVoiceMemoTemplate() {
+        let applyTemplate = app.buttons["Apply metadata template"]
+        XCTAssertTrue(applyTemplate.waitForExistence(timeout: 10))
+        applyTemplate.click()
+        let template = app.buttons["UI Smoke Voice Memo, 4 fields"]
+        XCTAssertTrue(template.waitForExistence(timeout: 10))
+        template.click()
+    }
+
+    @MainActor
     private func reopenMainWindowIfNeeded() {
         guard !app.windows.firstMatch.waitForExistence(timeout: 2) else { return }
 
@@ -337,6 +397,26 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let memoURL: URL
         let relationshipURL: URL
         let sidecarURL: URL
+    }
+
+    private enum TranscriptAuthority: Equatable {
+        case approved
+        case missing
+        case unapproved
+        case stale
+    }
+
+    private struct VoiceMemoBatchItem {
+        let imageURL: URL
+        let memoURL: URL
+        let relationshipURL: URL
+        let sidecarURL: URL
+        let transcript: String
+    }
+
+    private struct VoiceMemoBatchFixture {
+        let folder: URL
+        let items: [VoiceMemoBatchItem]
     }
 
     private func makeApprovedVoiceMemoFolder(includePendingMetadata: Bool = false) throws -> VoiceMemoFixture {
@@ -410,6 +490,89 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         )
     }
 
+    private func makeVoiceMemoBatch(authorities: [TranscriptAuthority]) throws -> VoiceMemoBatchFixture {
+        let folder = fixtureRoot.appendingPathComponent(
+            "VoiceMemoBatch-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let sidecarDirectory = folder.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: sidecarDirectory, withIntermediateDirectories: true)
+
+        var items: [VoiceMemoBatchItem] = []
+        for (offset, authority) in authorities.enumerated() {
+            let index = offset + 1
+            let imageName = "voice-batch-\(index).jpg"
+            let memoName = "voice-batch-\(index).WAV"
+            let imageURL = folder.appendingPathComponent(imageName)
+            let memoURL = folder.appendingPathComponent(memoName)
+            let relationshipURL = folder.appendingPathComponent(".\(imageName).voice-memo.json")
+            let sidecarURL = sidecarDirectory.appendingPathComponent("\(imageName).meta.json")
+            let imageData = try makeJPEG(index: index)
+            let memoData = makeSilentWAV()
+            let imageHash = sha256(imageData)
+            let memoHash = sha256(memoData)
+            let transcript = "Approved batch review \(index)"
+            try imageData.write(to: imageURL, options: .atomic)
+            try memoData.write(to: memoURL, options: .atomic)
+
+            var relationship: [String: Any] = [
+                "schemaVersion": 2,
+                "profileIdentifier": "ui-smoke",
+                "imageFilename": imageName,
+                "memoFilename": memoName,
+                "imageIdentity": ["byteCount": imageData.count, "sha256": imageHash],
+                "memoIdentity": ["byteCount": memoData.count, "sha256": memoHash],
+                "provenance": "capturedAssociation",
+            ]
+            if authority == .approved || authority == .stale {
+                relationship["approvedTranscriptMemoSHA256"] = memoHash
+            }
+            try writeJSON(relationship, to: relationshipURL)
+
+            var sidecar: [String: Any] = [
+                "schemaVersion": 1,
+                "sourceFile": imageName,
+                "pendingChanges": true,
+                "metadata": [
+                    "title": "Existing headline \(index)",
+                    "description": "Existing description \(index)",
+                    "extendedDescription": "Existing extended description \(index)",
+                    "instructions": "Existing instructions \(index)",
+                ],
+            ]
+            if authority != .missing {
+                var transcriptRecord: [String: Any] = [
+                    "schemaVersion": 1,
+                    "sourceImageFilename": imageName,
+                    "sourceMemoFilename": memoName,
+                    "memoByteCount": memoData.count,
+                    "memoSHA256": authority == .stale ? String(repeating: "f", count: 64) : memoHash,
+                    "associationProfileIdentifier": "ui-smoke",
+                    "localeIdentifier": "en-US",
+                    "provider": "Apple on-device speech",
+                    "providerModel": "System managed; exact version unavailable",
+                    "generatedAt": "2026-09-13T12:00:00Z",
+                    "generatedText": "Generated batch transcript \(index)",
+                    "reviewedText": transcript,
+                ]
+                if authority != .unapproved {
+                    transcriptRecord["approvedAt"] = "2026-09-13T12:01:00Z"
+                }
+                sidecar["voiceMemoTranscript"] = transcriptRecord
+            }
+            try writeJSON(sidecar, to: sidecarURL)
+            items.append(.init(
+                imageURL: imageURL,
+                memoURL: memoURL,
+                relationshipURL: relationshipURL,
+                sidecarURL: sidecarURL,
+                transcript: transcript
+            ))
+        }
+        return .init(folder: folder, items: items)
+    }
+
     private func makeVoiceMemoTemplateRoot() throws -> URL {
         let root = fixtureRoot.appendingPathComponent("Templates", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -430,6 +593,25 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         }
         expectation(for: predicate, evaluatedWith: NSObject())
         waitForExpectations(timeout: 20)
+        return predicate.evaluate(with: NSObject())
+    }
+
+    @MainActor
+    private func waitForAppliedVoiceMemoBatch(_ items: [VoiceMemoBatchItem]) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            items.allSatisfy { item in
+                guard let data = try? Data(contentsOf: item.sidecarURL),
+                      let graph = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      graph["pendingChanges"] as? Bool == false,
+                      let metadata = graph["metadata"] as? [String: Any] else { return false }
+                return metadata["title"] as? String == item.transcript
+                    && metadata["description"] as? String == item.transcript
+                    && metadata["extendedDescription"] as? String == item.transcript
+                    && metadata["instructions"] as? String == item.transcript
+            }
+        }
+        expectation(for: predicate, evaluatedWith: NSObject())
+        waitForExpectations(timeout: 30)
         return predicate.evaluate(with: NSObject())
     }
 
@@ -462,6 +644,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let predicate = NSPredicate { _, _ in element.isEnabled == expected }
         expectation(for: predicate, evaluatedWith: element)
         waitForExpectations(timeout: 5)
+        return predicate.evaluate(with: element)
+    }
+
+    @MainActor
+    private func waitForValue(_ element: XCUIElement, containing text: String) -> Bool {
+        let predicate = NSPredicate { _, _ in
+            element.exists && (element.value as? String)?.contains(text) == true
+        }
+        expectation(for: predicate, evaluatedWith: element)
+        waitForExpectations(timeout: 20)
         return predicate.evaluate(with: element)
     }
 

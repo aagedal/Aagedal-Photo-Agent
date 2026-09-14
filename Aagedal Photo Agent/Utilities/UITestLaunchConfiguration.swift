@@ -10,6 +10,7 @@ struct UITestLaunchConfiguration {
         case openFolder = "open-folder"
         case importPreflight = "import-preflight"
         case caption
+        case voiceMemoVariableBatch = "voice-memo-variable-batch"
         case batchRename = "batch-rename"
         case deadline
         case recoveryError = "recovery-error"

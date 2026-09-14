@@ -1,14 +1,24 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, pre-mutation application preview, narrow native application/read-back and explicit verified WAV delivery pass verification; authentic Sony/real-server voice-memo evidence, cloud and broader release gates remain.
-**Updated:** 2026-09-13
-**Latest implementation state:** Cycle 31 native voice-memo application (2,906 tests in the serial run, all 10 UI smoke tests and repository checks passed; the built app now verifies zero-write Cancel, keyboard Confirm, all four supported destinations and relaunch read-back; independent review and offline/Sony/broader-accessibility evidence remain open).
-**Latest native evidence:** Cycle 31 cancels Replace with Escape without changing the image or sidecar, confirms Append with Return, persists the approved transcript through Headline, Description, Extended Description and Instructions, then reads it back after relaunch while preserving the relationship and WAV bytes exactly. Cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable, cycle 26 adds compatible-target enforcement plus its pre-mutation preview, cycle 27 adds explicit verified WAV delivery, cycle 28 adds the transcription failure/reservation matrix, cycle 29 makes incremental review edits durable through navigation and relaunch boundaries, cycle 30 closes the native review/relaunch/approval check with canonical timestamp verification and cycle 31 closes the narrow native variable application/read-back check.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification; authentic Sony/real-server voice-memo evidence, cloud and broader release gates remain.
+**Updated:** 2026-09-14
+**Latest implementation state:** Cycle 32 voice-memo batch application (2,907 tests in the serial run, the focused native batch test and repository checks passed; the built app now verifies missing, unapproved and stale whole-batch refusal plus exact two-photo application; independent review and offline/Sony/VoiceOver evidence remain open). Cycle 31's 10-test pass remains the latest complete UI-smoke-target result because an unrelated foreground app interrupted cycle 32's whole-target attempt.
+**Latest native evidence:** Cycle 32 refuses a two-photo selection when either authority is missing, unapproved or stale, preserving both complete bundles byte for byte, then applies two distinct approved reviews as eight exact field changes while preserving both relationship records and WAVs. Cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
+**Cycle baseline:** `78f0209` on `main`; cycles 16–19 advance Known People interchange, cycle 20 adds transactional RAW voice-memo archive preservation, cycle 21 adds identity-bound adjacent memo recovery, cycle 22 adds exact moved-relationship reassociation, cycle 23 adds local editable transcription, cycle 24 adds durable reviewed approval, cycle 25 adds the exact-approved shared transcript variable, cycle 26 adds compatible-target enforcement plus its pre-mutation preview, cycle 27 adds explicit verified WAV delivery, cycle 28 adds the transcription failure/reservation matrix, cycle 29 makes incremental review edits durable through navigation and relaunch boundaries, cycle 30 closes the native review/relaunch/approval check, cycle 31 closes the narrow native variable application/read-back check and cycle 32 closes native invalid-authority refusal plus two-photo application.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 32 voice-memo batch application](cycle-32-voice-memo-batch-application-2026-09-14.md)
+closes the native missing/unapproved/stale authority-refusal and two-photo application checkpoint.
+Three invalid fixtures each refuse the complete selection with zero writes and preserve both image,
+sidecar, relationship and WAV bundles byte for byte. Two approved fixtures produce an exact eight-field
+Replace preview and persist each photo's distinct review while retaining exact relationship and WAV
+bytes. The 2,907-test serial suite, focused native batch test and repository validation pass. The
+whole UI target was interrupted by unrelated desktop focus, so cycle 31's 10-test run remains the
+latest complete whole-target evidence. Offline recognition, authorized-Sony recovery, VoiceOver and
+real-server evidence remain open.
 
 [Cycle 31 native voice-memo application](cycle-31-voice-memo-native-application-2026-09-13.md)
 closes the narrow built-app variable application/read-back check. The fixture previews exact Replace
@@ -335,8 +345,10 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    approval fixture and canonical timestamp verification while preserving exact WAV/relationship
    bytes. Cycle 31 completes a narrow native application drill: exact Replace/Append preview, Escape
    cancellation, Return confirmation, all four compatible destinations and relaunch read-back.
-   Continue native offline/Sony drills plus broader accessibility and native and real-server
-   image-plus-WAV delivery.
+   Cycle 32 extends that native path to two-photo selection, all-or-nothing missing/unapproved/stale
+   authority refusal and two distinct approved reviews applied as eight exact field changes. Continue
+   native offline/Sony drills plus VoiceOver evidence and native and real-server image-plus-WAV
+   delivery.
 6. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
@@ -355,8 +367,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 31: 2,906 tests, 10 UI smoke tests and repository checks passed | Packaging and exact-candidate release checks remain |
-| Computer-use workflows | Native voice-memo review/approval/application/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
+| Automated regression and package | Cycle 32: 2,907 serial tests, focused native batch test and repository checks passed; cycle 31 retains the latest complete 10-test UI run | Complete UI target rerun, packaging and exact-candidate release checks remain |
+| Computer-use workflows | Native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
 | External interoperability/transport | Open | Actual Bridge/Photo Mechanic and disposable FTP/FTPS/SFTP evidence |
