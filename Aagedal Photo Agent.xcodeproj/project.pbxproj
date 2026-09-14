@@ -1375,7 +1375,7 @@
 			repositoryURL = "https://github.com/aagedal/SwiftMediaMetadata.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 3.0.0;
+				minimumVersion = 3.0.1;
 			};
 		};
 		8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */ = {

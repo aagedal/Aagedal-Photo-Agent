@@ -10,6 +10,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Updated SwiftMediaMetadata to 3.0.1. Sony RTMD track discovery now avoids materializing top-level
+  media payloads while retaining file-absolute sample offsets, reducing peak memory use when scanning
+  supported Sony video metadata.
 - Added the first local automation foundation: a separately signed, hardened-runtime STDIO MCP
   executable bundled with the app. Automation is off by default; Settings manages explicit folder
   grants and a copyable Codex install command. The initial server exposes read-only capability,

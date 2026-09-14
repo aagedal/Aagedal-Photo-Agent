@@ -1,14 +1,15 @@
 # SwiftMediaMetadata 3 migration validation
 
 **Date:** 2026-09-02  
+**Dependency refresh:** 2026-09-15
 **Status:** implementation and automated validation complete
 
 ## Scope
 
 Photo Agent now resolves the renamed metadata package directly from
 [`aagedal/SwiftMediaMetadata`](https://github.com/aagedal/SwiftMediaMetadata) instead of the checked-in
-`Vendor/SwiftExif` snapshot. The Xcode package requirement starts at `3.0.0`; the lockfile currently
-resolves tag `3.0.0` at revision `c2d77c2dcefcb997623e52beca57bc61ce302cb9`.
+`Vendor/SwiftExif` snapshot. The Xcode package requirement starts at `3.0.1`; the lockfile currently
+resolves tag `3.0.1` at revision `8662054299a3e13c49c65f74c564360559d1bf7f`.
 
 ## Application migration
 
@@ -33,7 +34,9 @@ and is intentionally separate from the package relink.
 
 ## Automated evidence
 
-- Xcode package resolution succeeded and selected SwiftMediaMetadata `3.0.0`.
+- Xcode package resolution succeeded and selected SwiftMediaMetadata `3.0.1`. This patch release
+  changes Sony RTMD discovery to skip top-level `mdat` payload materialization while preserving
+  file-absolute sample offsets; it also repairs upstream fixture lookup and release packaging.
 - The app and test targets passed `build-for-testing` after the package relink and again after removal of
   the compatibility code. The only emitted diagnostics were pre-existing AppKit event-monitor warnings in
   `EditWorkspaceView.swift`.
@@ -48,6 +51,14 @@ and is intentionally separate from the package relink.
   failures. Xcode reports 1,888 logical tests and 2,015 expanded device/configuration executions;
   36 parameterized tests produced 163 runs. Result bundle:
   `Test-Aagedal Photo Agent Tests-2026.09.02_15-29-47-+0200.xcresult`.
+
+### 3.0.1 refresh evidence
+
+- The exact refreshed Photo Agent tree compiles and passes 2,916 tests across 315 suites with zero
+  failures in 136.473 seconds. Result bundle:
+  `Test-Aagedal Photo Agent Tests-2026.09.15_00-26-33-+0200.xcresult`.
+- `scripts/ci/validate_repository.sh` and `git diff --check` pass with the 3.0.1 requirement, lockfile
+  and public source link in place.
 
 ## Deliberately deferred package adoption
 

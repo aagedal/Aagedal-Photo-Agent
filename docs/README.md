@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-14
+**Last reviewed:** 2026-09-15
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 34: MCP transport and authority](release/cycle-34-mcp-transport-authority-2026-09-15.md). A separate hardened-runtime `photo-agent-mcp` executable is bundled and development-signed, speaks protocol-only newline-delimited JSON-RPC over STDIO, and remains disabled by default. Settings manages explicit authorized roots and a Codex install command. The helper exposes only read-only capability/root/path-admission tools at this stage and rejects traversal, aliases/links, special files, private stores, changed roots and out-of-root targets. Nine focused tests, the 2,916-test serial suite and repository checks pass. Production workflow tools, shared cross-process operation admission, FFmpeg Whisper and broader release gates remain open.
+**Latest improvement continuation:** [Cycle 35: SwiftMediaMetadata 3.0.1 refresh](release/cycle-35-swift-media-metadata-3-0-1-2026-09-15.md). The Xcode requirement and lockfile now select the current patch release at immutable revision `8662054299a3e13c49c65f74c564360559d1bf7f`. The update includes lower-memory Sony RTMD discovery and passes the complete 2,916-test serial suite plus repository checks. [Cycle 34](release/cycle-34-mcp-transport-authority-2026-09-15.md) remains the latest feature implementation: bundled default-off STDIO MCP transport and strict root authority. Production workflow tools, shared cross-process operation admission, FFmpeg Whisper and broader release gates remain open.
 
 ## Portfolio
 

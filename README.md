@@ -367,6 +367,6 @@ manifest against every present artifact; the required FFmpeg and c2patool binari
 
 The application's own source is published under GPL-3.0. SwiftMediaMetadata is resolved from its
 GPL-3.0 upstream repository at the version pinned in `Package.resolved` (currently
-[3.0.0](https://github.com/aagedal/SwiftMediaMetadata/tree/3.0.0)); the shipped license text, public
+[3.0.1](https://github.com/aagedal/SwiftMediaMetadata/tree/3.0.1)); the shipped license text, public
 table, and in-app label consistently identify GPL-3.0. See the
 [documentation-readiness validation](docs/documentation-readiness-validation-2026-08-25.md).
