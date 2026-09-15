@@ -202,6 +202,7 @@ struct MCPServerCoreTests {
 
         let first = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
         #expect(first["appSidecarPresent"] == .bool(false))
+        #expect(first["appSidecarDraftState"] == .string("absent"))
         #expect(first["xmpSidecarPresent"] == .bool(false))
         #expect(first["sourceRevision"]?.stringValue?.count == 64)
         let session = MCPServerSession(authorizationStore: store)
@@ -219,10 +220,11 @@ struct MCPServerCoreTests {
         let second = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
         #expect(second["sourceRevision"] == first["sourceRevision"])
         #expect(second["xmpSidecarRevision"] != first["xmpSidecarRevision"])
-        try Data(#"{"sourceFile":"frame.jpg","pendingChanges":true,"metadata":{"description":"private caption"}}"#.utf8)
+        try Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":true,"metadata":{"description":"private caption"}}"#.utf8)
             .write(to: app)
         let third = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
         #expect(third["appSidecarPresent"] == .bool(true))
+        #expect(third["appSidecarDraftState"] == .string("pending"))
         #expect(third["appSidecarRevision"] != second["appSidecarRevision"])
         #expect(!String(describing: third).contains("private caption"))
         try Data("photo-b".utf8).write(to: photo)
@@ -235,6 +237,39 @@ struct MCPServerCoreTests {
         let fifth = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
         #expect(fifth["sourceRevision"] != fourth["sourceRevision"])
         #expect(fifth["appSidecarRevision"] == fourth["appSidecarRevision"])
+    }
+
+    @Test("Owned sidecar state is bounded, and two owned naming generations are refused")
+    func inspectsOwnedDraftStateAndRejectsAmbiguousCarriers() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+        let current = privateFolder.appendingPathComponent("frame.jpg.meta.json")
+        let legacy = privateFolder.appendingPathComponent("frame.meta.json")
+        try Data("pixels".utf8).write(to: photo)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+
+        try Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":false}"#.utf8).write(to: current)
+        let saved = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(saved["appSidecarDraftState"] == .string("saved"))
+        try Data(#"{"version":1,"sourceFile":"frame.jpg","pendingChanges":false,"orientationDraft":{}}"#.utf8).write(to: current)
+        let orientationDraft = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(orientationDraft["appSidecarDraftState"] == .string("pending"))
+        try Data(#"{"schemaVersion":2,"sourceFile":"frame.jpg","pendingChanges":true}"#.utf8).write(to: current)
+        let newer = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(newer["appSidecarDraftState"] == .string("unsupported-schema"))
+        try Data(#"{"schemaVersion":1,"sourceFile":"other.jpg","pendingChanges":true}"#.utf8).write(to: legacy)
+        let foreign = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(foreign["appSidecarDraftState"] == .string("unsupported-schema"))
+        try Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":true}"#.utf8).write(to: legacy)
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            _ = try facade.inspectPhotoRevision(path: photo.path)
+        }
     }
 
     @Test("Revision inspection refuses busy photos and unrelated or linked metadata carriers")
@@ -262,6 +297,33 @@ struct MCPServerCoreTests {
         }
         try FileManager.default.removeItem(at: app)
         try FileManager.default.createSymbolicLink(at: xmp, withDestinationURL: photo)
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            _ = try facade.inspectPhotoRevision(path: photo.path)
+        }
+    }
+
+    @Test("Nested photo and carriers are read from the granted root; linked private storage is refused")
+    func anchoredNestedRevisionInspection() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
+        let photo = nested.appendingPathComponent("frame.jpg")
+        let xmp = nested.appendingPathComponent("frame.xmp")
+        try Data("pixels".utf8).write(to: photo)
+        try Data("sidecar".utf8).write(to: xmp)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let first = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(first["xmpSidecarPresent"] == .bool(true))
+        #expect(first["appSidecarPresent"] == .bool(false))
+
+        let outside = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let linkedPrivate = nested.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedPrivate, withDestinationURL: outside)
         #expect(throws: MCPAutomationReadError.unsafeCarrier) {
             _ = try facade.inspectPhotoRevision(path: photo.path)
         }

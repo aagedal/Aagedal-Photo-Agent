@@ -1593,6 +1593,16 @@ IPTC or private JSON values. Complete `get_photo_metadata` still needs typed des
 effective carrier/pending/conflict state and the production metadata reader; the facade and
 tool-contract checkboxes above therefore remain open.
 
+**Progress — cycle 42:** [Anchored revision reads](release/cycle-42-anchored-revision-read-2026-09-15.md)
+open the granted root and traverse nested ancestors by no-follow directory descriptors before
+reading the photo, adjacent XMP or owned app JSON. This narrows the ancestor-retargeting gap in
+cycle 41; typed metadata reads, production tools and real-client validation remain open.
+
+**Progress — cycle 43:** [Owned draft-state inspection](release/cycle-43-mcp-owned-draft-state-2026-09-15.md)
+reports a bounded pending/saved/unknown state for exact-owner app JSON without exposing its text.
+It refuses two concurrently owned naming generations and rechecks absent candidates and private
+directory identity. Effective IPTC values/source/conflict and production tools remain open.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

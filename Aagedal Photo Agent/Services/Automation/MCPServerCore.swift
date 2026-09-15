@@ -530,7 +530,13 @@ nonisolated struct MCPAutomationFacade: Sendable {
         }
         let lease = try MCPProcessReservation.acquirePhoto(target.url)
         defer { lease.release() }
-        let evidence = try MCPPhotoRevisionEvidence.capture(at: target.url)
+        let configuration = try authorizationStore.load()
+        guard configuration.isEnabled,
+              let root = configuration.roots.first(where: { $0.id == target.rootID }) else {
+            throw MCPAuthorizationError.rootChanged
+        }
+        let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
+        let evidence = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent, in: directory)
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
         return .object([
@@ -540,9 +546,57 @@ nonisolated struct MCPAutomationFacade: Sendable {
             "appSidecarRevision": .string(evidence.appSidecar),
             "xmpSidecarRevision": .string(evidence.xmpSidecar),
             "appSidecarPresent": .bool(evidence.appSidecarPresent),
+            "appSidecarDraftState": .string(evidence.appSidecarDraftState),
             "xmpSidecarPresent": .bool(evidence.xmpSidecarPresent),
         ])
     }
+}
+
+/// Opens each ancestor relative to the granted root. An absolute carrier path can otherwise
+/// follow a retargeted ancestor between authorization and the actual read.
+nonisolated private final class MCPAnchoredPhotoDirectory {
+    let descriptor: Int32
+
+    init(root: MCPAuthorizedRoot, target: MCPAuthorizedTarget) throws {
+        let rootURL = URL(fileURLWithPath: root.canonicalPath, isDirectory: true).standardizedFileURL
+        let components = target.url.standardizedFileURL.pathComponents
+        let rootComponents = rootURL.pathComponents
+        guard components.count > rootComponents.count,
+              Array(components.prefix(rootComponents.count)) == rootComponents else {
+            throw MCPAutomationReadError.photoChanged
+        }
+        let relative = Array(components.dropFirst(rootComponents.count).dropLast())
+        var current = Darwin.open(rootURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard current >= 0 else { throw MCPAutomationReadError.photoChanged }
+        do {
+            var rootStat = stat()
+            guard Darwin.fstat(current, &rootStat) == 0,
+                  UInt64(rootStat.st_dev) == root.identity.device,
+                  UInt64(rootStat.st_ino) == root.identity.inode else {
+                throw MCPAutomationReadError.photoChanged
+            }
+            for component in relative {
+                let next = Darwin.openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard next >= 0 else { throw MCPAutomationReadError.photoChanged }
+                _ = Darwin.close(current)
+                current = next
+            }
+            var photoStat = stat()
+            guard Darwin.fstatat(current, target.url.lastPathComponent, &photoStat, AT_SYMLINK_NOFOLLOW) == 0,
+                  (photoStat.st_mode & S_IFMT) == S_IFREG,
+                  photoStat.st_nlink == 1,
+                  UInt64(photoStat.st_dev) == target.identity.device,
+                  UInt64(photoStat.st_ino) == target.identity.inode else {
+                throw MCPAutomationReadError.photoChanged
+            }
+            descriptor = current
+        } catch {
+            _ = Darwin.close(current)
+            throw error
+        }
+    }
+
+    deinit { _ = Darwin.close(descriptor) }
 }
 
 nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
@@ -564,55 +618,117 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let appSidecar: String
     let xmpSidecar: String
     let appSidecarPresent: Bool
+    let appSidecarDraftState: String
     let xmpSidecarPresent: Bool
 
-    static func capture(at photo: URL) throws -> Self {
-        let source = try token(at: photo, domain: "source", required: true)
-        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
-        let xmpToken = try token(at: xmp, domain: "xmp", required: false)
-        let privateFolder = photo.deletingLastPathComponent()
-            .appendingPathComponent(".photo_metadata", isDirectory: true)
-        try requireSafeDirectoryIfPresent(privateFolder)
-        let current = privateFolder.appendingPathComponent("\(photo.lastPathComponent).meta.json")
-        let legacy = privateFolder.appendingPathComponent("\(photo.deletingPathExtension().lastPathComponent).meta.json")
-        let carriers = current == legacy ? [current] : [current, legacy]
+    static func capture(photoName: String, in directory: MCPAnchoredPhotoDirectory) throws -> Self {
+        let source = try token(name: photoName, in: directory.descriptor, domain: "source", required: true)
+        let stem = (photoName as NSString).deletingPathExtension
+        let xmpToken = try token(name: "\(stem).xmp", in: directory.descriptor, domain: "xmp", required: false)
+        let privateDescriptor = try openSafeDirectoryIfPresent(name: ".photo_metadata", in: directory.descriptor)
+        defer { if let privateDescriptor { _ = Darwin.close(privateDescriptor) } }
+        let carriers = photoName == stem
+            ? ["\(photoName).meta.json"]
+            : ["\(photoName).meta.json", "\(stem).meta.json"]
         var ownedTokens: [String] = []
-        for carrier in carriers {
-            let ownedToken = try withSafeBytesIfPresent(at: carrier) { bytes, identity -> String? in
-                guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-                      let owner = object["sourceFile"] as? String,
-                      !owner.isEmpty, !owner.contains("/"), !owner.contains("\\"), owner != ".", owner != ".." else {
-                    throw MCPAutomationReadError.unsafeCarrier
+        var draftState = "absent"
+        var absentCarriers: [String] = []
+        if let privateDescriptor {
+            for (index, carrier) in carriers.enumerated() {
+                let ownedCarrier = try withSafeBytesIfPresent(name: carrier, in: privateDescriptor) { bytes, identity -> (String, String)? in
+                    guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                          let owner = object["sourceFile"] as? String,
+                          !owner.isEmpty, !owner.contains("/"), !owner.contains("\\"), owner != ".", owner != ".." else {
+                        throw MCPAutomationReadError.unsafeCarrier
+                    }
+                    if index == 0 && owner != photoName {
+                        throw MCPAutomationReadError.unsafeCarrier
+                    }
+                    guard owner == photoName else { return nil }
+                    let state: String
+                    let schema = (object["schemaVersion"] ?? object["version"]) as? Int
+                    if let schema, schema > 1 {
+                        state = "unsupported-schema"
+                    } else if schema == 1,
+                              let pending = object["pendingChanges"] as? Bool {
+                        let orientationDraftPresent = object["orientationDraft"] != nil
+                            && !(object["orientationDraft"] is NSNull)
+                        state = pending || orientationDraftPresent ? "pending" : "saved"
+                    } else {
+                        state = "unknown"
+                    }
+                    return (token(for: bytes, domain: index == 0 ? "app-current" : "app-legacy", identity: identity), state)
                 }
-                if carrier == current && owner != photo.lastPathComponent {
-                    throw MCPAutomationReadError.unsafeCarrier
+                if let ownedCarrier = ownedCarrier ?? nil {
+                    guard ownedTokens.isEmpty else { throw MCPAutomationReadError.unsafeCarrier }
+                    ownedTokens.append(ownedCarrier.0)
+                    draftState = ownedCarrier.1
                 }
-                guard owner == photo.lastPathComponent else { return nil }
-                return token(for: bytes, domain: carrier == current ? "app-current" : "app-legacy", identity: identity)
+                if ownedCarrier == nil {
+                    absentCarriers.append(carrier)
+                }
             }
-            if let ownedToken = ownedToken ?? nil { ownedTokens.append(ownedToken) }
+            for carrier in absentCarriers {
+                try requireAbsent(name: carrier, in: privateDescriptor)
+            }
+            try requireSameDirectory(name: ".photo_metadata", in: directory.descriptor, descriptor: privateDescriptor)
         }
         let appToken = token(for: Data(ownedTokens.sorted().joined(separator: "|").utf8), domain: "app-sidecar-set")
+        if !xmpToken.present {
+            try requireAbsent(name: "\(stem).xmp", in: directory.descriptor)
+        }
+        if privateDescriptor == nil {
+            try requireAbsent(name: ".photo_metadata", in: directory.descriptor)
+        }
         return Self(
             source: source.token,
             appSidecar: appToken,
             xmpSidecar: xmpToken.token,
             appSidecarPresent: !ownedTokens.isEmpty,
+            appSidecarDraftState: draftState,
             xmpSidecarPresent: xmpToken.present
         )
     }
 
-    private static func requireSafeDirectoryIfPresent(_ url: URL) throws {
+    private static func requireAbsent(name: String, in parent: Int32) throws {
+        var item = stat()
+        guard Darwin.fstatat(parent, name, &item, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else {
+            throw MCPAutomationReadError.photoChanged
+        }
+    }
+
+    private static func requireSameDirectory(name: String, in parent: Int32, descriptor: Int32) throws {
+        var opened = stat()
+        var entry = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0,
+              Darwin.fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW) == 0,
+              (entry.st_mode & S_IFMT) == S_IFDIR,
+              opened.st_dev == entry.st_dev, opened.st_ino == entry.st_ino else {
+            throw MCPAutomationReadError.photoChanged
+        }
+    }
+
+    private static func openSafeDirectoryIfPresent(name: String, in parent: Int32) throws -> Int32? {
         var snapshot = stat()
-        guard Darwin.lstat(url.path, &snapshot) == 0 else {
-            if errno == ENOENT { return }
+        guard Darwin.fstatat(parent, name, &snapshot, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return nil }
             throw MCPAutomationReadError.unsafeCarrier
         }
         guard (snapshot.st_mode & S_IFMT) == S_IFDIR else { throw MCPAutomationReadError.unsafeCarrier }
+        let descriptor = Darwin.openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        var opened = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0,
+              snapshot.st_dev == opened.st_dev, snapshot.st_ino == opened.st_ino else {
+            _ = Darwin.close(descriptor)
+            throw MCPAutomationReadError.photoChanged
+        }
+        return descriptor
     }
 
-    private static func withSafeHandleIfPresent<T>(at url: URL, consume: (FileHandle, stat) throws -> T) throws -> T? {
-        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    private static func withSafeHandleIfPresent<T>(name: String, in parent: Int32, consume: (FileHandle, stat) throws -> T) throws -> T? {
+        let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
             throw MCPAutomationReadError.unsafeCarrier
@@ -625,12 +741,13 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
         let result = try consume(handle, before)
         var after = stat()
-        var pathAfter = stat()
+        var entryAfter = stat()
         guard Darwin.fstat(descriptor, &after) == 0,
-              Darwin.lstat(url.path, &pathAfter) == 0,
-              (pathAfter.st_mode & S_IFMT) == S_IFREG,
+              Darwin.fstatat(parent, name, &entryAfter, AT_SYMLINK_NOFOLLOW) == 0,
+              (entryAfter.st_mode & S_IFMT) == S_IFREG,
+              after.st_nlink == 1, entryAfter.st_nlink == 1,
               before.st_dev == after.st_dev, before.st_ino == after.st_ino,
-              before.st_dev == pathAfter.st_dev, before.st_ino == pathAfter.st_ino,
+              before.st_dev == entryAfter.st_dev, before.st_ino == entryAfter.st_ino,
               before.st_size == after.st_size,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
               before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
@@ -639,8 +756,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         return result
     }
 
-    private static func withSafeBytesIfPresent<T>(at url: URL, consume: (Data, stat) throws -> T) throws -> T? {
-        try withSafeHandleIfPresent(at: url) { handle, identity in
+    private static func withSafeBytesIfPresent<T>(name: String, in parent: Int32, consume: (Data, stat) throws -> T) throws -> T? {
+        try withSafeHandleIfPresent(name: name, in: parent) { handle, identity in
             guard identity.st_size <= 8_388_608 else {
                 throw MCPAutomationReadError.unsafeCarrier
             }
@@ -648,8 +765,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func token(at url: URL, domain: String, required: Bool) throws -> (token: String, present: Bool) {
-        guard let digest = try withSafeHandleIfPresent(at: url, consume: { handle, identity in
+    private static func token(name: String, in parent: Int32, domain: String, required: Bool) throws -> (token: String, present: Bool) {
+        guard let digest = try withSafeHandleIfPresent(name: name, in: parent, consume: { handle, identity in
             var hasher = SHA256()
             hasher.update(data: prefix(domain: domain, identity: identity))
             while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
