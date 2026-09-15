@@ -451,6 +451,40 @@ struct MCPServerCoreTests {
         }
     }
 
+    @Test("Retargeting a nested ancestor during carrier capture refuses publication")
+    func refusesRetargetedPhotoAncestor() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("case", isDirectory: true)
+        let nested = parent.appendingPathComponent("selection", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let photo = nested.appendingPathComponent("frame.jpg")
+        let xmp = nested.appendingPathComponent("frame.xmp")
+        try Data("original photo".utf8).write(to: photo)
+        try Data("original sidecar".utf8).write(to: xmp)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let stable = MCPAutomationFacade(authorizationStore: authorization)
+        let before = try #require(stable.inspectPhotoRevision(path: photo.path).objectValue)
+
+        let relocated = root.appendingPathComponent("relocated", isDirectory: true)
+        let replacement = parent.appendingPathComponent("selection", isDirectory: true)
+        let racing = MCPAutomationFacade(authorizationStore: authorization) {
+            try! FileManager.default.moveItem(at: nested, to: relocated)
+            try! FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: false)
+            try! Data("replacement photo".utf8).write(to: replacement.appendingPathComponent("frame.jpg"))
+        }
+        #expect(throws: MCPAutomationReadError.photoChanged) {
+            _ = try racing.inspectPhotoRevision(path: photo.path)
+        }
+        try FileManager.default.removeItem(at: replacement)
+        try FileManager.default.moveItem(at: relocated, to: nested)
+        let after = try #require(stable.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(after["sourceRevision"] == before["sourceRevision"])
+        #expect(after["xmpSidecarRevision"] == before["xmpSidecarRevision"])
+    }
+
     @Test("Format discovery uses the exact GUI admission catalog and does not claim universal embedded writes")
     func discoversInputFormats() throws {
         let session = MCPServerSession(authorizationStore: store())

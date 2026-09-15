@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 38: variable-write admission](release/cycle-38-variable-write-reservation-2026-09-15.md) extends the shared photo lease across variable/template JSON preparation, physical writes and read-back; 37 focused and 2,919 serial tests plus repository validation pass. [Cycle 37](release/cycle-37-mcp-client-setup-2026-09-15.md) adds Codex CLI, Claude Code and both OpenCode setup formats. Production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 47: MCP ancestor identity at publication](release/cycle-47-mcp-ancestor-publication-2026-09-15.md) retains and rechecks the authorized-root and nested-directory path chain before returning combined photo evidence; 21 focused and 3,780 expanded serial executions plus repository validation pass. Effective typed IPTC reads, production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

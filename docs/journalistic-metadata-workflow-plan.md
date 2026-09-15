@@ -1624,6 +1624,13 @@ mixed-generation revision/draft output. The focused 20-test selection passes. Ef
 reconciliation, production tools and external-writer coordination remain open; no Phase 5A
 criterion is checked by this read-only prerequisite.
 
+**Progress — cycle 47:** [MCP ancestor identity at publication](release/cycle-47-mcp-ancestor-publication-2026-09-15.md)
+retains the authorized-root and nested-directory descriptors through carrier capture and
+rechecks every pathname entry before returning combined evidence. A retargeted ancestor is
+refused; the focused 21-test and complete 3,780-execution serial suites pass. Effective IPTC
+reconciliation, production operations and external-writer revision admission remain open;
+this prerequisite does not close a Phase 5A checkbox.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

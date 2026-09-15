@@ -582,6 +582,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
             photoName: target.url.lastPathComponent, in: directory,
             onCaptureCheckpoint: onCaptureCheckpoint
         )
+        try directory.requireSameAncestors()
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
         return (target, evidence)
@@ -591,7 +592,11 @@ nonisolated struct MCPAutomationFacade: Sendable {
 /// Opens each ancestor relative to the granted root. An absolute carrier path can otherwise
 /// follow a retargeted ancestor between authorization and the actual read.
 nonisolated private final class MCPAnchoredPhotoDirectory {
-    let descriptor: Int32
+    var descriptor: Int32 { descriptors[descriptors.count - 1] }
+    private let rootPath: String
+    private let rootIdentity: MCPFileIdentity
+    private let relative: [String]
+    private let descriptors: [Int32]
 
     init(root: MCPAuthorizedRoot, target: MCPAuthorizedTarget) throws {
         let rootURL = URL(fileURLWithPath: root.canonicalPath, isDirectory: true).standardizedFileURL
@@ -604,6 +609,7 @@ nonisolated private final class MCPAnchoredPhotoDirectory {
         let relative = Array(components.dropFirst(rootComponents.count).dropLast())
         var current = Darwin.open(rootURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard current >= 0 else { throw MCPAutomationReadError.photoChanged }
+        var opened: [Int32] = [current]
         do {
             var rootStat = stat()
             guard Darwin.fstat(current, &rootStat) == 0,
@@ -614,7 +620,16 @@ nonisolated private final class MCPAnchoredPhotoDirectory {
             for component in relative {
                 let next = Darwin.openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 guard next >= 0 else { throw MCPAutomationReadError.photoChanged }
-                _ = Darwin.close(current)
+                opened.append(next)
+                var childStat = stat()
+                var entryStat = stat()
+                guard Darwin.fstat(next, &childStat) == 0,
+                      Darwin.fstatat(current, component, &entryStat, AT_SYMLINK_NOFOLLOW) == 0,
+                      (entryStat.st_mode & S_IFMT) == S_IFDIR,
+                      childStat.st_dev == entryStat.st_dev,
+                      childStat.st_ino == entryStat.st_ino else {
+                    throw MCPAutomationReadError.photoChanged
+                }
                 current = next
             }
             var photoStat = stat()
@@ -625,14 +640,44 @@ nonisolated private final class MCPAnchoredPhotoDirectory {
                   UInt64(photoStat.st_ino) == target.identity.inode else {
                 throw MCPAutomationReadError.photoChanged
             }
-            descriptor = current
+            self.rootPath = rootURL.path
+            self.rootIdentity = root.identity
+            self.relative = relative
+            self.descriptors = opened
         } catch {
-            _ = Darwin.close(current)
+            for descriptor in opened { _ = Darwin.close(descriptor) }
             throw error
         }
     }
 
-    deinit { _ = Darwin.close(descriptor) }
+    /// A no-follow read can remain attached to a directory that has since moved away from
+    /// the authorized pathname. Verify every retained ancestor before publishing its bytes.
+    func requireSameAncestors() throws {
+        var rootEntry = stat()
+        var rootOpened = stat()
+        guard Darwin.lstat(rootPath, &rootEntry) == 0,
+              Darwin.fstat(descriptors[0], &rootOpened) == 0,
+              (rootEntry.st_mode & S_IFMT) == S_IFDIR,
+              UInt64(rootEntry.st_dev) == rootIdentity.device,
+              UInt64(rootEntry.st_ino) == rootIdentity.inode,
+              rootEntry.st_dev == rootOpened.st_dev,
+              rootEntry.st_ino == rootOpened.st_ino else {
+            throw MCPAutomationReadError.photoChanged
+        }
+        for (index, component) in relative.enumerated() {
+            var entry = stat()
+            var child = stat()
+            guard Darwin.fstatat(descriptors[index], component, &entry, AT_SYMLINK_NOFOLLOW) == 0,
+                  Darwin.fstat(descriptors[index + 1], &child) == 0,
+                  (entry.st_mode & S_IFMT) == S_IFDIR,
+                  entry.st_dev == child.st_dev,
+                  entry.st_ino == child.st_ino else {
+                throw MCPAutomationReadError.photoChanged
+            }
+        }
+    }
+
+    deinit { for descriptor in descriptors { _ = Darwin.close(descriptor) } }
 }
 
 nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
