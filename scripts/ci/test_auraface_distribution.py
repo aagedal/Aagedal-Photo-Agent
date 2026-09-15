@@ -297,19 +297,5 @@ class AuraFaceDistributionTests(unittest.TestCase):
         self.assertEqual(archive.read_bytes(), b"independent completed artifact")
         self.assertFalse(descriptor.exists())
 
-    def test_app_target_and_release_gate_enforce_model_separation(self) -> None:
-        project = (REPOSITORY / "Aagedal Photo Agent.xcodeproj/project.pbxproj").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("Resources/Models/AuraFaceR100.mlpackage,", project)
-
-        release = (REPOSITORY / "scripts/release.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            'python3 -B scripts/ci/validate_model_omission.py "$APP" > "$OUTPUT_DIR/model-omission.json"',
-            release,
-        )
-        self.assertIn('|| die "Exported app failed the recursive on-demand model omission check."', release)
-
-
 if __name__ == "__main__":
     unittest.main()

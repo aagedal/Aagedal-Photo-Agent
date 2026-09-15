@@ -170,7 +170,7 @@ Do not spend release time implementing excluded conditional analyzers.
 
 ### A-MODEL-LIFECYCLE
 
-**Class:** Agent validation + external prerequisite. **Source:** [4.3 Move the face model to a verified on-demand component](../app-improvement-audit-plan.md), line 1956.
+**Class:** Deferred for the bundled-model release. **Source:** [4.3 Move the face model to a verified on-demand component](../app-improvement-audit-plan.md), line 1956.
 
 ```text
 - [ ] The pre-converted quantized Core ML archive, descriptor, and detached signature are published at their
@@ -182,9 +182,9 @@ Do not spend release time implementing excluded conditional analyzers.
   ([validation](auraface-on-demand-runtime-validation-2026-08-27.md))
 ```
 
-**Current status:** The plan already records published model endpoints and implemented verified installation. An unsigned model-free package exists historically; required runtime lifecycle and OS-tier evidence is absent.
+**Current status:** The 2026-09-15 release decision bundles the reviewed AuraFace model. The older on-demand publication and lifecycle plan remains available for a future version but is not a gate for this bundled release. A local Release-configuration app contains the compiled model with pinned weights, and its bundled RGB embedding reference passed.
 
-**Smallest next action/evidence:** Launch a fresh model-omitted candidate with isolated test state; verify production download/install, offline, update, rollback, removal, corrupt/interrupted download and relaunch on each supported macOS tier. Recheck endpoints; do not treat historical HTTP 200 or mocked tests as lifecycle evidence.
+**Smallest next action/evidence:** Verify the exported, signed app with `scripts/ci/validate_model_bundle.py`, then exercise bundled face recognition after a clean install and offline relaunch on each supported macOS tier. Reopen the server-download drill only if a later release restores on-demand delivery.
 
 ## Investigation and review delivery
 

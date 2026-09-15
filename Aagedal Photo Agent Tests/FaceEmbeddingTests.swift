@@ -1244,6 +1244,21 @@ struct FaceEmbeddingTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("rollback").path))
     }
 
+    @Test("Bundled AuraFace wins over a previously downloaded component")
+    func auraFaceBundledModelTakesPriority() {
+        let bundledURL = URL(fileURLWithPath: "/private/tmp/fixture-bundled-AuraFaceR100.mlmodelc")
+        var io = AuraFaceComponentIO.live
+        io.read = { _ in throw AuraFaceComponentError.io }
+        let resolution = AuraFaceComponentResolution.current(
+            publicKeyData: Data(repeating: 0, count: 32),
+            io: io,
+            bundledModelURL: { _ in bundledURL }
+        )
+        #expect(resolution.snapshot.source == .bundled)
+        #expect(resolution.modelURL == bundledURL)
+        #expect(resolution.snapshot.availability.isAvailable)
+    }
+
     @Test @MainActor
     func auraFaceBundledFallbackExposesNoMisleadingComponentActions() {
         let manager = AuraFaceComponentManager(

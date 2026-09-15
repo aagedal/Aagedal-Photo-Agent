@@ -316,12 +316,8 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 
 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
-   Inspect the app package you intend to ship for
-   `Contents/Resources/AuraFaceR100.mlmodelc`. If the optional AuraFace model is intentionally omitted,
-   include this exact sentence in `### Highlights`: **“Face recognition is unavailable in this build
-   because the AuraFace model is not included.”** The packaged app then shows **Unavailable** in the face
-   bar and refuses face scans before modifying face data. If recognition is advertised as available, the
-   compiled model and its manifest verification must both be present.
+   AuraFace is bundled for this release. The release assistant verifies the exported app contains
+   `Contents/Resources/AuraFaceR100.mlmodelc` with the reviewed model weights before notarization.
 3. Commit and push the exact release source, then wait for the **macOS CI / Clean build and unfiltered tests** check to pass for that commit. The workflow performs a clean `build-for-testing`, an unfiltered `test-without-building`, generated-metadata drift checking, JSON/plist validation, conflict-marker scanning, and whitespace checks. Configure this check as required on the protected release branch in GitHub; repository files cannot enforce that remote setting.
 4. From a clean checkout of that same commit, run the release assistant with an authenticated GitHub CLI:
    ```bash

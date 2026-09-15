@@ -58,7 +58,7 @@ ok "Bundled release artifacts match their pinned manifest"
 # Catch version/build, changelog, security-policy, Sparkle, and appcast drift
 # before consulting CI, credentials, or the keychain.
 say "Verifying release metadata"
-python3 -B scripts/ci/validate_release_metadata.py --require-production-model-key \
+python3 -B scripts/ci/validate_release_metadata.py \
   || die "Release metadata validation failed; reconcile the project, changelog, security policy, Info.plist, and appcast."
 ok "Release metadata is internally consistent"
 
@@ -425,11 +425,11 @@ EOF
   ok "Exported & verified: $APP"
 fi
 
-# AuraFace is independently delivered. Assert this on the final exported or
-# reused app so an ignored local source package cannot inflate an app update.
-python3 -B scripts/ci/validate_model_omission.py "$APP" > "$OUTPUT_DIR/model-omission.json" \
-  || die "Exported app failed the recursive on-demand model omission check."
-ok "AuraFace is excluded from the app bundle"
+# AuraFace is delivered with the app. Assert the exported or reused app contains
+# the compiled model and its reviewed weights before notarizing or advertising it.
+python3 -B scripts/ci/validate_model_bundle.py "$APP" > "$OUTPUT_DIR/model-bundle.json" \
+  || die "Exported app is missing the reviewed bundled AuraFace model."
+ok "AuraFace is included in the app bundle"
 
 # ─── 8. Notarize the app, then staple ─────────────────────────────────────────
 if xcrun stapler validate "$APP" >/dev/null 2>&1; then

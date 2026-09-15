@@ -454,7 +454,7 @@ nonisolated struct AuraFaceComponentSnapshot: Equatable, Sendable {
 }
 
 /// One immutable answer from the model-component filesystem boundary. The model URL is
-/// published to the embedder only after the signed downloaded component (or bundled fallback)
+/// published to the embedder only after the bundled model or a signed downloaded component
 /// has been resolved completely.
 nonisolated struct AuraFaceComponentResolution: Equatable, Sendable {
     let snapshot: AuraFaceComponentSnapshot
@@ -468,8 +468,18 @@ nonisolated struct AuraFaceComponentResolution: Equatable, Sendable {
     static func current(
         bundle: Bundle = .main,
         publicKeyData: Data? = AuraFaceComponentStore.productionPublicKeyData(),
-        io: AuraFaceComponentIO = .live
+        io: AuraFaceComponentIO = .live,
+        bundledModelURL: @Sendable (Bundle) -> URL? = { CoreMLFaceEmbedder.bundledModelURL(bundle: $0) }
     ) -> AuraFaceComponentResolution {
+        if let bundled = bundledModelURL(bundle) {
+            return AuraFaceComponentResolution(
+                snapshot: AuraFaceComponentSnapshot(
+                    availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
+                    source: .bundled
+                ),
+                modelURL: bundled
+            )
+        }
         if let publicKeyData,
            let descriptor = try? AuraFaceComponentStore.verifyInstalledDirectory(
                AuraFaceComponentStore.current,
@@ -489,15 +499,6 @@ nonisolated struct AuraFaceComponentResolution: Equatable, Sendable {
                     modelURL: compiled
                 )
             }
-        }
-        if let bundled = CoreMLFaceEmbedder.bundledModelURL(bundle: bundle) {
-            return AuraFaceComponentResolution(
-                snapshot: AuraFaceComponentSnapshot(
-                    availability: .ready(version: CoreMLFaceEmbedder.modelVersion),
-                    source: .bundled
-                ),
-                modelURL: bundled
-            )
         }
         return AuraFaceComponentResolution(
             snapshot: AuraFaceComponentSnapshot(availability: .notInstalled, source: .none),

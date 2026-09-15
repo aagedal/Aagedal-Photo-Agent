@@ -6,16 +6,13 @@ The face-recognition feature is built from this developer-only CoreML source pac
 Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage   (~125 MB)
 ```
 
-This file is **excluded from git** (see the repo `.gitignore`) because of its size and explicitly excluded
-from the app target even when it exists in a developer checkout. It is input to deterministic conversion and
-distribution packaging only; normal app builds obtain the pre-converted, signed component through the
-on-demand installer. The app still **builds and runs without it**. Until the production component is
-published, the face bar shows **Unavailable** and scan requests fail closed before changing face data.
+This file is **excluded from git** (see the repo `.gitignore`) because of its size. When present in a release
+checkout, Xcode compiles it into `Contents/Resources/AuraFaceR100.mlmodelc` and the release assistant requires
+that reviewed payload in the exported app. Clean development and CI builds still build without the local
+package; those builds show **Unavailable** and refuse face scans before changing face data.
 
-The release assistant rejects an exported app containing
-`Contents/Resources/AuraFaceR100.mlmodelc`, preventing an ignored local package from silently inflating app
-updates. Until the production on-demand files are published and validated, add the exact disclosure required
-by the root `README.md` release checklist to `CHANGELOG.md` under `### Highlights`.
+The release assistant checks the compiled model and its pinned weights before notarization. The local package
+must be present and hash-validated for a bundled release; it remains outside the Git repository.
 
 ## What the model is
 
@@ -33,8 +30,8 @@ Hugging Face `hf` CLI. The repository tool reads the immutable commit and source
 manifest, downloads into a staging directory, and installs the file only after its digest matches:
 
 This is developer/release provenance tooling only. The app never invokes `hf`, downloads ONNX, or runs
-ONNX-to-Core ML conversion on a user's Mac. The planned on-demand product component is the already-converted,
-quantized Core ML artifact hosted on `aagedal.me`.
+ONNX-to-Core ML conversion on a user's Mac. The release app contains the already-converted, quantized
+Core ML artifact.
 
 ```bash
 python3 scripts/fetch_auraface_source.py fetch
@@ -74,10 +71,11 @@ The 2026-09-12 reviewed local package is that deterministic output. Its model, w
 are pinned in `bundled-components.json`; independent receipts are byte-identical and record
 `matchesDeclaredArtifactFiles: true`.
 
-## Prepare the pre-converted on-demand artifact
+## Optional future on-demand distribution artifact
 
-After the reviewed package hashes are in `bundled-components.json`, create the user-facing archive and its
-download descriptor without invoking the conversion environment:
+The current release bundles the reviewed model. The archive and descriptor tooling below remains available
+for a future version that returns to separate model downloads. It creates a pre-converted archive without
+invoking the conversion environment:
 
 ```bash
 python3 -B scripts/package_auraface_distribution.py package \

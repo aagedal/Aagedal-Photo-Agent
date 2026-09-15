@@ -233,8 +233,9 @@ and Core ML with a BGR negative control, and two independent locked builds produ
 and receipts. The reviewed deterministic model now replaces the contradictory local artifact and all
 declared hashes match. The checked-in compact reference now passes the app's exact `CGImage` preprocessing
 and model-backed embed path with the BGR-negative separation, and a clean-source driver makes the two-process
-evidence repeatable. Hardened streaming/archive installation and a production distribution key/signature
-remain open recognition gates.
+evidence repeatable. The former on-demand distribution key/signature and lifecycle gates were deferred by the
+2026-09-15 decision to bundle AuraFace for this release; exported-app model verification and native offline
+launch evidence now govern this release path.
 
 [Cycle 15 Primary retention](cycle-15-primary-develop-retention-2026-09-11.md) implements immutable original evidence, causal FIFO, lifecycle capture/barriers and verified export-before-discard recovery. Independent review, 103 focused tests, 2,687 integrated tests and repository checks pass for `ae99369`. Native save/Undo, real conflict retention, blocked Quit/workspace/selection, recovery cancellation/tamper/scoped discard, fresh save, dual Reset and relaunch pass. The separate `be970f0` notice fix passes independent review, 51 focused tests, 2,687 integrated tests, repository checks and a native tamper/refusal/discard/fresh-save regression. The earlier usage interruption and an unchanged Known People wait failure followed by passing reruns remain explicitly recorded.
 
@@ -557,7 +558,8 @@ limit. Explicit local-to-cloud reconciliation is committed as `05f484a` and reco
 publication, cancellation-truthful pointer commit, active-generation routing and destructive UI
 confirmation pass 2,839 tests / 311 suites plus repository validation. Native real-iCloud and
 multi-Mac evidence, independent cycle-19 review and later opt-in App Group publication remain
-separate. Production AuraFace distribution trust and legacy embedding provenance remain open.
+separate. The production AuraFace distribution-trust gate is deferred for the bundled-model release; legacy
+embedding provenance remains open.
 
 `ae99369` is committed and independently reviewed. Focused-v4 passes 103 tests / five
 suites; full-v3 passes 2,687 tests / 297 suites in 102.945s and repository-v2 passes.

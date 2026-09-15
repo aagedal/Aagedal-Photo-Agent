@@ -10,6 +10,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Bundled the reviewed AuraFace face model with the app so face recognition works offline immediately, without a separate model download.
 - Updated SwiftMediaMetadata to 3.0.1. Sony RTMD track discovery now avoids materializing top-level
   media payloads while retaining file-absolute sample offsets, reducing peak memory use when scanning
   supported Sony video metadata.

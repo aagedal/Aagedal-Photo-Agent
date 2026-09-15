@@ -177,7 +177,7 @@ sparkle:edSignature="{signature}" length="123" type="application/octet-stream" /
                 with self.assertRaisesRegex(ValueError, "AuraFaceDistributionPublicEd25519Key"):
                     validator.validate(self.root)
 
-    def test_release_gate_rejects_known_development_model_key(self) -> None:
+    def test_optional_on_demand_gate_rejects_development_model_key(self) -> None:
         path = self.root / "Aagedal Photo Agent/Info.plist"
         info = plistlib.loads(path.read_bytes())
         info["AuraFaceDistributionPublicEd25519Key"] = base64.b64encode(
@@ -185,8 +185,8 @@ sparkle:edSignature="{signature}" length="123" type="application/octet-stream" /
         ).decode()
         path.write_bytes(plistlib.dumps(info))
 
-        # Credential-free repository validation can inspect a development checkout,
-        # while the release entry point must reject this public trust anchor.
+        # Bundled releases may carry the dormant development key, but a future
+        # on-demand release must replace it before enabling hosted downloads.
         validator.validate(self.root)
         with self.assertRaisesRegex(ValueError, "development trust anchor"):
             validator.validate(self.root, require_production_model_key=True)

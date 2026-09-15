@@ -75,12 +75,17 @@ xcodebuild test -project 'Aagedal Photo Agent.xcodeproj' \
   -destination 'platform=macOS' -parallel-testing-enabled NO
 scripts/ci/validate_repository.sh
 git diff --check
-python3 -B scripts/ci/build_model_free_candidate.py build/model-free-candidate-UNIQUE-RUN-ID
+xcodebuild build -project 'Aagedal Photo Agent.xcodeproj' \
+  -scheme 'Aagedal Photo Agent' -configuration Release \
+  -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO \
+  CONFIGURATION_BUILD_DIR=build/model-bundled-candidate-UNIQUE-RUN-ID
+python3 -B scripts/ci/validate_model_bundle.py \
+  'build/model-bundled-candidate-UNIQUE-RUN-ID/Aagedal Photo Agent.app'
 ```
 
-The candidate builder requires clean committed source and a fresh output directory.
-An unsigned candidate is evidence of build/package consistency, not notarization,
-production model availability, or launch success. Launch and inspect the candidate
+The bundled candidate requires the ignored, pinned AuraFace package in the release checkout.
+An unsigned build is evidence of local bundle consistency, not notarization or launch success.
+Launch and inspect the candidate
 actually offered to the user. Required permissions must use the existing approval
 mechanism; never bypass an unavailable tool, sandbox, or accessibility permission.
 
