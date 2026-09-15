@@ -2,8 +2,8 @@
 import CryptoKit
 import Foundation
 
-/// Shared schema-2 contract mirrored from FTP Sync source 2dc18e9.
-/// Keep canonical revision inputs aligned with the cross-app golden fixture.
+/// Schema 2 remains byte-compatible with FTP Sync source 2dc18e9. Schema 3 adds optional
+/// per-example upgrade crops; older readers must reject it rather than misread its revisions.
 /// These types perform no extraction, filesystem access, or snapshot publication.
 nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
     static let fileName = "manifest.json"
@@ -21,7 +21,7 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
     struct Limits: Equatable, Sendable {
         var maximumPeople = 10_000
         var maximumEmbeddings = 100_000
-        var maximumFiles = 200_001
+        var maximumFiles = 300_001
         var maximumFileBytes = 16_777_216
         var maximumTotalBytes = 500_000_000
         var maximumManifestBytes = 16_777_216
@@ -140,13 +140,14 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
 
     init(libraryID: UUID, exportedAt: String, exporter: Exporter, peopleCount: Int, embeddingCount: Int,
          files: [FileDeclaration], contract: EmbeddingContract = .auraFaceV1, editorPayload: EditorPayloadDescriptor? = nil) throws {
-        format = Self.formatIdentifier; schemaVersion = 2
+        format = Self.formatIdentifier
+        schemaVersion = files.contains { $0.path.hasPrefix("upgrade_sources/") } ? 3 : 2
         self.libraryID = libraryID; self.exportedAt = exportedAt; self.exporter = exporter
         self.peopleCount = peopleCount; self.embeddingCount = embeddingCount; self.files = files; self.contract = contract
         self.editorPayload = editorPayload
-        coreRevision = try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
+        coreRevision = try Self.revision(schemaVersion: schemaVersion, libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
             files: files.filter { $0.path != EditorPayloadDescriptor.filePath })
-        revision = try Self.overallRevision(coreRevision: coreRevision, editorPayload: editorPayload)
+        revision = try Self.overallRevision(schemaVersion: schemaVersion, coreRevision: coreRevision, editorPayload: editorPayload)
         try validate()
     }
 
@@ -167,7 +168,8 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
 
     func validate(limits: Limits = .init()) throws {
         try limits.validate()
-        guard format == Self.formatIdentifier, schemaVersion == 2 else { throw ValidationError.invalidSchema }
+        guard format == Self.formatIdentifier, [2, 3].contains(schemaVersion),
+              schemaVersion == 3 || !files.contains(where: { $0.path.hasPrefix("upgrade_sources/") }) else { throw ValidationError.invalidSchema }
         try KnownPeoplePackageCoding.validateID(libraryID)
         guard revision.utf8.count == 64, KnownPeoplePackageCoding.lowerHex(revision) else { throw ValidationError.invalidHash }
         let formatter = ISO8601DateFormatter()
@@ -195,9 +197,9 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
             guard editorFiles.count == 1, editorFiles[0].byteCount == editorPayload.byteCount,
                   editorFiles[0].sha256 == editorPayload.sha256 else { throw ValidationError.invalidReference }
         } else if !editorFiles.isEmpty { throw ValidationError.invalidReference }
-        guard try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
+        guard try Self.revision(schemaVersion: schemaVersion, libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
                   files: files.filter { $0.path != EditorPayloadDescriptor.filePath }) == coreRevision,
-              try Self.overallRevision(coreRevision: coreRevision, editorPayload: editorPayload) == revision else {
+              try Self.overallRevision(schemaVersion: schemaVersion, coreRevision: coreRevision, editorPayload: editorPayload) == revision else {
             throw ValidationError.revisionMismatch
         }
     }
@@ -213,6 +215,7 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
                 examples += 1
                 guard referenced.insert(example.embeddingPath).inserted else { throw ValidationError.duplicatePath }
                 if let path = example.thumbnailPath { guard referenced.insert(path).inserted else { throw ValidationError.duplicatePath } }
+                if let path = example.upgradeSourcePath { guard referenced.insert(path).inserted else { throw ValidationError.duplicatePath } }
             }
         }
         guard payload.people.count == peopleCount, examples == embeddingCount else { throw ValidationError.invalidCounts }
@@ -221,21 +224,21 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
 
     /// Canonical UTF-8 JSON with sorted keys/unescaped slashes and lowercase UUID;
     /// file declarations are sorted by ASCII path. Export time/exporter are excluded.
-    private static func revision(libraryID: UUID, contract: EmbeddingContract, peopleCount: Int, embeddingCount: Int, files: [FileDeclaration]) throws -> String {
+    private static func revision(schemaVersion: Int, libraryID: UUID, contract: EmbeddingContract, peopleCount: Int, embeddingCount: Int, files: [FileDeclaration]) throws -> String {
         struct RevisionInput: Encodable {
             let format: String; let schemaVersion: Int; let libraryID: String; let contract: EmbeddingContract
             let peopleCount: Int; let embeddingCount: Int; let files: [FileDeclaration]
         }
-        let value = RevisionInput(format: formatIdentifier, schemaVersion: 2, libraryID: libraryID.uuidString.lowercased(), contract: contract,
+        let value = RevisionInput(format: formatIdentifier, schemaVersion: schemaVersion, libraryID: libraryID.uuidString.lowercased(), contract: contract,
             peopleCount: peopleCount, embeddingCount: embeddingCount, files: files.sorted { $0.path < $1.path })
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return SHA256.hash(data: try encoder.encode(value)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Separate domain prevents an editor-only change from changing recognition identity.
-    private static func overallRevision(coreRevision: String, editorPayload: EditorPayloadDescriptor?) throws -> String {
+    private static func overallRevision(schemaVersion: Int, coreRevision: String, editorPayload: EditorPayloadDescriptor?) throws -> String {
         struct Input: Encodable { let format: String; let schemaVersion: Int; let coreRevision: String; let editorPayload: EditorPayloadDescriptor? }
-        let value = Input(format: "aagedal-known-people-snapshot", schemaVersion: 2, coreRevision: coreRevision, editorPayload: editorPayload)
+        let value = Input(format: "aagedal-known-people-snapshot", schemaVersion: schemaVersion, coreRevision: coreRevision, editorPayload: editorPayload)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return SHA256.hash(data: try encoder.encode(value)).map { String(format: "%02x", $0) }.joined()
     }
@@ -243,7 +246,7 @@ nonisolated struct KnownPeoplePackageManifest: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try KnownPeoplePackageCoding.object(decoder, required: ["format", "schemaVersion", "libraryID", "revision", "coreRevision", "exportedAt", "exporter", "contract", "peopleCount", "embeddingCount", "files"], optional: ["editorPayload"])
         format = try c.decode(String.self, forKey: .init("format")); schemaVersion = try c.decode(Int.self, forKey: .init("schemaVersion"))
-        guard format == Self.formatIdentifier, schemaVersion == 2 else { throw ValidationError.invalidSchema }
+        guard format == Self.formatIdentifier, [2, 3].contains(schemaVersion) else { throw ValidationError.invalidSchema }
         contract = try c.decode(EmbeddingContract.self, forKey: .init("contract"))
         libraryID = try KnownPeoplePackageCoding.id(from: c, key: "libraryID"); revision = try c.decode(String.self, forKey: .init("revision"))
         coreRevision = try c.decode(String.self, forKey: .init("coreRevision"))
@@ -271,23 +274,29 @@ nonisolated struct KnownPeoplePackagePayload: Codable, Equatable, Sendable {
         let id: UUID
         let embeddingPath: String
         let thumbnailPath: String?
-        init(id: UUID, embeddingPath: String, thumbnailPath: String? = nil) throws {
+        let upgradeSourcePath: String?
+        init(id: UUID, embeddingPath: String, thumbnailPath: String? = nil,
+             upgradeSourcePath: String? = nil) throws {
             try KnownPeoplePackageCoding.validateID(id)
             guard embeddingPath == "embeddings/\(id.uuidString.lowercased()).fem2",
-                  thumbnailPath == nil || thumbnailPath == "embedding_thumbnails/\(id.uuidString.lowercased()).jpg" else {
+                  thumbnailPath == nil || thumbnailPath == "embedding_thumbnails/\(id.uuidString.lowercased()).jpg",
+                  upgradeSourcePath == nil || upgradeSourcePath == "upgrade_sources/\(id.uuidString.lowercased()).jpg" else {
                 throw KnownPeoplePackageManifest.ValidationError.invalidReference
             }
             self.id = id; self.embeddingPath = embeddingPath; self.thumbnailPath = thumbnailPath
+            self.upgradeSourcePath = upgradeSourcePath
         }
         init(from decoder: Decoder) throws {
-            let c = try KnownPeoplePackageCoding.object(decoder, required: ["id", "embeddingPath"], optional: ["thumbnailPath"])
+            let c = try KnownPeoplePackageCoding.object(decoder, required: ["id", "embeddingPath"], optional: ["thumbnailPath", "upgradeSourcePath"])
             try self.init(id: KnownPeoplePackageCoding.id(from: c, key: "id"), embeddingPath: c.decode(String.self, forKey: .init("embeddingPath")),
-                thumbnailPath: c.contains(.init("thumbnailPath")) ? c.decode(String.self, forKey: .init("thumbnailPath")) : nil)
+                thumbnailPath: c.contains(.init("thumbnailPath")) ? c.decode(String.self, forKey: .init("thumbnailPath")) : nil,
+                upgradeSourcePath: c.contains(.init("upgradeSourcePath")) ? c.decode(String.self, forKey: .init("upgradeSourcePath")) : nil)
         }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: KnownPeoplePackageCoding.Key.self)
             try c.encode(id.uuidString.lowercased(), forKey: .init("id")); try c.encode(embeddingPath, forKey: .init("embeddingPath"))
             try c.encodeIfPresent(thumbnailPath, forKey: .init("thumbnailPath"))
+            try c.encodeIfPresent(upgradeSourcePath, forKey: .init("upgradeSourcePath"))
         }
     }
     struct Person: Codable, Equatable, Sendable {
@@ -451,7 +460,7 @@ nonisolated private enum KnownPeoplePackageCoding {
         let suffix: String
         switch folder {
         case "embeddings": suffix = ".fem2"
-        case "thumbnails", "embedding_thumbnails": suffix = ".jpg"
+        case "thumbnails", "embedding_thumbnails", "upgrade_sources": suffix = ".jpg"
         default: throw KnownPeoplePackageManifest.ValidationError.invalidPath
         }
         guard name.hasSuffix(suffix), let id = UUID(uuidString: String(name.dropLast(suffix.count))),

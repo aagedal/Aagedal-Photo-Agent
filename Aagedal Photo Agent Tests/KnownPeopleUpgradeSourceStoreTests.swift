@@ -6,6 +6,41 @@ import ImageIO
 
 @Suite("Known People optional upgrade sources", .serialized)
 struct KnownPeopleUpgradeSourceStoreTests {
+    @Test func cloudRoutesUseASiblingOutsideTheStrictManagedGeneration() {
+        let root = URL(fileURLWithPath:
+            "/virtual/\(AppPaths.iCloudContainerID)/Documents/KnownPeople/generations/example",
+            isDirectory: true)
+        #expect(KnownPeopleUpgradeSourceStore.cloudDirectory(for: root)?.path ==
+            "/virtual/\(AppPaths.iCloudContainerID)/Documents/KnownPeopleUpgradeSources")
+        #expect(KnownPeopleUpgradeSourceStore.cloudDirectory(for:
+            URL(fileURLWithPath: "/virtual/ApplicationSupport/KnownPeople", isDirectory: true)) == nil)
+    }
+
+    @Test func oldICloudConsentDoesNotUploadNewCrops() async throws {
+        let retainKey = UserDefaultsKeys.knownPeopleRetainUpgradeSources
+        let consentKey = UserDefaultsKeys.knownPeopleICloudConsentVersion
+        let oldRetain = UserDefaults.standard.object(forKey: retainKey)
+        let oldConsent = UserDefaults.standard.object(forKey: consentKey)
+        defer {
+            if let oldRetain { UserDefaults.standard.set(oldRetain, forKey: retainKey) }
+            else { UserDefaults.standard.removeObject(forKey: retainKey) }
+            if let oldConsent { UserDefaults.standard.set(oldConsent, forKey: consentKey) }
+            else { UserDefaults.standard.removeObject(forKey: consentKey) }
+        }
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CropConsent-\(UUID().uuidString)/\(AppPaths.iCloudContainerID)/Documents",
+            isDirectory: true)
+        let root = parent.appendingPathComponent("KnownPeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent.deletingLastPathComponent().deletingLastPathComponent()) }
+        let id = UUID()
+        UserDefaults.standard.set(true, forKey: retainKey)
+        UserDefaults.standard.set(1, forKey: consentKey)
+        #expect(try await KnownPeopleUpgradeSourceStore().saveIfEnabled(
+            [id: cropJPEG()], admittedIDs: [id], knownPeopleRoot: root) == 0)
+        #expect(!FileManager.default.fileExists(atPath:
+            KnownPeopleUpgradeSourceStore.imageURL(for: id, knownPeopleRoot: root).path))
+    }
     private func cropJPEG() throws -> Data {
         let context = try #require(CGContext(data: nil, width: 320, height: 320,
             bitsPerComponent: 8, bytesPerRow: 0,

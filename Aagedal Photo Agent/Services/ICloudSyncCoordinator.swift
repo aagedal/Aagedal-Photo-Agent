@@ -3,6 +3,10 @@ import os
 
 private let cloudSyncLog = Logger(subsystem: "com.aagedal.photo-agent", category: "ICloudSyncCoordinator")
 
+nonisolated enum KnownPeopleCropSyncConsentContext {
+    @TaskLocal static var confirmedForThisReconcile = false
+}
+
 /// Every user-facing data category controlled by the master iCloud switch.
 /// Keeping the master implementation driven by `allCases` prevents newly-added
 /// categories from being omitted from either its displayed state or its action.
@@ -490,6 +494,14 @@ actor KnownPeopleICloudRoutingService: KnownPeopleICloudRouting {
         let source = enabled ? local : activeCloud
         let destination = enabled ? activeCloud : local
         try access.merge(source, destination)
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources),
+           !enabled || KnownPeoplePrivacyLifecycle.hasConfirmedICloudTransfer()
+              || KnownPeopleCropSyncConsentContext.confirmedForThisReconcile {
+            let sourceCrops = KnownPeopleUpgradeSourceStore.directory(for: source)
+            if FileManager.default.fileExists(atPath: sourceCrops.path) {
+                try access.merge(sourceCrops, KnownPeopleUpgradeSourceStore.directory(for: destination))
+            }
+        }
         let commit = KnownPeopleICloudRoutingCommit(
             requestID: requestID,
             enabled: enabled,
@@ -949,10 +961,10 @@ final class ICloudSyncCoordinator {
                         return
                     }
                 }
-                let result = try await knownPeopleRouting.reconcile(
-                    enabled: on,
-                    requestID: requestID
-                )
+                let result = try await KnownPeopleCropSyncConsentContext.$confirmedForThisReconcile
+                    .withValue(confirmedFirstEnable) {
+                        try await knownPeopleRouting.reconcile(enabled: on, requestID: requestID)
+                    }
                 guard knownPeopleRoutingRequestID == requestID else { return }
                 knownPeopleRoutingTask = nil
                 knownPeopleRoutingRequestID = nil

@@ -575,6 +575,38 @@ struct ICloudSyncCoordinatorTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("Opt-in Known People crops follow routing without entering the managed root")
+    func knownPeopleCropRouting() async throws {
+        let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KnownPeopleCropRouting-\(UUID().uuidString)", isDirectory: true)
+        let local = parent.appendingPathComponent("local", isDirectory: true)
+        let cloud = parent.appendingPathComponent("cloud", isDirectory: true)
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let crops = KnownPeopleUpgradeSourceStore.directory(for: local)
+        try FileManager.default.createDirectory(at: crops, withIntermediateDirectories: true)
+        let probe = KnownPeopleICloudRoutingProbe(local: local, cloud: cloud)
+        let service = KnownPeopleICloudRoutingService(access: probe.fileAccess)
+        UserDefaults.standard.set(true, forKey: key)
+        let result = try await KnownPeopleCropSyncConsentContext.$confirmedForThisReconcile
+            .withValue(true) { try await service.reconcile(enabled: true, requestID: UUID()) }
+        guard case .committed = result else {
+            Issue.record("Crop routing did not commit")
+            return
+        }
+        #expect(probe.merges.map(\.0) == [local, crops])
+        #expect(probe.merges.map(\.1) == [cloud,
+            KnownPeopleUpgradeSourceStore.directory(for: cloud)])
+        #expect(crops.path != local.appendingPathComponent("upgrade_sources").path)
+    }
+
     @Test("Known People routing uses the pointer's exact active generation")
     func knownPeopleRoutingUsesActiveGeneration() async throws {
         let parent = URL(fileURLWithPath:
@@ -1022,6 +1054,9 @@ struct ICloudSyncCoordinatorTests {
             currentlyEnabled: true,
             defaults: defaults
         ))
+        defaults.set(1, forKey: UserDefaultsKeys.knownPeopleICloudConsentVersion)
+        #expect(KnownPeoplePrivacyLifecycle.requiresICloudConfirmation(
+            enabling: true, currentlyEnabled: true, defaults: defaults))
 
         KnownPeoplePrivacyLifecycle.acknowledgeDisclosure(in: defaults)
         #expect(KnownPeoplePrivacyLifecycle.hasAcknowledgedDisclosure(in: defaults))

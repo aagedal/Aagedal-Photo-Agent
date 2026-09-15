@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import CoreGraphics
+import ImageIO
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -65,6 +67,59 @@ struct KnownPeopleLocalStoreSnapshotBuilderTests {
                          access: KnownPeopleLocalStoreSnapshotAccess = .init()) async throws -> KnownPeopleLocalStoreSnapshotCapture {
         try await KnownPeopleLocalStoreSnapshotBuilder(access: access).capture(rootURL: local,
             exportedAt: exportedAt, exporter: admitted.manifest.exporter)
+    }
+
+    private func upgradeJPEG() throws -> Data {
+        let context = try #require(CGContext(data: nil, width: 320, height: 320,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.5, green: 0.4, blue: 0.3, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 320, height: 320))
+        let image = try #require(context.makeImage())
+        let encoded = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(encoded,
+            "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return encoded as Data
+    }
+
+    @Test("Opt-in crops round-trip through schema 3 ZIP and directory packages")
+    func upgradeSourceRoundTrip() async throws {
+        let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let parent = try root()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let (local, admitted) = try await fixture(parent)
+        let id = try #require(admitted.people.first?.embeddings.first?.id)
+        let crop = try upgradeJPEG()
+        UserDefaults.standard.set(true, forKey: key)
+        _ = try await KnownPeopleUpgradeSourceStore.shared.saveIfEnabled(
+            [id: crop], admittedIDs: [id], knownPeopleRoot: local)
+        let captured = try await capture(local, admitted)
+        let path = "upgrade_sources/\(id.uuidString.lowercased()).jpg"
+        #expect(captured.snapshot.manifest.schemaVersion == 3)
+        #expect(captured.snapshot.payload.people.first?.examples.first?.upgradeSourcePath == path)
+        #expect(captured.snapshot.files[path] == crop)
+        let zip = try KnownPeoplePackageArchiveCodec.encode(captured.snapshot.files)
+        #expect(try KnownPeoplePackageArchiveCodec.decode(zip)[path] == crop)
+        let destination = parent.appendingPathComponent("with-crops.aagedalpeople")
+        #expect(await KnownPeoplePackageDirectoryWriter().write(
+            snapshot: captured.snapshot, destinationURL: destination).completed)
+        let restored = try await KnownPeoplePackageDirectoryReader().read(directoryURL: destination)
+        #expect(restored.files[path] == crop)
+        let remote = parent.appendingPathComponent("restored", isDirectory: true)
+        try await install(restored, at: remote)
+        #expect(try await KnownPeopleUpgradeSourceStore.shared.read(
+            id, knownPeopleRoot: remote) == crop)
+        UserDefaults.standard.set(false, forKey: key)
+        let optedOut = try await capture(local, admitted)
+        #expect(optedOut.snapshot.manifest.schemaVersion == 2)
+        #expect(optedOut.snapshot.files[path] == nil)
     }
 
     @Test("Unchanged managed projection re-exports the exact admitted golden bytes without writes")

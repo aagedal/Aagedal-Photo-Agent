@@ -28,6 +28,7 @@ struct SettingsView: View {
     @State private var knownPeopleClearNoticeID: UUID?
     @State private var showClearConfirmation = false
     @State private var showUpgradeSourceClearConfirmation = false
+    @State private var showCropSyncConsentConfirmation = false
     @State private var isClearingUpgradeSources = false
     @State private var knownPeopleMessage: String?
     @State private var knownPeopleDataSummary = KnownPeopleDataSummary(
@@ -781,11 +782,28 @@ struct SettingsView: View {
                 Toggle("Keep reusable face crops", isOn: Binding(
                     get: { retainKnownPeopleUpgradeSources },
                     set: { requested in
-                        if requested { retainKnownPeopleUpgradeSources = true }
+                        if requested {
+                            if ICloudSyncCoordinator.shared.knownPeopleEnabled,
+                               !KnownPeoplePrivacyLifecycle.hasConfirmedICloudTransfer() {
+                                showCropSyncConsentConfirmation = true
+                            } else {
+                                retainKnownPeopleUpgradeSources = true
+                            }
+                        }
                         else { showUpgradeSourceClearConfirmation = true }
                     }
                 ))
                 .disabled(isClearingUpgradeSources)
+                if retainKnownPeopleUpgradeSources,
+                   ICloudSyncCoordinator.shared.knownPeopleEnabled,
+                   !KnownPeoplePrivacyLifecycle.hasConfirmedICloudTransfer() {
+                    Button("Confirm iCloud Crop Sync") {
+                        showCropSyncConsentConfirmation = true
+                    }
+                    Text("Your previous iCloud consent covered embeddings and thumbnails, not reusable face crops. Crop upload is paused until you confirm.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 LabeledContent("Retained crops") {
                     if let upgradeSourceInventory {
                         Text("\(upgradeSourceInventory.retainedCount) of \(knownPeopleStats.embeddingCount) examples · \(ByteCountFormatter.string(fromByteCount: upgradeSourceInventory.retainedBytes, countStyle: .file))")
@@ -797,7 +815,7 @@ struct SettingsView: View {
                 Text("Off by default. When on, new Known People enrollments keep a wider 320-pixel crop from each available original photo, in addition to the small display thumbnail. Expect roughly 30–100 KB per retained example. This may let a future face model rebuild its gallery without re-opening the originals; it does not upgrade embeddings today.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("These extra crops stay on this Mac. They are not included in People Library ZIP exports or Known People iCloud sync. Turning this off deletes them but keeps people, embeddings, and display thumbnails. Previously enrolled examples are not backfilled automatically.")
+                Text("When enabled, retained crops are included in People Library directory/ZIP exports and Known People iCloud sync. Crop-bearing packages use schema 3, which older FTP Sync readers may not support. ZIP32 is limited to 512 MiB and the current People Library package contract to 500 MB of files; oversized exports require a future streaming format. Turning this off removes retained crops on this Mac and from the active iCloud crop store, but exported ZIPs and earlier iCloud generations are separate copies. Previously enrolled examples are not backfilled automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -851,7 +869,16 @@ struct SettingsView: View {
                 }
             }
         } message: {
-            Text("This deletes the optional local face crops used for future model upgrades. Names, embeddings, and display thumbnails remain.")
+            Text("This deletes the optional face crops on this Mac and in the active iCloud crop store. Previously exported ZIPs and older iCloud generations may still contain separate copies. Names, embeddings, and display thumbnails remain.")
+        }
+        .alert("Sync Reusable Face Crops with iCloud?", isPresented: $showCropSyncConsentConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Confirm and Sync") {
+                retainKnownPeopleUpgradeSources = true
+                ICloudSyncCoordinator.shared.setKnownPeopleEnabled(true, confirmedFirstEnable: true)
+            }
+        } message: {
+            Text("This adds the optional wider face crops to Known People iCloud sync so they can reach your other Macs. Names, embeddings, and display thumbnails are already synced.")
         }
     }
 
@@ -1853,7 +1880,7 @@ struct SettingsView: View {
                     set: { requestKnownPeopleSync($0, coordinator: coordinator) }
                 ))
                 .disabled(interchangeController.isBusy)
-                Text("Names, face-only feature vectors, and reference thumbnails used for auto-matching. Folder .face_data, including clothing features, is not synced.")
+                Text("Names, face-only feature vectors, reference thumbnails, and opt-in reusable face crops. Folder .face_data, including clothing features, is not synced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -1929,9 +1956,9 @@ struct SettingsView: View {
             .keyboardShortcut(.defaultAction)
         } message: {
             if pendingKnownPeopleSyncRequest?.replacesCloudLibrary == true {
-                Text("This local library was replaced or assigned a new interchange identity. Continuing publishes it as a complete new iCloud generation. It replaces the active iCloud Known People library, including removals and an intentionally empty library; the previous cloud generation is not merged into it. Names, face-only feature vectors, and reference thumbnails are uploaded. Folder scan and clothing data stay in each photo folder.")
+                Text("This local library was replaced or assigned a new interchange identity. Continuing publishes it as a complete new iCloud generation. It replaces the active iCloud Known People library, including removals and an intentionally empty library; the previous cloud generation is not merged into it. Names, face-only feature vectors, reference thumbnails, and opt-in reusable face crops are uploaded. Folder scan and clothing data stay in each photo folder.")
             } else {
-                Text("This uploads names, face-only feature vectors, and reference thumbnails from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
+                Text("This uploads names, face-only feature vectors, reference thumbnails, and opt-in reusable face crops from Known People to this app’s iCloud Drive container so they can reach your other Macs. Folder scan data and clothing features stay in each photo folder and are not uploaded by this setting. Turning sync off later does not itself delete the existing iCloud files.")
             }
         }
     }
@@ -2685,17 +2712,17 @@ private struct KnownPeoplePrivacyDisclosureView: View {
             disclosureRow(
                 icon: "internaldrive",
                 title: "Saved in two places",
-                text: "Each scanned photo folder gets a hidden .face_data folder containing face positions, feature vectors, groups, and thumbnails. Known People separately saves names, face-only feature vectors, and reference thumbnails in the app’s managed database. If you enable reusable face crops, new enrollments also save wider crops in a separate local-only store."
+                text: "Each scanned photo folder gets a hidden .face_data folder containing face positions, feature vectors, groups, and thumbnails. Known People separately saves names, face-only feature vectors, and reference thumbnails in the app’s managed database. If you enable reusable face crops, new enrollments also save wider crops in a separate store that follows People Library exports and iCloud sync."
             )
             disclosureRow(
                 icon: "clock.arrow.circlepath",
                 title: "Kept until you remove it",
-                text: "Folder scan data follows the auto-delete setting and can be deleted from the Faces view. Known People remains until you remove people or clear its database. Reusable crops can also be deleted by turning their option off. Exported ZIP files are separate copies you manage."
+                text: "Folder scan data follows the auto-delete setting and can be deleted from the Faces view. Known People remains until you remove people or clear its database. Reusable crops can also be deleted by turning their option off. Exported ZIP files and earlier iCloud generations are separate copies."
             )
             disclosureRow(
                 icon: "icloud",
                 title: "iCloud is optional",
-                text: "Known People stays on this Mac unless you separately confirm iCloud sync. Sync uploads its names, face-only feature vectors, and reference thumbnails; optional reusable crops, folder scan data, and clothing features are not uploaded by that setting."
+                text: "Known People stays on this Mac unless you separately confirm iCloud sync. Sync uploads its names, face-only feature vectors, reference thumbnails, and optional reusable face crops. Folder scan data and clothing features are not uploaded by that setting."
             )
 
             HStack {

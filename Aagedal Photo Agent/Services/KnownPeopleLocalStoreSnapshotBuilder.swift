@@ -71,17 +71,25 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         }
 
         let thumbnails = try Self.thumbnails(initial.files, people: people, admitted: admitted)
+        let upgradeSources = try await KnownPeopleUpgradeSourceStore.shared.snapshot(
+            admittedIDs: Set(people.flatMap { $0.embeddings.map(\.id) }), knownPeopleRoot: root.url)
         let samePeople = try Self.canonicalPeople(people) == Self.canonicalPeople(admitted.people)
         let admittedThumbnails = admitted.files.filter { $0.key.hasPrefix("thumbnails/") || $0.key.hasPrefix("embedding_thumbnails/") }
+        let admittedUpgradeSources = Dictionary(uniqueKeysWithValues: admitted.files.compactMap { path, bytes -> (UUID, Data)? in
+            guard path.hasPrefix("upgrade_sources/"),
+                  let id = UUID(uuidString: String(path.dropFirst("upgrade_sources/".count).dropLast(4))) else { return nil }
+            return (id, bytes)
+        })
         let exactProjection = try Self.managedProjectionHash(files: initial.files, directories: initial.directories)
         let reused = exactProjection == state.managedProjectionSHA256 && samePeople && thumbnails == admittedThumbnails
+            && upgradeSources == admittedUpgradeSources
         let snapshot: KnownPeoplePackageSnapshot
         if reused {
             snapshot = .init(sourceDirectoryURL: root.url, sourceDevice: root.identity.st_dev,
                 sourceInode: root.identity.st_ino, manifest: admitted.manifest, payload: admitted.payload,
                 editor: admitted.editor, files: admitted.files, people: admitted.people)
         } else {
-            snapshot = try Self.build(people: people, thumbnails: thumbnails, libraryID: state.libraryID,
+            snapshot = try Self.build(people: people, thumbnails: thumbnails, upgradeSources: upgradeSources, libraryID: state.libraryID,
                                       root: root, exportedAt: exportedAt, exporter: exporter)
         }
         try KnownPeoplePackageSnapshotValidation.validate(snapshot)
@@ -112,7 +120,9 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         let people = try Self.people(initial.files)
         _ = try KnownPeopleInterchangeEligibility.validate(people: people)
         let thumbnails = try Self.thumbnails(initial.files, people: people, admitted: nil)
-        let snapshot = try Self.build(people: people, thumbnails: thumbnails, libraryID: libraryID,
+        let upgradeSources = try await KnownPeopleUpgradeSourceStore.shared.snapshot(
+            admittedIDs: Set(people.flatMap { $0.embeddings.map(\.id) }), knownPeopleRoot: root.url)
+        let snapshot = try Self.build(people: people, thumbnails: thumbnails, upgradeSources: upgradeSources, libraryID: libraryID,
                                       root: root, exportedAt: exportedAt, exporter: exporter)
         try KnownPeoplePackageSnapshotValidation.validate(snapshot)
         try access.beforeFinalValidation()
@@ -179,7 +189,7 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
         return result
     }
 
-    private static func build(people: [KnownPerson], thumbnails: [String: Data], libraryID: UUID,
+    private static func build(people: [KnownPerson], thumbnails: [String: Data], upgradeSources: [UUID: Data], libraryID: UUID,
                               root: LocalRoot, exportedAt: String,
                               exporter: KnownPeoplePackageManifest.Exporter) throws -> KnownPeoplePackageSnapshot {
         var files = thumbnails, corePeople: [KnownPeoplePackagePayload.Person] = []
@@ -192,8 +202,12 @@ actor KnownPeopleLocalStoreSnapshotBuilder {
             var examples: [KnownPeoplePackagePayload.Example] = []
             for example in person.embeddings {
                 let key = example.id.uuidString.lowercased(), path = "embeddings/\(key).fem2", thumbnail = "embedding_thumbnails/\(key).jpg"
+                let upgradePath = "upgrade_sources/\(key).jpg"
                 files[path] = example.featurePrintData
-                examples.append(try .init(id: example.id, embeddingPath: path, thumbnailPath: thumbnails[thumbnail] == nil ? nil : thumbnail))
+                if let source = upgradeSources[example.id] { files[upgradePath] = source }
+                examples.append(try .init(id: example.id, embeddingPath: path,
+                    thumbnailPath: thumbnails[thumbnail] == nil ? nil : thumbnail,
+                    upgradeSourcePath: upgradeSources[example.id] == nil ? nil : upgradePath))
                 let mode: KnownPeoplePackageEditorPayload.RecognitionMode?
                 switch example.recognitionMode {
                 case .visionFeaturePrint: mode = .vision

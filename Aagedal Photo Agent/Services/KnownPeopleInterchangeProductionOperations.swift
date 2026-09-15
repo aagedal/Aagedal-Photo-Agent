@@ -64,7 +64,7 @@ struct KnownPeopleInterchangeSecurityScope {
     }
 }
 
-/// Injectable at operation boundaries; production closures only use schema-2 services.
+/// Injectable at operation boundaries; production closures admit schema-2 and schema-3 packages.
 @MainActor
 struct KnownPeopleInterchangeOperationsAccess {
     var availability: () -> KnownPeopleInterchangeAvailability

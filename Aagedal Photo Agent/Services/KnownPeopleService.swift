@@ -3163,10 +3163,21 @@ final class KnownPeopleService {
                         person.embeddings.map(\.id)
                     })
                     do {
-                        try await KnownPeopleUpgradeSourceStore.shared.pruneUnreferenced(
-                            admittedIDs: admittedIDs, knownPeopleRoot: currentRoute.rootURL)
+                        // A whole-library replacement makes the admitted package authoritative.
+                        // Do not retain an old crop for a reused example UUID with new bytes.
+                        try await KnownPeopleUpgradeSourceStore.shared.clear(
+                            knownPeopleRoot: currentRoute.rootURL)
+                        let sources = Dictionary(uniqueKeysWithValues: plan.snapshot.payload.people.flatMap { person in
+                            person.examples.compactMap { example -> (UUID, Data)? in
+                                guard let path = example.upgradeSourcePath,
+                                      let bytes = plan.snapshot.files[path] else { return nil }
+                                return (example.id, bytes)
+                            }
+                        })
+                        _ = try await KnownPeopleUpgradeSourceStore.shared.saveIfEnabled(
+                            sources, admittedIDs: admittedIDs, knownPeopleRoot: currentRoute.rootURL)
                     } catch {
-                        knownPeopleLog.error("Could not prune retained upgrade crops after library replacement: \(error.localizedDescription, privacy: .private)")
+                        knownPeopleLog.error("Could not restore retained upgrade crops after library replacement: \(error.localizedDescription, privacy: .private)")
                     }
                 }
                 return .init(value: result, publishChange: result.committed)

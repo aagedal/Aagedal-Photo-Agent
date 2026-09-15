@@ -3,8 +3,8 @@ import Foundation
 /// Versioned, local-only acknowledgement state for the Known People privacy UX.
 /// Copy changes that alter the described data lifecycle should bump the matching version.
 nonisolated enum KnownPeoplePrivacyLifecycle {
-    static let disclosureVersion = 2
-    static let iCloudConsentVersion = 1
+    static let disclosureVersion = 3
+    static let iCloudConsentVersion = 2
 
     static func hasAcknowledgedDisclosure(in defaults: UserDefaults = .standard) -> Bool {
         defaults.integer(forKey: UserDefaultsKeys.knownPeopleDisclosureAcknowledgedVersion) >= disclosureVersion
@@ -27,7 +27,7 @@ nonisolated enum KnownPeoplePrivacyLifecycle {
         currentlyEnabled: Bool,
         defaults: UserDefaults = .standard
     ) -> Bool {
-        enabling && !currentlyEnabled && !hasConfirmedICloudTransfer(in: defaults)
+        enabling && !hasConfirmedICloudTransfer(in: defaults)
     }
 }
 

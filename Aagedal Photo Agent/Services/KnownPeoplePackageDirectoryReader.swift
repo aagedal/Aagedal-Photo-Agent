@@ -61,7 +61,9 @@ actor KnownPeoplePackageDirectoryReader {
             let data = try Self.readFile(root, path: file.path, maximum: file.byteCount)
             guard data.count == file.byteCount, Self.hash(data) == file.sha256 else { throw Failure.hashMismatch }
             if file.path.hasSuffix(".fem2") { _ = try FaceEmbeddingInterchangeCodec.validate(data) }
-            if file.path.hasSuffix(".jpg") { try Self.validateThumbnail(data) }
+            if file.path.hasPrefix("upgrade_sources/") {
+                guard KnownPeopleUpgradeSourceStore.isValidUpgradeCrop(data) else { throw Failure.invalidThumbnail }
+            } else if file.path.hasSuffix(".jpg") { try Self.validateThumbnail(data) }
             files[file.path] = data
         }
         guard let peopleBytes = files["people.json"] else { throw Failure.unexpectedFiles }
@@ -192,7 +194,7 @@ actor KnownPeoplePackageDirectoryReader {
             var info = stat()
             guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw Failure.io }
             if info.st_mode & S_IFMT == S_IFDIR {
-                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails", "editor"].contains(name) else { throw Failure.unexpectedFiles }
+                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails", "upgrade_sources", "editor"].contains(name) else { throw Failure.unexpectedFiles }
                 let child = try openChildDirectory(fd, name)
                 defer { close(child) }
                 let nested = try enumerate(child, maximum: maximum - result.count, prefix: name + "/")

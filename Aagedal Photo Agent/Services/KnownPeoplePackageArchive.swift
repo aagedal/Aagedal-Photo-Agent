@@ -132,6 +132,12 @@ nonisolated enum KnownPeoplePackageArchiveCodec {
             }
             if declaration.path.hasSuffix(".fem2") { _ = try FaceEmbeddingInterchangeCodec.validate(bytes) }
             if declaration.path.hasSuffix(".jpg") {
+                if declaration.path.hasPrefix("upgrade_sources/") {
+                    guard KnownPeopleUpgradeSourceStore.isValidUpgradeCrop(bytes) else {
+                        throw KnownPeoplePackageArchiveError.invalidInventory
+                    }
+                    continue
+                }
                 guard let source = CGImageSourceCreateWithData(bytes as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
                       CGImageSourceGetType(source) as String? == "public.jpeg", CGImageSourceGetCount(source) == 1,
                       CGImageSourceGetStatus(source) == .statusComplete,
@@ -153,7 +159,7 @@ nonisolated enum KnownPeoplePackageArchiveCodec {
     private static func validatePath(_ path: String) throws {
         if path == "manifest.json" || path == "people.json" || path == "editor/photo-agent.json" { return }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 2, ["embeddings", "thumbnails", "embedding_thumbnails"].contains(String(parts[0])) else { throw KnownPeoplePackageArchiveError.unsafePath }
+        guard parts.count == 2, ["embeddings", "thumbnails", "embedding_thumbnails", "upgrade_sources"].contains(String(parts[0])) else { throw KnownPeoplePackageArchiveError.unsafePath }
         let suffix = parts[0] == "embeddings" ? ".fem2" : ".jpg"
         guard parts[1].hasSuffix(suffix) else { throw KnownPeoplePackageArchiveError.unsafePath }
         let id = String(parts[1].dropLast(suffix.count))

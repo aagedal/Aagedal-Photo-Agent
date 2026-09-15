@@ -15,7 +15,7 @@ nonisolated struct KnownPeoplePackageAdmissionProvenance: Sendable {
     let archiveSHA256: String?
 }
 
-/// Validated schema-2 bytes for managed import planning. This deliberately does not expose
+/// Validated schema-2/3 bytes for managed import planning. This deliberately does not expose
 /// an export-ready directory snapshot: archive extraction has already been removed when
 /// admission succeeds. The original selected input is retained as separate provenance.
 nonisolated final class KnownPeopleManagedImportAdmission: Sendable {
@@ -52,7 +52,7 @@ nonisolated struct KnownPeoplePackageAdmissionResult: Sendable {
     var completed: Bool { admission != nil && !wasCancelled && failure == nil && recoveryDirectories.isEmpty }
 }
 
-/// Exact dispatch for schema-2 manual inputs. Legacy ZIP/schema-1 APIs are separate and
+/// Exact dispatch for schema-2/3 manual inputs. Legacy ZIP/schema-1 APIs are separate and
 /// remain untouched; neither extensions nor file kinds are guessed from archive contents.
 actor KnownPeoplePackageAdmissionService {
     private let archiveAccess: KnownPeoplePackageArchiveAccess

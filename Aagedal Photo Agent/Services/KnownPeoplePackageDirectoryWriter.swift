@@ -678,7 +678,9 @@ nonisolated enum KnownPeoplePackageSnapshotValidation {
                 throw KnownPeoplePackageWriterError.invalidSnapshot
             }
             if file.path.hasSuffix(".fem2") { _ = try FaceEmbeddingInterchangeCodec.validate(bytes) }
-            if file.path.hasSuffix(".jpg") { try validateThumbnail(bytes) }
+            if file.path.hasPrefix("upgrade_sources/") {
+                guard KnownPeopleUpgradeSourceStore.isValidUpgradeCrop(bytes) else { throw KnownPeoplePackageWriterError.invalidSnapshot }
+            } else if file.path.hasSuffix(".jpg") { try validateThumbnail(bytes) }
         }
         let editor: KnownPeoplePackageEditorPayload?
         if let descriptor = manifest.editorPayload {
