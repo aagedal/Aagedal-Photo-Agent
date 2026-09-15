@@ -29,6 +29,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Local automation now reports the same supported photo input extensions used by the Browser,
   distinguishes RAW sidecar formats from format-dependent embedded writes, and rejects malformed
   tool-call arguments and unknown tool names at the proper MCP boundaries.
+- Local automation can now inspect one authorized photo's opaque source, adjacent XMP and owned
+  app-sidecar revision tokens through the shared photo reservation. The read exposes carrier
+  presence without returning private metadata values; typed IPTC inspection remains in progress.
 - Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
   shared-memo handling. Destination metadata is protected from orphan-sidecar collisions, and
   toolbar actions have independent accessibility identities.

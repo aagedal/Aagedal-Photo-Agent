@@ -175,12 +175,95 @@ struct MCPServerCoreTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
             "get_server_capabilities", "list_supported_photo_formats", "list_authorized_roots", "inspect_path_authorization",
+            "inspect_photo_revision",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
             #expect(annotations["readOnlyHint"] as? Bool == true)
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
+        }
+    }
+
+    @Test("Revision inspection binds source, XMP, and owned JSON changes to separate opaque tokens")
+    func inspectsPhotoRevision() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+        let app = privateFolder.appendingPathComponent("frame.jpg.meta.json")
+        try Data("photo-a".utf8).write(to: photo)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+
+        let first = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(first["appSidecarPresent"] == .bool(false))
+        #expect(first["xmpSidecarPresent"] == .bool(false))
+        #expect(first["sourceRevision"]?.stringValue?.count == 64)
+        let session = MCPServerSession(authorizationStore: store)
+        _ = session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+        ))
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+        let protocolLine = #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"inspect_photo_revision","arguments":{"path":"\#(photo.path)"}}}"#
+        let protocolResponse = try #require(session.response(forLine: Data(protocolLine.utf8)))
+        let protocolResult = try #require((try json(protocolResponse))["result"] as? [String: Any])
+        let structured = try #require(protocolResult["structuredContent"] as? [String: Any])
+        #expect(protocolResult["isError"] as? Bool == false)
+        #expect(structured["sourceRevision"] as? String == first["sourceRevision"]?.stringValue)
+        try Data("<xmp>one</xmp>".utf8).write(to: xmp)
+        let second = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(second["sourceRevision"] == first["sourceRevision"])
+        #expect(second["xmpSidecarRevision"] != first["xmpSidecarRevision"])
+        try Data(#"{"sourceFile":"frame.jpg","pendingChanges":true,"metadata":{"description":"private caption"}}"#.utf8)
+            .write(to: app)
+        let third = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(third["appSidecarPresent"] == .bool(true))
+        #expect(third["appSidecarRevision"] != second["appSidecarRevision"])
+        #expect(!String(describing: third).contains("private caption"))
+        try Data("photo-b".utf8).write(to: photo)
+        let fourth = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(fourth["sourceRevision"] != third["sourceRevision"])
+        #expect(fourth["appSidecarRevision"] == third["appSidecarRevision"])
+        let replaced = root.appendingPathComponent("replaced.jpg")
+        try FileManager.default.moveItem(at: photo, to: replaced)
+        try Data("photo-b".utf8).write(to: photo)
+        let fifth = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(fifth["sourceRevision"] != fourth["sourceRevision"])
+        #expect(fifth["appSidecarRevision"] == fourth["appSidecarRevision"])
+    }
+
+    @Test("Revision inspection refuses busy photos and unrelated or linked metadata carriers")
+    func refusesUnsafeRevisionInspection() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+        let app = privateFolder.appendingPathComponent("frame.jpg.meta.json")
+        try Data("photo".utf8).write(to: photo)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        #expect(throws: MCPProcessReservationError.busy) {
+            _ = try facade.inspectPhotoRevision(path: photo.path)
+        }
+        lease.release()
+        try Data(#"{"sourceFile":"different.jpg"}"#.utf8).write(to: app)
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            _ = try facade.inspectPhotoRevision(path: photo.path)
+        }
+        try FileManager.default.removeItem(at: app)
+        try FileManager.default.createSymbolicLink(at: xmp, withDestinationURL: photo)
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            _ = try facade.inspectPhotoRevision(path: photo.path)
         }
     }
 

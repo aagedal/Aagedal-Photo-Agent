@@ -119,18 +119,20 @@ struct RAWArchiveTransactionServiceTests {
         let fixture = try Fixture(associated: true, withXMP: true)
         defer { fixture.remove() }
 
-        do {
-            _ = try await RAWArchiveTransactionService().archive(request(
-                fixture,
-                render: standardRender(fixture),
-                sign: { _, _ in
-                    if cancel {
-                        withUnsafeCurrentTask { $0?.cancel() }
-                    } else {
-                        throw InjectedFailure.signing
-                    }
+        let archiveRequest = request(
+            fixture,
+            render: standardRender(fixture),
+            sign: { _, _ in
+                if cancel {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                } else {
+                    throw InjectedFailure.signing
                 }
-            ))
+            }
+        )
+        let operation = Task { try await RAWArchiveTransactionService().archive(archiveRequest) }
+        do {
+            _ = try await operation.value
             Issue.record("Expected archive failure")
         } catch is CancellationError {
             #expect(cancel)

@@ -511,11 +511,180 @@ nonisolated protocol MCPToolServing: Sendable {
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue
 }
 
-nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
+/// Value-only entry point shared by the app and the bundled helper. A read owns the same
+/// cross-process photo reservation as retained writes, and captures all three physical carrier
+/// generations before releasing it. Later mutation preparation can compare these opaque tokens
+/// without trusting a caller's description of the current disk state.
+nonisolated struct MCPAutomationFacade: Sendable {
     let authorizationStore: MCPAuthorizationStore
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore()) {
         self.authorizationStore = authorizationStore
+    }
+
+    func inspectPhotoRevision(path: String) throws -> MCPJSONValue {
+        let target = try authorizationStore.authorizeExistingPath(path)
+        guard !target.isDirectory,
+              MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()) else {
+            throw MCPAutomationReadError.unsupportedPhoto
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(target.url)
+        defer { lease.release() }
+        let evidence = try MCPPhotoRevisionEvidence.capture(at: target.url)
+        let admittedAgain = try authorizationStore.authorizeExistingPath(path)
+        guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
+        return .object([
+            "canonicalPath": .string(target.url.path),
+            "rootID": .string(target.rootID.uuidString.lowercased()),
+            "sourceRevision": .string(evidence.source),
+            "appSidecarRevision": .string(evidence.appSidecar),
+            "xmpSidecarRevision": .string(evidence.xmpSidecar),
+            "appSidecarPresent": .bool(evidence.appSidecarPresent),
+            "xmpSidecarPresent": .bool(evidence.xmpSidecarPresent),
+        ])
+    }
+}
+
+nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
+    case unsupportedPhoto
+    case unsafeCarrier
+    case photoChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedPhoto: "The target is not a supported photo input."
+        case .unsafeCarrier: "A metadata carrier cannot be safely associated with this photo."
+        case .photoChanged: "The photo or its metadata changed during inspection. Retry after it is stable."
+        }
+    }
+}
+
+nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
+    let source: String
+    let appSidecar: String
+    let xmpSidecar: String
+    let appSidecarPresent: Bool
+    let xmpSidecarPresent: Bool
+
+    static func capture(at photo: URL) throws -> Self {
+        let source = try token(at: photo, domain: "source", required: true)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let xmpToken = try token(at: xmp, domain: "xmp", required: false)
+        let privateFolder = photo.deletingLastPathComponent()
+            .appendingPathComponent(".photo_metadata", isDirectory: true)
+        try requireSafeDirectoryIfPresent(privateFolder)
+        let current = privateFolder.appendingPathComponent("\(photo.lastPathComponent).meta.json")
+        let legacy = privateFolder.appendingPathComponent("\(photo.deletingPathExtension().lastPathComponent).meta.json")
+        let carriers = current == legacy ? [current] : [current, legacy]
+        var ownedTokens: [String] = []
+        for carrier in carriers {
+            let ownedToken = try withSafeBytesIfPresent(at: carrier) { bytes, identity -> String? in
+                guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                      let owner = object["sourceFile"] as? String,
+                      !owner.isEmpty, !owner.contains("/"), !owner.contains("\\"), owner != ".", owner != ".." else {
+                    throw MCPAutomationReadError.unsafeCarrier
+                }
+                if carrier == current && owner != photo.lastPathComponent {
+                    throw MCPAutomationReadError.unsafeCarrier
+                }
+                guard owner == photo.lastPathComponent else { return nil }
+                return token(for: bytes, domain: carrier == current ? "app-current" : "app-legacy", identity: identity)
+            }
+            if let ownedToken = ownedToken ?? nil { ownedTokens.append(ownedToken) }
+        }
+        let appToken = token(for: Data(ownedTokens.sorted().joined(separator: "|").utf8), domain: "app-sidecar-set")
+        return Self(
+            source: source.token,
+            appSidecar: appToken,
+            xmpSidecar: xmpToken.token,
+            appSidecarPresent: !ownedTokens.isEmpty,
+            xmpSidecarPresent: xmpToken.present
+        )
+    }
+
+    private static func requireSafeDirectoryIfPresent(_ url: URL) throws {
+        var snapshot = stat()
+        guard Darwin.lstat(url.path, &snapshot) == 0 else {
+            if errno == ENOENT { return }
+            throw MCPAutomationReadError.unsafeCarrier
+        }
+        guard (snapshot.st_mode & S_IFMT) == S_IFDIR else { throw MCPAutomationReadError.unsafeCarrier }
+    }
+
+    private static func withSafeHandleIfPresent<T>(at url: URL, consume: (FileHandle, stat) throws -> T) throws -> T? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw MCPAutomationReadError.unsafeCarrier
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var before = stat()
+        guard Darwin.fstat(descriptor, &before) == 0,
+              (before.st_mode & S_IFMT) == S_IFREG, before.st_nlink == 1 else {
+            throw MCPAutomationReadError.unsafeCarrier
+        }
+        let result = try consume(handle, before)
+        var after = stat()
+        var pathAfter = stat()
+        guard Darwin.fstat(descriptor, &after) == 0,
+              Darwin.lstat(url.path, &pathAfter) == 0,
+              (pathAfter.st_mode & S_IFMT) == S_IFREG,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_dev == pathAfter.st_dev, before.st_ino == pathAfter.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
+            throw MCPAutomationReadError.photoChanged
+        }
+        return result
+    }
+
+    private static func withSafeBytesIfPresent<T>(at url: URL, consume: (Data, stat) throws -> T) throws -> T? {
+        try withSafeHandleIfPresent(at: url) { handle, identity in
+            guard identity.st_size <= 8_388_608 else {
+                throw MCPAutomationReadError.unsafeCarrier
+            }
+            return try consume(handle.readToEnd() ?? Data(), identity)
+        }
+    }
+
+    private static func token(at url: URL, domain: String, required: Bool) throws -> (token: String, present: Bool) {
+        guard let digest = try withSafeHandleIfPresent(at: url, consume: { handle, identity in
+            var hasher = SHA256()
+            hasher.update(data: prefix(domain: domain, identity: identity))
+            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }) else {
+            if required { throw MCPAutomationReadError.photoChanged }
+            return (token(for: Data(), domain: "\(domain)-absent"), false)
+        }
+        return (digest, true)
+    }
+
+    private static func token(for bytes: Data, domain: String, identity: stat? = nil) -> String {
+        var hasher = SHA256()
+        hasher.update(data: prefix(domain: domain, identity: identity))
+        hasher.update(data: bytes)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func prefix(domain: String, identity: stat?) -> Data {
+        let identityPart = identity.map {
+            "\($0.st_dev):\($0.st_ino):\($0.st_size):\($0.st_mtimespec.tv_sec):\($0.st_mtimespec.tv_nsec):"
+        } ?? "absent:"
+        return Data("apa-mcp-revision-v1:\(domain):\(identityPart)".utf8)
+    }
+}
+
+nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
+    let authorizationStore: MCPAuthorizationStore
+    let automationFacade: MCPAutomationFacade
+
+    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore()) {
+        self.authorizationStore = authorizationStore
+        self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
@@ -549,6 +718,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 ],
                 required: ["path"]
             ),
+            definition(
+                name: "inspect_photo_revision",
+                description: "Capture opaque source, owned app-sidecar and adjacent XMP revision tokens for one authorized photo. This tool does not return IPTC values.",
+                properties: [
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute canonical path to one photo under an authorized folder."),
+                    ]),
+                ],
+                required: ["path"]
+            ),
         ]
     }
 
@@ -559,7 +739,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
 
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
-            let acceptedArguments: Set<String> = name == "inspect_path_authorization" ? ["path"] : []
+            let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision"].contains(name)
+                ? ["path"] : []
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
             }
@@ -573,6 +754,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "networkListener": .bool(false),
                     "implementedCapabilities": .array([
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
+                        .string("photo-revision-inspection"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -604,10 +786,22 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "rootID": .string(target.rootID.uuidString.lowercased()),
                     "kind": .string(target.isDirectory ? "directory" : "regular-file"),
                 ])
+            case "inspect_photo_revision":
+                guard let path = arguments["path"]?.stringValue else {
+                    return failure(code: "invalid_arguments", message: "path must be an absolute string")
+                }
+                guard case .object(let value) = try automationFacade.inspectPhotoRevision(path: path) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not inspect the revision")
+                }
+                return success(value)
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
         } catch let error as MCPAuthorizationError {
+            return failure(code: String(describing: error), message: error.localizedDescription)
+        } catch let error as MCPProcessReservationError {
+            return failure(code: String(describing: error), message: error.localizedDescription)
+        } catch let error as MCPAutomationReadError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch {
             return failure(code: "internal_error", message: "Photo Agent could not validate the request")

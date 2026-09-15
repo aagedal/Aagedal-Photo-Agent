@@ -1585,6 +1585,14 @@ JSON-RPC boundary; unexpected properties yield a corrective tool error. This is 
 the discovery and protocol criteria above. Template/provider readiness, production workflow
 tools, full protocol coverage and real-client checks remain open.
 
+**Progress — cycle 41:** [Photo revision evidence inspection](release/cycle-41-photo-revision-evidence-2026-09-15.md)
+starts a shared explicit-photo automation facade. Its read-only tool holds the shared photo lease,
+captures opaque source, XMP and owned app-JSON tokens with descriptor-based no-follow reads, and
+revalidates the admitted photo before returning. It reports carrier presence without exposing
+IPTC or private JSON values. Complete `get_photo_metadata` still needs typed descriptive values,
+effective carrier/pending/conflict state and the production metadata reader; the facade and
+tool-contract checkboxes above therefore remain open.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support
