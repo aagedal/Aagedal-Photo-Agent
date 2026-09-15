@@ -272,6 +272,25 @@ final class BatchRenameSheetSession {
             isExecuting = false
             return nil
         }
+        // The Develop flush above may acquire a photo lease. Hold the exclusive folder
+        // lease from execution preflight through moves, rollback and reassociation.
+        let reservation: MCPProcessReservationLease
+        do {
+            reservation = try MCPProcessReservation.acquireFolder(request.folderURL)
+        } catch {
+            executionGuardError = "This folder is busy or its local-operation reservation is unavailable. Refresh the preview after the other operation finishes."
+            do {
+                try await executionQuiescence.complete(.abortedBeforeExecution)
+            } catch {
+                executionGuardError = [
+                    executionGuardError,
+                    Self.executionBarrierMessage(for: error),
+                ].compactMap { $0 }.joined(separator: " ")
+            }
+            isExecuting = false
+            return nil
+        }
+        defer { reservation.release() }
         let result = await RenameExecutionService().execute(plan)
         recordExecutionResult(result)
         if result.succeeded {
@@ -782,6 +801,10 @@ struct BatchRenameSheet: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.caption)
+                Button("Refresh Preview from Disk") {
+                    Task { await session.refreshSnapshotAfterFailure() }
+                }
+                .disabled(session.isPreparing)
             }
 
             if let presentation = session.executionPresentation {

@@ -432,6 +432,9 @@ struct BatchRenameSheetStateTests {
                         return
                     }
                     events.append("completion")
+                    #expect(throws: MCPProcessReservationError.busy) {
+                        _ = try MCPProcessReservation.acquireFolder(folder)
+                    }
                     #expect(!FileManager.default.fileExists(atPath: source.path))
                     #expect(FileManager.default.fileExists(atPath: destination.path))
                 }
@@ -444,6 +447,65 @@ struct BatchRenameSheetStateTests {
 
         #expect(result?.succeeded == true)
         #expect(events == ["barrier", "completion"])
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
+    @MainActor
+    @Test("A competing folder operation refuses rename before its barrier or first move")
+    func competingFolderOperationRefusesRename() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-rename-peer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("old.jpg")
+        let destination = folder.appendingPathComponent("new.jpg")
+        let original = Data("image".utf8)
+        try original.write(to: source)
+        var barrierCount = 0
+        var completions: [String] = []
+
+        let session = BatchRenameSheetSession(
+            request: BatchRenameSheetRequest(
+                folderURL: folder,
+                items: [RenamePlanningItem(sourceImageURL: source)]
+            ),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseSensitive,
+                existingURLs: [source]
+            ),
+            executionQuiescence: BatchRenameExecutionQuiescence(
+                prepare: { barrierCount += 1 },
+                complete: { completion in
+                    switch completion {
+                    case .abortedBeforeExecution: completions.append("aborted")
+                    case .succeeded: completions.append("succeeded")
+                    case .executionFailed: completions.append("failed")
+                    }
+                }
+            )
+        )
+        session.editor.components[0].literal = destination.lastPathComponent
+        await session.waitForPlanning()
+
+        let peer = try MCPProcessReservation.acquireFolder(folder)
+        let refused = await session.execute()
+        #expect(refused == nil)
+        #expect(barrierCount == 1)
+        #expect(completions == ["aborted"])
+        #expect(session.executionGuardError?.contains("folder is busy") == true)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        peer.release()
+
+        await session.refreshSnapshotAfterFailure()
+        session.editor.components[0].literal = destination.lastPathComponent
+        await session.waitForPlanning()
+        let retried = await session.execute()
+        #expect(retried?.succeeded == true)
+        #expect(barrierCount == 2)
+        #expect(completions == ["aborted", "succeeded"])
+        #expect(try Data(contentsOf: destination) == original)
     }
 
     @MainActor

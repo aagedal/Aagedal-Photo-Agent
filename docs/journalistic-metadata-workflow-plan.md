@@ -1571,6 +1571,13 @@ read-back. Nested Write All reuses the exact photo lease; direct Write All remai
 admitted. Busy requests retain frozen intent with zero carrier writes and can retry after release.
 This closes one more GUI write boundary, not the broader GUI/MCP coordination or production-tool gate.
 
+**Progress — cycle 39:** [Batch Rename folder admission](release/cycle-39-rename-folder-admission-2026-09-15.md)
+adds an exclusive shared folder lease after the pre-rename Develop flush and before execution
+preflight. It remains held through filesystem moves/rollback, face-analysis-voice reassociation and
+quiescence completion. A busy folder aborts with zero moves and requires a fresh disk preview before
+retry. Planning and pre-rename quiescence, other GUI folder paths, production MCP tools and Whisper
+remain open; the shared-coordination criterion above is not yet complete.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support
