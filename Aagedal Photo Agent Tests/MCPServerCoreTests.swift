@@ -175,7 +175,7 @@ struct MCPServerCoreTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
             "get_server_capabilities", "list_supported_photo_formats", "list_authorized_roots", "inspect_path_authorization",
-            "inspect_photo_revision",
+            "inspect_photo_revision", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
@@ -183,6 +183,60 @@ struct MCPServerCoreTests {
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }
+    }
+
+    @Test("Owned JSON draft inspection exposes only bounded descriptive fields and is not effective IPTC")
+    func inspectsOwnedDescriptiveDraft() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("image".utf8).write(to: photo)
+        let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+        let app = privateFolder.appendingPathComponent("frame.jpg.meta.json")
+        let authorization = store()
+        try authorization.addRoot(root)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        #expect(throws: MCPAuthorizationError.disabled) {
+            _ = try facade.inspectAppPhotoDraft(path: photo.path)
+        }
+        try authorization.setEnabled(true)
+
+        let absent = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue)
+        #expect(absent["appSidecarDraftState"] == .string("absent"))
+        #expect(absent["fields"] == .object([:]))
+        let document: [String: Any] = [
+            "schemaVersion": 1, "sourceFile": "frame.jpg", "pendingChanges": true,
+            "metadata": [
+                "title": "Reporter caption", "description": "The mayor speaks.",
+                "keywords": ["city", "opening"], "personShown": ["Mayor A"],
+                "cameraRaw": "must not appear", "unknownFutureField": "private extension",
+            ],
+            "voiceMemoTranscript": "private transcript", "history": ["private history"],
+        ]
+        try JSONSerialization.data(withJSONObject: document).write(to: app)
+        let result = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue)
+        #expect(result["appSidecarDraftState"] == .string("pending"))
+        #expect(result["effectiveIPTCResolved"] == .bool(false))
+        #expect(result["sourceRevision"]?.stringValue?.count == 64)
+        #expect(result["appSidecarRevision"]?.stringValue?.count == 64)
+        let fields = try #require(result["fields"]?.objectValue)
+        #expect(fields["title"] == .string("Reporter caption"))
+        #expect(fields["keywords"] == .array([.string("city"), .string("opening")]))
+        #expect(fields["personShown"] == .array([.string("Mayor A")]))
+        #expect(fields["cameraRaw"] == nil)
+        let text = String(describing: result)
+        #expect(!text.contains("private transcript"))
+        #expect(!text.contains("private history"))
+        #expect(!text.contains("private extension"))
+
+        var newer = document
+        newer["schemaVersion"] = 2
+        try JSONSerialization.data(withJSONObject: newer).write(to: app)
+        #expect(throws: MCPAutomationReadError.unreadableDraft) {
+            _ = try facade.inspectAppPhotoDraft(path: photo.path)
+        }
+        #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("unsupported-schema"))
     }
 
     @Test("Revision inspection binds source, XMP, and owned JSON changes to separate opaque tokens")

@@ -1603,6 +1603,13 @@ reports a bounded pending/saved/unknown state for exact-owner app JSON without e
 It refuses two concurrently owned naming generations and rechecks absent candidates and private
 directory identity. Effective IPTC values/source/conflict and production tools remain open.
 
+**Progress — cycle 44:** [Basic app-owned descriptive draft inspection](release/cycle-44-mcp-owned-descriptive-draft-2026-09-15.md)
+returns a bounded subset of typed fields from an exact-owner Photo Agent JSON carrier with the
+same anchored revision evidence. It identifies these as unreconciled stored draft values and
+refuses newer or malformed schema. The complete effective `get_photo_metadata` reader, template
+inventory, operation facade, guarded mutations, Whisper provider and native client evidence remain
+open; no Phase 5A checklist criterion is closed by this subset.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

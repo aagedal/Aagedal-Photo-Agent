@@ -523,6 +523,43 @@ nonisolated struct MCPAutomationFacade: Sendable {
     }
 
     func inspectPhotoRevision(path: String) throws -> MCPJSONValue {
+        let (target, evidence) = try capturePhotoEvidence(path: path)
+        return .object([
+            "canonicalPath": .string(target.url.path),
+            "rootID": .string(target.rootID.uuidString.lowercased()),
+            "sourceRevision": .string(evidence.source),
+            "appSidecarRevision": .string(evidence.appSidecar),
+            "xmpSidecarRevision": .string(evidence.xmpSidecar),
+            "appSidecarPresent": .bool(evidence.appSidecarPresent),
+            "appSidecarDraftState": .string(evidence.appSidecarDraftState),
+            "xmpSidecarPresent": .bool(evidence.xmpSidecarPresent),
+        ])
+    }
+
+    /// This is the app-owned JSON draft only. Effective IPTC still requires the embedded/XMP
+    /// production reader and carrier reconciliation before a patch can be prepared.
+    func inspectAppPhotoDraft(path: String) throws -> MCPJSONValue {
+        let (target, evidence) = try capturePhotoEvidence(path: path)
+        guard evidence.appSidecarDraftState == "absent"
+                || evidence.appSidecarDraftState == "saved"
+                || evidence.appSidecarDraftState == "pending" else {
+            throw MCPAutomationReadError.unreadableDraft
+        }
+        guard let fields = evidence.appDraftFields else { throw MCPAutomationReadError.unreadableDraft }
+        return .object([
+            "canonicalPath": .string(target.url.path),
+            "rootID": .string(target.rootID.uuidString.lowercased()),
+            "sourceRevision": .string(evidence.source),
+            "appSidecarRevision": .string(evidence.appSidecar),
+            "xmpSidecarRevision": .string(evidence.xmpSidecar),
+            "appSidecarDraftState": .string(evidence.appSidecarDraftState),
+            "fields": .object(fields),
+            "fieldScope": .string("basic-app-json-descriptive-draft"),
+            "effectiveIPTCResolved": .bool(false),
+        ])
+    }
+
+    private func capturePhotoEvidence(path: String) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
         let target = try authorizationStore.authorizeExistingPath(path)
         guard !target.isDirectory,
               MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()) else {
@@ -539,16 +576,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         let evidence = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent, in: directory)
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
-        return .object([
-            "canonicalPath": .string(target.url.path),
-            "rootID": .string(target.rootID.uuidString.lowercased()),
-            "sourceRevision": .string(evidence.source),
-            "appSidecarRevision": .string(evidence.appSidecar),
-            "xmpSidecarRevision": .string(evidence.xmpSidecar),
-            "appSidecarPresent": .bool(evidence.appSidecarPresent),
-            "appSidecarDraftState": .string(evidence.appSidecarDraftState),
-            "xmpSidecarPresent": .bool(evidence.xmpSidecarPresent),
-        ])
+        return (target, evidence)
     }
 }
 
@@ -603,13 +631,52 @@ nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
     case unsupportedPhoto
     case unsafeCarrier
     case photoChanged
+    case unreadableDraft
 
     var errorDescription: String? {
         switch self {
         case .unsupportedPhoto: "The target is not a supported photo input."
         case .unsafeCarrier: "A metadata carrier cannot be safely associated with this photo."
         case .photoChanged: "The photo or its metadata changed during inspection. Retry after it is stable."
+        case .unreadableDraft: "The app-owned metadata draft cannot be safely interpreted."
         }
+    }
+}
+
+/// Persisted IPTC keys shared with the app's editorial JSON schema. This deliberately excludes
+/// structured suppliers, location records, history, transcripts, and technical/Develop values.
+nonisolated private enum MCPAppDraftFieldCatalog {
+    static let scalarKeys: Set<String> = [
+        "title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
+        "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
+        "imageSupplierImageID", "jobId", "dateCreated", "city", "sublocation", "provinceState",
+        "country", "countryCode", "event", "instructions", "source",
+    ]
+    static let arrayKeys: Set<String> = [
+        "keywords", "personShown", "organisationsShownNames", "organisationsShownCodes",
+        "creators", "sceneCodes", "subjectCodes",
+    ]
+
+    static func read(from record: [String: Any]) -> [String: MCPJSONValue]? {
+        guard let metadata = record["metadata"] as? [String: Any] else { return nil }
+        var result: [String: MCPJSONValue] = [:]
+        var byteCount = 0
+        for key in scalarKeys.sorted() {
+            guard let value = metadata[key], !(value is NSNull) else { continue }
+            guard let string = value as? String, string.utf8.count <= 32_768 else { return nil }
+            byteCount += string.utf8.count
+            guard byteCount <= 65_536 else { return nil }
+            result[key] = .string(string)
+        }
+        for key in arrayKeys.sorted() {
+            guard let value = metadata[key], !(value is NSNull) else { continue }
+            guard let values = value as? [String], values.count <= 128,
+                  values.allSatisfy({ $0.utf8.count <= 1_024 }) else { return nil }
+            byteCount += values.reduce(0) { $0 + $1.utf8.count }
+            guard byteCount <= 65_536 else { return nil }
+            result[key] = .array(values.map(MCPJSONValue.string))
+        }
+        return result
     }
 }
 
@@ -620,6 +687,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let appSidecarPresent: Bool
     let appSidecarDraftState: String
     let xmpSidecarPresent: Bool
+    let appDraftFields: [String: MCPJSONValue]?
 
     static func capture(photoName: String, in directory: MCPAnchoredPhotoDirectory) throws -> Self {
         let source = try token(name: photoName, in: directory.descriptor, domain: "source", required: true)
@@ -632,10 +700,11 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             : ["\(photoName).meta.json", "\(stem).meta.json"]
         var ownedTokens: [String] = []
         var draftState = "absent"
+        var draftFields: [String: MCPJSONValue]? = [:]
         var absentCarriers: [String] = []
         if let privateDescriptor {
             for (index, carrier) in carriers.enumerated() {
-                let ownedCarrier = try withSafeBytesIfPresent(name: carrier, in: privateDescriptor) { bytes, identity -> (String, String)? in
+                let ownedCarrier = try withSafeBytesIfPresent(name: carrier, in: privateDescriptor) { bytes, identity -> (String, String, [String: MCPJSONValue]?)? in
                     guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
                           let owner = object["sourceFile"] as? String,
                           !owner.isEmpty, !owner.contains("/"), !owner.contains("\\"), owner != ".", owner != ".." else {
@@ -657,12 +726,14 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                     } else {
                         state = "unknown"
                     }
-                    return (token(for: bytes, domain: index == 0 ? "app-current" : "app-legacy", identity: identity), state)
+                    let fields = schema == 1 ? MCPAppDraftFieldCatalog.read(from: object) : nil
+                    return (token(for: bytes, domain: index == 0 ? "app-current" : "app-legacy", identity: identity), state, fields)
                 }
                 if let ownedCarrier = ownedCarrier ?? nil {
                     guard ownedTokens.isEmpty else { throw MCPAutomationReadError.unsafeCarrier }
                     ownedTokens.append(ownedCarrier.0)
                     draftState = ownedCarrier.1
+                    draftFields = ownedCarrier.2
                 }
                 if ownedCarrier == nil {
                     absentCarriers.append(carrier)
@@ -686,7 +757,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             xmpSidecar: xmpToken.token,
             appSidecarPresent: !ownedTokens.isEmpty,
             appSidecarDraftState: draftState,
-            xmpSidecarPresent: xmpToken.present
+            xmpSidecarPresent: xmpToken.present,
+            appDraftFields: draftFields
         )
     }
 
@@ -846,6 +918,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 ],
                 required: ["path"]
             ),
+            definition(
+                name: "inspect_app_photo_draft",
+                description: "Read bounded basic descriptive fields from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
+                properties: [
+                    "path": .object([
+                        "type": .string("string"),
+                        "description": .string("Absolute canonical path to one photo under an authorized folder."),
+                    ]),
+                ],
+                required: ["path"]
+            ),
         ]
     }
 
@@ -856,7 +939,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
 
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
-            let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision"].contains(name)
+            let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft"].contains(name)
                 ? ["path"] : []
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
@@ -871,7 +954,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "networkListener": .bool(false),
                     "implementedCapabilities": .array([
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
-                        .string("photo-revision-inspection"),
+                        .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -909,6 +992,14 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 }
                 guard case .object(let value) = try automationFacade.inspectPhotoRevision(path: path) else {
                     return failure(code: "internal_error", message: "Photo Agent could not inspect the revision")
+                }
+                return success(value)
+            case "inspect_app_photo_draft":
+                guard let path = arguments["path"]?.stringValue else {
+                    return failure(code: "invalid_arguments", message: "path must be an absolute string")
+                }
+                guard case .object(let value) = try automationFacade.inspectAppPhotoDraft(path: path) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not inspect the draft")
                 }
                 return success(value)
             default:
