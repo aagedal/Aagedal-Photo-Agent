@@ -104,9 +104,10 @@ the support table and validation records.
 - A separately built, hardened-runtime `photo-agent-mcp` helper is bundled for local STDIO MCP clients;
   it does not listen on the network.
 - Automation is disabled by default. Settings → Automation manages explicit folder grants and provides a
-  copyable `codex mcp add` command.
+  copyable setup for Codex CLI, Claude Code, OpenCode 1.x, and OpenCode v2.
 - The current foundation exposes read-only server/root/path-admission tools with strict canonical-path,
-  identity, link, special-file, and private-store refusal. Production metadata, template, face,
+  identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
+  with retained field, Write All and Primary Develop GUI saves. Production metadata, template, face,
   transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 
 ### Face Recognition

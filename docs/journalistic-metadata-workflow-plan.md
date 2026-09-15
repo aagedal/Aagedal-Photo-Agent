@@ -1433,8 +1433,8 @@ reviewable transcript workflow without implicitly approving or applying text to 
 
 ### MCP transport and authority
 
-- [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex and
-  ChatGPT desktop. STDOUT must contain newline-delimited JSON-RPC messages only; diagnostics go to
+- [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex CLI,
+  Claude Code, OpenCode and ChatGPT desktop. STDOUT must contain newline-delimited JSON-RPC messages only; diagnostics go to
   STDERR. Do not expose a listening network service in 3.0.
 - [x] Keep MCP disabled by default and provide an explicit Settings surface explaining local data
   access, mutation authority, activity retention, and how to copy/install the client configuration.
@@ -1531,7 +1531,9 @@ reviewable transcript workflow without implicitly approving or applying text to 
 - [ ] Model lifecycle tests cover descriptor/signature/hash/size mismatch, interrupted or superseded
   downloads, disk full, alias/retargeting attempts, atomic install, verified reuse, rollback, removal,
   update, custom model access loss, and offline installed-model transcription.
-- [ ] Run native end-to-end checks from at least one real MCP client: metadata read; prepared and
+- [ ] Verify setup, launch, tool discovery and status from Codex CLI, Claude Code, OpenCode 1.x and
+  OpenCode v2 with disposable client configuration, then run native end-to-end checks from at least
+  one real MCP client: metadata read; prepared and
   cancelled IPTC proofread; confirmed/read-back patch; metadata and Develop template batches; face
   scan progress/cancellation; Apple and Whisper transcript drafts; stale-source refusal; relaunch; and
   concurrent GUI activity. Preserve exact before/after fixture identities and do not use private photos.
@@ -1551,6 +1553,17 @@ aliases, hard links, special files and Photo Agent private folders. Nine focused
 exact bundled helper launch and signature/runtime inspection, pass. Production metadata/Develop/face/
 transcription facades, cross-process operation reservations, status/cancellation, two-phase IPTC writes,
 the FFmpeg Whisper provider, full protocol/fault coverage and native client validation remain open.
+
+**Progress — cycle 36:** [Cross-process reservations](release/cycle-36-cross-process-reservations-2026-09-15.md)
+add a shared photo/folder advisory lease used by three retained GUI metadata-write entry points and
+available to the MCP helper. A second-process smoke check and app build pass. Broader GUI operation
+coverage, production MCP tools and Xcode test assertions remain open; the shared-coordination
+checkbox above is not yet complete.
+
+**Progress — cycle 37:** [Codex, Claude Code and OpenCode setup](release/cycle-37-mcp-client-setup-2026-09-15.md)
+adds copyable STDIO setup for all three client families, including the distinct OpenCode 1.x JSON
+and v2 CLI formats. The app builds. Disposable real-client connection and discovery checks remain
+open, along with production workflow tools and the full Phase 5A exit gate.
 
 ## Phase 6 — migration and release hardening
 

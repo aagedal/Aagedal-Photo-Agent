@@ -71,7 +71,10 @@ Limitations. FFmpeg Whisper transcription remains under development.
 ## Connect a local automation client
 
 Open **Settings → Automation**. Local automation is off by default. Add only the folders a client should
-be able to address, enable the local server, and copy the displayed Codex install command. The bundled
+be able to address, enable the local server, and copy the setup shown for your client. Settings provides
+CLI commands for Codex and Claude Code, an `opencode.json` entry for OpenCode 1.x, and a global CLI
+command for OpenCode v2. OpenCode 1.x places server names directly under `mcp`; merge the displayed
+entry into your existing config. OpenCode v2 uses `mcp.servers` when configured by JSON. The bundled
 `photo-agent-mcp` process communicates through STDIO and does not listen on the network. Removing a folder
 or disabling automation applies to later calls from an already connected client.
 
@@ -80,6 +83,11 @@ relative/traversal paths, symlinks, Finder aliases, hard links, special files, c
 Photo Agent private folders, and targets outside the selected roots. Metadata, face scan, template,
 transcription, and IPTC mutation tools are not yet exposed. Returned paths and later metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
+
+Client setup references: [Codex MCP](https://developers.openai.com/codex/mcp),
+[Claude Code MCP](https://code.claude.com/docs/en/mcp),
+[OpenCode 1.x MCP](https://opencode.ai/docs/mcp-servers/), and
+[OpenCode v2 MCP](https://opencode.ai/v2/docs/mcp-servers).
 
 ## Recover a deleted template
 

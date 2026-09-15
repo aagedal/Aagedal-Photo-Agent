@@ -598,6 +598,22 @@ extension MetadataFieldMutationWriteServiceTests {
         #expect(saved.metadata.rating == 3)
         #expect(saved.pendingChanges)
     }
+
+    @Test("A shared photo reservation refuses a GUI field write before changing any carrier")
+    func sharedReservationRefusal() async throws {
+        let (folder, image, _) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try Data(contentsOf: image)
+        let lease = try MCPProcessReservation.acquirePhoto(image)
+        defer { lease.release() }
+        let result = await worker().write(request(image, mutation: .rating(5)))
+        #expect(result.failure?.stage == .prepare)
+        #expect(result.failure?.kind == .conflict)
+        #expect(!result.didWriteEmbedded && !result.didWriteXMP)
+        #expect(result.installedSidecar == nil)
+        #expect(try Data(contentsOf: image) == before)
+        #expect(!FileManager.default.fileExists(atPath: json(image).path))
+    }
 }
 
 extension MetadataFieldMutationWriteServiceTests {

@@ -1,6 +1,11 @@
 import Darwin
 import CoreFoundation
+import CryptoKit
 import Foundation
+
+// Swift's Darwin module exposes the `flock` record name; bind the C function explicitly.
+@_silgen_name("flock")
+nonisolated private func mcpFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
 /// The local automation process deliberately shares only this small, value-oriented protocol
 /// surface with the app. Production operations are added behind `MCPToolServing`; the transport
@@ -172,6 +177,101 @@ nonisolated struct MCPAuthorizedTarget: Equatable, Sendable {
     let rootID: UUID
     let isDirectory: Bool
     let identity: MCPFileIdentity
+}
+
+/// A process-wide filesystem reservation shared by the app and its bundled MCP helper.
+/// Folder leases are shared for photo operations and exclusive for folder operations, so a
+/// directory-wide operation cannot overlap any photo write in that directory. Existing
+/// MetadataIOCoordinator locks continue to order operations within the app process.
+nonisolated enum MCPProcessReservationError: LocalizedError, Sendable {
+    case busy
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .busy: "Another Photo Agent operation owns this photo or folder. Retry after it finishes."
+        case .unavailable: "Photo Agent could not establish a shared operation reservation. No write was started."
+        }
+    }
+}
+
+nonisolated final class MCPProcessReservationLease: @unchecked Sendable {
+    private let guardLock = NSLock()
+    private var descriptors: [Int32]
+
+    init(_ descriptors: [Int32]) { self.descriptors = descriptors }
+
+    func release() {
+        let held = guardLock.withLock { () -> [Int32] in
+            let held = descriptors
+            descriptors.removeAll()
+            return held
+        }
+        for descriptor in held.reversed() {
+            _ = mcpFlock(descriptor, LOCK_UN)
+            _ = Darwin.close(descriptor)
+        }
+    }
+
+    deinit { release() }
+}
+
+nonisolated enum MCPProcessReservation {
+    private static var directory: String {
+        "/private/tmp/aagedal-photo-agent-reservations-\(Darwin.getuid())"
+    }
+
+    static func acquirePhoto(_ photoURL: URL) throws -> MCPProcessReservationLease {
+        let canonical = photoURL.standardizedFileURL.resolvingSymlinksInPath()
+        let folder = canonical.deletingLastPathComponent().path.lowercased()
+        let photo = canonical.deletingPathExtension().path.lowercased()
+        let folderDescriptor = try acquire("folder:\(folder)", operation: LOCK_SH)
+        do {
+            let photoDescriptor = try acquire("photo:\(photo)", operation: LOCK_EX)
+            return MCPProcessReservationLease([folderDescriptor, photoDescriptor])
+        } catch {
+            _ = Darwin.close(folderDescriptor)
+            throw error
+        }
+    }
+
+    static func acquireFolder(_ folderURL: URL) throws -> MCPProcessReservationLease {
+        let canonical = folderURL.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
+        return MCPProcessReservationLease([try acquire("folder:\(canonical)", operation: LOCK_EX)])
+    }
+
+    private static func acquire(_ key: String, operation: Int32) throws -> Int32 {
+        let root = directory
+        if Darwin.mkdir(root, 0o700) != 0 && errno != EEXIST {
+            throw MCPProcessReservationError.unavailable
+        }
+        var rootStat = stat()
+        guard Darwin.lstat(root, &rootStat) == 0,
+              (rootStat.st_mode & S_IFMT) == S_IFDIR,
+              rootStat.st_uid == Darwin.getuid(),
+              (rootStat.st_mode & 0o077) == 0 else {
+            throw MCPProcessReservationError.unavailable
+        }
+        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        let path = root + "/" + digest + ".lock"
+        let descriptor = Darwin.open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw MCPProcessReservationError.unavailable }
+        var fileStat = stat()
+        guard Darwin.fstat(descriptor, &fileStat) == 0,
+              (fileStat.st_mode & S_IFMT) == S_IFREG,
+              fileStat.st_uid == Darwin.getuid(),
+              fileStat.st_nlink == 1,
+              (fileStat.st_mode & 0o077) == 0 else {
+            _ = Darwin.close(descriptor)
+            throw MCPProcessReservationError.unavailable
+        }
+        guard mcpFlock(descriptor, operation | LOCK_NB) == 0 else {
+            let wasBusy = errno == EWOULDBLOCK
+            _ = Darwin.close(descriptor)
+            throw wasBusy ? MCPProcessReservationError.busy : MCPProcessReservationError.unavailable
+        }
+        return descriptor
+    }
 }
 
 /// A single-data-blob preference keeps enablement and its complete root set coherent when the app

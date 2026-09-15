@@ -108,6 +108,8 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
         var result = PrimaryDevelopWriteResult(requestID: request.id)
         do {
             try Task.checkCancellation()
+            let reservation = try MCPProcessReservation.acquirePhoto(request.imageURL)
+            defer { reservation.release() }
             if let message = request.captureFailure { throw PrimaryDevelopWriteError(message: message) }
             let admittedSource: SourceImageRevision?
             let admittedXMP: XMPSidecarWriteSnapshot?

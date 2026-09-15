@@ -174,6 +174,8 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
         var stage = MetadataFieldMutationWriteResult.Failure.Stage.prepare
         do {
             try Task.checkCancellation()
+            let reservation = try MCPProcessReservation.acquirePhoto(request.imageURL)
+            defer { reservation.release() }
             if case .rating(let value) = request.mutation, let value, !(0...5).contains(value) {
                 throw MetadataFieldMutationWriteResult.Failure(stage: .prepare, message: "Rating must be between zero and five.", kind: .io)
             }
@@ -283,7 +285,8 @@ nonisolated struct MetadataFieldMutationWriteService: Sendable {
                     ? request.folderURL.appendingPathComponent(".photo_metadata/\(request.imageURL.lastPathComponent).meta.json") : nil,
                 failure: wasCancelled ? nil : (error as? MetadataFieldMutationWriteResult.Failure
                     ?? .init(stage: stage, message: error.localizedDescription,
-                        kind: error is MetadataFieldMutationConflict ? .conflict : .io)))
+                        kind: error is MetadataFieldMutationConflict ||
+                            (error as? MCPProcessReservationError) == .busy ? .conflict : .io)))
         }
     }
 

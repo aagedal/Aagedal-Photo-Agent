@@ -80,6 +80,8 @@ nonisolated struct PendingMetadataWriteService: Sendable {
         var result = PendingMetadataWriteResult(requestID: request.id, imageURL: request.imageURL)
         do {
             try Task.checkCancellation()
+            let reservation = try MCPProcessReservation.acquirePhoto(request.imageURL)
+            defer { reservation.release() }
             guard request.requestedMode != .historyOnly, request.expectedSidecar.pendingChanges else { throw CocoaError(.fileWriteFileExists) }
             let service = MetadataSidecarService()
             try await service.requireNoPendingOrientation(for: request.imageURL, in: request.folderURL)

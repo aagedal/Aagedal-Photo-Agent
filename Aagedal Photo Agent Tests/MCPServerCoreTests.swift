@@ -127,6 +127,35 @@ struct MCPServerCoreTests {
         }
     }
 
+    @Test("Photo and folder reservations refuse overlap and release after completion")
+    func reservationsRefuseOverlap() throws {
+        let folder = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpeg = folder.appendingPathComponent("frame.jpg")
+        let raw = folder.appendingPathComponent("frame.cr2")
+        let other = folder.appendingPathComponent("other.jpg")
+        for url in [jpeg, raw, other] { try Data("pixels".utf8).write(to: url) }
+
+        let photoLease = try MCPProcessReservation.acquirePhoto(jpeg)
+        defer { photoLease.release() }
+        #expect(throws: MCPProcessReservationError.busy) {
+            _ = try MCPProcessReservation.acquirePhoto(raw)
+        }
+        #expect(throws: MCPProcessReservationError.busy) {
+            _ = try MCPProcessReservation.acquireFolder(folder)
+        }
+        let otherLease = try MCPProcessReservation.acquirePhoto(other)
+        otherLease.release()
+        photoLease.release()
+        let folderLease = try MCPProcessReservation.acquireFolder(folder)
+        #expect(throws: MCPProcessReservationError.busy) {
+            _ = try MCPProcessReservation.acquirePhoto(other)
+        }
+        folderLease.release()
+        let released = try MCPProcessReservation.acquirePhoto(raw)
+        released.release()
+    }
+
     @Test("Initialize negotiation and tool discovery use bounded read-only contracts")
     func initializeAndListTools() throws {
         let store = store()

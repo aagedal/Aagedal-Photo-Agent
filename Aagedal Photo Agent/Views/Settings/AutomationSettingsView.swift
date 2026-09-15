@@ -69,6 +69,34 @@ private final class AutomationSettingsModel {
         return "codex mcp add aagedal-photo-agent -- \(shellQuote(helperURL.path))"
     }
 
+    var claudeCodeInstallCommand: String? {
+        guard let helperURL else { return nil }
+        return "claude mcp add --transport stdio aagedal-photo-agent -- \(shellQuote(helperURL.path))"
+    }
+
+    var openCodeV2InstallCommand: String? {
+        guard let helperURL else { return nil }
+        return "opencode mcp add aagedal-photo-agent --global -- \(shellQuote(helperURL.path))"
+    }
+
+    var openCode1Configuration: String? {
+        guard let helperURL else { return nil }
+        let configuration: [String: Any] = [
+            "mcp": [
+                "aagedal-photo-agent": [
+                    "type": "local",
+                    "command": [helperURL.path],
+                    "enabled": true,
+                ] as [String: Any],
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: configuration,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        ) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -116,17 +144,21 @@ struct AutomationSettingsView: View {
             }
 
             Section("Client Setup") {
-                if let helperURL = model.helperURL, let command = model.codexInstallCommand {
+                if let helperURL = model.helperURL,
+                   let codexCommand = model.codexInstallCommand,
+                   let claudeCommand = model.claudeCodeInstallCommand,
+                   let openCode1Config = model.openCode1Configuration,
+                   let openCodeV2Command = model.openCodeV2InstallCommand {
                     LabeledContent("Server executable") {
                         Text(helperURL.path).font(.caption).textSelection(.enabled)
                     }
-                    LabeledContent("Codex") {
-                        Text(command).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                    Button("Copy Codex Install Command") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(command, forType: .string)
-                    }
+                    clientSetup("Codex CLI", text: codexCommand, copyLabel: "Copy Codex Install Command")
+                    clientSetup("Claude Code", text: claudeCommand, copyLabel: "Copy Claude Code Install Command")
+                    clientSetup("OpenCode 1.x", text: openCode1Config, copyLabel: "Copy OpenCode 1.x Config")
+                    Text("Merge the mcp entry into your existing opencode.json. OpenCode 1.x places server names directly under mcp.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    clientSetup("OpenCode v2", text: openCodeV2Command, copyLabel: "Copy OpenCode v2 Install Command")
                 } else {
                     Text("The bundled MCP executable is unavailable in this build.")
                         .foregroundStyle(.secondary)
@@ -154,5 +186,16 @@ struct AutomationSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Automation")
         .onAppear { model.reload() }
+    }
+
+    private func clientSetup(_ title: String, text: String, copyLabel: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.headline)
+            Text(text).font(.caption.monospaced()).textSelection(.enabled)
+            Button(copyLabel) {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+        }
     }
 }

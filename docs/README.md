@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 35: SwiftMediaMetadata 3.0.1 refresh](release/cycle-35-swift-media-metadata-3-0-1-2026-09-15.md). The Xcode requirement and lockfile now select the current patch release at immutable revision `8662054299a3e13c49c65f74c564360559d1bf7f`. The update includes lower-memory Sony RTMD discovery and passes the complete 2,916-test serial suite plus repository checks. [Cycle 34](release/cycle-34-mcp-transport-authority-2026-09-15.md) remains the latest feature implementation: bundled default-off STDIO MCP transport and strict root authority. Production workflow tools, shared cross-process operation admission, FFmpeg Whisper and broader release gates remain open.
+**Latest improvement continuation:** [Cycle 37: MCP client setup](release/cycle-37-mcp-client-setup-2026-09-15.md) adds Codex CLI, Claude Code, OpenCode 1.x and OpenCode v2 instructions to Automation Settings. The app builds; real-client connection evidence remains open. [Cycle 36](release/cycle-36-cross-process-reservations-2026-09-15.md) added shared photo/folder leases to three retained GUI writes, with a second-process smoke pass and Xcode test assertions pending. [Cycle 35](release/cycle-35-swift-media-metadata-3-0-1-2026-09-15.md) remains the latest complete 2,916-test suite. Production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 
