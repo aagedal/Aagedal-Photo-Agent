@@ -1680,6 +1680,17 @@ final class FaceRecognitionViewModel {
         let prepared = try await KnownPeopleAdditionThumbnailService.shared.prepare(
             embeddingSources: sourceThumbnails, representativeSource: representativeData
         )
+        let upgradeSources: [UUID: Data]
+        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) {
+            let cropInputs = zip(faces, embeddings).map { face, embedding in
+                KnownPeopleUpgradeCropSource(embeddingID: embedding.id,
+                    imageURL: face.imageURL, faceRect: face.faceRect)
+            }
+            upgradeSources = try await KnownPeopleAdditionThumbnailService.shared
+                .prepareUpgradeSources(cropInputs)
+        } else {
+            upgradeSources = [:]
+        }
         try Task.checkCancellation()
         guard faceDataRevision == expectedRevision, displayedFolderURL == expectedFolder else {
             throw CancellationError()
@@ -1706,6 +1717,7 @@ final class FaceRecognitionViewModel {
                 embeddings: embeddings,
                 thumbnailData: prepared.representative,
                 embeddingThumbnails: prepared.embeddings,
+                upgradeSources: upgradeSources,
                 duplicateCheck: duplicateCheck
             )
         } catch {

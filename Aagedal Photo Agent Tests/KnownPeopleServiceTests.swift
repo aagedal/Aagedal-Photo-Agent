@@ -14,6 +14,38 @@ import SwiftUI
 @MainActor
 struct KnownPeopleServiceTests {
 
+    @Test("Matching never mixes examples with different known model provenance")
+    func matchSkipsForeignModelSpace() throws {
+        try withIsolatedEmbeddingMigration { _ in
+            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion,
+                forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            var vector = [Float](repeating: 0, count: 512)
+            vector[0] = 1
+            let bytes = EmbeddingCodec.encode(vector)
+            let active = FaceEmbeddingProvenance.current
+            let foreign = FaceEmbeddingProvenance(
+                embeddingSpaceVersion: active.embeddingSpaceVersion + 1,
+                componentID: active.componentID,
+                modelID: "future-model",
+                preprocessingRevision: active.preprocessingRevision,
+                vectorEncoding: active.vectorEncoding,
+                dimension: active.dimension,
+                l2Normalized: active.l2Normalized
+            )
+            let service = KnownPeopleService()
+            _ = try service.addPerson(name: "Foreign", embeddings: [
+                PersonEmbedding(featurePrintData: bytes, provenance: foreign)
+            ])
+            let current = try service.addPerson(name: "Current", embeddings: [
+                PersonEmbedding(featurePrintData: bytes, provenance: active)
+            ])
+
+            #expect(service.matchFace(featurePrintData: bytes).map(\.person.id) == [current.id])
+            #expect(service.matchFace(featurePrintData: bytes,
+                queryProvenance: foreign).map(\.person.name) == ["Foreign"])
+        }
+    }
+
     @Test("Cold background edits, embedding removal and export migrate legacy records on the retained worker",
           arguments: ["edit", "removeEmbedding", "export"],
           ["success", "cancel", "storageChange", "readFailure", "writeFailure", "removeFailure"])

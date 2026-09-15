@@ -8,9 +8,17 @@ import Foundation
 /// points for the AuraFace/ArcFace embedding and should be refined empirically on labeled data.
 nonisolated enum FaceRecognitionDefaults {
     /// Embedding-space version. Bump when the model or its preprocessing changes; a mismatch with
-    /// `FolderFaceData.embeddingVersion` forces a full re-scan, and a mismatch with the stored
-    /// Known People schema starts that database fresh.
+    /// `FolderFaceData.embeddingVersion` forces a full re-scan. Known People preserves galleries
+    /// from this ArcFace-era version onward so a future model can coexist with an older one.
     static let embeddingVersion = 3
+
+    /// The v2 -> v3 transition replaced an unproven legacy embedding space and still uses the
+    /// verified-backup/start-fresh path. ArcFace-era model changes retain enrolled identities;
+    /// matching selects examples by their individual model provenance instead.
+    static func preservesKnownPeopleOnUpgrade(storedVersion: Int?, currentVersion: Int) -> Bool {
+        guard let storedVersion else { return false }
+        return storedVersion >= 3 && currentVersion >= 3 && currentVersion != storedVersion
+    }
 
     /// Master switch for the secondary face lenses (Expression / Red Carpet / Sports). Off for the
     /// 2.0 release: only the canonical Face lens ships, with no lens switcher. The lens code and

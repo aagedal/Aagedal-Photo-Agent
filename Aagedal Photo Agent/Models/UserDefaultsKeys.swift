@@ -42,10 +42,12 @@ nonisolated enum UserDefaultsKeys {
     static let faceClothingSecondPassAttachToExisting = "faceClothingSecondPassAttachToExisting"
 
     // MARK: - Known People
-    /// Embedding-space version the Known People database was built with. A mismatch with
-    /// `FaceRecognitionDefaults.embeddingVersion` triggers a one-time start-fresh migration.
+    /// Last embedding-space version admitted to the Known People store. The legacy v2 -> v3
+    /// transition starts fresh after backup; subsequent upgrades preserve per-model examples.
     static let knownPeopleEmbeddingVersion = "knownPeople.embeddingVersion"
     static let knownPeopleMinConfidence = "knownPeopleMinConfidence"
+    /// Opt-in, local-only retention of reusable face crops captured during Known People enrollment.
+    static let knownPeopleRetainUpgradeSources = "knownPeople.retainUpgradeSources"
     /// Version of the first-use face-data disclosure the user has viewed.
     static let knownPeopleDisclosureAcknowledgedVersion = "knownPeople.disclosureAcknowledgedVersion"
     /// Version of the explicit Known People iCloud transfer confirmation the user accepted.

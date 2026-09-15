@@ -2119,8 +2119,17 @@ final class KnownPeopleService {
                 NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
             }
         }
+        var upgradeCleanupError: (any Error)?
+        if result.personRemoved {
+            do {
+                try await KnownPeopleUpgradeSourceStore.shared.remove(
+                    person?.embeddings.map(\.id) ?? [], knownPeopleRoot: root
+                )
+            } catch { upgradeCleanupError = error }
+        }
         await releaseImportDestinations()
         try result.completion.get()
+        if let upgradeCleanupError { throw upgradeCleanupError }
         try Task.checkCancellation()
         guard revision == storageRevision else { throw CancellationError() }
     }
@@ -2146,6 +2155,9 @@ final class KnownPeopleService {
             for embedding in personToCleanUp.embeddings {
                 featurePrintCache.removeObject(forKey: embedding.id as NSUUID)
             }
+            try KnownPeopleUpgradeSourceStore.removeSynchronously(
+                personToCleanUp.embeddings.map(\.id), knownPeopleRoot: knownPeopleDirectory
+            )
         }
         deleteThumbnail(for: id)
         NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
@@ -2231,6 +2243,7 @@ final class KnownPeopleService {
         embeddings: [PersonEmbedding],
         thumbnailData: Data?,
         embeddingThumbnails: [UUID: Data] = [:],
+        upgradeSources: [UUID: Data] = [:],
         duplicateCheck: DuplicateCheckResult
     ) async throws -> (person: KnownPerson, addedToExisting: Bool) {
         let revision = storageRevision
@@ -2302,6 +2315,18 @@ final class KnownPeopleService {
                 clearFeaturePrintCache()
                 stampLocalWrite(recordURL)
                 NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+            }
+        }
+        if case .success = result.completion, !upgradeSources.isEmpty {
+            do {
+                _ = try await KnownPeopleUpgradeSourceStore.shared.saveIfEnabled(
+                    upgradeSources, admittedIDs: Set(person.embeddings.map(\.id)),
+                    knownPeopleRoot: root
+                )
+            } catch {
+                // The authoritative person write already committed. A crop failure must not be
+                // reported as a failed enrollment; affected examples need manual re-enrollment.
+                knownPeopleLog.error("Could not retain optional upgrade face crops: \(error.localizedDescription, privacy: .private)")
             }
         }
         await releaseImportDestinations()
@@ -2438,11 +2463,20 @@ final class KnownPeopleService {
                 for url in result.removedThumbnailURLs { stampLocalWrite(url) }
             }
         }
+        var upgradeCleanupError: (any Error)?
+        if result.sourceRemoved {
+            do {
+                try await KnownPeopleUpgradeSourceStore.shared.remove(
+                    removedEmbeddings.map(\.id), knownPeopleRoot: root
+                )
+            } catch { upgradeCleanupError = error }
+        }
         await releaseImportDestinations()
         // Durable evidence above belongs to the captured root. Suppress its error as well as
         // success presentation if the caller has since switched to another storage revision.
         guard revision == storageRevision else { throw CancellationError() }
         try result.completion.get()
+        if let upgradeCleanupError { throw upgradeCleanupError }
         try Task.checkCancellation()
     }
 
@@ -2568,8 +2602,17 @@ final class KnownPeopleService {
         if result.personWritten, expectedStorageRevision == storageRevision {
             NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
         }
+        var upgradeCleanupError: (any Error)?
+        if result.personWritten {
+            do {
+                try await KnownPeopleUpgradeSourceStore.shared.remove(
+                    [embeddingID], knownPeopleRoot: root
+                )
+            } catch { upgradeCleanupError = error }
+        }
         await releaseImportDestinations()
         try result.completion.get()
+        if let upgradeCleanupError { throw upgradeCleanupError }
         try Task.checkCancellation()
         guard expectedStorageRevision == storageRevision else { throw CancellationError() }
     }
@@ -2582,16 +2625,22 @@ final class KnownPeopleService {
         return db.people[index]
     }
 
-    /// First launch after the face-embedding model changed: embeddings stored by the previous
-    /// model live in a different vector space and can't be compared to new ones. Per the rewrite
-    /// decision the Known People database starts fresh — but the old store is backed up first, so
-    /// nothing is silently destroyed. A no-op once the stored version matches the current one.
+    /// Preserve ArcFace-era Known People examples across future model upgrades. The v2 -> v3
+    /// replacement remains a verified-backup/start-fresh migration; matching never compares
+    /// examples with a known, different model provenance against the active model.
     private func migrateEmbeddingVersionIfNeeded() {
         guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else { return }
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
         let stored = UserDefaults.standard.object(forKey: key) as? Int
         let current = FaceRecognitionDefaults.embeddingVersion
         guard stored != current else {
+            Self.migrationRecoveryNotices.clear(.knownPeople)
+            return
+        }
+        if FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(
+            storedVersion: stored, currentVersion: current
+        ) {
+            UserDefaults.standard.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
@@ -2696,6 +2745,19 @@ final class KnownPeopleService {
 
     /// Settings uses this entry point so recursive deletion and recreation run on the
     /// serialized filesystem worker, with process-wide exclusion for the entire root.
+    func deleteRetainedUpgradeSourcesInBackground() async throws {
+        let root = knownPeopleDirectory
+        try await KnownPeopleUpgradeSourceStore.shared.clearAll(knownPeopleRoot: root)
+    }
+
+    func retainedUpgradeSourceInventory() async throws -> KnownPeopleUpgradeSourceInventory {
+        let ids = Set(getAllPeople().flatMap { $0.embeddings.map(\.id) })
+        let root = knownPeopleDirectory
+        return try await KnownPeopleUpgradeSourceStore.shared.inventory(
+            admittedIDs: ids, knownPeopleRoot: root
+        )
+    }
+
     func clearDatabaseInBackground() async throws {
         let revision = storageRevision
         await beginImport()
@@ -2717,11 +2779,18 @@ final class KnownPeopleService {
                 }
             }
         }
+        var upgradeCleanupError: (any Error)?
+        if result.rootRemoved {
+            do {
+                try await KnownPeopleUpgradeSourceStore.shared.clear(knownPeopleRoot: root)
+            } catch { upgradeCleanupError = error }
+        }
         await releaseImportDestinations()
         if result.removalAttempted, revision == storageRevision {
             NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
         }
         try result.completion.get()
+        if let upgradeCleanupError { throw upgradeCleanupError }
         // An admitted clear completes its destructive transaction despite cancellation.
         // Report that durable success to Settings instead of claiming the clear failed.
         guard revision == storageRevision else { throw CancellationError() }
@@ -2752,6 +2821,7 @@ final class KnownPeopleService {
         for name in ["people", "thumbnails", "embedding_thumbnails"] {
             try CloudCoordinatedIO.ensureDirectory(root.appendingPathComponent(name, isDirectory: true))
         }
+        try KnownPeopleUpgradeSourceStore.clearSynchronously(knownPeopleRoot: root)
     }
 
     // MARK: - Matching
@@ -2776,7 +2846,19 @@ final class KnownPeopleService {
         featurePrintCache.removeAllObjects()
     }
 
-    private func getFeaturePrint(for embedding: PersonEmbedding) -> [Float]? {
+    private func getFeaturePrint(
+        for embedding: PersonEmbedding,
+        queryProvenance: FaceEmbeddingProvenance
+    ) -> [Float]? {
+        // FEM2 encodes vector shape, not model identity. Never compare a known foreign model
+        // space against the active one, even when both models produce 512-dimensional vectors.
+        if let provenance = embedding.provenance {
+            guard provenance == queryProvenance else { return nil }
+        } else if queryProvenance != .current || FaceRecognitionDefaults.embeddingVersion != 3 {
+            // Legacy/foreign examples have no reliable provenance. Preserve today's v3 local
+            // matching behavior, but do not guess their model after a future upgrade.
+            return nil
+        }
         let key = embedding.id as NSUUID
         if let cached = featurePrintCache.object(forKey: key) {
             return cached.vector
@@ -2792,6 +2874,7 @@ final class KnownPeopleService {
     /// using cosine distance. Extracted so callers can load the database once and reuse it.
     private func matchFaceAgainstDatabase(
         queryFP: [Float],
+        queryProvenance: FaceEmbeddingProvenance,
         database: KnownPeopleDatabase,
         threshold: Float,
         maxResults: Int
@@ -2804,7 +2887,9 @@ final class KnownPeopleService {
             var bestEmbeddingID: UUID?
 
             for embedding in person.embeddings {
-                guard let personFP = getFeaturePrint(for: embedding),
+                guard let personFP = getFeaturePrint(
+                    for: embedding, queryProvenance: queryProvenance
+                ),
                       let distance = EmbeddingCodec.cosineDistance(queryFP, personFP) else { continue }
                 if distance < bestDistance {
                     bestDistance = distance
@@ -2846,6 +2931,7 @@ final class KnownPeopleService {
     /// across different contexts (same person in different clothing).
     func matchFace(
         featurePrintData: Data,
+        queryProvenance: FaceEmbeddingProvenance = .current,
         threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold,
         maxResults: Int = 5
     ) -> [KnownPersonMatch] {
@@ -2855,6 +2941,7 @@ final class KnownPeopleService {
 
         return matchFaceAgainstDatabase(
             queryFP: queryFP,
+            queryProvenance: queryProvenance,
             database: loadDatabase(),
             threshold: threshold,
             maxResults: maxResults
@@ -2865,11 +2952,13 @@ final class KnownPeopleService {
     /// This is intended for auto-naming flows and is more conservative than raw `matchFace`.
     func bestAutoMatch(
         featurePrintData: Data,
+        queryProvenance: FaceEmbeddingProvenance = .current,
         policy: MatchPolicy? = nil
     ) -> KnownPersonMatch? {
         let policy = policy ?? currentAutoMatchPolicy()
         let matches = matchFace(
             featurePrintData: featurePrintData,
+            queryProvenance: queryProvenance,
             threshold: policy.threshold,
             maxResults: 2
         )
@@ -2891,6 +2980,7 @@ final class KnownPeopleService {
     /// Returns a map of face ID → best match for faces that pass the policy.
     func bestAutoMatches(
         _ faces: [(id: UUID, featurePrintData: Data)],
+        queryProvenance: FaceEmbeddingProvenance = .current,
         policy: MatchPolicy? = nil
     ) -> [UUID: KnownPersonMatch] {
         let db = loadDatabase()
@@ -2904,6 +2994,7 @@ final class KnownPeopleService {
 
             let matches = matchFaceAgainstDatabase(
                 queryFP: queryFP,
+                queryProvenance: queryProvenance,
                 database: db,
                 threshold: policy.threshold,
                 maxResults: 2
@@ -2929,6 +3020,7 @@ final class KnownPeopleService {
     /// Returns a dictionary mapping face IDs to their best match (if any).
     func matchFaces(
         _ faces: [(id: UUID, featurePrintData: Data)],
+        queryProvenance: FaceEmbeddingProvenance = .current,
         threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold
     ) -> [UUID: KnownPersonMatch] {
         let db = loadDatabase()
@@ -2939,6 +3031,7 @@ final class KnownPeopleService {
 
             if let bestMatch = matchFaceAgainstDatabase(
                 queryFP: queryFP,
+                queryProvenance: queryProvenance,
                 database: db,
                 threshold: threshold,
                 maxResults: 1
@@ -2959,6 +3052,7 @@ final class KnownPeopleService {
     /// indicating how many sampled faces agreed on each person.
     func matchGroupsForSuggestions(
         groups: [(groupID: UUID, faceEmbeddings: [(faceID: UUID, featurePrintData: Data)])],
+        queryProvenance: FaceEmbeddingProvenance = .current,
         threshold: Float = FaceRecognitionDefaults.knownPeopleMatchThreshold,
         maxResultsPerFace: Int = 3
     ) -> [UUID: [(match: KnownPersonMatch, matchedFaceCount: Int)]] {
@@ -2976,6 +3070,7 @@ final class KnownPeopleService {
 
                 let faceMatches = matchFaceAgainstDatabase(
                     queryFP: queryFP,
+                    queryProvenance: queryProvenance,
                     database: db,
                     threshold: threshold,
                     maxResults: maxResultsPerFace
@@ -3063,6 +3158,17 @@ final class KnownPeopleService {
                     self, routingActive: routingActive, baseAccess: replacementAccess)
                 let result = await replacement.replace(plan: plan, decision: decision,
                     currentRoute: currentRoute)
+                if result.committed {
+                    let admittedIDs = Set(plan.snapshot.people.flatMap { person in
+                        person.embeddings.map(\.id)
+                    })
+                    do {
+                        try await KnownPeopleUpgradeSourceStore.shared.pruneUnreferenced(
+                            admittedIDs: admittedIDs, knownPeopleRoot: currentRoute.rootURL)
+                    } catch {
+                        knownPeopleLog.error("Could not prune retained upgrade crops after library replacement: \(error.localizedDescription, privacy: .private)")
+                    }
+                }
                 return .init(value: result, publishChange: result.committed)
             } afterDeferredWork: { _, result in result }
         } catch {

@@ -587,6 +587,14 @@ struct FaceEmbeddingTests {
         #expect(legacy.provenance == nil)
     }
 
+    @Test func futureKnownPeopleModelUpgradePreservesArcFaceGallery() {
+        #expect(FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(storedVersion: 3, currentVersion: 4))
+        #expect(FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(storedVersion: 4, currentVersion: 5))
+        #expect(!FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(storedVersion: 2, currentVersion: 3))
+        #expect(!FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(storedVersion: nil, currentVersion: 4))
+        #expect(FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(storedVersion: 4, currentVersion: 3))
+    }
+
     @Test func knownPeopleAdditionCopiesOnlyDetectedFaceProvenance() throws {
         var vector = [Float](repeating: 0, count: 512)
         vector[0] = 1
@@ -2441,6 +2449,33 @@ nonisolated private final class AuraFacePublishedURLProbe: @unchecked Sendable {
 
 @Suite("Known People addition thumbnail preparation")
 struct KnownPeopleAdditionThumbnailTests {
+    @Test func preparesReusableFaceCropFromOriginalRatherThanDisplayThumbnail() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "KnownPeopleUpgradeCrop-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceURL = root.appendingPathComponent("original.png")
+        let context = try #require(CGContext(data: nil, width: 1000, height: 1000,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.3, green: 0.5, blue: 0.7, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1000, height: 1000))
+        let image = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            sourceURL as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let embeddingID = UUID()
+        let prepared = try await KnownPeopleAdditionThumbnailService().prepareUpgradeSources([
+            KnownPeopleUpgradeCropSource(embeddingID: embeddingID, imageURL: sourceURL,
+                faceRect: CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.2))
+        ])
+        let bytes = try #require(prepared[embeddingID])
+        let decoded = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        let crop = try #require(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
+        #expect(crop.width == 320 && crop.height == 320)
+        #expect(bytes.count > 0)
+    }
     @Test func preparesCenteredSquareAndPreservesRepresentativeDimensions() async throws {
         let context = try #require(CGContext(data: nil, width: 240, height: 80,
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),

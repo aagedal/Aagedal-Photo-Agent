@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(UserDefaultsKeys.creatorInitials) private var creatorInitials = ""
     @State private var ftpViewModel = FTPViewModel()
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
+    @AppStorage(UserDefaultsKeys.knownPeopleRetainUpgradeSources) private var retainKnownPeopleUpgradeSources = false
     @State private var templateViewModel = TemplateViewModel()
     @State private var developTemplateViewModel = DevelopTemplateViewModel()
     @State private var selectedTemplateKind: TemplateKind = .metadata
@@ -20,11 +21,14 @@ struct SettingsView: View {
     // Known People state
     @State private var interchangePresenterID = UUID()
     @State private var knownPeopleStats: (peopleCount: Int, embeddingCount: Int) = (0, 0)
+    @State private var upgradeSourceInventory: KnownPeopleUpgradeSourceInventory?
     @State private var isLegacyImporting = false
     @State private var isLegacyExporting = false
     @State private var isClearingKnownPeople = false
     @State private var knownPeopleClearNoticeID: UUID?
     @State private var showClearConfirmation = false
+    @State private var showUpgradeSourceClearConfirmation = false
+    @State private var isClearingUpgradeSources = false
     @State private var knownPeopleMessage: String?
     @State private var knownPeopleDataSummary = KnownPeopleDataSummary(
         peopleCount: 0,
@@ -773,6 +777,31 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Future Face Model Upgrades") {
+                Toggle("Keep reusable face crops", isOn: Binding(
+                    get: { retainKnownPeopleUpgradeSources },
+                    set: { requested in
+                        if requested { retainKnownPeopleUpgradeSources = true }
+                        else { showUpgradeSourceClearConfirmation = true }
+                    }
+                ))
+                .disabled(isClearingUpgradeSources)
+                LabeledContent("Retained crops") {
+                    if let upgradeSourceInventory {
+                        Text("\(upgradeSourceInventory.retainedCount) of \(knownPeopleStats.embeddingCount) examples · \(ByteCountFormatter.string(fromByteCount: upgradeSourceInventory.retainedBytes, countStyle: .file))")
+                            .monospacedDigit()
+                    } else {
+                        Text("Calculating…").foregroundStyle(.secondary)
+                    }
+                }
+                Text("Off by default. When on, new Known People enrollments keep a wider 320-pixel crop from each available original photo, in addition to the small display thumbnail. Expect roughly 30–100 KB per retained example. This may let a future face model rebuild its gallery without re-opening the originals; it does not upgrade embeddings today.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("These extra crops stay on this Mac. They are not included in People Library ZIP exports or Known People iCloud sync. Turning this off deletes them but keeps people, embeddings, and display thumbnails. Previously enrolled examples are not backfilled automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             knownPeopleDataManagementSection
 
             structuredPersonShownSection
@@ -804,6 +833,25 @@ struct SettingsView: View {
             }
         } message: {
             Text("This will permanently delete all \(knownPeopleStats.peopleCount) known people and their reference images. This cannot be undone.")
+        }
+        .alert("Delete Reusable Face Crops?", isPresented: $showUpgradeSourceClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Turn Off and Delete", role: .destructive) {
+                retainKnownPeopleUpgradeSources = false
+                isClearingUpgradeSources = true
+                Task {
+                    do {
+                        try await KnownPeopleService.shared.deleteRetainedUpgradeSourcesInBackground()
+                        refreshKnownPeopleStats()
+                    } catch {
+                        retainKnownPeopleUpgradeSources = true
+                        knownPeopleMessage = "Could not delete all reusable face crops: \(error.localizedDescription)"
+                    }
+                    isClearingUpgradeSources = false
+                }
+            }
+        } message: {
+            Text("This deletes the optional local face crops used for future model upgrades. Names, embeddings, and display thumbnails remain.")
         }
     }
 
@@ -1892,6 +1940,7 @@ struct SettingsView: View {
 
     private func refreshKnownPeopleStats() {
         let statistics = KnownPeopleService.shared.getStatistics()
+        upgradeSourceInventory = nil
         let coordinator = ICloudSyncCoordinator.shared
         let syncEnabled = coordinator.knownPeopleEnabled
         knownPeopleStats = statistics
@@ -1915,7 +1964,10 @@ struct SettingsView: View {
                 syncEnabled: storage.syncEnabled
             )
             guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
+            let retained = try? await KnownPeopleService.shared.retainedUpgradeSourceInventory()
+            guard knownPeopleDataSummaryRequestID == requestID, !Task.isCancelled else { return }
             knownPeopleDataSummaryTask = nil
+            upgradeSourceInventory = retained
             if case .complete(let summary) = evidence {
                 knownPeopleDataSummary = summary
             }
@@ -2633,17 +2685,17 @@ private struct KnownPeoplePrivacyDisclosureView: View {
             disclosureRow(
                 icon: "internaldrive",
                 title: "Saved in two places",
-                text: "Each scanned photo folder gets a hidden .face_data folder containing face positions, feature vectors, groups, and thumbnails. Known People separately saves names, face-only feature vectors, and reference thumbnails in the app’s managed database."
+                text: "Each scanned photo folder gets a hidden .face_data folder containing face positions, feature vectors, groups, and thumbnails. Known People separately saves names, face-only feature vectors, and reference thumbnails in the app’s managed database. If you enable reusable face crops, new enrollments also save wider crops in a separate local-only store."
             )
             disclosureRow(
                 icon: "clock.arrow.circlepath",
                 title: "Kept until you remove it",
-                text: "Folder scan data follows the auto-delete setting and can be deleted from the Faces view. Known People remains until you remove people or clear its database. Exported ZIP files are separate copies you manage."
+                text: "Folder scan data follows the auto-delete setting and can be deleted from the Faces view. Known People remains until you remove people or clear its database. Reusable crops can also be deleted by turning their option off. Exported ZIP files are separate copies you manage."
             )
             disclosureRow(
                 icon: "icloud",
                 title: "iCloud is optional",
-                text: "Known People stays on this Mac unless you separately confirm iCloud sync. Sync uploads its names, face-only feature vectors, and reference thumbnails; folder scan data and clothing features are not uploaded by that setting."
+                text: "Known People stays on this Mac unless you separately confirm iCloud sync. Sync uploads its names, face-only feature vectors, and reference thumbnails; optional reusable crops, folder scan data, and clothing features are not uploaded by that setting."
             )
 
             HStack {
