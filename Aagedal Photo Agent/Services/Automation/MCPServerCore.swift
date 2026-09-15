@@ -198,8 +198,18 @@ nonisolated enum MCPProcessReservationError: LocalizedError, Sendable {
 nonisolated final class MCPProcessReservationLease: @unchecked Sendable {
     private let guardLock = NSLock()
     private var descriptors: [Int32]
+    private let photoKey: String?
 
-    init(_ descriptors: [Int32]) { self.descriptors = descriptors }
+    fileprivate init(_ descriptors: [Int32], photoKey: String? = nil) {
+        self.descriptors = descriptors
+        self.photoKey = photoKey
+    }
+
+    func coversPhoto(_ photoURL: URL) -> Bool {
+        let key = photoURL.standardizedFileURL.resolvingSymlinksInPath()
+            .deletingPathExtension().path.lowercased()
+        return guardLock.withLock { !descriptors.isEmpty && photoKey == key }
+    }
 
     func release() {
         let held = guardLock.withLock { () -> [Int32] in
@@ -228,7 +238,7 @@ nonisolated enum MCPProcessReservation {
         let folderDescriptor = try acquire("folder:\(folder)", operation: LOCK_SH)
         do {
             let photoDescriptor = try acquire("photo:\(photo)", operation: LOCK_EX)
-            return MCPProcessReservationLease([folderDescriptor, photoDescriptor])
+            return MCPProcessReservationLease([folderDescriptor, photoDescriptor], photoKey: photo)
         } catch {
             _ = Darwin.close(folderDescriptor)
             throw error

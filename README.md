@@ -107,7 +107,7 @@ the support table and validation records.
   copyable setup for Codex CLI, Claude Code, OpenCode 1.x, and OpenCode v2.
 - The current foundation exposes read-only server/root/path-admission tools with strict canonical-path,
   identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
-  with retained field, Write All and Primary Develop GUI saves. Production metadata, template, face,
+  with retained field, variable/template, Write All and Primary Develop GUI saves. Production metadata, template, face,
   transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 
 ### Face Recognition

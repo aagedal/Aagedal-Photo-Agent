@@ -76,12 +76,19 @@ nonisolated struct PendingMetadataWriteService: Sendable {
         self.writeEngine = writeEngine; self.readSourceFacts = readSourceFacts; self.hooks = hooks
     }
 
-    func execute(_ request: PendingMetadataWriteRequest) async -> PendingMetadataWriteResult {
+    /// A variable transaction may already own the photo lease across its JSON preparation.
+    /// Reusing that lease avoids a nested cross-process lock while keeping direct Write All
+    /// calls independently admitted.
+    func execute(_ request: PendingMetadataWriteRequest,
+                 heldReservation: MCPProcessReservationLease? = nil) async -> PendingMetadataWriteResult {
         var result = PendingMetadataWriteResult(requestID: request.id, imageURL: request.imageURL)
         do {
             try Task.checkCancellation()
-            let reservation = try MCPProcessReservation.acquirePhoto(request.imageURL)
-            defer { reservation.release() }
+            guard heldReservation?.coversPhoto(request.imageURL) != false else {
+                throw MCPProcessReservationError.unavailable
+            }
+            let reservation = try heldReservation ?? MCPProcessReservation.acquirePhoto(request.imageURL)
+            defer { if heldReservation == nil { reservation.release() } }
             guard request.requestedMode != .historyOnly, request.expectedSidecar.pendingChanges else { throw CocoaError(.fileWriteFileExists) }
             let service = MetadataSidecarService()
             try await service.requireNoPendingOrientation(for: request.imageURL, in: request.folderURL)

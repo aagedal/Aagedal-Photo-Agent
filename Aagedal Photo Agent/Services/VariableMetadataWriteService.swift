@@ -145,6 +145,16 @@ nonisolated struct VariableMetadataWriteService: Sendable {
         defer { request.receipt.recordLastResult(result); request.receipt.end() }
         if let completed = request.receipt.state.2 { result = completed; return result }
         if Task.isCancelled { result.wasCancelled = true; return result }
+        // Own the cross-process boundary before the first JSON preparation and retain it
+        // through physical completion and semantic read-back. A busy peer leaves the captured
+        // request retryable without changing any carrier.
+        let reservation: MCPProcessReservationLease
+        do { reservation = try MCPProcessReservation.acquirePhoto(request.imageURL) }
+        catch {
+            result.failure = error.localizedDescription
+            return result
+        }
+        defer { reservation.release() }
         let service = MetadataSidecarService()
         if var unverified = request.receipt.unverifiedCompletion,
            let prepared = request.receipt.state.0 {
@@ -197,7 +207,7 @@ nonisolated struct VariableMetadataWriteService: Sendable {
         }
         let physical = await physicalService.execute(.init(imageURL: request.imageURL, folderURL: request.folderURL,
             expectedSidecar: prepared, skipC2PA: false, id: request.id, requestedMode: request.requestedMode,
-            expectedPhysicalBaseline: request.receipt.state.1))
+            expectedPhysicalBaseline: request.receipt.state.1), heldReservation: reservation)
         result.physicalResult = physical
         result.wasCancelled = physical.wasCancelled
         result.failure = physical.failure

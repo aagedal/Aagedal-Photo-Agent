@@ -55,6 +55,25 @@ struct VariableMetadataWriteServiceTests {
             requestedMode: mode, creationEvidence: .init(sourceRevision: revision, xmpData: xmp.snapshot.data)))
     }
 
+    @Test("A busy cross-process photo lease refuses variable preparation with zero carrier writes",
+        arguments: [MetadataWriteMode.historyOnly, .writeToFile])
+    func busyReservationBeforeJSON(mode: MetadataWriteMode) async throws {
+        let (folder, image, baseline) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let request = try await capture(image, baseline, mode: mode)
+        let source = try Data(contentsOf: image)
+        let sidecar = try Data(contentsOf: json(image))
+        let lease = try MCPProcessReservation.acquirePhoto(image)
+        let refused = await service().execute(request)
+        #expect(!refused.completed && refused.failure != nil)
+        #expect(refused.preparedSidecar == nil)
+        #expect(try Data(contentsOf: image) == source)
+        #expect(try Data(contentsOf: json(image)) == sidecar)
+        lease.release()
+        let retried = await service().execute(request)
+        #expect(retried.completed)
+    }
+
     @Test("History-only interpolation is awaited JSON-only and retains nil baseline, orientation and opaque bytes")
     func historyOnly() async throws {
         let (folder, image, base) = try await fixture()

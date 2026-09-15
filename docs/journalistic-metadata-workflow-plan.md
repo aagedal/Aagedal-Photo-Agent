@@ -1565,6 +1565,12 @@ adds copyable STDIO setup for all three client families, including the distinct 
 and v2 CLI formats. The app builds. Disposable real-client connection and discovery checks remain
 open, along with production workflow tools and the full Phase 5A exit gate.
 
+**Progress — cycle 38:** [Variable-write cross-process admission](release/cycle-38-variable-write-reservation-2026-09-15.md)
+extends the shared photo lease over variable/template JSON preparation, physical writes and final
+read-back. Nested Write All reuses the exact photo lease; direct Write All remains independently
+admitted. Busy requests retain frozen intent with zero carrier writes and can retry after release.
+This closes one more GUI write boundary, not the broader GUI/MCP coordination or production-tool gate.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

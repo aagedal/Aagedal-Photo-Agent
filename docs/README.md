@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest improvement continuation:** [Cycle 37: MCP client setup](release/cycle-37-mcp-client-setup-2026-09-15.md) adds Codex CLI, Claude Code, OpenCode 1.x and OpenCode v2 instructions to Automation Settings. The app builds; real-client connection evidence remains open. [Cycle 36](release/cycle-36-cross-process-reservations-2026-09-15.md) added shared photo/folder leases to three retained GUI writes, with a second-process smoke pass and Xcode test assertions pending. [Cycle 35](release/cycle-35-swift-media-metadata-3-0-1-2026-09-15.md) remains the latest complete 2,916-test suite. Production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest improvement continuation:** [Cycle 38: variable-write admission](release/cycle-38-variable-write-reservation-2026-09-15.md) extends the shared photo lease across variable/template JSON preparation, physical writes and read-back; 37 focused and 2,919 serial tests plus repository validation pass. [Cycle 37](release/cycle-37-mcp-client-setup-2026-09-15.md) adds Codex CLI, Claude Code and both OpenCode setup formats. Production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

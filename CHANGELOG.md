@@ -20,9 +20,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   changed roots and Photo Agent private folders, and never opens a network listener. Production
   metadata, face, template, transcription and mutation tools remain unavailable until their shared
   operation/recovery boundaries are implemented.
-- Retained field mutations, Write All and Primary Develop saves now reserve their photo and folder
-  across processes while they prepare, write and verify. A competing operation is refused before
-  a metadata write begins; the bundled MCP helper shares the reservation code for upcoming tools.
+- Retained field mutations, variable/template metadata completion, Write All and Primary Develop
+  saves now reserve their photo and folder across processes while they prepare, write and verify.
+  A competing operation is refused before a metadata write begins; the bundled MCP helper shares
+  the reservation code for upcoming tools.
 - Automation Settings now supplies copyable setup for Codex CLI, Claude Code, OpenCode 1.x and
   OpenCode v2, using each client's local STDIO MCP configuration format.
 - Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
