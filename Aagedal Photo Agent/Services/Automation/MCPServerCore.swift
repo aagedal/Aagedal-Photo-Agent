@@ -517,9 +517,14 @@ nonisolated protocol MCPToolServing: Sendable {
 /// without trusting a caller's description of the current disk state.
 nonisolated struct MCPAutomationFacade: Sendable {
     let authorizationStore: MCPAuthorizationStore
+    private let onCaptureCheckpoint: @Sendable () -> Void
 
-    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore()) {
+    init(
+        authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(),
+        onCaptureCheckpoint: @escaping @Sendable () -> Void = {}
+    ) {
         self.authorizationStore = authorizationStore
+        self.onCaptureCheckpoint = onCaptureCheckpoint
     }
 
     func inspectPhotoRevision(path: String) throws -> MCPJSONValue {
@@ -573,7 +578,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
             throw MCPAuthorizationError.rootChanged
         }
         let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
-        let evidence = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent, in: directory)
+        let evidence = try MCPPhotoRevisionEvidence.capture(
+            photoName: target.url.lastPathComponent, in: directory,
+            onCaptureCheckpoint: onCaptureCheckpoint
+        )
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
         return (target, evidence)
@@ -689,7 +697,11 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let xmpSidecarPresent: Bool
     let appDraftFields: [String: MCPJSONValue]?
 
-    static func capture(photoName: String, in directory: MCPAnchoredPhotoDirectory) throws -> Self {
+    static func capture(
+        photoName: String,
+        in directory: MCPAnchoredPhotoDirectory,
+        onCaptureCheckpoint: @Sendable () -> Void
+    ) throws -> Self {
         let source = try token(name: photoName, in: directory.descriptor, domain: "source", required: true)
         let stem = (photoName as NSString).deletingPathExtension
         let xmpToken = try token(name: "\(stem).xmp", in: directory.descriptor, domain: "xmp", required: false)
@@ -702,9 +714,12 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         var draftState = "absent"
         var draftFields: [String: MCPJSONValue]? = [:]
         var absentCarriers: [String] = []
+        var carrierSnapshots: [String: stat] = [:]
         if let privateDescriptor {
             for (index, carrier) in carriers.enumerated() {
+                var carrierSnapshot: stat?
                 let ownedCarrier = try withSafeBytesIfPresent(name: carrier, in: privateDescriptor) { bytes, identity -> (String, String, [String: MCPJSONValue]?)? in
+                    carrierSnapshot = identity
                     guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
                           let owner = object["sourceFile"] as? String,
                           !owner.isEmpty, !owner.contains("/"), !owner.contains("\\"), owner != ".", owner != ".." else {
@@ -738,6 +753,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                 if ownedCarrier == nil {
                     absentCarriers.append(carrier)
                 }
+                if let carrierSnapshot { carrierSnapshots[carrier] = carrierSnapshot }
             }
             for carrier in absentCarriers {
                 try requireAbsent(name: carrier, in: privateDescriptor)
@@ -749,6 +765,28 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             try requireAbsent(name: "\(stem).xmp", in: directory.descriptor)
         }
         if privateDescriptor == nil {
+            try requireAbsent(name: ".photo_metadata", in: directory.descriptor)
+        }
+        // A writer outside Photo Agent can change an earlier carrier after its own anchored
+        // read. Recheck every path entry before publishing the combined revision evidence.
+        onCaptureCheckpoint()
+        guard let sourceIdentity = source.identity else { throw MCPAutomationReadError.photoChanged }
+        try requireSameFile(name: photoName, in: directory.descriptor, snapshot: sourceIdentity)
+        if let identity = xmpToken.identity {
+            try requireSameFile(name: "\(stem).xmp", in: directory.descriptor, snapshot: identity)
+        } else {
+            try requireAbsent(name: "\(stem).xmp", in: directory.descriptor)
+        }
+        if let privateDescriptor {
+            try requireSameDirectory(name: ".photo_metadata", in: directory.descriptor, descriptor: privateDescriptor)
+            for carrier in carriers {
+                if let snapshot = carrierSnapshots[carrier] {
+                    try requireSameFile(name: carrier, in: privateDescriptor, snapshot: snapshot)
+                } else {
+                    try requireAbsent(name: carrier, in: privateDescriptor)
+                }
+            }
+        } else {
             try requireAbsent(name: ".photo_metadata", in: directory.descriptor)
         }
         return Self(
@@ -766,6 +804,20 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         var item = stat()
         guard Darwin.fstatat(parent, name, &item, AT_SYMLINK_NOFOLLOW) != 0,
               errno == ENOENT else {
+            throw MCPAutomationReadError.photoChanged
+        }
+    }
+
+    private static func requireSameFile(name: String, in parent: Int32, snapshot: stat) throws {
+        var entry = stat()
+        guard Darwin.fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW) == 0,
+              (entry.st_mode & S_IFMT) == S_IFREG, entry.st_nlink == 1,
+              entry.st_dev == snapshot.st_dev, entry.st_ino == snapshot.st_ino,
+              entry.st_size == snapshot.st_size,
+              entry.st_mtimespec.tv_sec == snapshot.st_mtimespec.tv_sec,
+              entry.st_mtimespec.tv_nsec == snapshot.st_mtimespec.tv_nsec,
+              entry.st_ctimespec.tv_sec == snapshot.st_ctimespec.tv_sec,
+              entry.st_ctimespec.tv_nsec == snapshot.st_ctimespec.tv_nsec else {
             throw MCPAutomationReadError.photoChanged
         }
     }
@@ -844,19 +896,19 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func token(name: String, in parent: Int32, domain: String, required: Bool) throws -> (token: String, present: Bool) {
+    private static func token(name: String, in parent: Int32, domain: String, required: Bool) throws -> (token: String, present: Bool, identity: stat?) {
         guard let digest = try withSafeHandleIfPresent(name: name, in: parent, consume: { handle, identity in
             var hasher = SHA256()
             hasher.update(data: prefix(domain: domain, identity: identity))
             while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
                 hasher.update(data: chunk)
             }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), identity)
         }) else {
             if required { throw MCPAutomationReadError.photoChanged }
-            return (token(for: Data(), domain: "\(domain)-absent"), false)
+            return (token(for: Data(), domain: "\(domain)-absent"), false, nil)
         }
-        return (digest, true)
+        return (digest.0, true, digest.1)
     }
 
     private static func token(for bytes: Data, domain: String, identity: stat? = nil) -> String {

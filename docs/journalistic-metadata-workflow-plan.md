@@ -1617,6 +1617,13 @@ oversized STDIO line produces a bounded protocol error without disrupting the ne
 final-source serial suite passes 3,777 executions; effective IPTC reads and production tools remain
 open. No Phase 5A criterion is checked by this bounded prerequisite.
 
+**Progress — cycle 46:** [Coherent MCP carrier evidence](release/cycle-46-mcp-coherent-carrier-snapshot-2026-09-15.md)
+rechecks every source, XMP and current/legacy app-JSON path entry after the combined read. An
+earlier carrier rewrite or an initially absent carrier appearing before publication now refuses
+mixed-generation revision/draft output. The focused 20-test selection passes. Effective IPTC
+reconciliation, production tools and external-writer coordination remain open; no Phase 5A
+criterion is checked by this read-only prerequisite.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

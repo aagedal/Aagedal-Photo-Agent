@@ -275,6 +275,38 @@ struct MCPServerCoreTests {
         #expect(second["sourceRevision"] != first["sourceRevision"])
     }
 
+    @Test("An earlier carrier change prevents publishing combined photo evidence")
+    func refusesCrossCarrierChange() throws {
+        for carrier in ["source", "xmp", "app", "new-xmp"] {
+            let root = try temporaryFolder()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let photo = root.appendingPathComponent("frame.jpg")
+            let xmp = root.appendingPathComponent("frame.xmp")
+            let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+            let app = privateFolder.appendingPathComponent("frame.jpg.meta.json")
+            try Data("image-one".utf8).write(to: photo)
+            try Data("xmp-one".utf8).write(to: xmp)
+            try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+            try Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":false,"metadata":{"title":"one"}}"#.utf8)
+                .write(to: app)
+            if carrier == "new-xmp" { try FileManager.default.removeItem(at: xmp) }
+            let authorization = store()
+            try authorization.addRoot(root)
+            try authorization.setEnabled(true)
+            let facade = MCPAutomationFacade(authorizationStore: authorization) {
+                let target = switch carrier {
+                case "source": photo
+                case "app": app
+                default: xmp
+                }
+                try? Data("changed-at-checkpoint".utf8).write(to: target)
+            }
+            #expect(throws: MCPAutomationReadError.photoChanged) {
+                _ = try facade.inspectAppPhotoDraft(path: photo.path)
+            }
+        }
+    }
+
     @Test("Revision inspection binds source, XMP, and owned JSON changes to separate opaque tokens")
     func inspectsPhotoRevision() throws {
         let root = try temporaryFolder()
