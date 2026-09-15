@@ -1610,6 +1610,13 @@ refuses newer or malformed schema. The complete effective `get_photo_metadata` r
 inventory, operation facade, guarded mutations, Whisper provider and native client evidence remain
 open; no Phase 5A checklist criterion is closed by this subset.
 
+**Progress — cycle 45:** [Stable carrier reads and bounded STDIO errors](release/cycle-45-mcp-stable-carrier-read-2026-09-15.md)
+compare carrier change time and opened/path-entry generations during anchored inspection. Opaque
+tokens now change after an in-place same-byte rewrite with restored modification time. A complete
+oversized STDIO line produces a bounded protocol error without disrupting the next request. The
+final-source serial suite passes 3,777 executions; effective IPTC reads and production tools remain
+open. No Phase 5A criterion is checked by this bounded prerequisite.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

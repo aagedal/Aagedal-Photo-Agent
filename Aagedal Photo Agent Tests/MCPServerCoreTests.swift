@@ -239,6 +239,42 @@ struct MCPServerCoreTests {
         #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("unsupported-schema"))
     }
 
+    @Test("Revision tokens detect an in-place rewrite of identical bytes after modification time is restored")
+    func detectsRestoredModificationTime() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("first".utf8).write(to: photo)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        let first = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        var original = stat()
+        #expect(Darwin.lstat(photo.path, &original) == 0)
+
+        let descriptor = Darwin.open(photo.path, O_WRONLY)
+        #expect(descriptor >= 0)
+        defer { if descriptor >= 0 { _ = Darwin.close(descriptor) } }
+        Darwin.usleep(2_000)
+        let replacement = Array("first".utf8)
+        #expect(replacement.withUnsafeBytes { Darwin.pwrite(descriptor, $0.baseAddress, replacement.count, 0) } == replacement.count)
+        var times = [original.st_atimespec, original.st_mtimespec]
+        #expect(times.withUnsafeMutableBufferPointer {
+            Darwin.utimensat(AT_FDCWD, photo.path, $0.baseAddress, 0)
+        } == 0)
+        var rewritten = stat()
+        #expect(Darwin.lstat(photo.path, &rewritten) == 0)
+        #expect(original.st_ino == rewritten.st_ino)
+        #expect(original.st_size == rewritten.st_size)
+        #expect(original.st_mtimespec.tv_sec == rewritten.st_mtimespec.tv_sec)
+        #expect(original.st_mtimespec.tv_nsec == rewritten.st_mtimespec.tv_nsec)
+        #expect(original.st_ctimespec.tv_sec != rewritten.st_ctimespec.tv_sec
+            || original.st_ctimespec.tv_nsec != rewritten.st_ctimespec.tv_nsec)
+        let second = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(second["sourceRevision"] != first["sourceRevision"])
+    }
+
     @Test("Revision inspection binds source, XMP, and owned JSON changes to separate opaque tokens")
     func inspectsPhotoRevision() throws {
         let root = try temporaryFolder()
@@ -464,6 +500,33 @@ struct MCPServerCoreTests {
         #expect(outputString.split(separator: "\n").count == 1)
         #expect(try json(Data(outputString.dropLast().utf8))["jsonrpc"] as? String == "2.0")
         #expect(diagnosticData.isEmpty)
+    }
+
+    @Test("STDIO bounds complete lines and resumes at EOF without leaking diagnostics")
+    func stdioBoundsLinesAndProcessesFinalRequest() throws {
+        let input = Pipe()
+        let output = Pipe()
+        let diagnostics = Pipe()
+        let initialize = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#
+        let oversized = String(repeating: "x", count: 160)
+        let ping = #"{"jsonrpc":"2.0","id":2,"method":"ping"}"#
+        try input.fileHandleForWriting.write(contentsOf: Data((initialize + "\r\n" + oversized + "\n" + ping).utf8))
+        try input.fileHandleForWriting.close()
+        MCPStdioServer(session: MCPServerSession(authorizationStore: store()), maximumMessageBytes: 128).run(
+            input: input.fileHandleForReading,
+            output: output.fileHandleForWriting,
+            diagnostics: diagnostics.fileHandleForWriting
+        )
+        try output.fileHandleForWriting.close()
+        try diagnostics.fileHandleForWriting.close()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        let lines = try #require(String(data: bytes, encoding: .utf8)).split(separator: "\n")
+        #expect(lines.count == 3)
+        let responses = try lines.map { try json(Data($0.utf8)) }
+        #expect((responses[0]["result"] as? [String: Any])?["protocolVersion"] as? String == "2025-11-25")
+        #expect((responses[1]["error"] as? [String: Any])?["code"] as? Int == -32600)
+        #expect((responses[2]["result"] as? [String: Any])?.isEmpty == true)
+        #expect(diagnostics.fileHandleForReading.readDataToEndOfFile().isEmpty)
     }
 
     @Test("The app bundle contains a launchable hardened-runtime MCP helper")

@@ -821,8 +821,15 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
               before.st_dev == after.st_dev, before.st_ino == after.st_ino,
               before.st_dev == entryAfter.st_dev, before.st_ino == entryAfter.st_ino,
               before.st_size == after.st_size,
+              before.st_size == entryAfter.st_size,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
-              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec else {
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_mtimespec.tv_sec == entryAfter.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == entryAfter.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == entryAfter.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == entryAfter.st_ctimespec.tv_nsec else {
             throw MCPAutomationReadError.photoChanged
         }
         return result
@@ -861,7 +868,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
 
     private static func prefix(domain: String, identity: stat?) -> Data {
         let identityPart = identity.map {
-            "\($0.st_dev):\($0.st_ino):\($0.st_size):\($0.st_mtimespec.tv_sec):\($0.st_mtimespec.tv_nsec):"
+            "\($0.st_dev):\($0.st_ino):\($0.st_size):\($0.st_mtimespec.tv_sec):\($0.st_mtimespec.tv_nsec):\($0.st_ctimespec.tv_sec):\($0.st_ctimespec.tv_nsec):"
         } ?? "absent:"
         return Data("apa-mcp-revision-v1:\(domain):\(identityPart)".utf8)
     }
@@ -1091,7 +1098,7 @@ nonisolated final class MCPServerSession {
 
     func response(forLine data: Data) -> Data? {
         guard !data.isEmpty, data.count <= MCPServerConstants.maximumMessageBytes else {
-            return encodedError(id: .null, code: -32600, message: "Invalid Request")
+            return invalidRequestResponse()
         }
         let request: MCPRequestEnvelope
         do {
@@ -1161,6 +1168,10 @@ nonisolated final class MCPServerSession {
         }
     }
 
+    func invalidRequestResponse() -> Data {
+        encodedError(id: .null, code: -32600, message: "Invalid Request")
+    }
+
     private func encodedResult(id: MCPRequestID, result: MCPJSONValue) -> Data {
         (try? encoder.encode(MCPResponseEnvelope(id: id, result: result, error: nil))) ?? Data()
     }
@@ -1202,7 +1213,7 @@ nonisolated struct MCPStdioServer {
             }
             buffer.append(chunk)
             if buffer.count > maximumMessageBytes, !buffer.contains(0x0a) {
-                writeResponse(session.response(forLine: Data(repeating: 0x20, count: maximumMessageBytes + 1)), to: output)
+                writeResponse(session.invalidRequestResponse(), to: output)
                 return
             }
             while let newline = buffer.firstIndex(of: 0x0a) {
@@ -1215,7 +1226,9 @@ nonisolated struct MCPStdioServer {
     }
 
     private func process(_ line: Data, output: FileHandle) {
-        writeResponse(session.response(forLine: line), to: output)
+        writeResponse(line.count > maximumMessageBytes
+            ? session.invalidRequestResponse()
+            : session.response(forLine: line), to: output)
     }
 
     private func writeResponse(_ response: Data?, to output: FileHandle) {
