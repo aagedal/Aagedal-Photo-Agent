@@ -21,6 +21,19 @@ nonisolated enum MCPServerConstants {
     static let configurationKey = "automation.mcp.authorization.v1"
 }
 
+/// The input-format catalog is shared by the GUI and the bundled helper. These extensions
+/// describe photo admission, not a promise that every format supports embedded IPTC writes.
+nonisolated enum MCPPhotoFormatCatalog {
+    static let rawExtensions: Set<String> = [
+        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
+        "dng", "rw2", "orf", "pef", "srw",
+    ]
+    static let fileExtensions: Set<String> = Set([
+        "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif",
+        "bmp", "gif", "webp", "avif", "jxl",
+    ]).union(rawExtensions)
+}
+
 nonisolated enum MCPJSONValue: Codable, Equatable, Sendable {
     case object([String: MCPJSONValue])
     case array([MCPJSONValue])
@@ -494,6 +507,7 @@ nonisolated struct MCPAuthorizationStore: Sendable {
 
 nonisolated protocol MCPToolServing: Sendable {
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue]
+    func supportsTool(named name: String) -> Bool
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue
 }
 
@@ -509,6 +523,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             definition(
                 name: "get_server_capabilities",
                 description: "Report the Photo Agent local automation version, enablement, and implemented capability boundary.",
+                properties: [:],
+                required: []
+            ),
+            definition(
+                name: "list_supported_photo_formats",
+                description: "List photo input extensions admitted by Photo Agent. RAW files use sidecars; this does not describe embedded IPTC write support.",
                 properties: [:],
                 required: []
             ),
@@ -532,8 +552,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         ]
     }
 
+    func supportsTool(named name: String) -> Bool {
+        toolDefinitions(configuration: MCPAuthorizationConfiguration())
+            .contains { $0.objectValue?["name"]?.stringValue == name }
+    }
+
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
+            let acceptedArguments: Set<String> = name == "inspect_path_authorization" ? ["path"] : []
+            guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
+                return failure(code: "invalid_arguments", message: "Unknown tool argument")
+            }
             let configuration = try authorizationStore.load()
             switch name {
             case "get_server_capabilities":
@@ -542,8 +571,16 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "automationEnabled": .bool(configuration.isEnabled),
                     "transport": .string("stdio"),
                     "networkListener": .bool(false),
-                    "implementedCapabilities": .array([.string("authorization-inspection")]),
+                    "implementedCapabilities": .array([
+                        .string("authorization-inspection"), .string("photo-input-format-discovery"),
+                    ]),
                     "mutationToolsAvailable": .bool(false),
+                ])
+            case "list_supported_photo_formats":
+                return success([
+                    "inputExtensions": .array(MCPPhotoFormatCatalog.fileExtensions.sorted().map(MCPJSONValue.string)),
+                    "rawSidecarExtensions": .array(MCPPhotoFormatCatalog.rawExtensions.sorted().map(MCPJSONValue.string)),
+                    "embeddedWriteSupport": .string("format-and-carrier-dependent"),
                 ])
             case "list_authorized_roots":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
@@ -706,8 +743,14 @@ nonisolated final class MCPServerSession {
                 return encodedError(id: id, code: -32002, message: "Initialization is incomplete")
             }
             guard let params = request.params?.objectValue,
-                  let name = params["name"]?.stringValue else {
+                  let name = params["name"]?.stringValue, !name.isEmpty else {
                 return encodedError(id: id, code: -32602, message: "Missing tool name")
+            }
+            guard tools.supportsTool(named: name) else {
+                return encodedError(id: id, code: -32602, message: "Unknown tool")
+            }
+            guard params["arguments"] == nil || params["arguments"]?.objectValue != nil else {
+                return encodedError(id: id, code: -32602, message: "Tool arguments must be an object")
             }
             let arguments = params["arguments"]?.objectValue ?? [:]
             return encodedResult(id: id, result: tools.callTool(name: name, arguments: arguments))

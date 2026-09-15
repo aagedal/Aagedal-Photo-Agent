@@ -109,7 +109,7 @@ This is separate from the unapproved AI-origin analyzer described above.
 
 - Local MCP automation is off by default, uses a bundled STDIO helper, and opens no network listener.
   Only explicitly selected, unchanged folder roots are eligible. The current implementation exposes
-  read-only capability/root/path-admission tools; production metadata, Develop, face, transcription,
+  read-only capability/photo-input-format/root/path-admission tools; production metadata, Develop, face, transcription,
   status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.
 - Folder authorization limits Photo Agent, not the connected client's own filesystem or network access.

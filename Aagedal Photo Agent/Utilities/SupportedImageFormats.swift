@@ -27,17 +27,9 @@ enum SupportedImageFormats {
         UTType("com.olympus.raw-image") ?? .rawImage,
     ]
 
-    nonisolated static let fileExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif",
-        "bmp", "gif", "webp", "avif", "jxl",
-        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
-        "dng", "rw2", "orf", "pef", "srw",
-    ]
+    nonisolated static let fileExtensions = MCPPhotoFormatCatalog.fileExtensions
 
-    nonisolated static let rawExtensions: Set<String> = [
-        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf",
-        "dng", "rw2", "orf", "pef", "srw",
-    ]
+    nonisolated static let rawExtensions = MCPPhotoFormatCatalog.rawExtensions
 
     /// Ordered RAW extensions for deterministic sibling pairing.
     static let orderedRawExtensions: [String] = [

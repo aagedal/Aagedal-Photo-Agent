@@ -174,7 +174,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_server_capabilities", "list_authorized_roots", "inspect_path_authorization",
+            "get_server_capabilities", "list_supported_photo_formats", "list_authorized_roots", "inspect_path_authorization",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
@@ -182,6 +182,47 @@ struct MCPServerCoreTests {
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }
+    }
+
+    @Test("Format discovery uses the exact GUI admission catalog and does not claim universal embedded writes")
+    func discoversInputFormats() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        _ = session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+        ))
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+        let response = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_supported_photo_formats","arguments":{}}}"#.utf8
+        )))
+        let result = try #require((try json(response))["result"] as? [String: Any])
+        let structured = try #require(result["structuredContent"] as? [String: Any])
+        #expect(Set(try #require(structured["inputExtensions"] as? [String])) == SupportedImageFormats.fileExtensions)
+        #expect(Set(try #require(structured["rawSidecarExtensions"] as? [String])) == SupportedImageFormats.rawExtensions)
+        #expect(structured["embeddedWriteSupport"] as? String == "format-and-carrier-dependent")
+        #expect(result["isError"] as? Bool == false)
+    }
+
+    @Test("Malformed tool-call shapes and unknown names fail at the protocol boundary")
+    func rejectsMalformedToolCalls() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        _ = session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+        ))
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+        for call in [
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown","arguments":{}}}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_supported_photo_formats","arguments":[]}}"#,
+            #"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":""}}"#,
+        ] {
+            let response = try #require(session.response(forLine: Data(call.utf8)))
+            #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32602)
+        }
+        let extra = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_supported_photo_formats","arguments":{"path":"/tmp"}}}"#.utf8
+        )))
+        let result = try #require((try json(extra))["result"] as? [String: Any])
+        #expect(result["isError"] as? Bool == true)
+        #expect((result["structuredContent"] as? [String: Any])?["code"] as? String == "invalid_arguments")
     }
 
     @Test("Malformed input, lifecycle misuse, unsupported methods, and notifications follow JSON-RPC")

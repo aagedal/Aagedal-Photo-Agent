@@ -26,6 +26,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   the reservation code for upcoming tools.
 - Automation Settings now supplies copyable setup for Codex CLI, Claude Code, OpenCode 1.x and
   OpenCode v2, using each client's local STDIO MCP configuration format.
+- Local automation now reports the same supported photo input extensions used by the Browser,
+  distinguishes RAW sidecar formats from format-dependent embedded writes, and rejects malformed
+  tool-call arguments and unknown tool names at the proper MCP boundaries.
 - Move and Reject now preserve proven voice-memo companions with verified staging, rollback and
   shared-memo handling. Destination metadata is protected from orphan-sidecar collisions, and
   toolbar actions have independent accessibility identities.

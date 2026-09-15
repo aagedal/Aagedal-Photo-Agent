@@ -1578,6 +1578,13 @@ quiescence completion. A busy folder aborts with zero moves and requires a fresh
 retry. Planning and pre-rename quiescence, other GUI folder paths, production MCP tools and Whisper
 remain open; the shared-coordination criterion above is not yet complete.
 
+**Progress — cycle 40:** [Photo format discovery and MCP call validation](release/cycle-40-mcp-discovery-contract-2026-09-15.md)
+share the Browser's admitted input-extension catalog with the bundled helper and expose it as a
+bounded read-only tool. Unknown tool names and malformed call argument shapes now fail at the
+JSON-RPC boundary; unexpected properties yield a corrective tool error. This is a subset of
+the discovery and protocol criteria above. Template/provider readiness, production workflow
+tools, full protocol coverage and real-client checks remain open.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support
