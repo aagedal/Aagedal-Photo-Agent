@@ -162,6 +162,26 @@ struct VariableMetadataCallerTests {
         try #require(await executor.isPaused)
     }
 
+    @Test("Automatic metadata commit defers unresolved variables and processing crosses the editor barrier")
+    @MainActor
+    func automaticCommitVariableBarrier() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/variables-auto-commit")
+        let url = folder.appendingPathComponent("one.jpg")
+        let original = IPTCMetadata(title: "Original")
+        let executor = VariableCallerExecutor()
+        let model = makeModel([url: snapshot(url, metadata: original)], executor: executor)
+        try await load(model, url: url)
+        model.editingMetadata.title = "Resolved {seq}"
+        model.markChanged()
+        #expect(model.shouldDeferAutomaticCommitForVariables)
+        var crossedBarrier = false
+        model.registerVariableRecoveryEditorBarrier(owner: UUID()) { crossedBarrier = true }
+        model.processVariablesForImages([ImageFile(url: url)])
+        await model.waitForVariableProcessing()
+        #expect(crossedBarrier)
+        #expect(await executor.requests.count == 1)
+    }
+
     @Test("Selected history save is awaited and owns only its original editor")
     @MainActor
     func selectedCompletionIsAwaitedAndScoped() async throws {

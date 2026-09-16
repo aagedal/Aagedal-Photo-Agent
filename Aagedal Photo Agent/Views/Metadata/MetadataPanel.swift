@@ -1174,6 +1174,10 @@ struct MetadataPanel: View {
         // A pending draft loaded from disk is not a new edit. Moving focus (including to
         // voice-memo playback) must not automatically rewrite that draft or its XMP mirror.
         guard viewModel.hasUnpersistedEditorChanges else { return }
+        // Unresolved placeholders are owned by Process Variables. An ordinary focus-loss save
+        // can otherwise write the literals and make that variable request conflict with the
+        // "newer" metadata produced by its own editor.
+        guard !viewModel.shouldDeferAutomaticCommitForVariables else { return }
         if let captionFlushCoordinator {
             do {
                 // Field blur and debounce must capture the same immutable FIFO request as

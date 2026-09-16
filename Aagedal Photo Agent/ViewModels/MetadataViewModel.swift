@@ -328,6 +328,12 @@ final class MetadataViewModel {
         return editingMetadata != previousEditingMetadata
     }
 
+    /// Literal placeholders belong to the variable transaction, not the ordinary focus-loss
+    /// writer. Writing them first would change the transaction's baseline underneath it.
+    var shouldDeferAutomaticCommitForVariables: Bool {
+        hasUnpersistedEditorChanges && hasVariables
+    }
+
     /// The display reference may be the XMP copy of an existing pending draft. Keep that
     /// reference separate from the historical baseline, including an explicitly absent baseline
     /// in legacy JSON. The captured record is usable only for the current image and folder.
@@ -3433,7 +3439,12 @@ final class MetadataViewModel {
               !images.isEmpty || !retryRequests.isEmpty || !retryAdmissions.isEmpty else { return }
         let isRetry = retryFolder != nil
         if !isRetry {
-            do { try requireVariableDiscardedEditorReconciled() }
+            do {
+                // Cancel the metadata panel's focus-loss debounce and synchronously capture its
+                // AppKit field buffer before freezing the variable admission.
+                try prepareVariableRecoveryPresentation()
+                try requireVariableDiscardedEditorReconciled()
+            }
             catch { saveError = error.localizedDescription; return }
         }
         let urls = isRetry ? retryRequests.map(\.imageURL) + retryAdmissions.map(\.imageURL) : images.map(\.url)
