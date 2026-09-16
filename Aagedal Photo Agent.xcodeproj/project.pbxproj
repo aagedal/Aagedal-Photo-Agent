@@ -7,10 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C5A000000000000000000002 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* main.swift */; };
-		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
-		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1B9FF71903054DC7BE54A5E5 /* VariableConflictRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */; };
@@ -31,6 +27,17 @@
 		A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */; };
 		A8F5A4000000000000000002 /* DeliveryStagingProductionFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */; };
 		A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95300000000000000000001 /* MetadataHistoryTests.swift */; };
+		A9D001000000000000000002 /* KnownPeoplePackageDirectoryWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */; };
+		A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */; };
+		A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */; };
+		A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */; };
+		A9D005000000000000000002 /* KnownPeopleLocalIdentityAssignmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */; };
+		A9D006000000000000000002 /* KnownPeoplePackageAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D006000000000000000001 /* KnownPeoplePackageAdmissionServiceTests.swift */; };
+		A9D007000000000000000002 /* KnownPeopleInterchangeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D007000000000000000001 /* KnownPeopleInterchangeControllerTests.swift */; };
+		A9D008000000000000000002 /* KnownPeopleInterchangeProductionOperationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D008000000000000000001 /* KnownPeopleInterchangeProductionOperationsTests.swift */; };
+		A9D010000000000000000002 /* KnownPeopleInterchangePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D010000000000000000001 /* KnownPeopleInterchangePresentationTests.swift */; };
+		A9D011000000000000000002 /* UITestLaunchConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D011000000000000000001 /* UITestLaunchConfigurationTests.swift */; };
+		A9D012000000000000000002 /* KnownPeopleCloudGenerationPublisherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D012000000000000000001 /* KnownPeopleCloudGenerationPublisherTests.swift */; };
 		AB0100000000000000000002 /* ApprovedListBypassTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0100000000000000000001 /* ApprovedListBypassTests.swift */; };
 		AB0200000000000000000002 /* KeywordListsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0200000000000000000001 /* KeywordListsStoreTests.swift */; };
 		AB0300000000000000000002 /* StructuredKeywordParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0300000000000000000001 /* StructuredKeywordParserTests.swift */; };
@@ -47,19 +54,6 @@
 		AB1400000000000000000002 /* TeamColorClustererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1400000000000000000001 /* TeamColorClustererTests.swift */; };
 		AB1500000000000000000002 /* SportsTaggingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1500000000000000000001 /* SportsTaggingTests.swift */; };
 		AB1600000000000000000002 /* FaceEmbeddingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1600000000000000000001 /* FaceEmbeddingTests.swift */; };
-		AFACE1000000000000000002 /* AuraFaceChannelReferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */; };
-		AFACE2000000000000000002 /* AuraFaceInstallerSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */; };
-		A9D001000000000000000002 /* KnownPeoplePackageDirectoryWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */; };
-		A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */; };
-		A9D004000000000000000002 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */; };
-		A9D003000000000000000002 /* KnownPeopleManagedStoreReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */; };
-		A9D005000000000000000002 /* KnownPeopleLocalIdentityAssignmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */; };
-		A9D006000000000000000002 /* KnownPeoplePackageAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D006000000000000000001 /* KnownPeoplePackageAdmissionServiceTests.swift */; };
-		A9D007000000000000000002 /* KnownPeopleInterchangeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D007000000000000000001 /* KnownPeopleInterchangeControllerTests.swift */; };
-		A9D008000000000000000002 /* KnownPeopleInterchangeProductionOperationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D008000000000000000001 /* KnownPeopleInterchangeProductionOperationsTests.swift */; };
-		A9D010000000000000000002 /* KnownPeopleInterchangePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D010000000000000000001 /* KnownPeopleInterchangePresentationTests.swift */; };
-		A9D011000000000000000002 /* UITestLaunchConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D011000000000000000001 /* UITestLaunchConfigurationTests.swift */; };
-		A9D012000000000000000002 /* KnownPeopleCloudGenerationPublisherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D012000000000000000001 /* KnownPeopleCloudGenerationPublisherTests.swift */; };
 		AB1700000000000000000002 /* ToneCurveGeneratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */; };
 		AB1800000000000000000002 /* GeocodingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1800000000000000000001 /* GeocodingServiceTests.swift */; };
 		AB1900000000000000000002 /* ColorLabelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1900000000000000000001 /* ColorLabelTests.swift */; };
@@ -101,6 +95,8 @@
 		AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */; };
 		AF5300000000000000000002 /* TextAndCloudExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */; };
 		AF5400000000000000000002 /* RenderExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5400000000000000000001 /* RenderExecutorTests.swift */; };
+		AFACE1000000000000000002 /* AuraFaceChannelReferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */; };
+		AFACE2000000000000000002 /* AuraFaceInstallerSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */; };
 		B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */; };
 		B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
@@ -115,6 +111,10 @@
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
 		C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A710000000000000000001 /* CaptionSessionTests.swift */; };
 		C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */; };
+		C5A000000000000000000002 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* main.swift */; };
+		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
+		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
 		C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */; };
 		C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000003 /* FieldMutationCallerTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
@@ -141,6 +141,8 @@
 		D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */; };
 		D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */; };
 		D3C00A000000000000000002 /* CleanFeedBrowseRenderServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C00A000000000000000001 /* CleanFeedBrowseRenderServiceTests.swift */; };
+		D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */; };
+		D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */; };
 		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
 		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
 		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
@@ -161,24 +163,22 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
-		D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */; };
-		D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		C5A00000000000000000000F /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = C5A000000000000000000008;
-			remoteInfo = "Photo Agent MCP";
-		};
 		88530002139060FF0EA7D219 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 8E0556B22F28C3F600BCFB49;
 			remoteInfo = "Aagedal Photo Agent";
+		};
+		C5A00000000000000000000F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8E0556AB2F28C3F600BCFB49 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C5A000000000000000000008;
+			remoteInfo = "Photo Agent MCP";
 		};
 		F00D0000000000000000000A /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -189,11 +189,21 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		C5A00000000000000000000B /* Copy MCP Helper */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */,
+			);
+			name = "Copy MCP Helper";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		C5A000000000000000000001 /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		C5A000000000000000000003 /* photo-agent-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "photo-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
-		C5A000000000000000000005 /* MCPServerCore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPServerCore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPServerCore.swift"; sourceTree = SOURCE_ROOT; };
-		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -218,6 +228,17 @@
 		A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplatesFolderBookmarkTests.swift; sourceTree = "<group>"; };
 		A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryStagingProductionFactoryTests.swift; sourceTree = "<group>"; };
 		A95300000000000000000001 /* MetadataHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataHistoryTests.swift; sourceTree = "<group>"; };
+		A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageDirectoryWriterTests.swift; sourceTree = "<group>"; };
+		A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageArchiveTests.swift; sourceTree = "<group>"; };
+		A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleManagedStoreReplacementTests.swift; sourceTree = "<group>"; };
+		A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalStoreSnapshotBuilderTests.swift; sourceTree = "<group>"; };
+		A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalIdentityAssignmentTests.swift; sourceTree = "<group>"; };
+		A9D006000000000000000001 /* KnownPeoplePackageAdmissionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageAdmissionServiceTests.swift; sourceTree = "<group>"; };
+		A9D007000000000000000001 /* KnownPeopleInterchangeControllerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangeControllerTests.swift; sourceTree = "<group>"; };
+		A9D008000000000000000001 /* KnownPeopleInterchangeProductionOperationsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangeProductionOperationsTests.swift; sourceTree = "<group>"; };
+		A9D010000000000000000001 /* KnownPeopleInterchangePresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangePresentationTests.swift; sourceTree = "<group>"; };
+		A9D011000000000000000001 /* UITestLaunchConfigurationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UITestLaunchConfigurationTests.swift; sourceTree = "<group>"; };
+		A9D012000000000000000001 /* KnownPeopleCloudGenerationPublisherTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleCloudGenerationPublisherTests.swift; sourceTree = "<group>"; };
 		AB0100000000000000000001 /* ApprovedListBypassTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListBypassTests.swift; sourceTree = "<group>"; };
 		AB0200000000000000000001 /* KeywordListsStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListsStoreTests.swift; sourceTree = "<group>"; };
 		AB0300000000000000000001 /* StructuredKeywordParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StructuredKeywordParserTests.swift; sourceTree = "<group>"; };
@@ -234,19 +255,6 @@
 		AB1400000000000000000001 /* TeamColorClustererTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamColorClustererTests.swift; sourceTree = "<group>"; };
 		AB1500000000000000000001 /* SportsTaggingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SportsTaggingTests.swift; sourceTree = "<group>"; };
 		AB1600000000000000000001 /* FaceEmbeddingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FaceEmbeddingTests.swift; sourceTree = "<group>"; };
-		AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceChannelReferenceTests.swift; sourceTree = "<group>"; };
-		AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceInstallerSecurityTests.swift; sourceTree = "<group>"; };
-		A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageDirectoryWriterTests.swift; sourceTree = "<group>"; };
-		A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageArchiveTests.swift; sourceTree = "<group>"; };
-		A9D004000000000000000001 /* KnownPeopleLocalStoreSnapshotBuilderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalStoreSnapshotBuilderTests.swift; sourceTree = "<group>"; };
-		A9D003000000000000000001 /* KnownPeopleManagedStoreReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleManagedStoreReplacementTests.swift; sourceTree = "<group>"; };
-		A9D005000000000000000001 /* KnownPeopleLocalIdentityAssignmentTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleLocalIdentityAssignmentTests.swift; sourceTree = "<group>"; };
-		A9D006000000000000000001 /* KnownPeoplePackageAdmissionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeoplePackageAdmissionServiceTests.swift; sourceTree = "<group>"; };
-		A9D007000000000000000001 /* KnownPeopleInterchangeControllerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangeControllerTests.swift; sourceTree = "<group>"; };
-		A9D008000000000000000001 /* KnownPeopleInterchangeProductionOperationsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangeProductionOperationsTests.swift; sourceTree = "<group>"; };
-		A9D010000000000000000001 /* KnownPeopleInterchangePresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleInterchangePresentationTests.swift; sourceTree = "<group>"; };
-		A9D011000000000000000001 /* UITestLaunchConfigurationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UITestLaunchConfigurationTests.swift; sourceTree = "<group>"; };
-		A9D012000000000000000001 /* KnownPeopleCloudGenerationPublisherTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KnownPeopleCloudGenerationPublisherTests.swift; sourceTree = "<group>"; };
 		AB1700000000000000000001 /* ToneCurveGeneratorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToneCurveGeneratorTests.swift; sourceTree = "<group>"; };
 		AB1800000000000000000001 /* GeocodingServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeocodingServiceTests.swift; sourceTree = "<group>"; };
 		AB1900000000000000000001 /* ColorLabelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ColorLabelTests.swift; sourceTree = "<group>"; };
@@ -288,6 +296,8 @@
 		AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportFilesystemExecutorTests.swift; sourceTree = "<group>"; };
 		AF5300000000000000000001 /* TextAndCloudExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TextAndCloudExecutorTests.swift; sourceTree = "<group>"; };
 		AF5400000000000000000001 /* RenderExecutorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenderExecutorTests.swift; sourceTree = "<group>"; };
+		AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceChannelReferenceTests.swift; sourceTree = "<group>"; };
+		AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceInstallerSecurityTests.swift; sourceTree = "<group>"; };
 		B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserXMPSidecarLoadServiceTests.swift; sourceTree = "<group>"; };
 		B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListEditorPersistenceServiceTests.swift; sourceTree = "<group>"; };
 		B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteCallerTests.swift; sourceTree = "<group>"; };
@@ -302,6 +312,10 @@
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
 		C4A710000000000000000001 /* CaptionSessionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionSessionTests.swift; sourceTree = "<group>"; };
 		C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCopyPreviousServiceTests.swift; sourceTree = "<group>"; };
+		C5A000000000000000000001 /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		C5A000000000000000000003 /* photo-agent-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "photo-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C5A000000000000000000005 /* MCPServerCore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPServerCore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPServerCore.swift"; sourceTree = SOURCE_ROOT; };
+		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
 		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000003 /* FieldMutationCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FieldMutationCallerTests.swift; sourceTree = "<group>"; };
@@ -329,6 +343,8 @@
 		D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopWorkspaceInputCoordinatorTests.swift; sourceTree = "<group>"; };
 		D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopSourceDecodeServiceTests.swift; sourceTree = "<group>"; };
 		D3C00A000000000000000001 /* CleanFeedBrowseRenderServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CleanFeedBrowseRenderServiceTests.swift; sourceTree = "<group>"; };
+		D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPrimaryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
+		D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrimaryDevelopWriteServiceTests.swift; sourceTree = "<group>"; };
 		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
 		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
 		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
@@ -347,8 +363,6 @@
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
-		D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPrimaryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
-		D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrimaryDevelopWriteServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -373,13 +387,6 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		C5A00000000000000000000A /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		8E0556B02F28C3F600BCFB49 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -396,6 +403,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C5A00000000000000000000A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F00D00000000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -406,15 +420,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		C5A000000000000000000004 /* PhotoAgent MCP */ = {
-			isa = PBXGroup;
-			children = (
-				C5A000000000000000000001 /* main.swift */,
-				C5A000000000000000000005 /* MCPServerCore.swift */,
-			);
-			path = "PhotoAgent MCP";
-			sourceTree = "<group>";
-		};
 		025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXGroup;
 			children = (
@@ -596,6 +601,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		C5A000000000000000000004 /* PhotoAgent MCP */ = {
+			isa = PBXGroup;
+			children = (
+				C5A000000000000000000001 /* main.swift */,
+				C5A000000000000000000005 /* MCPServerCore.swift */,
+			);
+			path = "PhotoAgent MCP";
+			sourceTree = "<group>";
+		};
 		F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */ = {
 			isa = PBXGroup;
 			children = (
@@ -607,22 +621,6 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		C5A000000000000000000008 /* Photo Agent MCP */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */;
-			buildPhases = (
-				C5A000000000000000000009 /* Sources */,
-				C5A00000000000000000000A /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = "Photo Agent MCP";
-			productName = "photo-agent-mcp";
-			productReference = C5A000000000000000000003 /* photo-agent-mcp */;
-			productType = "com.apple.product-type.tool";
-		};
 		8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 8E0556BE2F28C3F900BCFB49 /* Build configuration list for PBXNativeTarget "Aagedal Photo Agent" */;
@@ -645,6 +643,22 @@
 			productName = "Aagedal Photo Agent";
 			productReference = 8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C5A000000000000000000008 /* Photo Agent MCP */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */;
+			buildPhases = (
+				C5A000000000000000000009 /* Sources */,
+				C5A00000000000000000000A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Photo Agent MCP";
+			productName = "photo-agent-mcp";
+			productReference = C5A000000000000000000003 /* photo-agent-mcp */;
+			productType = "com.apple.product-type.tool";
 		};
 		DB6EB8B3A46DC2147D8DE710 /* Aagedal Photo Agent Tests */ = {
 			isa = PBXNativeTarget;
@@ -692,10 +706,10 @@
 				LastSwiftUpdateCheck = 2600;
 				LastUpgradeCheck = 2600;
 				TargetAttributes = {
-					C5A000000000000000000008 = {
+					8E0556B22F28C3F600BCFB49 = {
 						CreatedOnToolsVersion = 26.0;
 					};
-					8E0556B22F28C3F600BCFB49 = {
+					C5A000000000000000000008 = {
 						CreatedOnToolsVersion = 26.0;
 					};
 					F00D00000000000000000008 = {
@@ -729,20 +743,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		C5A00000000000000000000B /* Copy MCP Helper */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 6;
-			files = (
-				C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */,
-			);
-			name = "Copy MCP Helper";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		8E0556B12F28C3F600BCFB49 /* Resources */ = {
@@ -790,15 +790,6 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		C5A000000000000000000009 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				C5A000000000000000000002 /* main.swift in Sources */,
-				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		32D292541781394DC612E9B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -963,6 +954,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C5A000000000000000000009 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C5A000000000000000000002 /* main.swift in Sources */,
+				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F00D00000000000000000006 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -974,16 +974,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		C5A000000000000000000010 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = C5A000000000000000000008 /* Photo Agent MCP */;
-			targetProxy = C5A00000000000000000000F /* PBXContainerItemProxy */;
-		};
 		2974ADFA266F2A27871845CC /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = "Aagedal Photo Agent";
 			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
 			targetProxy = 88530002139060FF0EA7D219 /* PBXContainerItemProxy */;
+		};
+		C5A000000000000000000010 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C5A000000000000000000008 /* Photo Agent MCP */;
+			targetProxy = C5A00000000000000000000F /* PBXContainerItemProxy */;
 		};
 		F00D00000000000000000009 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -994,41 +994,6 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		C5A00000000000000000000C /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_NAME = "photo-agent-mcp";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		C5A00000000000000000000D /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = arm64;
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
-				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_NAME = "photo-agent-mcp";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
 		56C3E2B22B2BF8584C9A038F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1190,7 +1155,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 738;
+				CURRENT_PROJECT_VERSION = 739;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1227,7 +1192,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent/Aagedal Photo Agent.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 738;
+				CURRENT_PROJECT_VERSION = 739;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1280,6 +1245,41 @@
 			};
 			name = Debug;
 		};
+		C5A00000000000000000000C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "photo-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C5A00000000000000000000D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_NAME = "photo-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		F00D0000000000000000000B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1321,15 +1321,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				C5A00000000000000000000C /* Debug */,
-				C5A00000000000000000000D /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		8E0556AE2F28C3F600BCFB49 /* Build configuration list for PBXProject "Aagedal Photo Agent" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1353,6 +1344,15 @@
 			buildConfigurations = (
 				56C3E2B22B2BF8584C9A038F /* Release */,
 				A0AC567F342F22C5A248C160 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C5A00000000000000000000E /* Build configuration list for PBXNativeTarget "Photo Agent MCP" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C5A00000000000000000000C /* Debug */,
+				C5A00000000000000000000D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -135,17 +135,20 @@ final class KeywordListsStore {
     @ObservationIgnored private let resolveCloudRoot: @Sendable () async -> URL?
     @ObservationIgnored private let usesTestStorage: Bool
     @ObservationIgnored private let cloudPreference: (() -> Bool)?
+    @ObservationIgnored private let defaults: UserDefaults
 
     /// Injection keeps routing-race tests isolated from both real cloud storage and preferences.
     init(
         usesTestStorage: Bool = true,
         cloudPreference: (() -> Bool)? = nil,
+        defaults: UserDefaults = AppDefaults.store,
         resolveCloudRoot: @escaping @Sendable () async -> URL? = {
-            await KeywordListsRootResolutionService.shared.resolve()
+            KeywordListsRootResolutionService.shared.resolve()
         }
     ) {
         self.usesTestStorage = usesTestStorage
         self.cloudPreference = cloudPreference
+        self.defaults = defaults
         self.resolveCloudRoot = resolveCloudRoot
     }
 
@@ -154,7 +157,7 @@ final class KeywordListsStore {
     /// Whether the user has opted into iCloud sync. The actual effective root may
     /// fall back to local if iCloud is unavailable (no account, no entitlement).
     var iCloudEnabled: Bool {
-        cloudPreference?() ?? UserDefaults.standard.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+        cloudPreference?() ?? defaults.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled)
     }
 
     /// Local fallback root: `<App Support>/Aagedal Photo Agent/Lists`.
@@ -237,7 +240,7 @@ final class KeywordListsStore {
     /// publication only changes the preference/cache and invalidates observers.
     func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) {
         if cloudPreference == nil {
-            UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+            defaults.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
         }
         routingGeneration = UUID()
         cachedRoot = resolvedRoot
@@ -265,7 +268,6 @@ final class KeywordListsStore {
     /// filesystem actor. Each verified source is retained even if cancellation interrupts later work.
     func migrateLegacyBookmarksIfNeeded() async {
         guard activeMigrationID == nil else { return }
-        let defaults = UserDefaults.standard
         guard defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) < 1 else {
             Self.migrationRecoveryNotices.clear(.keywordLists)
             return

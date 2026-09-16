@@ -849,7 +849,7 @@ nonisolated private enum KnownPeopleManagedStageFilesystem {
             throw KnownPeopleManagedStoreFailure.io
         }
         defer { closedir(stream) }
-        while let entry = try KnownPeopleManagedDirectoryReader.next { readdir(stream) } {
+        while let entry = try KnownPeopleManagedDirectoryReader.next({ readdir(stream) }) {
             guard let name = withUnsafePointer(to: &entry.pointee.d_name, { pointer in
                 pointer.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) {
                     String(validatingCString: $0)

@@ -823,7 +823,9 @@ struct KeywordListLegacyMigrationTests {
 
         let approvedBookmark = Data("approved".utf8)
         let quickBookmark = Data("quick".utf8)
-        let defaults = UserDefaults.standard
+        let defaultsSuiteName = "KeywordListLegacyMigrationTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer { defaults.removePersistentDomain(forName: defaultsSuiteName) }
         let approvedKey = ApprovedListField.keywords.bookmarkKey
         let quickKey = QuickListType.keywords.bookmarkKey
         let legacyBookmarkKeys =
@@ -834,17 +836,9 @@ struct KeywordListLegacyMigrationTests {
             UserDefaultsKeys.keywordListsMigratedVersion,
             UserDefaultsKeys.keywordListsMigrationCompletedKeys,
         ] + legacyBookmarkKeys
-        let previous = Dictionary(uniqueKeysWithValues: migrationKeys.map { ($0, defaults.object(forKey: $0)) })
         let migrationNotices = MigrationRecoveryNoticeCenter()
         KeywordListsStore.migrationRecoveryNotices = migrationNotices
         defer {
-            for (key, value) in previous {
-                if let value {
-                    defaults.set(value, forKey: key)
-                } else {
-                    defaults.removeObject(forKey: key)
-                }
-            }
             KeywordListsStore.legacyBookmarkResolver = { data in
                 var isStale = false
                 return try? URL(
@@ -857,9 +851,7 @@ struct KeywordListLegacyMigrationTests {
             KeywordListsStore.migrationRecoveryNotices = .shared
         }
 
-        for key in migrationKeys {
-            defaults.removeObject(forKey: key)
-        }
+        #expect(migrationKeys.allSatisfy { defaults.object(forKey: $0) == nil })
         defaults.set(approvedBookmark, forKey: approvedKey)
         defaults.set(quickBookmark, forKey: quickKey)
         KeywordListsStore.legacyBookmarkResolver = { data in
@@ -871,7 +863,7 @@ struct KeywordListLegacyMigrationTests {
         }
 
         try await KeywordListsStoreStorageOverride.$current.withValue(root.appendingPathComponent("store")) {
-            let store = KeywordListsStore()
+            let store = KeywordListsStore(defaults: defaults)
             await store.migrateLegacyBookmarksIfNeeded()
 
             #expect(defaults.integer(forKey: UserDefaultsKeys.keywordListsMigratedVersion) == 0)

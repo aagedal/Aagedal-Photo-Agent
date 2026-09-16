@@ -1394,8 +1394,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         // The installed bundle is authoritative. Report retained original bytes separately;
         // throwing here would incorrectly label a fully committed photo as still unmoved.
         var cleanupResiduals: [URL] = []
-        for backup in [recordRetired ? recordBackup : nil, imageRetired ? imageBackup : nil,
-                       memoRetired ? memoBackup : nil].compactMap({ $0 }) {
+        var retiredBackups = [imageBackup]
+        if recordRetired { retiredBackups.append(recordBackup) }
+        if memoRetired { retiredBackups.append(memoBackup) }
+        for backup in retiredBackups {
             do { try copyIO.remove(backup) }
             catch { cleanupResiduals.append(backup) }
         }

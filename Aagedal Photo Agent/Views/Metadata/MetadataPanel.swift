@@ -96,10 +96,20 @@ final class MetadataEditorBufferRegistry {
     }
 }
 
+private struct MetadataEditorCurrentLoadIDReader: Equatable {
+    let viewModel: MetadataViewModel
+
+    func callAsFunction() -> UUID? { viewModel.editorBufferLoadID }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.viewModel === rhs.viewModel
+    }
+}
+
 private extension EnvironmentValues {
     @Entry var metadataEditorBuffers: MetadataEditorBufferRegistry? = nil
     @Entry var metadataEditorBufferLoadID: UUID? = nil
-    @Entry var metadataEditorCurrentLoadID: (() -> UUID?)? = nil
+    @Entry var metadataEditorCurrentLoadID: MetadataEditorCurrentLoadIDReader? = nil
 }
 
 struct MetadataPanel: View {
@@ -1243,7 +1253,7 @@ struct MetadataPanel: View {
         .accessibilityValue(viewModel.variableProcessingStatus ?? "")
         .environment(\.metadataEditorBuffers, editorBuffers)
         .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
-        .environment(\.metadataEditorCurrentLoadID, { viewModel.editorBufferLoadID })
+        .environment(\.metadataEditorCurrentLoadID, MetadataEditorCurrentLoadIDReader(viewModel: viewModel))
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,

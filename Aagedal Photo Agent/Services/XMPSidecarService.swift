@@ -420,7 +420,7 @@ struct XMPSidecarService: Sendable {
                 xmp.tiffOrientation = String(target)
                 xmp.setValue(.simple(String(target)), namespace: XMPNamespace.exif, property: "Orientation")
             case .addPersons(let names):
-                xmp.setValue(.array(MetadataPhysicalFieldMutation.add(names, to: xmp.personInImage ?? [])),
+                xmp.setValue(.array(MetadataPhysicalFieldMutation.add(names, to: xmp.personInImage)),
                     namespace: XMPNamespace.iptcExt, property: "PersonInImage")
             }
             xmp.creatorTool = SwiftExifWriteEngine.creatorTool
