@@ -1749,6 +1749,63 @@ struct ExpandedFaceCardShortcutTests {
     }
 }
 
+@Suite("Expanded face-group name suggestions")
+struct FaceGroupNameSuggestionFilterTests {
+    private let names = [
+        "Erna Solberg",
+        "Jonas Gahr Støre",
+        "Solfrid Koanda",
+        "Ada Lovelace",
+    ]
+
+    @Test("Typing filters the dropdown case-insensitively")
+    func filtersByTypedText() {
+        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "STØ") == [
+            "Jonas Gahr Støre",
+        ])
+    }
+
+    @Test("Prefix matches remain ahead of substring matches")
+    func prioritizesPrefixMatches() {
+        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "sol") == [
+            "Solfrid Koanda",
+            "Erna Solberg",
+        ])
+    }
+
+    @Test("An empty query keeps the full browsable list")
+    func emptyQueryKeepsAllNames() {
+        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "  ") == names)
+    }
+
+    @Test("An explicit dropdown choice applies that exact candidate")
+    @MainActor
+    func explicitSelectionAppliesChosenCandidate() throws {
+        let folder = URL(fileURLWithPath: "/faces/name-suggestion")
+        let data = makeFaceFolderData(folder: folder, faceIDs: [UUID()])
+        let group = try #require(data.groups.first)
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: FaceDataFolderLoadService(saveFaceData: { _ in })
+        )
+        viewModel.faceData = data
+        let card = FaceGroupCardView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        card.configure(
+            group: group,
+            viewModel: viewModel,
+            selectionState: FaceSelectionState(),
+            settingsViewModel: SettingsViewModel(),
+            isExpanded: true,
+            callbacks: .init()
+        )
+
+        card.applyNameSuggestion("Second Candidate")
+
+        #expect(viewModel.group(byID: group.id)?.name == "Second Candidate")
+    }
+}
+
 @Suite("Face scan file-signature boundary")
 struct FaceScanFileSignatureServiceTests {
     @Test @MainActor

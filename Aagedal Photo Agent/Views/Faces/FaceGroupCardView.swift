@@ -20,6 +20,31 @@ struct FaceGroupCardCallbacks {
     var onNameFromTeamSheet: ((UUID) -> Void)?
 }
 
+// MARK: - Name Suggestions
+
+enum FaceGroupNameSuggestionFilter {
+    /// Keeps the combo box useful as a type-ahead picker without enabling AppKit's
+    /// inline completion, which can replace text the user is still editing.
+    static func matches(in names: [String], query: String) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return names }
+
+        var prefixMatches: [String] = []
+        var substringMatches: [String] = []
+        for name in names {
+            guard let match = name.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else {
+                continue
+            }
+            if match.lowerBound == name.startIndex {
+                prefixMatches.append(name)
+            } else {
+                substringMatches.append(name)
+            }
+        }
+        return prefixMatches + substringMatches
+    }
+}
+
 // MARK: - Face Thumbnail Subview
 
 final class FaceThumbnailSubview: NSView {
@@ -195,8 +220,12 @@ final class FaceGroupCardView: NSView {
     private var selectedSuggestionName: String?
     private var nameCommitScheduled = false
     private var nameEditRevision = 0
-    /// Structured Person Shown names backing the name combo box's dropdown list.
+    /// Full structured Person Shown vocabulary for the current edit session.
+    private var allStructuredNames: [String] = []
+    /// Filtered names currently backing the name combo box's dropdown list.
     private var structuredNameCache: [String] = []
+    private var isRefreshingNameSuggestions = false
+    private var isNameSuggestionListOpen = false
 
     // MARK: - Face grid
 
@@ -841,9 +870,9 @@ final class FaceGroupCardView: NSView {
         countBadge.isHidden = true
         nameEditor.isHidden = false
 
-        // Refresh structured Person Shown names for the dropdown.
-        structuredNameCache = StructuredKeywordService.personShown.allSearchableNames()
-        nameEditor.reloadData()
+        // Refresh the source vocabulary and filter it against an existing name too.
+        allStructuredNames = StructuredKeywordService.personShown.allSearchableNames()
+        refreshNameSuggestions(for: nameEditor.stringValue)
 
         window?.makeFirstResponder(nameEditor)
     }
@@ -854,13 +883,43 @@ final class FaceGroupCardView: NSView {
         nameEditRevision &+= 1
         selectedSuggestionName = nil
         nameCommitScheduled = false
+        isNameSuggestionListOpen = false
         nameLabel.isHidden = false
         countBadge.isHidden = false
         nameEditor.isHidden = true
     }
 
+    private func refreshNameSuggestions(for query: String) {
+        let matches = FaceGroupNameSuggestionFilter.matches(in: allStructuredNames, query: query)
+        guard matches != structuredNameCache else { return }
+
+        // Reloading can move the combo box's selection to its first row. Treat that
+        // as implementation detail, never as the user's explicit choice.
+        isRefreshingNameSuggestions = true
+        structuredNameCache = matches
+        nameEditor.reloadData()
+        if nameEditor.indexOfSelectedItem != NSNotFound {
+            nameEditor.deselectItem(at: nameEditor.indexOfSelectedItem)
+        }
+        isRefreshingNameSuggestions = false
+    }
+
+    /// Applies a row the user explicitly chose. This intentionally bypasses the
+    /// deferred free-text commit because AppKit may end field editing before it
+    /// delivers the combo-box selection notification.
+    func applyNameSuggestion(_ selectedName: String) {
+        selectedSuggestionName = selectedName
+        nameEditor.stringValue = selectedName
+        if let groupID {
+            viewModel?.nameGroup(groupID, name: selectedName)
+        }
+        endEditing()
+    }
+
     @objc private func nameEditorCommit() {
-        guard isEditingName, !nameCommitScheduled else { return }
+        // A dropdown choice is committed by comboBoxSelectionDidChange. Letting
+        // the combo box's target action race it can apply the pre-selection text.
+        guard isEditingName, !isNameSuggestionListOpen, !nameCommitScheduled else { return }
         nameCommitScheduled = true
         let revision = nameEditRevision
         // AppKit can send the text-field action/end-editing event before it updates
@@ -1085,11 +1144,22 @@ final class FaceGroupCardView: NSView {
 // MARK: - NSTextFieldDelegate
 
 extension FaceGroupCardView: NSComboBoxDelegate {
+    func comboBoxWillPopUp(_ notification: Notification) {
+        guard notification.object as? NSComboBox === nameEditor else { return }
+        isNameSuggestionListOpen = true
+    }
+
+    func comboBoxWillDismiss(_ notification: Notification) {
+        guard notification.object as? NSComboBox === nameEditor else { return }
+        isNameSuggestionListOpen = false
+    }
+
     func comboBoxSelectionDidChange(_ notification: Notification) {
-        guard notification.object as? NSComboBox === nameEditor,
+        guard !isRefreshingNameSuggestions,
+              notification.object as? NSComboBox === nameEditor,
               structuredNameCache.indices.contains(nameEditor.indexOfSelectedItem) else { return }
-        selectedSuggestionName = structuredNameCache[nameEditor.indexOfSelectedItem]
-        nameEditorCommit()
+        let selectedName = structuredNameCache[nameEditor.indexOfSelectedItem]
+        applyNameSuggestion(selectedName)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -1107,10 +1177,12 @@ extension FaceGroupCardView: NSComboBoxDelegate {
         if filtered != current {
             nameEditor.stringValue = filtered
         }
+        selectedSuggestionName = nil
+        refreshNameSuggestions(for: filtered)
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
-        if isEditingName {
+        if isEditingName, !isNameSuggestionListOpen {
             nameEditorCommit()
         }
     }
