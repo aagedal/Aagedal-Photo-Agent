@@ -753,15 +753,19 @@ struct ContentView: View {
                     TemplatePaletteView(
                         templates: templateViewModel.templates,
                         onApply: { template, append in
-                            applyTemplate(
-                                template,
-                                append: captionTemplateAppendOverride ?? append
-                            )
+                            let resolvedAppend = captionTemplateAppendOverride ?? append
                             closeTemplatePalette(restoringGridFocus: true)
+                            // Presenting the picker is read-only and stays reachable during
+                            // recovery. Applying a choice still crosses the persistence barrier.
+                            performAfterCaptionFlush {
+                                applyTemplate(template, append: resolvedAppend)
+                            }
                         },
                         onSaveNew: {
                             closeTemplatePalette(restoringGridFocus: false)
-                            isShowingSaveTemplateName = true
+                            performAfterCaptionFlush {
+                                isShowingSaveTemplateName = true
+                            }
                         },
                         onDismiss: {
                             closeTemplatePalette(restoringGridFocus: true)
@@ -881,20 +885,29 @@ struct ContentView: View {
                 guard let delivery else { return }
                 switch delivery.command {
                 case .processVariablesSelected:
-                    let selected = browserViewModel.selectedImages
-                    if !selected.isEmpty {
+                    if metadataViewModel.hasRetainedVariableWrites {
+                        // Command-P is also the natural recovery gesture. It must not pass
+                        // through the lifecycle gate held by the request it needs to retry.
+                        metadataViewModel.retryVariableWrites()
+                    } else {
+                        let selected = browserViewModel.selectedImages
+                        guard !selected.isEmpty else { break }
                         performAfterCaptionFlush { metadataViewModel.processVariablesForImages(selected) }
                     }
                 case .processVariablesAll:
-                    performAfterCaptionFlush {
-                        metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                    if metadataViewModel.hasRetainedVariableWrites {
+                        metadataViewModel.retryVariableWrites()
+                    } else {
+                        performAfterCaptionFlush {
+                            metadataViewModel.processVariablesInFolder(images: browserViewModel.images)
+                        }
                     }
                 case .showTemplatePalette:
                     switch mainViewMode.templateCommandTarget {
                     case .metadata:
-                        performAfterCaptionFlush {
-                            isShowingTemplatePalette = true
-                        }
+                        // Opening the palette does not change metadata. The selected action
+                        // performs its own flush before applying or saving a template.
+                        isShowingTemplatePalette = true
                     case .develop:
                         isShowingDevelopTemplatePalette = true
                     }

@@ -250,7 +250,11 @@ struct VariableMetadataCallerTests {
     @Test("Literal punctuated lists are unchanged while intentional variable lists expand")
     @MainActor
     func literalListsAndPreprocessing() throws {
-        var original = IPTCMetadata(title: "{filename}")
+        var original = IPTCMetadata(title: "{filename}", localizedTitles: [
+            .init(languageTag: "x-default", value: "Title {seq}"),
+            .init(languageTag: "nb-NO", value: "Fil {filename}"),
+            .init(languageTag: "nn", value: "")
+        ])
         original.personShown = ["Doe, Jane", "Smith; John"]
         original.keywords = ["literal, comma", "  intentional spaces  "]
         original.creators = ["Writer, First", "Writer, First"]
@@ -261,6 +265,11 @@ struct VariableMetadataCallerTests {
         #expect(result.keywords == original.keywords)
         #expect(result.creators == original.creators)
         #expect(result.title != original.title)
+        #expect(result.localizedTitles == [
+            .init(languageTag: "x-default", value: "Title 2"),
+            .init(languageTag: "nb-NO", value: "Fil one"),
+            .init(languageTag: "nn", value: "")
+        ])
         var variables = original
         variables.personShown = ["{initials}"]
         let expanded = VariableMetadataResolver.resolveText(variables, input: .init(metadata: variables,

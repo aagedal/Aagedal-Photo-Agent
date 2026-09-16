@@ -2821,10 +2821,11 @@ final class MetadataViewModel {
             editingMetadata.country,
             editingMetadata.event,
         ]
+        let localizedTitleValues = editingMetadata.localizedTitles?.map(\.value) ?? []
         if fields.contains(where: { field in
             guard let field else { return false }
             return field.contains(Self.variablePattern)
-        }) {
+        }) || localizedTitleValues.contains(where: { $0.contains(Self.variablePattern) }) {
             return true
         }
         let listValues = editingMetadata.keywords + editingMetadata.personShown
@@ -2929,18 +2930,24 @@ final class MetadataViewModel {
             saveError = "Confirm or cancel the voice-memo transcript preview before retrying variable writes."
             return
         }
+        guard !isProcessingFolder else {
+            saveError = "Variable processing is still running. Wait for it to finish before retrying."
+            return
+        }
         if retainedVariableWrites.isEmpty && retainedVariableAdmissions.isEmpty && !variableDiscardedEditorCheckpoints.isEmpty {
-            guard variableRecoveryOwnerID == nil, !isProcessingFolder else { return }
+            guard variableRecoveryOwnerID == nil else { return }
+            saveError = nil
             batchProcessTask = Task {
                 await reconcileVariableDiscardedEditors()
                 synchronizeVariableLifecycleRetention()
             }
             return
         }
-        guard !isProcessingFolder, let folder = retainedVariableWrites.first?.folderURL ?? retainedVariableAdmissions.first?.folderURL else { return }
+        guard let folder = retainedVariableWrites.first?.folderURL ?? retainedVariableAdmissions.first?.folderURL else { return }
         let folderKey = Self.variablePhotoKey(folder)
         let requests = retainedVariableWrites.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
         let admissions = retainedVariableAdmissions.filter { Self.variablePhotoKey($0.folderURL) == folderKey }
+        saveError = nil
         startVariableBatch(images: [], retryRequests: requests, retryAdmissions: admissions, retryFolder: folder,
             previewAction: .processExisting)
     }

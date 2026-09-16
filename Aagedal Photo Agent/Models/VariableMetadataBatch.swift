@@ -176,6 +176,17 @@ enum VariableMetadataResolver {
             \.city, \.sublocation, \.provinceState, \.country, \.event, \.instructions, \.source
         ]
         for field in fields { result[keyPath: field] = scalar(reference[keyPath: field]) }
+        if let localizedTitles = reference.localizedTitles {
+            result.localizedTitles = localizedTitles.map { title in
+                LocalizedMetadataText(
+                    languageTag: title.languageTag,
+                    value: interpolator.resolve(title.value, filename: input.filename,
+                        existingMetadata: reference, sequenceIndex: input.sequenceIndex,
+                        initials: input.options.initials,
+                        voiceMemoTranscriptContext: input.voiceMemoTranscriptContext)
+                )
+            }
+        }
         let creators = reference.creators.compactMap(scalar)
         result.creators = creators == reference.creators ? reference.creators : IPTCMetadata.normalizedCreators(creators)
         result.keywords = list(reference.keywords, keywords: true)
