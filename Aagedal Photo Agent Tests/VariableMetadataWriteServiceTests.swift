@@ -15,6 +15,32 @@ private nonisolated final class VariableWriteFailureGate: @unchecked Sendable {
 
 @Suite("Immutable variable metadata completion", .serialized)
 struct VariableMetadataWriteServiceTests {
+    @Test("Missing GPS variables complete history replay and physical writes without a false conflict",
+        arguments: [MetadataWriteMode.historyOnly, .writeToFile, .writeToXMPSidecar, .writeToFileAndXMPSidecar])
+    func missingGPSVariables(mode: MetadataWriteMode) async throws {
+        let (folder, image, base) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var record = base
+        record.metadata.title = "Headline {seq}"
+        record.metadata.city = "{gps:city}"
+        record.metadata.country = "{gps:country}"
+        record.metadata.description = "Location: {field:country}, {field:city}: caption"
+        let baseline = try MetadataSidecarService().saveSidecar(record, for: image, in: folder)
+        let original = baseline.metadata
+        let options = VariableMetadataOptions(ordinaryMode: mode, credentialMode: .historyOnly,
+            rawMode: .historyOnly, credentialRawMode: .historyOnly, initials: "",
+            addJobIDToKeywords: false, approvedKeywords: [:], strictKeywords: false)
+        let resolved = try await VariableMetadataResolver.resolve(.init(metadata: original, imageURL: image, filename: image.lastPathComponent, sequenceIndex: 1, options: options))
+        #expect(resolved.city == nil && resolved.country == nil)
+        let result = await service().execute(try await capture(image, baseline, mode: mode, resolved: resolved))
+        #expect(result.completed, "\(result.failure ?? "no failure")")
+        let saved = try #require(MetadataSidecarService().loadSidecar(for: image, in: folder))
+        #expect(saved.metadata.title == "Headline 1")
+        #expect(saved.metadata.city == nil && saved.metadata.country == nil)
+        #expect(saved.metadata.description == "Location: , : caption")
+        #expect(saved.pendingChanges == (mode == .historyOnly))
+    }
+
     private func fixture() async throws -> (URL, URL, MetadataSidecar) {
         let folder = URL(fileURLWithPath: "/private/tmp/VariableWrite-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

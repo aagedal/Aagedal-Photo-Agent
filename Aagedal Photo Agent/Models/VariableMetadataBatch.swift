@@ -134,7 +134,9 @@ enum VariableMetadataResolver {
     static func resolveText(_ reference: IPTCMetadata, input: VariableMetadataResolutionInput) -> IPTCMetadata {
         let interpolator = PresetVariableInterpolator()
         func scalar(_ value: String?) -> String? {
-            guard let value, !value.isEmpty else { return value }
+            // GPS and sports-number expansion can already have cleared a token before
+            // this pass. Use the same absent-value representation as history replay.
+            guard let value, !value.isEmpty else { return nil }
             let resolved = interpolator.resolve(value, filename: input.filename,
                 existingMetadata: reference, sequenceIndex: input.sequenceIndex,
                 initials: input.options.initials,
