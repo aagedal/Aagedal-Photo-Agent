@@ -192,7 +192,9 @@ final class FaceGroupCardView: NSView {
 
     private var isAddingToKnownPeople = false
     private var isEditingName = false
-    private var editingName = ""
+    private var selectedSuggestionName: String?
+    private var nameCommitScheduled = false
+    private var nameEditRevision = 0
     /// Structured Person Shown names backing the name combo box's dropdown list.
     private var structuredNameCache: [String] = []
 
@@ -683,7 +685,10 @@ final class FaceGroupCardView: NSView {
         }
 
         // Notify collection view to refresh
-        (enclosingScrollView?.documentView as? FaceGroupCollectionView)?.refreshVisibleSelections()
+        if let collectionView = enclosingScrollView?.documentView as? FaceGroupCollectionView {
+            window?.makeFirstResponder(collectionView)
+            collectionView.refreshVisibleSelections()
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -826,8 +831,12 @@ final class FaceGroupCardView: NSView {
     private func startEditing() {
         guard !isEditingName, let group = currentGroup else { return }
         isEditingName = true
-        editingName = group.name ?? ""
-        nameEditor.stringValue = editingName
+        nameEditRevision &+= 1
+        selectedSuggestionName = nil
+        if nameEditor.indexOfSelectedItem != NSNotFound {
+            nameEditor.deselectItem(at: nameEditor.indexOfSelectedItem)
+        }
+        nameEditor.stringValue = group.name ?? ""
         nameLabel.isHidden = true
         countBadge.isHidden = true
         nameEditor.isHidden = false
@@ -842,18 +851,32 @@ final class FaceGroupCardView: NSView {
     private func endEditing() {
         guard isEditingName else { return }
         isEditingName = false
+        nameEditRevision &+= 1
+        selectedSuggestionName = nil
+        nameCommitScheduled = false
         nameLabel.isHidden = false
         countBadge.isHidden = false
         nameEditor.isHidden = true
     }
 
     @objc private func nameEditorCommit() {
-        let typedName = nameEditor.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = StructuredKeywordService.personShown.canonicalName(forNameOrSynonym: typedName) ?? typedName
-        if let groupID, !name.isEmpty {
-            viewModel?.nameGroup(groupID, name: name)
+        guard isEditingName, !nameCommitScheduled else { return }
+        nameCommitScheduled = true
+        let revision = nameEditRevision
+        // AppKit can send the text-field action/end-editing event before it updates
+        // the field for a clicked combo-box row. Read the final selection next turn.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.nameEditRevision == revision else { return }
+            self.nameCommitScheduled = false
+            guard self.isEditingName else { return }
+            let name = (self.selectedSuggestionName ?? self.nameEditor.stringValue)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let groupID = self.groupID, !name.isEmpty {
+                self.viewModel?.nameGroup(groupID, name: name)
+            }
+            self.endEditing()
         }
-        endEditing()
     }
 
     // MARK: - Key Art
@@ -1062,6 +1085,13 @@ final class FaceGroupCardView: NSView {
 // MARK: - NSTextFieldDelegate
 
 extension FaceGroupCardView: NSComboBoxDelegate {
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        guard notification.object as? NSComboBox === nameEditor,
+              structuredNameCache.indices.contains(nameEditor.indexOfSelectedItem) else { return }
+        selectedSuggestionName = structuredNameCache[nameEditor.indexOfSelectedItem]
+        nameEditorCommit()
+    }
+
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             endEditing()

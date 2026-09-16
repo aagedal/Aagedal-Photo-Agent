@@ -136,7 +136,10 @@ final class FaceRecognitionViewModel {
     }
     var errorMessage: String?
 
-    // Thumbnail cache: faceID -> NSImage (NSCache with eviction, not observed to avoid re-render loops)
+    // Keep compressed crops for the displayed folder so an evicted decoded image can be
+    // recreated when its card scrolls back into view.
+    @ObservationIgnored private var thumbnailDataByFaceID: [UUID: Data] = [:]
+    // Thumbnail cache: faceID -> decoded NSImage (evictable, not observed)
     @ObservationIgnored nonisolated(unsafe) private let thumbnailCache: NSCache<NSUUID, FaceThumbnailCacheEntry> = {
         let cache = NSCache<NSUUID, FaceThumbnailCacheEntry>()
         cache.countLimit = 500
@@ -765,6 +768,7 @@ final class FaceRecognitionViewModel {
         faceData = nil
         scanComplete = false
         thumbnailCache.removeAllObjects()
+        thumbnailDataByFaceID.removeAll()
 
         let pendingPersistence = faceDataPersistenceTask
         let folderLoadService = self.folderLoadService
@@ -852,6 +856,7 @@ final class FaceRecognitionViewModel {
 
     private func installThumbnails(_ thumbnailData: [UUID: Data]) {
         thumbnailCache.removeAllObjects()
+        thumbnailDataByFaceID = thumbnailData
         for (faceID, data) in thumbnailData {
             if let image = NSImage(data: data) {
                 thumbnailCache.setObject(FaceThumbnailCacheEntry(image: image, data: data), forKey: faceID as NSUUID)
@@ -903,6 +908,7 @@ final class FaceRecognitionViewModel {
             // before detection begins.
             faceData = nil
             thumbnailCache.removeAllObjects()
+            thumbnailDataByFaceID.removeAll()
             scanComplete = false
             mergeSuggestions = []
         }
@@ -1062,6 +1068,7 @@ final class FaceRecognitionViewModel {
             let reportThumbnail: @MainActor @Sendable (UUID, Data) -> Void = { [self] faceID, data in
                 guard self.displayedFolderURL == folderURL.standardizedFileURL,
                       let image = NSImage(data: data) else { return }
+                self.thumbnailDataByFaceID[faceID] = data
                 self.thumbnailCache.setObject(FaceThumbnailCacheEntry(image: image, data: data), forKey: faceID as NSUUID)
             }
 
@@ -1674,9 +1681,9 @@ final class FaceRecognitionViewModel {
         let expectedRevision = faceDataRevision
         let expectedFolder = displayedFolderURL
         let sourceThumbnails = Dictionary(uniqueKeysWithValues: faces.enumerated().compactMap { index, face in
-            thumbnailCache.object(forKey: face.id as NSUUID).map { (embeddings[index].id, $0.data) }
+            thumbnailDataByFaceID[face.id].map { (embeddings[index].id, $0) }
         })
-        let representativeData = thumbnailCache.object(forKey: group.representativeFaceID as NSUUID)?.data
+        let representativeData = thumbnailDataByFaceID[group.representativeFaceID]
         let prepared = try await KnownPeopleAdditionThumbnailService.shared.prepare(
             embeddingSources: sourceThumbnails, representativeSource: representativeData
         )
@@ -3120,6 +3127,7 @@ final class FaceRecognitionViewModel {
         // the updated document before cleaning up the now-unreferenced files.
         for faceID in faceIDs {
             thumbnailCache.removeObject(forKey: faceID as NSUUID)
+            thumbnailDataByFaceID.removeValue(forKey: faceID)
         }
 
         faceData = data
@@ -3201,6 +3209,7 @@ final class FaceRecognitionViewModel {
         // first and then removes its orphaned thumbnail files.
         for faceID in faceIDs {
             thumbnailCache.removeObject(forKey: faceID as NSUUID)
+            thumbnailDataByFaceID.removeValue(forKey: faceID)
         }
 
         faceData = data
@@ -3223,6 +3232,7 @@ final class FaceRecognitionViewModel {
         lensPrewarmTask?.cancel()
         faceData = nil
         thumbnailCache.removeAllObjects()
+        thumbnailDataByFaceID.removeAll()
         scanComplete = false
         scheduleFaceDataDeletion(for: folderURL)
     }
@@ -3293,6 +3303,11 @@ final class FaceRecognitionViewModel {
     }
 
     func thumbnailImage(for faceID: UUID) -> NSImage? {
-        thumbnailCache.object(forKey: faceID as NSUUID)?.image
+        if let cached = thumbnailCache.object(forKey: faceID as NSUUID) {
+            return cached.image
+        }
+        guard let data = thumbnailDataByFaceID[faceID], let image = NSImage(data: data) else { return nil }
+        thumbnailCache.setObject(FaceThumbnailCacheEntry(image: image, data: data), forKey: faceID as NSUUID)
+        return image
     }
 }

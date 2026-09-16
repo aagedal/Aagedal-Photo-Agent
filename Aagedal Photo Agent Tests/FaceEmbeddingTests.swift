@@ -4,6 +4,7 @@ import CoreGraphics
 import ImageIO
 import CryptoKit
 import Darwin
+import AppKit
 @testable import Aagedal_Photo_Agent
 
 /// Golden wire bytes are from FTP Sync fixture commit da3579e; contract source 2dc18e9.
@@ -1686,6 +1687,68 @@ private nonisolated func makeFaceFolderData(
     )
 }
 
+@Suite("Expanded face card full-screen shortcut")
+@MainActor
+struct ExpandedFaceCardShortcutTests {
+    @Test("selecting a face restores keyboard focus and opens its source with a highlighted face")
+    func selectedFaceRoutesSpaceToHighlightedFullscreen() throws {
+        let folder = URL(fileURLWithPath: "/faces/shortcut")
+        let faceID = UUID()
+        let data = makeFaceFolderData(folder: folder, faceIDs: [faceID])
+        let group = try #require(data.groups.first)
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: FaceDataFolderLoadService(saveFaceData: { _ in })
+        )
+        viewModel.faceData = data
+        let selection = FaceSelectionState()
+        let settings = SettingsViewModel()
+        let controller = FaceGroupCollectionController(
+            viewModel: viewModel, selectionState: selection, settingsViewModel: settings
+        )
+        var openedImageURL: URL?
+        var highlightedFaceID: UUID?
+        controller.callbacks.onOpenFullScreen = { imageURL, selectedFaceID in
+            openedImageURL = imageURL
+            highlightedFaceID = selectedFaceID
+        }
+
+        let collection = FaceGroupCollectionView(frame: NSRect(x: 0, y: 0, width: 340, height: 260))
+        collection.controller = controller
+        let card = FaceGroupCardView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        card.configure(
+            group: group, viewModel: viewModel, selectionState: selection,
+            settingsViewModel: settings, isExpanded: true, callbacks: .init()
+        )
+        collection.addSubview(card)
+        let field = NSTextField(frame: NSRect(x: 0, y: 190, width: 100, height: 24))
+        collection.addSubview(field)
+        let scroll = NSScrollView(frame: collection.frame)
+        scroll.documentView = collection
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = scroll
+        #expect(window.makeFirstResponder(field))
+
+        let thumbnail = try #require(card.subviews.flatMap(\.subviews)
+            .compactMap { $0 as? FaceThumbnailSubview }.first)
+        #expect(thumbnail.accessibilityPerformPress())
+        #expect(selection.selectedFaceIDs == [faceID])
+        #expect(window.firstResponder === collection)
+
+        let space = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil,
+            characters: " ", charactersIgnoringModifiers: " ", isARepeat: false,
+            keyCode: 49
+        ))
+        collection.keyDown(with: space)
+        #expect(openedImageURL == data.faces.first?.imageURL)
+        #expect(highlightedFaceID == faceID)
+    }
+}
+
 @Suite("Face scan file-signature boundary")
 struct FaceScanFileSignatureServiceTests {
     @Test @MainActor
@@ -1799,6 +1862,35 @@ struct FaceScanFileSignatureServiceTests {
 
 @Suite("Face folder-load filesystem boundary")
 struct FaceFolderLoadServiceTests {
+    @Test("face crops remain available after the decoded cache evicts older entries")
+    @MainActor
+    func evictedFaceCropsReloadFromCompressedBacking() async throws {
+        let folder = URL(fileURLWithPath: "/faces/many-thumbnails")
+        let faceIDs = (0..<520).map { _ in UUID() }
+        let data = makeFaceFolderData(folder: folder, faceIDs: faceIDs)
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/AnalysisCorpus/jpeg-single-q82.jpg")
+        let jpegData = try Data(contentsOf: fixture)
+        let service = FaceDataFolderLoadService(
+            loadFaceData: { _ in data },
+            loadThumbnail: { _, _ in jpegData },
+            saveFaceData: { _ in }
+        )
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: service
+        )
+
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+
+        #expect(viewModel.thumbnailImage(for: faceIDs[0]) != nil)
+        #expect(viewModel.thumbnailImage(for: faceIDs[519]) != nil)
+        #expect(faceIDs.allSatisfy { viewModel.thumbnailImage(for: $0) != nil })
+    }
+
     @Test @MainActor
     func documentOnlyLoadReturnsExistenceEvidenceOffMainActor() async {
         let folder = URL(fileURLWithPath: "/faces/document-only")
