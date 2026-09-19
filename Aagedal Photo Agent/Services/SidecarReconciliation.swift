@@ -30,19 +30,27 @@ nonisolated enum SidecarReconciliation {
         embedded: IPTCMetadata?,
         sidecar: IPTCMetadata
     ) -> Verdict {
-        // A develop-settings-only sidecar (no descriptive content, e.g. written by
-        // saveCameraRawOnly) is not an IPTC record — there is nothing to reconcile
-        // and it must never be flagged stale against embedded descriptive values.
-        guard sidecar.hasDescriptiveContent else {
+        // Keep passive/develop-only reads free of unnecessary filesystem probes.
+        guard sidecar.hasDescriptiveContent,
+              let embedded, descriptiveFieldsDiffer(embedded, sidecar) else {
             return .sidecarMaster
         }
-        // No embedded baseline, or the two agree → nothing to reconcile; sidecar stands.
-        guard let embedded, descriptiveFieldsDiffer(embedded, sidecar) else {
-            return .sidecarMaster
-        }
-        // Without both timestamps we can't tell which is newer; default to the sidecar.
-        guard let fileDate = modificationDate(of: imageURL),
-              let sidecarDate = modificationDate(of: sidecarURL) else {
+        return verdict(imageModificationDate: modificationDate(of: imageURL),
+                sidecarModificationDate: modificationDate(of: sidecarURL),
+                embedded: embedded, sidecar: sidecar)
+    }
+
+    /// Reconciles captured carriers without observing a later filesystem generation.
+    static func verdict(
+        imageModificationDate: Date?,
+        sidecarModificationDate: Date?,
+        embedded: IPTCMetadata?,
+        sidecar: IPTCMetadata
+    ) -> Verdict {
+        guard sidecar.hasDescriptiveContent,
+              let embedded, descriptiveFieldsDiffer(embedded, sidecar),
+              let fileDate = imageModificationDate,
+              let sidecarDate = sidecarModificationDate else {
             return .sidecarMaster
         }
         return fileDate > sidecarDate ? .fileNewerConflict : .sidecarMaster

@@ -3283,3 +3283,101 @@ struct AdvancedExportLayoutTests {
         #expect(AdvancedExportLayout(visibleSize: CGSize(width: CGFloat.infinity, height: 800)) == fallback)
     }
 }
+
+@Suite("MCP typed immutable metadata snapshots")
+struct MCPMetadataSnapshotReaderTests {
+    @Test("Captured bytes and timestamps resolve without an existing source path", arguments: [false, true])
+    func capturedResolution(sourceNewer: Bool) throws {
+        let result = try MCPMetadataSnapshotReader.read(snapshot(sourceNewer: sourceNewer))
+        #expect(result.resolution.metadata.title == (sourceNewer ? "Embedded" : "Sidecar"))
+        #expect(result.resolution.hasXMPConflict == sourceNewer)
+        #expect(result.resolution.descriptiveCarrier == (sourceNewer ? .embedded : .xmp))
+        #expect(result.sourceRevision == "source-token")
+        #expect(result.xmpSidecarRevision == "xmp-token")
+        #expect(result.appSidecarRevision == "json-token")
+    }
+
+    @Test("Pending JSON clears physical text; saved JSON leaves physical values", arguments: [false, true])
+    func ownedDraft(pending: Bool) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let app = try encoder.encode(MetadataSidecar(sourceFile: "frame.jpg", pendingChanges: pending,
+            metadata: IPTCMetadata(description: "Draft")))
+        let result = try MCPMetadataSnapshotReader.read(snapshot(app: app))
+        #expect(result.resolution.metadata.title == (pending ? nil : "Sidecar"))
+        #expect(result.resolution.metadata.description == (pending ? "Draft" : nil))
+        #expect(result.resolution.hasPendingChanges == pending)
+        #expect(result.resolution.descriptiveCarrier == (pending ? .pendingAppSidecar : .xmp))
+    }
+
+    @Test("Malformed or unsupported carriers refuse instead of returning empty metadata",
+          arguments: ["source", "xmp", "owner", "schema", "pending", "metadata", "nullMetadata", "unknownSchema"])
+    func invalidCarrier(kind: String) throws {
+        let app: Data?
+        switch kind {
+        case "owner": app = Data(#"{"schemaVersion":1,"sourceFile":"other.jpg","pendingChanges":true,"metadata":{}}"#.utf8)
+        case "schema": app = Data(#"{"schemaVersion":999,"sourceFile":"frame.jpg","pendingChanges":true}"#.utf8)
+        case "pending": app = Data(#"{"sourceFile":"frame.jpg","metadata":{}}"#.utf8)
+        case "nullMetadata": app = Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":true,"metadata":null}"#.utf8)
+        case "unknownSchema": app = Data(#"{"sourceFile":"frame.jpg","pendingChanges":true,"metadata":{}}"#.utf8)
+        case "metadata": app = Data(#"{"sourceFile":"frame.jpg","pendingChanges":true,"metadata":42}"#.utf8)
+        default: app = nil
+        }
+        let input = try snapshot(app: app, invalidSource: kind == "source", invalidXMP: kind == "xmp")
+        #expect(throws: (any Error).self) { try MCPMetadataSnapshotReader.read(input) }
+    }
+
+    @Test("Absent XMP preserves embedded metadata")
+    func absentXMP() throws {
+        let result = try MCPMetadataSnapshotReader.read(snapshot(absentXMP: true))
+        #expect(result.resolution.metadata.title == "Embedded")
+        #expect(result.resolution.descriptiveCarrier == .embedded)
+        #expect(!result.resolution.hasXMPConflict)
+    }
+
+    @Test("Incomplete, unrelated and DTD-bearing XML cannot supply effective metadata",
+          arguments: ["<broken>", "<unrelated/>",
+            "<!DOCTYPE rdf:RDF [<!ENTITY caption 'text'>]><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'/>"])
+    func invalidXML(xml: String) throws {
+        let input = try snapshot(xmpOverride: Data(xml.utf8))
+        #expect(throws: EffectiveMetadataResolver.ReadError.self) {
+            try MCPMetadataSnapshotReader.read(input)
+        }
+    }
+
+    @Test("Empty RDF records and packet padding preserve the embedded baseline", arguments: [false, true])
+    func emptyRDF(packetPadding: Bool) throws {
+        var xml = "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'/>"
+        if packetPadding { xml += "<?xpacket end='w'?>\0\0" }
+        let result = try MCPMetadataSnapshotReader.read(snapshot(xmpOverride: Data(xml.utf8)))
+        #expect(result.resolution.metadata.title == "Embedded")
+        #expect(result.resolution.descriptiveCarrier == .embedded)
+    }
+
+    private func snapshot(sourceNewer: Bool = false, app: Data? = nil,
+                          invalidSource: Bool = false, invalidXMP: Bool = false,
+                          absentXMP: Bool = false, xmpOverride: Data? = nil) throws -> MCPPhotoCarrierSnapshot {
+        let pixels = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 16, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(pixels.makeImage())
+        let bytes = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image,
+            [kCGImagePropertyIPTCDictionary: [kCGImagePropertyIPTCHeadline: "Embedded"]] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        let xmp = Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" photoshop:Headline="Sidecar"/>
+        </rdf:RDF></x:xmpmeta>
+        """.utf8)
+        return MCPPhotoCarrierSnapshot(target: MCPAuthorizedTarget(
+            url: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/frame.jpg"), rootID: UUID(),
+            isDirectory: false, identity: MCPFileIdentity(device: 0, inode: 0)),
+            sourceBytes: invalidSource ? Data() : bytes as Data,
+            xmpBytes: absentXMP ? nil : (xmpOverride ?? (invalidXMP ? Data() : xmp)), appSidecarBytes: app,
+            sourceModificationDate: Date(timeIntervalSince1970: sourceNewer ? 200 : 100),
+            xmpModificationDate: absentXMP ? nil : Date(timeIntervalSince1970: 150),
+            sourceRevision: "source-token", xmpSidecarRevision: "xmp-token", appSidecarRevision: "json-token")
+    }
+}

@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 53: MCP immutable parser snapshots](release/cycle-53-mcp-parser-snapshot-2026-09-19.md) retains bounded source, XMP and owned JSON bytes from the same anchored reads as their revision tokens, with captured modification dates and final generation/authorization checks. Connecting production typed parsing and the shared effective resolver remains open, along with broader operation admission, FFmpeg Whisper and release gates.
+**Latest implementation continuation:** [Cycle 54: typed immutable metadata snapshots](release/cycle-54-mcp-typed-snapshot-reader-2026-09-19.md) connects captured image, XMP and owned JSON bytes to the production typed parsers and shared effective resolver in an internal app-side adapter. Captured timestamps and revision tokens remain associated with the result. Focused and full serial regression validation pass. Helper endpoint integration, bounded protocol output, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 
