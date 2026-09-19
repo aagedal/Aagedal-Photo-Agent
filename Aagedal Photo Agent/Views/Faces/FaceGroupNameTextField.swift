@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 /// Free text with the same live suggestions as Person Shown. The child panel
@@ -12,6 +13,8 @@ final class FaceGroupNameTextField: NSTextField, NSTextFieldDelegate {
     private var suggestionPanel: NameSuggestionPanel?
     private var hostingView: NSHostingView<AnyView>?
     private var dismissalObservers: [NSObjectProtocol] = []
+    private var candidateObservationGeneration = 0
+    private var suppressCandidateRefresh = false
     var suggestionsAreVisible: Bool { suggestionPanel?.isVisible == true }
 
     override init(frame frameRect: NSRect) {
@@ -29,16 +32,47 @@ final class FaceGroupNameTextField: NSTextField, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        stopObservingCandidates()
         dismissSuggestions()
         super.viewWillMove(toWindow: newWindow)
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        suppressCandidateRefresh = false
         guard !((currentEditor() as? NSTextView)?.hasMarkedText() ?? false) else {
             dismissSuggestions()
             return
         }
         refreshSuggestions()
+    }
+
+    /// AppKit doesn't subscribe to Observable services automatically. Keep the
+    /// active edit in sync when the initial disk load or a list import completes.
+    func observeCandidates(_ provider: @escaping @MainActor () -> [String]) {
+        candidateObservationGeneration &+= 1
+        suppressCandidateRefresh = false
+        trackCandidates(provider, generation: candidateObservationGeneration)
+    }
+
+    func stopObservingCandidates() {
+        candidateObservationGeneration &+= 1
+    }
+
+    private func trackCandidates(_ provider: @escaping @MainActor () -> [String], generation: Int) {
+        guard candidateObservationGeneration == generation else { return }
+        candidates = withObservationTracking {
+            provider()
+        } onChange: { [weak self] in
+            // Observation fires before the new value is installed. Read it on
+            // the next main-queue turn, and discard callbacks from older edits.
+            DispatchQueue.main.async { [weak self] in
+                self?.trackCandidates(provider, generation: generation)
+            }
+        }
+        if !suppressCandidateRefresh,
+           !((currentEditor() as? NSTextView)?.hasMarkedText() ?? false) {
+            refreshSuggestions()
+        }
     }
 
     func refreshSuggestions() {
@@ -56,6 +90,7 @@ final class FaceGroupNameTextField: NSTextField, NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
+        stopObservingCandidates()
         dismissSuggestions()
         onCommit?(stringValue)
     }
@@ -84,6 +119,7 @@ final class FaceGroupNameTextField: NSTextField, NSTextFieldDelegate {
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             if !visibleSuggestions.isEmpty {
+                suppressCandidateRefresh = true
                 dismissSuggestions()
             } else {
                 onCancel?()
@@ -174,7 +210,10 @@ final class FaceGroupNameTextField: NSTextField, NSTextFieldDelegate {
         dismissalObservers.append(NotificationCenter.default.addObserver(
             forName: name, object: object, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dismissSuggestions() }
+            MainActor.assumeIsolated {
+                self?.suppressCandidateRefresh = true
+                self?.dismissSuggestions()
+            }
         })
     }
 }

@@ -1780,6 +1780,7 @@ struct FaceGroupNameSuggestionFilterTests {
 
         func close() {
             field.onCommit = nil
+            field.stopObservingCandidates()
             field.dismissSuggestions()
             window.orderOut(nil)
         }
@@ -1800,6 +1801,65 @@ struct FaceGroupNameSuggestionFilterTests {
         #expect(harness.field.visibleSuggestions.map(\.canonical) == ["Tonje Brenna"])
         #expect(harness.field.stringValue == "Tonje")
         #expect(harness.committedName == nil)
+    }
+
+    @Test("An initially unloaded Person Shown list refreshes the active edit", arguments: [false, true])
+    func delayedStructuredListLoad(editEnded: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("people.txt")
+        try "Harald Hansen\nTonje Brenna\n".write(to: source, atomically: true, encoding: .utf8)
+        let gate = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish() }
+        let service = StructuredKeywordService(
+            key: .structuredPersonShown, includesAncestors: false,
+            storageURL: { _ in source },
+            resolveStorageURL: { _ in
+                for await _ in gate.stream { }
+                return source
+            }
+        )
+        let harness = EditorHarness()
+        defer { harness.close() }
+        harness.field.observeCandidates { service.allSearchableNames() }
+        try harness.type("Harald")
+        #expect(service.allSearchableNames().isEmpty)
+        #expect(!harness.field.suggestionsAreVisible)
+        if editEnded {
+            harness.field.stopObservingCandidates()
+            harness.field.dismissSuggestions()
+        }
+
+        gate.continuation.finish()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !service.isLoaded, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(service.isLoaded)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(harness.field.suggestionsAreVisible == !editEnded)
+        #expect(harness.field.visibleSuggestions.map(\.canonical) == (editEnded ? [] : ["Harald Hansen"]))
+        #expect(harness.field.stringValue == "Harald")
+        #expect(harness.committedName == nil)
+
+        if !editEnded {
+            // Subscription must rearm: later file reloads update the same edit too.
+            try "Harald Berg\n".write(to: source, atomically: true, encoding: .utf8)
+            await service.reload()
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            #expect(harness.field.visibleSuggestions.map(\.canonical) == ["Harald Berg"])
+            try harness.command(#selector(NSResponder.cancelOperation(_:)))
+            await service.reload()
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            #expect(!harness.field.suggestionsAreVisible)
+        }
     }
 
     @Test("Empty and unmatched queries close the suggestions")
@@ -1912,6 +1972,43 @@ struct FaceGroupNameSuggestionFilterTests {
         harness.field.removeFromSuperview()
         #expect(!harness.field.suggestionsAreVisible)
         #expect(harness.field.visibleSuggestions.isEmpty)
+    }
+
+    @Test("Reset to Unnamed clears identification and persists the intact group")
+    func resetNamePreservesFacesAndKeyArt() async throws {
+        var data = makeFaceFolderData(folder: URL(fileURLWithPath: "/faces/reset-name"), faceIDs: [UUID(), UUID()])
+        data.groups[0].name = "Incorrect Person"
+        data.groups[0].knownPersonID = UUID()
+        let original = data.groups[0]
+        let probe = FaceDataPersistenceProbe()
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            folderLoadService: FaceDataFolderLoadService(saveFaceData: { snapshot in
+                let saved = snapshot.groups[0]
+                probe.record("\(saved.name ?? "unnamed")/\(saved.knownPersonID == nil)/\(saved.faceIDs.count)")
+            })
+        )
+        viewModel.faceData = data
+        let card = FaceGroupCardView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        card.configure(group: original, viewModel: viewModel, selectionState: FaceSelectionState(),
+                       settingsViewModel: SettingsViewModel(), isExpanded: true, callbacks: .init())
+        let resetItem = try #require(card.buildContextMenu().item(withTitle: "Reset to Unnamed"))
+        let action = try #require(resetItem.action)
+        #expect(NSApp.sendAction(action, to: resetItem.target, from: resetItem))
+
+        let reset = try #require(viewModel.group(byID: original.id))
+        #expect(reset.name == nil)
+        #expect(reset.knownPersonID == nil)
+        #expect(reset.faceIDs == original.faceIDs)
+        #expect(reset.representativeFaceID == original.representativeFaceID)
+        #expect(viewModel.faceData?.faces.map(\.id) == data.faces.map(\.id))
+        #expect(viewModel.unnamedGroups.contains { $0.id == original.id })
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(probe.events == ["unnamed/true/2"])
+
+        card.configure(group: reset, viewModel: viewModel, selectionState: FaceSelectionState(),
+                       settingsViewModel: SettingsViewModel(), isExpanded: true, callbacks: .init())
+        #expect(card.buildContextMenu().item(withTitle: "Reset to Unnamed") == nil)
     }
 }
 

@@ -143,6 +143,17 @@ struct FaceGroupDetailView: View {
                 .help("Apply name")
             }
 
+            if !isUnmatched, viewModel.group(byID: group.id)?.name != nil {
+                Button("Reset to Unnamed") {
+                    nameFieldFocused = false
+                    editingName = ""
+                    viewModel.resetGroupName(group.id)
+                    dismiss()
+                }
+                .disabled(isApplying || isAddingToKnownPeople)
+                .help("Clear this group's name and identity link. Previously applied photo metadata is unchanged.")
+            }
+
             if let message = knownPeopleMessage {
                 Text(message)
                     .font(.caption)

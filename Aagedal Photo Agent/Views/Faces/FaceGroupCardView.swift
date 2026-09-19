@@ -819,19 +819,21 @@ final class FaceGroupCardView: NSView {
         guard !isEditingName, let group = currentGroup else { return }
         isEditingName = true
         nameEditor.stringValue = group.name ?? ""
-        nameEditor.candidates = (settingsViewModel?.loadPersonShownList() ?? [])
-            + StructuredKeywordService.personShown.allSearchableNames()
-            + KnownPeopleService.shared.getAllPeople().map(\.name)
         nameLabel.isHidden = true
         countBadge.isHidden = true
         nameEditor.isHidden = false
         window?.makeFirstResponder(nameEditor)
-        nameEditor.refreshSuggestions()
+        nameEditor.observeCandidates { [weak self] in
+            (self?.settingsViewModel?.loadPersonShownList() ?? [])
+                + StructuredKeywordService.personShown.allSearchableNames()
+                + KnownPeopleService.shared.getAllPeople().map(\.name)
+        }
     }
 
     private func endEditing() {
         guard isEditingName else { return }
         isEditingName = false
+        nameEditor.stopObservingCandidates()
         nameEditor.dismissSuggestions()
         nameLabel.isHidden = false
         countBadge.isHidden = false
@@ -893,6 +895,13 @@ final class FaceGroupCardView: NSView {
         let renameItem = NSMenuItem(title: "Rename", action: #selector(menuRename), keyEquivalent: "")
         renameItem.target = self
         menu.addItem(renameItem)
+
+        if group.name != nil {
+            let resetItem = NSMenuItem(title: "Reset to Unnamed", action: #selector(menuResetName), keyEquivalent: "")
+            resetItem.target = self
+            resetItem.toolTip = "Clear this group's name and identity link. Previously applied photo metadata is unchanged."
+            menu.addItem(resetItem)
+        }
 
         // Sports lens: name the group from the roster by jersey number + team — for when the
         // photographer can read the number but doesn't remember who wears it (or OCR missed it).
@@ -961,6 +970,12 @@ final class FaceGroupCardView: NSView {
 
     @objc private func menuRename() {
         startEditing()
+    }
+
+    @objc private func menuResetName() {
+        guard let groupID else { return }
+        endEditing()
+        viewModel?.resetGroupName(groupID)
     }
 
     @objc private func menuNameFromTeamSheet() {

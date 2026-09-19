@@ -1965,6 +1965,12 @@ final class FaceRecognitionViewModel {
         scheduleFaceDataPersistence(data)
     }
 
+    /// Clears the group's identification while preserving its faces and key art.
+    /// Previously written photo metadata and the Known People database are not edited.
+    func resetGroupName(_ groupID: UUID) {
+        nameGroup(groupID, name: "")
+    }
+
     /// Assign (or clear, with `nil`) a hand-picked jersey number for a group. Display-only —
     /// see `groupNumber(_:)`. Persisted alongside the rest of the face data.
     func setManualNumber(_ number: Int?, forGroup groupID: UUID) {

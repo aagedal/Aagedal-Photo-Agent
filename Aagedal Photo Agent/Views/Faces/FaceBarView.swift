@@ -247,6 +247,14 @@ struct FaceBarView: View {
                 selectedGroup = group
             }
         }
+        .contextMenu {
+            if group.name != nil {
+                Button("Reset to Unnamed") {
+                    selectedGroup = nil
+                    viewModel.resetGroupName(group.id)
+                }
+            }
+        }
         .popover(isPresented: Binding<Bool>(
             get: { selectedGroup?.id == group.id },
             set: { newValue in if !newValue { selectedGroup = nil } }
