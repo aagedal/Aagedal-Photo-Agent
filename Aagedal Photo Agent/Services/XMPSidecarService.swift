@@ -3,7 +3,7 @@ import SwiftMediaMetadata
 import os
 
 nonisolated private let xmpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "XMPSidecarService")
-nonisolated private let localizedTitleClearedProperty = "LocalizedTitleCleared"
+nonisolated private let localizedTitleClearedProperty = XMPMetadataNamespace.localizedTitleClearedProperty
 
 /// Reads and writes Adobe-compatible `.xmp` sidecars for RAW (and any file we don't embed into).
 ///
@@ -67,8 +67,7 @@ struct XMPSidecarService: Sendable {
     /// sensor-frame width/height ratio for the ACR angled-crop conversion; it is only invoked when
     /// the sidecar carries an angled crop (the conversion is the identity at angle 0).
     nonisolated func loadSidecar(fromData data: Data, imageAspect: () -> Double? = { nil }) -> IPTCMetadata? {
-        guard let xmp = try? XMPReader.readFromXML(data) else { return nil }
-        return parseMetadata(from: xmp, imageAspect: imageAspect)
+        XMPMetadataReader.read(data, imageAspect: imageAspect)
     }
 
     /// Removes all IPTC/descriptive metadata from the sidecar while preserving Camera Raw edit
@@ -125,7 +124,7 @@ struct XMPSidecarService: Sendable {
             for attempt in 0..<Self.transactionRetryLimit {
                 guard let sourceData = try Self.currentData(at: url) else { return }
                 var xmp = try XMPReader.readFromXML(sourceData)
-                let metadata = self.parseMetadata(from: xmp, imageAspect: { nil })
+                let metadata = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
                 let stagedData: Data?
 
                 if let cameraRaw = metadata.cameraRaw, !cameraRaw.isEmpty {
@@ -256,7 +255,7 @@ struct XMPSidecarService: Sendable {
             ) { xmp in
                 var record: IPTCMetadata
                 if mergeWithExisting {
-                    let existing = self.parseMetadata(from: xmp, imageAspect: { nil })
+                    let existing = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
                     record = existing.merged(preferring: metadata)
                 } else {
                     record = metadata
@@ -396,12 +395,12 @@ struct XMPSidecarService: Sendable {
         return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
             onInstalled: onInstalled) { xmp in
             if case .addPersons = mutation,
-               !self.parseMetadata(from: xmp, imageAspect: { nil }).hasDescriptiveContent {
+               !XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil }).hasDescriptiveContent {
                 // PersonInImage makes this an authoritative descriptive XMP record. Seed from
                 // actual embedded facts, never unrelated pending JSON, before adding that field.
                 let orientation = xmp.tiffOrientation
                 let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
-                let current = self.parseMetadata(from: xmp, imageAspect: { nil })
+                let current = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
                 // Existing rating, label, GPS and technical overlays remain authoritative when
                 // adding the first descriptive field to an otherwise technical-only sidecar.
                 let seed = embeddedBaseline.merged(preferring: current)
@@ -443,7 +442,7 @@ struct XMPSidecarService: Sendable {
             for attempt in 0..<Self.transactionRetryLimit {
                 let sourceData = try Self.currentData(at: url)
                 var xmp = try sourceData.map { try XMPReader.readFromXML($0) } ?? XMPData()
-                var metadata = sourceData == nil ? fallback : self.parseMetadata(
+                var metadata = sourceData == nil ? fallback : XMPMetadataReader.parseMetadata(
                     from: xmp, imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
                 )
                 mutation(&metadata)
@@ -471,7 +470,7 @@ struct XMPSidecarService: Sendable {
                 try staged.write(to: url, options: .atomic)
                 let installed = try Data(contentsOf: url)
                 guard installed == staged else { throw CocoaError(.fileWriteUnknown) }
-                return self.parseMetadata(
+                return XMPMetadataReader.parseMetadata(
                     from: try XMPReader.readFromXML(installed),
                     imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
                 )
@@ -567,107 +566,6 @@ struct XMPSidecarService: Sendable {
             XMPDataBuilder.removeCRSBlock(&xmp)
             try writeXMP(xmp, to: url)
         }
-    }
-
-    // MARK: - Read
-
-    nonisolated private func parseMetadata(from xmp: XMPData, imageAspect: () -> Double?) -> IPTCMetadata {
-        var dict = ImageMetadata(xmp: xmp).asMetadataDict()
-        fillXMPOnlyGaps(&dict, xmp: xmp, imageAspect: imageAspect)
-        var metadata = iptcMetadataFromDict(dict)
-        if metadata.localizedTitles == nil,
-           xmp.simpleValue(
-               namespace: XMPDataBuilder.aaphotoNamespace,
-               property: localizedTitleClearedProperty
-           ) == "True" {
-            metadata.localizedTitles = []
-        }
-        return metadata
-    }
-
-    /// `asMetadataDict` sources Orientation, GPS and the IPTC date only from the EXIF segment, which
-    /// a sidecar-only `ImageMetadata(xmp:)` lacks. Fill those three from XMP, and seed the sensor
-    /// dimensions for the angled-crop conversion (which otherwise reads dimensions a sidecar dict
-    /// has none of) — all the other descriptive + crs fields `asMetadataDict` already covers.
-    nonisolated private func fillXMPOnlyGaps(_ dict: inout [String: Any], xmp: XMPData, imageAspect: () -> Double?) {
-        // Orientation — tiff authoritative, exif fallback (matches the old reader).
-        let orientationString = xmp.tiffOrientation
-            ?? xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
-        if let orientationString, let orientation = Int(orientationString) {
-            dict[MetadataDictKey.orientation] = orientation
-        }
-
-        // GPS — the sidecar stores decimal degrees in exif:GPSLatitude/Longitude; the reader expects
-        // a Double. parseCoordinateComponent also tolerates the DMS / N-S-E-W forms other tools write.
-        if let latString = xmp.simpleValue(namespace: XMPNamespace.exif, property: "GPSLatitude"),
-           let lat = parseCoordinateComponent(latString) {
-            dict[MetadataDictKey.gpsLatitude] = lat
-        }
-        if let lonString = xmp.simpleValue(namespace: XMPNamespace.exif, property: "GPSLongitude"),
-           let lon = parseCoordinateComponent(lonString) {
-            dict[MetadataDictKey.gpsLongitude] = lon
-        }
-
-        // photoshop:DateCreated (the IPTC date) — asMetadataDict only surfaces xmp:CreateDate.
-        if dict[MetadataDictKey.dateCreated] == nil,
-           let dateCreated = xmp.simpleValue(namespace: XMPNamespace.photoshop, property: "DateCreated") {
-            dict[MetadataDictKey.dateCreated] = dateCreated
-        }
-
-        // Angled-crop ACR→upright conversion needs the sensor aspect; iptcMetadataFromDict derives it
-        // from image dimensions that a sidecar dict lacks. Seed them from the service's aspect closure
-        // — only when the crop is actually angled, keeping the closure's file read lazy.
-        if let angle = parseDoubleValue(dict[MetadataDictKey.crsCropAngle]), abs(angle) > 0.0001,
-           dict[MetadataDictKey.imageWidth] == nil, dict[MetadataDictKey.imageHeight] == nil,
-           let aspect = imageAspect(), aspect > 0 {
-            dict[MetadataDictKey.imageWidth] = aspect * 10000.0
-            dict[MetadataDictKey.imageHeight] = 10000.0
-        }
-    }
-
-    /// Parses a GPS coordinate string — decimal, decimal + N/S/E/W, DMS, or DDM — into signed
-    /// decimal degrees. (Ported from the old NSXML reader; sidecars we write use plain `%.6f`
-    /// decimal, but third-party sidecars may use the other forms.)
-    nonisolated private func parseCoordinateComponent(_ value: String) -> Double? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let direct = Double(trimmed) {
-            return direct
-        }
-
-        let decimalWithDir = /^\s*(-?\d+\.?\d*)\s*([NSEWnsew])\s*$/
-        if let match = trimmed.firstMatch(of: decimalWithDir),
-           let base = Double(match.1) {
-            let dir = String(match.2).uppercased()
-            if dir == "S" || dir == "W" { return -abs(base) }
-            return abs(base)
-        }
-
-        let dms = /(-?\d+)\s*°\s*(\d+)\s*[''′]\s*([\d.]+)\s*[""″]?\s*([NSEWnsew])?/
-        if let match = trimmed.firstMatch(of: dms),
-           let degrees = Int(match.1),
-           let minutes = Int(match.2),
-           let seconds = Double(match.3) {
-            var decimal = Double(abs(degrees)) + Double(minutes) / 60.0 + seconds / 3600.0
-            if degrees < 0 { decimal = -decimal }
-            if let dir = match.4.map({ String($0).uppercased() }), dir == "S" || dir == "W" {
-                decimal = -abs(decimal)
-            }
-            return decimal
-        }
-
-        let ddm = /(-?\d+)\s*°\s*([\d.]+)\s*[''′]\s*([NSEWnsew])?/
-        if let match = trimmed.firstMatch(of: ddm),
-           let degrees = Int(match.1),
-           let minutes = Double(match.2) {
-            var decimal = Double(abs(degrees)) + minutes / 60.0
-            if degrees < 0 { decimal = -decimal }
-            if let dir = match.3.map({ String($0).uppercased() }), dir == "S" || dir == "W" {
-                decimal = -abs(decimal)
-            }
-            return decimal
-        }
-
-        return nil
     }
 
     // MARK: - Write

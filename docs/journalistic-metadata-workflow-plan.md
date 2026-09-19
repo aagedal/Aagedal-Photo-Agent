@@ -1425,6 +1425,12 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 58 continuation (2026-09-19):** Captured XMP decoding now has a shared byte-only
+reader used by the interactive sidecar service and guarded MCP snapshot reads. This removes
+the XMP write-service dependency before helper integration. Remaining helper target wiring
+and endpoint dispatch stay open; no Phase 5A checkbox closes.
+See [cycle 58](release/cycle-58-xmp-reader-boundary-2026-09-19.md).
+
 **Cycle 56 continuation (2026-09-19):** Effective output now includes a complete field-carrier
 map from the shared resolver, distinguishing inherited values, explicit clears and pending drafts.
 This is selection provenance, not authenticity or proof of physical field presence. Helper wiring

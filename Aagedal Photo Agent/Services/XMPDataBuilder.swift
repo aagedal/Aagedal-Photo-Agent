@@ -13,8 +13,8 @@ enum XMPDataBuilder {
 
     /// App-private XMP namespace for settings ACR can't represent — the global node's position in
     /// the reorderable layer chain and app-native render controls. (crs uses `XMPNamespace.crs`.)
-    nonisolated static let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
-    nonisolated static let xmpRightsNamespace = "http://ns.adobe.com/xap/1.0/rights/"
+    nonisolated static let aaphotoNamespace = XMPMetadataNamespace.app
+    nonisolated static let xmpRightsNamespace = XMPMetadataNamespace.rights
 
     // MARK: - Descriptive fields
 

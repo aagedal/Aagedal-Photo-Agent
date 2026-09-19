@@ -136,13 +136,13 @@ extension ImageMetadata {
                 dict[MetadataDictKey.genre] = values.map(unwrapXMPStruct)
             }
             if let v = xmp.simpleValue(
-                namespace: XMPDataBuilder.xmpRightsNamespace,
+                namespace: XMPMetadataNamespace.rights,
                 property: MetadataDictKey.rightsUsageTerms
             ) {
                 dict[MetadataDictKey.rightsUsageTerms] = v
             }
             if let v = xmp.simpleValue(
-                namespace: XMPDataBuilder.xmpRightsNamespace,
+                namespace: XMPMetadataNamespace.rights,
                 property: MetadataDictKey.webStatementOfRights
             ) {
                 dict[MetadataDictKey.webStatementOfRights] = v

@@ -3584,3 +3584,56 @@ struct MCPMetadataSnapshotReaderTests {
             sourceRevision: "source-token", xmpSidecarRevision: "xmp-token", appSidecarRevision: "json-token")
     }
 }
+
+@Suite("Captured XMP metadata decoding")
+struct XMPMetadataReaderTests {
+    @Test("Captured sidecars retain editorial clears and XMP-only orientation, GPS and date")
+    func capturedEditorialFields() throws {
+        let xml = """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+              xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
+              xmlns:exif="http://ns.adobe.com/exif/1.0/"
+              xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+              xmlns:aaphoto="http://aagedal.me/ns/photo/1.0/"
+              photoshop:Headline="Captured headline" photoshop:DateCreated="2026-09-19"
+              tiff:Orientation="6" exif:Orientation="3"
+              exif:GPSLatitude="59° 30' 0N" exif:GPSLongitude="10.5W"
+              xmp:Label="" aaphoto:LocalizedTitleCleared="True"/>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        let metadata = try #require(XMPMetadataReader.read(Data(xml.utf8), imageAspect: {
+            Issue.record("An unrotated sidecar must not request sensor dimensions")
+            return nil
+        }))
+        #expect(metadata.title == "Captured headline")
+        #expect(metadata.localizedTitles == [])
+        #expect(metadata.label == "")
+        #expect(metadata.exifOrientation == 6)
+        #expect(metadata.latitude == 59.5)
+        #expect(metadata.longitude == -10.5)
+        #expect(metadata.dateCreated == "2026-09-19")
+    }
+
+    @Test("Sensor aspect is requested only for an angled crop", arguments: [0.0, 12.0])
+    func lazyCropAspect(angle: Double) throws {
+        let xml = """
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+              crs:HasCrop="True" crs:CropLeft="0.1" crs:CropTop="0.1"
+              crs:CropRight="0.9" crs:CropBottom="0.9" crs:CropAngle="\(angle)"/>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        var requests = 0
+        let metadata = try #require(XMPMetadataReader.read(Data(xml.utf8), imageAspect: {
+            requests += 1
+            return 1.5
+        }))
+        #expect(metadata.cameraRaw?.crop != nil)
+        #expect(requests == (angle == 0 ? 0 : 1))
+    }
+}

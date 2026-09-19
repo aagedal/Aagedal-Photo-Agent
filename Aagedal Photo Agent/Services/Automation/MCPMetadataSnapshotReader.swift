@@ -100,7 +100,7 @@ nonisolated enum MCPMetadataSnapshotReader {
             guard validXMPDocument(bytes) else {
                 throw EffectiveMetadataResolver.ReadError.incompleteXMP
             }
-            guard let parsed = XMPSidecarService().loadSidecar(fromData: bytes, imageAspect: { aspect }) else {
+            guard let parsed = XMPMetadataReader.read(bytes, imageAspect: { aspect }) else {
                 throw EffectiveMetadataResolver.ReadError.incompleteXMP
             }
             return parsed
