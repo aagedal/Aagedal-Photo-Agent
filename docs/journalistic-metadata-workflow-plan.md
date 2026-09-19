@@ -1425,6 +1425,12 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 56 continuation (2026-09-19):** Effective output now includes a complete field-carrier
+map from the shared resolver, distinguishing inherited values, explicit clears and pending drafts.
+This is selection provenance, not authenticity or proof of physical field presence. Helper wiring
+and publication authorization remain open; no Phase 5A checkbox closes.
+See [cycle 56](release/cycle-56-mcp-field-provenance-2026-09-19.md).
+
 **Cycle 55 continuation (2026-09-19):** The immutable source/XMP/owned JSON snapshots now
 feed production typed parsing and effective resolution, with a bounded response projection.
 The response preserves typed fields, explicit clears, captured revisions and pending/conflict

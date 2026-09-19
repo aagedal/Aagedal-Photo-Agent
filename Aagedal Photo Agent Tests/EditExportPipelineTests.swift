@@ -1164,6 +1164,44 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
 
 @Suite("SidecarReconciliation descriptive diff")
 struct SidecarReconciliationTests {
+    @Test("Field provenance follows inheritance, clears and equal-valued replacements", arguments: [false, true])
+    func effectiveFieldCarriers(conflict: Bool) throws {
+        var embedded = IPTCMetadata(title: "Same", localizedTitles: [.init(languageTag: "nb", value: "Title")],
+            description: "Clear me", latitude: 59, longitude: 10,
+            creators: ["Embedded"], captureDate: "2026-01-01", rating: 4, label: "Red")
+        embedded.keywords = ["old"]
+        let xmp = IPTCMetadata(title: "Same", latitude: 60,
+            creators: ["Sidecar"], captureDate: "", rating: 0, label: "")
+        let result = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp, conflict: conflict), isRaw: false)
+        #expect(Set(result.fieldCarriers.keys) == IPTCMetadata.persistedJSONFieldNames)
+        for key in ["title", "description", "keywords", "creators", "creator", "latitude", "rating", "label"] {
+            #expect(result.fieldCarriers[key] == (conflict ? .embedded : .xmp))
+        }
+        for key in ["localizedTitles", "captureDate", "longitude"] {
+            #expect(result.fieldCarriers[key] == .embedded)
+        }
+        #expect(result.metadata.creator == (conflict ? "Embedded" : "Sidecar"))
+        #expect(result.metadata.description == (conflict ? "Clear me" : nil))
+    }
+
+    @Test("Non-descriptive XMP can supply GPS and label while localized clear selects a record")
+    func effectiveSparseFieldCarriers() throws {
+        let embedded = IPTCMetadata(title: "Embedded", localizedTitles: [.init(languageTag: "nb", value: "Title")])
+        var xmp = IPTCMetadata(latitude: 0, label: "")
+        let sparse = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp), isRaw: true)
+        #expect(sparse.fieldCarriers["title"] == .embedded)
+        #expect(sparse.fieldCarriers["latitude"] == .xmp)
+        #expect(sparse.fieldCarriers["label"] == .xmp)
+        xmp.localizedTitles = []
+        let cleared = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp), isRaw: true)
+        #expect(cleared.metadata.localizedTitles == [])
+        #expect(cleared.fieldCarriers["localizedTitles"] == .xmp)
+        #expect(cleared.fieldCarriers["title"] == .xmp)
+    }
+
     @Test("Effective reads preserve XMP clears and identify the descriptive carrier")
     func effectiveReadClears() throws {
         let embedded = IPTCMetadata(title: "Old", description: "Embedded", keywords: ["old"])
@@ -1238,6 +1276,7 @@ struct SidecarReconciliationTests {
         #expect(result.metadata.cameraRaw?.exposure2012 == 2)
         #expect(result.descriptiveCarrier == (pending ? .pendingAppSidecar : .embedded))
         #expect(result.hasPendingChanges == pending)
+        #expect(result.fieldCarriers.values.allSatisfy { $0 == (pending ? .pendingAppSidecar : .embedded) })
     }
 
     @Test("Incomplete XMP is refused even when a pending draft exists", arguments: [false, true])
@@ -3297,6 +3336,10 @@ struct MCPMetadataSnapshotReaderTests {
         #expect(fields["description"] == .null)
         #expect(fields["keywords"] == .array([]))
         #expect(Set(fields.keys) == MCPEditorialFieldCatalog.fieldKeys)
+        let carriers = try #require(output["fieldCarriers"]?.objectValue)
+        #expect(Set(carriers.keys) == Set(fields.keys))
+        #expect(carriers["title"] == .string(sourceNewer ? "embedded" : "xmp"))
+        #expect(carriers["localizedTitles"] == .string("embedded"))
         #expect(output["canonicalPath"] == .string(input.target.url.path))
         #expect(output["rootID"] == .string(input.target.rootID.uuidString.lowercased()))
         #expect(output["sourceRevision"] == .string("source-token"))
@@ -3370,9 +3413,24 @@ struct MCPMetadataSnapshotReaderTests {
         let input = try snapshot()
         return .init(target: input.target,
             resolution: .init(metadata: metadata, descriptiveCarrier: .pendingAppSidecar,
+                              fieldCarriers: Dictionary(uniqueKeysWithValues: IPTCMetadata.persistedJSONFieldNames.map { ($0, .pendingAppSidecar) }),
                               hasPendingChanges: true, hasXMPConflict: false),
             sourceRevision: input.sourceRevision, xmpSidecarRevision: input.xmpSidecarRevision,
             appSidecarRevision: input.appSidecarRevision)
+    }
+
+    @Test("Protocol output refuses incomplete or unexpected field provenance", arguments: [false, true])
+    func invalidFieldProvenance(extra: Bool) throws {
+        let original = try protocolResult(IPTCMetadata(title: "Caption"))
+        var carriers = original.resolution.fieldCarriers
+        if extra { carriers["privateHistory"] = .embedded }
+        else { carriers.removeValue(forKey: "title") }
+        let result = MCPMetadataSnapshotReader.Result(target: original.target,
+            resolution: .init(metadata: original.resolution.metadata, descriptiveCarrier: .pendingAppSidecar,
+                fieldCarriers: carriers, hasPendingChanges: true, hasXMPConflict: false),
+            sourceRevision: original.sourceRevision, xmpSidecarRevision: original.xmpSidecarRevision,
+            appSidecarRevision: original.appSidecarRevision)
+        #expect(throws: MCPMetadataSnapshotReader.ReadError.self) { try result.protocolValue() }
     }
 
     @Test("Structured editorial output retains paired and ordered values")

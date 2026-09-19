@@ -24,6 +24,9 @@ nonisolated enum MCPMetadataSnapshotReader {
             for key in MCPEditorialFieldCatalog.fieldKeys where fields[key] == nil {
                 fields[key] = .null
             }
+            guard Set(resolution.fieldCarriers.keys) == MCPEditorialFieldCatalog.fieldKeys else {
+                throw ReadError.incompleteProvenance
+            }
             let value = MCPJSONValue.object([
                 "schemaVersion": .integer(1),
                 "canonicalPath": .string(target.url.path),
@@ -34,8 +37,9 @@ nonisolated enum MCPMetadataSnapshotReader {
                 "fields": .object(fields),
                 "fieldScope": .string("effective-editorial-metadata"),
                 "effectiveIPTCResolved": .bool(true),
-                // This identifies record selection, not per-field provenance: localized
-                // Titles, GPS, capture date, rating and label can inherit embedded values.
+                // Selection provenance includes absent values and explicit clears. It does
+                // not claim authorship, authenticity, or that a field was physically present.
+                "fieldCarriers": .object(resolution.fieldCarriers.mapValues { .string($0.rawValue) }),
                 "descriptiveRecordCarrier": .string(resolution.descriptiveCarrier.rawValue),
                 "hasPendingChanges": .bool(resolution.hasPendingChanges),
                 "hasXMPConflict": .bool(resolution.hasXMPConflict),
@@ -50,6 +54,7 @@ nonisolated enum MCPMetadataSnapshotReader {
     enum ReadError: Error {
         case invalidAppSidecar
         case outputLimitExceeded
+        case incompleteProvenance
     }
 
     static func read(_ snapshot: MCPPhotoCarrierSnapshot) throws -> Result {

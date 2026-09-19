@@ -136,6 +136,8 @@ nonisolated enum EffectiveMetadataResolver {
     struct Resolution: Sendable {
         let metadata: IPTCMetadata
         let descriptiveCarrier: Carrier
+        /// Carrier whose selection rule supplied each persisted editorial field, including clears.
+        let fieldCarriers: [String: Carrier]
         let hasPendingChanges: Bool
         let hasXMPConflict: Bool
     }
@@ -156,9 +158,27 @@ nonisolated enum EffectiveMetadataResolver {
             xmp: facts.xmpMetadata, isRaw: isRaw) ?? embedded
         let pending = facts.appSidecar?.pendingChanges == true
         let metadata = facts.appSidecar.map { applyingPendingDraft($0, to: physical) } ?? physical
+        let descriptiveCarrier: Carrier = pending ? .pendingAppSidecar
+            : (reference == .xmp && facts.xmpMetadata?.hasDescriptiveContent == true ? .xmp : .embedded)
+        var fieldCarriers = Dictionary(uniqueKeysWithValues:
+            IPTCMetadata.persistedJSONFieldNames.map { ($0, descriptiveCarrier) })
+        if !pending {
+            // These fields are inherited even when XMP replaces the descriptive record.
+            // The legacy creator alias follows the creators array selected above.
+            for key in ["localizedTitles", "captureDate", "latitude", "longitude", "rating", "label"] {
+                fieldCarriers[key] = .embedded
+            }
+            if reference == .xmp, let xmp = facts.xmpMetadata {
+                if xmp.localizedTitles != nil { fieldCarriers["localizedTitles"] = .xmp }
+                if let value = xmp.captureDate, !value.isEmpty { fieldCarriers["captureDate"] = .xmp }
+                if xmp.latitude != nil { fieldCarriers["latitude"] = .xmp }
+                if xmp.longitude != nil { fieldCarriers["longitude"] = .xmp }
+                if xmp.rating != nil { fieldCarriers["rating"] = .xmp }
+                if xmp.label != nil { fieldCarriers["label"] = .xmp }
+            }
+        }
         return Resolution(metadata: metadata,
-            descriptiveCarrier: pending ? .pendingAppSidecar
-                : (reference == .xmp && facts.xmpMetadata?.hasDescriptiveContent == true ? .xmp : .embedded),
+            descriptiveCarrier: descriptiveCarrier, fieldCarriers: fieldCarriers,
             hasPendingChanges: pending, hasXMPConflict: conflict)
     }
 
