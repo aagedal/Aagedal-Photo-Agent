@@ -2372,7 +2372,7 @@ struct FaceFolderLoadServiceTests {
         )).lowerBound..<source.endIndex
         let thumbnailSource = String(source[thumbnailSlice])
 
-        #expect(loadSource.contains("await folderLoadService.load("))
+        #expect(loadSource.contains("await folderLoadService.loadWithFolderReservation("))
         #expect(loadSource.contains("faceDataLoadRequestID == requestID"))
         #expect(!loadSource.contains("storageService.loadFaceData"))
         #expect(!loadSource.contains("storageService.applyCleanupIfNeeded"))

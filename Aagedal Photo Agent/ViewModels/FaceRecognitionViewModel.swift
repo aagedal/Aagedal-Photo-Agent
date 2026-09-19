@@ -752,7 +752,8 @@ final class FaceRecognitionViewModel {
     // MARK: - Load Existing Data
 
     func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
-        if displayedFolderURL != folderURL.standardizedFileURL {
+        let isSameFolder = displayedFolderURL == folderURL.standardizedFileURL
+        if !isSameFolder {
             matchRosterLoadTask?.cancel()
             matchRosterLoadRequestID = UUID()
             matchRoster = nil
@@ -765,19 +766,31 @@ final class FaceRecognitionViewModel {
 
         // Never present the preceding folder's people or thumbnails while the new immutable
         // snapshot is being read. Folder identity itself remains synchronous for scan routing.
-        faceData = nil
-        scanComplete = false
-        thumbnailCache.removeAllObjects()
-        thumbnailDataByFaceID.removeAll()
+        if !isSameFolder {
+            faceData = nil
+            scanComplete = false
+            thumbnailCache.removeAllObjects()
+            thumbnailDataByFaceID.removeAll()
+        }
 
         let pendingPersistence = faceDataPersistenceTask
         let folderLoadService = self.folderLoadService
         faceDataLoadTask = Task(priority: .userInitiated) { [weak self] in
             _ = await pendingPersistence?.value
-            let result = await folderLoadService.load(
-                folderURL: folderURL,
-                cleanupPolicy: cleanupPolicy
-            )
+            let result: FaceDataFolderLoadResult
+            do {
+                result = try await folderLoadService.loadWithFolderReservation(
+                    folderURL: folderURL,
+                    cleanupPolicy: cleanupPolicy
+                )
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.faceDataLoadRequestID == requestID,
+                      self.displayedFolderURL == folderURL.standardizedFileURL else { return }
+                self.errorMessage = "Failed to load face data: \(error.localizedDescription)"
+                return
+            }
             guard let self,
                   self.faceDataLoadRequestID == requestID,
                   self.displayedFolderURL == folderURL.standardizedFileURL else {

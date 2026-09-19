@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 60: face-scan admission](release/cycle-60-face-scan-admission-2026-09-19.md) extends shared GUI/MCP coordination to face-scan execution through final persistence and thumbnail reload. Busy full rescans preserve existing results. Production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 62: face-folder-load admission](release/cycle-62-face-load-admission-2026-09-19.md) extends shared GUI/MCP coordination to interactive expiration cleanup, corrupt-document recovery and thumbnail loading. Busy reloads preserve same-folder results, and document-only consumers preserve corrupt bytes. Production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

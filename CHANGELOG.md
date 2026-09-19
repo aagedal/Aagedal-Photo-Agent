@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Opening a folder now reserves face-data expiration and corrupt-document recovery against
+  competing photo operations. Busy reloads preserve that folder's displayed results; metadata
+  and rename document reads preserve corrupt files for later explicit folder recovery.
+
 - Interactive face-data saves and deletion now reserve their folder against overlapping local
   automation and face scans. Busy deletion preserves displayed results and durable data so it
   can be retried after the other operation finishes.

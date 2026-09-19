@@ -135,15 +135,15 @@ struct ActivityHistoryTests {
             lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
         let storage = FaceDataStorageService()
         try storage.saveFaceData(original)
-        let lease = try folderReservation
-            ? MCPProcessReservation.acquireFolder(folder)
-            : MCPProcessReservation.acquirePhoto(photo)
-        defer { lease.release() }
         let viewModel = FaceRecognitionViewModel(
             readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
             faceModelAvailability: .available)
         viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
         await viewModel.waitForCurrentFaceDataLoad()
+        let lease = try folderReservation
+            ? MCPProcessReservation.acquireFolder(folder)
+            : MCPProcessReservation.acquirePhoto(photo)
+        defer { lease.release() }
         viewModel.scanFolder(imageURLs: [photo], folderURL: folder, forceFullScan: true)
         await viewModel.waitForCurrentScan()
 
@@ -286,6 +286,140 @@ struct ActivityHistoryTests {
         }
         let next = try MCPProcessReservation.acquireFolder(folder)
         next.release()
+    }
+
+    @Test("Folder loads refuse competing operations before cleanup or recovery", arguments: [false, true])
+    func faceLoadAdmission(folderReservation: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let lease = try folderReservation ? MCPProcessReservation.acquireFolder(folder)
+            : MCPProcessReservation.acquirePhoto(folder.appendingPathComponent("photo.jpg"))
+        defer { lease.release() }
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in
+            Issue.record("A refused load must not read or relocate the document")
+            return nil
+        }, deleteFaceData: { _ in Issue.record("A refused load must not delete data") })
+        do {
+            _ = try await service.loadWithFolderReservation(folderURL: folder, cleanupPolicy: .sevenDays)
+            Issue.record("A competing operation must refuse loading")
+        } catch {
+            #expect(error as? MCPProcessReservationError == .busy)
+        }
+    }
+
+    @Test("Folder load owns cleanup and thumbnails, and releases after cancellation or failure",
+          arguments: ["success", "deleteFailure", "cancelBefore", "cancelAfterRead", "cancelAfterDelete"])
+    func faceLoadReservationLifetime(outcome: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let faceID = UUID()
+        let document = FolderFaceData(folderURL: folder,
+            faces: [DetectedFace(id: faceID, imageURL: photo, faceRect: .zero,
+                featurePrintData: Data([1]), detectedAt: Date())], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        let check: @Sendable () -> Void = {
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+        }
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in
+            #expect(outcome != "cancelBefore")
+            check()
+            if outcome == "cancelAfterRead" { withUnsafeCurrentTask { $0?.cancel() } }
+            return document
+        }, loadThumbnail: { _, _ in
+            check()
+            #expect(outcome == "success" || outcome == "deleteFailure")
+            return Data([1])
+        }, deleteFaceData: { _ in
+            check()
+            #expect(outcome == "deleteFailure" || outcome == "cancelAfterDelete")
+            if outcome == "deleteFailure" { throw CocoaError(.fileWriteUnknown) }
+            if outcome == "cancelAfterDelete" { withUnsafeCurrentTask { $0?.cancel() } }
+        })
+        let result = try await Task {
+            if outcome == "cancelBefore" { withUnsafeCurrentTask { $0?.cancel() } }
+            return try await service.loadWithFolderReservation(folderURL: folder,
+                cleanupPolicy: outcome == "success" ? .never : .sevenDays)
+        }.value
+        switch result {
+        case .cancelled:
+            #expect(outcome == "cancelBefore" || outcome == "cancelAfterRead")
+        case .complete(let evidence):
+            if outcome == "cancelAfterDelete" {
+                #expect(evidence.cleanupDisposition == .deleted(cancellationRequestedAfterCommit: true))
+                #expect(evidence.faceData == nil)
+            } else {
+                #expect(evidence.thumbnailData[faceID] == Data([1]))
+                if outcome == "deleteFailure" {
+                    guard case .deletionFailed = evidence.cleanupDisposition else {
+                        Issue.record("Cleanup failure must remain visible in evidence")
+                        return
+                    }
+                }
+            }
+        }
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+    }
+
+    @Test("Document consumers preserve corrupt bytes; admitted folder recovery relocates them")
+    func corruptFaceDocumentReadAndRecovery() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let directory = folder.appendingPathComponent(".face_data")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("face_data.json")
+        let bytes = Data("corrupt fixture".utf8)
+        try bytes.write(to: file)
+        let service = FaceDataFolderLoadService()
+        guard case .complete(let evidence) = await service.loadDocument(folderURL: folder) else {
+            Issue.record("Document read should complete with decode failure evidence")
+            return
+        }
+        #expect(evidence.documentExisted && evidence.faceData == nil)
+        #expect(try Data(contentsOf: file) == bytes)
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        defer { lease.release() }
+        do {
+            _ = try await service.loadWithFolderReservation(folderURL: folder, cleanupPolicy: .never)
+            Issue.record("Busy recovery must refuse")
+        } catch { #expect(error as? MCPProcessReservationError == .busy) }
+        #expect(try Data(contentsOf: file) == bytes)
+        lease.release()
+        _ = try await service.loadWithFolderReservation(folderURL: folder, cleanupPolicy: .never)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        #expect(backups.count == 1)
+        #expect(try Data(contentsOf: #require(backups.first)) == bytes)
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+    }
+
+    @Test("Busy same-folder reload retains visible results and allows expiration on retry")
+    func faceLoadRetryPreservesPresentation() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let storage = FaceDataStorageService()
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        try storage.saveFaceData(original)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        defer { lease.release() }
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .sevenDays)
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(viewModel.faceData?.lastScanDate == original.lastScanDate)
+        #expect(viewModel.scanComplete)
+        #expect(storage.faceDataExists(for: folder))
+        #expect(viewModel.errorMessage?.contains(MCPProcessReservationError.busy.localizedDescription) == true)
+        lease.release()
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .sevenDays)
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(viewModel.faceData == nil)
+        #expect(!storage.faceDataExists(for: folder))
     }
 
     @Test("Interactive group edits report busy admission without overwriting durable names")

@@ -33,7 +33,7 @@ nonisolated struct FaceDataStorageService: Sendable {
         FileManager.default.fileExists(atPath: dataFileURL(for: folderURL).path)
     }
 
-    func loadFaceData(for folderURL: URL) -> FolderFaceData? {
+    func loadFaceData(for folderURL: URL, relocateCorruptFile: Bool = false) -> FolderFaceData? {
         let fileURL = dataFileURL(for: folderURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
 
@@ -43,6 +43,8 @@ nonisolated struct FaceDataStorageService: Sendable {
             return faceData
         } catch {
             faceDataLog.error("Failed to decode face data at \(fileURL.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
+            guard relocateCorruptFile else { return nil }
+            // Only a caller holding the folder reservation may relocate corrupt data.
             // Move corrupt file aside so it doesn't block future loads
             let timestamp = ISO8601DateFormatter().string(from: Date())
                 .replacingOccurrences(of: ":", with: "-")
@@ -367,6 +369,7 @@ actor FaceDataFolderLoadService {
     typealias ThumbnailDeleter = @Sendable (UUID, URL) throws -> Void
     typealias CurrentDate = @Sendable () -> Date
 
+    private let loadDocumentFaceData: FaceDataLoader
     private let loadFaceData: FaceDataLoader
     private let faceDataExists: FaceDataExistenceChecker
     private let loadThumbnail: ThumbnailLoader
@@ -380,9 +383,7 @@ actor FaceDataFolderLoadService {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.face-data-storage", qos: .utility
         ),
-        loadFaceData: @escaping FaceDataLoader = { folderURL in
-            FaceDataStorageService().loadFaceData(for: folderURL)
-        },
+        loadFaceData: FaceDataLoader? = nil,
         faceDataExists: @escaping FaceDataExistenceChecker = { folderURL in
             FaceDataStorageService().faceDataExists(for: folderURL)
         },
@@ -404,7 +405,12 @@ actor FaceDataFolderLoadService {
         currentDate: @escaping CurrentDate = Date.init
     ) {
         self.filesystemQueue = filesystemQueue
-        self.loadFaceData = loadFaceData
+        self.loadDocumentFaceData = loadFaceData ?? { folderURL in
+            FaceDataStorageService().loadFaceData(for: folderURL)
+        }
+        self.loadFaceData = loadFaceData ?? { folderURL in
+            FaceDataStorageService().loadFaceData(for: folderURL, relocateCorruptFile: true)
+        }
         self.faceDataExists = faceDataExists
         self.loadThumbnail = loadThumbnail
         self.deleteFaceData = deleteFaceData
@@ -423,7 +429,7 @@ actor FaceDataFolderLoadService {
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
-        let faceData = loadFaceData(folderURL)
+        let faceData = loadDocumentFaceData(folderURL)
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
@@ -554,6 +560,26 @@ actor FaceDataFolderLoadService {
         }
     }
 
+    /// Folder browsing may recover corrupt documents or expire old results. Hold the
+    /// shared reservation across those mutations and the complete thumbnail snapshot.
+    func loadWithFolderReservation(
+        folderURL: URL,
+        cleanupPolicy: FaceCleanupPolicy
+    ) throws -> FaceDataFolderLoadResult {
+        guard !Task.isCancelled else {
+            return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                folderURL: folderURL.standardizedFileURL,
+                requestedThumbnailCount: 0,
+                processedThumbnailCount: 0
+            ))
+        }
+        let reservation = try MCPProcessReservation.acquireFolder(folderURL)
+        defer { reservation.release() }
+        return load(folderURL: folderURL, cleanupPolicy: cleanupPolicy)
+    }
+
+    /// The caller must own the enclosing folder reservation (for example a face scan).
+    /// Document-only consumers use the non-mutating `loadDocument` path instead.
     func load(
         folderURL: URL,
         cleanupPolicy: FaceCleanupPolicy
