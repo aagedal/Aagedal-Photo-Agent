@@ -2,13 +2,18 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. Complete typed metadata reads, the production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-19
-**Latest implementation state:** Cycle 51 extends owned MCP draft inspection with bounded structured suppliers, locations, creator contact information and vocabulary records, preserving pairing/order and explicit clears. Focused MCP validation passes 28 tests / 36 executions with no failures/skips; the complete serial suite passes 2,972 tests / 3,830 executions with no failures/skips, and repository validation passes. Effective typed MCP reads, production workflow tools, broader operation coordination, FFmpeg Whisper, independent review and native-client evidence remain open.
+**Latest implementation state:** Cycle 52 completes owned MCP draft scalar inspection with capture date, digital source type, label, legacy creator, typed urgency/rating and finite GPS values. Focused MCP validation passes 29 tests / 37 executions with no failures/skips; repository validation passes. Full serial regression passes 2,973 tests / 3,831 executions with no failures/skips (four previously documented QoS warnings). Effective typed MCP reads, production workflow tools, broader operation coordination, FFmpeg Whisper, independent review and native-client evidence remain open.
 **Latest native evidence:** Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `0a70acd` for cycle 51; checkout initially clean. This cycle changes owned MCP draft parsing, regression tests and release documentation. No effective-metadata endpoint or release-readiness gate is claimed complete.
+**Cycle baseline:** `fe4b4b6` for cycle 52; checkout initially clean. This cycle changes owned MCP draft parsing, regression tests and release documentation. No effective-metadata endpoint or release-readiness gate is claimed complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 52 MCP typed draft scalars](cycle-52-mcp-typed-draft-scalars-2026-09-19.md)
+adds the remaining persisted editorial scalar fields with strict numeric decoding,
+shared text limits, explicit clears and legacy/current creator independence. Effective
+metadata integration remains open.
 
 [Cycle 51 MCP structured editorial drafts](cycle-51-mcp-structured-draft-2026-09-19.md)
 preserves ordered supplier pairs, independent location structures, creator contact lists

@@ -711,6 +711,7 @@ nonisolated private enum MCPAppDraftFieldCatalog {
         "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
         "imageSupplierImageID", "jobId", "dateCreated", "city", "sublocation", "provinceState",
         "country", "countryCode", "event", "instructions", "source",
+        "captureDate", "digitalSourceType", "label", "creator",
     ]
     static let arrayKeys: Set<String> = [
         "keywords", "personShown", "organisationsShownNames", "organisationsShownCodes",
@@ -735,6 +736,19 @@ nonisolated private enum MCPAppDraftFieldCatalog {
             byteCount += values.reduce(0) { $0 + $1.utf8.count }
             guard byteCount <= 65_536 else { return nil }
             result[key] = .array(values.map(MCPJSONValue.string))
+        }
+        // Stored numeric fields retain their types and values, without imposing editor
+        // ranges or interpreting coordinates. Decoding rejects NSNumber boolean coercion.
+        for key in ["urgency", "rating"] {
+            guard let value = metadata[key], !(value is NSNull) else { continue }
+            guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+                  let number = try? JSONDecoder().decode(Int64.self, from: data) else { return nil }
+            result[key] = .integer(number)
+        }
+        for key in ["latitude", "longitude"] {
+            guard let value = metadata[key], !(value is NSNull) else { continue }
+            guard let number = finiteNumber(value) else { return nil }
+            result[key] = .number(number)
         }
         // Preserve the production distinction: `title` is Headline; localizedTitles is
         // dc:title. Missing/null means unmodeled, while [] is an explicit clear.
@@ -783,6 +797,13 @@ nonisolated private enum MCPAppDraftFieldCatalog {
         return result
     }
 
+    private static func finiteNumber(_ value: Any) -> Double? {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+              let number = try? JSONDecoder().decode(Double.self, from: data),
+              number.isFinite else { return nil }
+        return number
+    }
+
     private struct Structure {
         var strings: Set<String>
         var arrays: Set<String> = []
@@ -812,9 +833,7 @@ nonisolated private enum MCPAppDraftFieldCatalog {
             for key in numbers.sorted() {
                 guard let value = record[key], !(value is NSNull) else { continue }
                 // Decode rather than bridge NSNumber: JSON booleans are not coordinates.
-                guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
-                      let number = try? JSONDecoder().decode(Double.self, from: data),
-                      number.isFinite else { return nil }
+                guard let number = finiteNumber(value) else { return nil }
                 result[key] = .number(number)
             }
             return result
@@ -1147,7 +1166,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "inspect_app_photo_draft",
-                description: "Read bounded descriptive fields and structured editorial records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
+                description: "Read bounded editorial text, classification, rating, label, GPS and structured records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
                 properties: [
                     "path": .object([
                         "type": .string("string"),

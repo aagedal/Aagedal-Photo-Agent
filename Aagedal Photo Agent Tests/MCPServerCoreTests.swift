@@ -239,6 +239,71 @@ struct MCPServerCoreTests {
         #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("unsupported-schema"))
     }
 
+    @Test("Typed draft scalars preserve production values, absence, and explicit clears")
+    func inspectsTypedDraftScalars() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("image".utf8).write(to: photo)
+        let folder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let sidecar = folder.appendingPathComponent("frame.jpg.meta.json")
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        func write(_ fields: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 1, "sourceFile": "frame.jpg", "pendingChanges": true, "metadata": fields,
+            ]).write(to: sidecar)
+        }
+        var metadata = IPTCMetadata()
+        metadata.digitalSourceType = .digitalCapture
+        metadata.captureDate = "2026-09-19T12:34:56+02:00"
+        metadata.urgency = 0
+        metadata.rating = -1
+        metadata.label = ""
+        metadata.latitude = 59.91
+        metadata.longitude = -10.75
+        let encoded = try JSONEncoder().encode(metadata)
+        try write(try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any]))
+        let expected = try #require(JSONDecoder().decode(MCPJSONValue.self, from: encoded).objectValue)
+        let fields = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+        for key in ["digitalSourceType", "captureDate", "urgency", "rating", "label", "latitude", "longitude"] {
+            #expect(fields[key] == expected[key])
+        }
+        try write(["rating": NSNull(), "urgency": NSNull(), "latitude": NSNull(), "label": NSNull()])
+        #expect(try facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"] == .object([:]))
+        // Inspection preserves legacy/current creator keys independently and does not claim
+        // enum or editor-range validation of stored draft values.
+        try write(["creator": " Legacy ", "creators": [], "digitalSourceType": "future-kind",
+                   "rating": 42, "urgency": -2, "latitude": 0, "longitude": 180])
+        let raw = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+        #expect(raw["creator"] == .string(" Legacy "))
+        #expect(raw["creators"] == .array([]))
+        #expect(raw["digitalSourceType"] == .string("future-kind"))
+        #expect(raw["rating"] == .integer(42))
+        #expect(raw["urgency"] == .integer(-2))
+        #expect(raw["latitude"] == .number(0))
+        #expect(raw["longitude"] == .number(180))
+        let invalid: [[String: Any]] = [
+            ["rating": true], ["urgency": false], ["rating": "5"], ["urgency": 1.5],
+            ["rating": 1e30], ["latitude": true], ["longitude": "10.7"], ["latitude": []],
+            ["label": 2], ["captureDate": 123], ["digitalSourceType": [:]], ["creator": []],
+            ["label": String(repeating: "ø", count: 16_385)],
+            ["description": String(repeating: "a", count: 32_768),
+             "label": String(repeating: "b", count: 32_768), "captureDate": "overflow"],
+        ]
+        for fields in invalid {
+            try write(fields)
+            #expect(throws: MCPAutomationReadError.unreadableDraft) {
+                _ = try facade.inspectAppPhotoDraft(path: photo.path)
+            }
+            let lease = try MCPProcessReservation.acquirePhoto(photo)
+            lease.release()
+        }
+    }
+
     @Test("Structured editorial draft records preserve production pairing, order, and clears")
     func inspectsStructuredDraftRecords() throws {
         let root = try temporaryFolder()
