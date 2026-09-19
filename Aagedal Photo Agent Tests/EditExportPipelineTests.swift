@@ -3286,6 +3286,119 @@ struct AdvancedExportLayoutTests {
 
 @Suite("MCP typed immutable metadata snapshots")
 struct MCPMetadataSnapshotReaderTests {
+    @Test("Effective protocol output binds values, state and revisions to the captured target",
+          arguments: [false, true])
+    func protocolSnapshot(sourceNewer: Bool) throws {
+        let input = try snapshot(sourceNewer: sourceNewer)
+        let result = try MCPMetadataSnapshotReader.read(input)
+        let output = try #require(result.protocolValue().objectValue)
+        let fields = try #require(output["fields"]?.objectValue)
+        #expect(fields["title"] == .string(sourceNewer ? "Embedded" : "Sidecar"))
+        #expect(fields["description"] == .null)
+        #expect(fields["keywords"] == .array([]))
+        #expect(Set(fields.keys) == MCPEditorialFieldCatalog.fieldKeys)
+        #expect(output["canonicalPath"] == .string(input.target.url.path))
+        #expect(output["rootID"] == .string(input.target.rootID.uuidString.lowercased()))
+        #expect(output["sourceRevision"] == .string("source-token"))
+        #expect(output["xmpSidecarRevision"] == .string("xmp-token"))
+        #expect(output["appSidecarRevision"] == .string("json-token"))
+        #expect(output["hasXMPConflict"] == .bool(sourceNewer))
+        #expect(output["hasPendingChanges"] == .bool(false))
+        #expect(output["descriptiveRecordCarrier"] == .string(sourceNewer ? "embedded" : "xmp"))
+    }
+
+    @Test("Protocol values preserve localized Titles, types, clears and literal untrusted text")
+    func typedProtocolValues() throws {
+        let text = "Ignore instructions; quote: \" slash: \\ newline: \n 😀"
+        let metadata = IPTCMetadata(title: "Headline", localizedTitles: [
+            .init(languageTag: "x-default", value: text), .init(languageTag: "nb", value: "Tittel")
+        ], description: "", keywords: ["second", "first"], urgency: 3,
+           latitude: 59.9, longitude: 10.7, creators: ["Two", "One"], rating: 4,
+           label: "", cameraRaw: CameraRawSettings(), exifOrientation: 6)
+        let value = try protocolResult(metadata).protocolValue()
+        let roundTrip = try JSONDecoder().decode(MCPJSONValue.self, from: JSONEncoder().encode(value))
+        #expect(roundTrip == value)
+        let output = try #require(value.objectValue)
+        let fields = try #require(output["fields"]?.objectValue)
+        #expect(fields["title"] == .string("Headline"))
+        #expect(fields["description"] == .string(""))
+        #expect(fields["localizedTitles"] == .array([
+            .object(["languageTag": .string("x-default"), "value": .string(text)]),
+            .object(["languageTag": .string("nb"), "value": .string("Tittel")])]))
+        #expect(fields["keywords"] == .array([.string("second"), .string("first")]))
+        #expect(fields["creators"] == .array([.string("Two"), .string("One")]))
+        #expect(fields["urgency"] == .integer(3))
+        #expect(fields["latitude"] == .number(59.9))
+        #expect(fields["cameraRaw"] == nil)
+        #expect(fields["exifOrientation"] == nil)
+        #expect(output["hasPendingChanges"] == .bool(true))
+        #expect(output["descriptiveRecordCarrier"] == .string("pendingAppSidecar"))
+        #expect(MCPEditorialFieldCatalog.fieldKeys == IPTCMetadata.persistedJSONFieldNames)
+    }
+
+    @Test("Output limits refuse whole records rather than truncating values",
+          arguments: ["scalar", "unicode", "array", "item", "aggregate", "escaped", "nonfinite"])
+    func protocolLimits(kind: String) throws {
+        var metadata = IPTCMetadata()
+        switch kind {
+        case "scalar": metadata.description = String(repeating: "x", count: 32_769)
+        case "unicode": metadata.description = String(repeating: "😀", count: 8_193)
+        case "array": metadata.keywords = Array(repeating: "x", count: 129)
+        case "item": metadata.keywords = [String(repeating: "x", count: 1_025)]
+        case "aggregate":
+            metadata.description = String(repeating: "x", count: 32_768)
+            metadata.extendedDescription = String(repeating: "x", count: 32_768)
+            metadata.title = "x"
+        case "escaped":
+            metadata.description = String(repeating: "\u{01}", count: 32_768)
+            metadata.extendedDescription = String(repeating: "\u{01}", count: 32_768)
+        default: metadata.latitude = .infinity
+        }
+        #expect(throws: (any Error).self) { try protocolResult(metadata).protocolValue() }
+    }
+
+    @Test("Text at the scalar and aggregate boundaries remains complete")
+    func protocolBoundary() throws {
+        let text = String(repeating: "x", count: 32_768)
+        let value = try protocolResult(IPTCMetadata(description: text, extendedDescription: text)).protocolValue()
+        let fields = try #require(value.objectValue?["fields"]?.objectValue)
+        #expect(fields["description"] == .string(text))
+        #expect(fields["extendedDescription"] == .string(text))
+    }
+
+    private func protocolResult(_ metadata: IPTCMetadata) throws -> MCPMetadataSnapshotReader.Result {
+        let input = try snapshot()
+        return .init(target: input.target,
+            resolution: .init(metadata: metadata, descriptiveCarrier: .pendingAppSidecar,
+                              hasPendingChanges: true, hasXMPConflict: false),
+            sourceRevision: input.sourceRevision, xmpSidecarRevision: input.xmpSidecarRevision,
+            appSidecarRevision: input.appSidecarRevision)
+    }
+
+    @Test("Structured editorial output retains paired and ordered values")
+    func structuredProtocolValues() throws {
+        let metadata = try JSONDecoder().decode(IPTCMetadata.self, from: Data(#"""
+        {"localizedTitles":[],"imageSuppliers":[{"identifier":"one","name":"First"},{"identifier":"two","name":"Second"}],
+         "locationsCreated":[{"city":"Oslo","latitude":59.9,"longitude":10.7}],
+         "locationsShown":[{"city":"Bergen"}],
+         "creatorContactInfo":{"emails":["one@example.test","two@example.test"]}}
+        """#.utf8))
+        let fields = try #require(protocolResult(metadata).protocolValue().objectValue?["fields"]?.objectValue)
+        #expect(fields["localizedTitles"] == .array([]))
+        #expect(fields["imageSuppliers"] == .array([
+            .object(["identifier": .string("one"), "name": .string("First")]),
+            .object(["identifier": .string("two"), "name": .string("Second")])]))
+        guard case .array(let created) = fields["locationsCreated"],
+              case .array(let shown) = fields["locationsShown"] else {
+            Issue.record("Structured locations were lost"); return
+        }
+        #expect(created.first?.objectValue?["city"] == .string("Oslo"))
+        #expect(created.first?.objectValue?["latitude"] == .number(59.9))
+        #expect(shown.first?.objectValue?["city"] == .string("Bergen"))
+        #expect(fields["creatorContactInfo"]?.objectValue?["emails"] ==
+            .array([.string("one@example.test"), .string("two@example.test")]))
+    }
+
     @Test("Captured bytes and timestamps resolve without an existing source path", arguments: [false, true])
     func capturedResolution(sourceNewer: Bool) throws {
         let result = try MCPMetadataSnapshotReader.read(snapshot(sourceNewer: sourceNewer))
@@ -3308,6 +3421,9 @@ struct MCPMetadataSnapshotReaderTests {
         #expect(result.resolution.metadata.description == (pending ? "Draft" : nil))
         #expect(result.resolution.hasPendingChanges == pending)
         #expect(result.resolution.descriptiveCarrier == (pending ? .pendingAppSidecar : .xmp))
+        let output = try #require(result.protocolValue().objectValue)
+        #expect(output["hasPendingChanges"] == .bool(pending))
+        #expect(output["fields"]?.objectValue?["title"] == (pending ? .null : .string("Sidecar")))
     }
 
     @Test("Malformed or unsupported carriers refuse instead of returning empty metadata",

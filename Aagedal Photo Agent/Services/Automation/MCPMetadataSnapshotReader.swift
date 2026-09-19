@@ -6,14 +6,50 @@ import SwiftMediaMetadata
 /// carrier, and its result describes the captured revisions, not current write authority.
 nonisolated enum MCPMetadataSnapshotReader {
     struct Result: Sendable {
+        let target: MCPAuthorizedTarget
         let resolution: EffectiveMetadataResolver.Resolution
         let sourceRevision: String
         let xmpSidecarRevision: String
         let appSidecarRevision: String
+
+        /// A bounded historical read, not publication authorization or a mutation plan.
+        /// Nulls make absent scalar values explicit; ordered arrays and explicit clears
+        /// retain the production model's semantics. Never truncate a metadata record.
+        func protocolValue() throws -> MCPJSONValue {
+            let encoded = try JSONEncoder().encode(resolution.metadata)
+            guard let metadata = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+                  var fields = MCPEditorialFieldCatalog.read(from: ["metadata": metadata]) else {
+                throw ReadError.outputLimitExceeded
+            }
+            for key in MCPEditorialFieldCatalog.fieldKeys where fields[key] == nil {
+                fields[key] = .null
+            }
+            let value = MCPJSONValue.object([
+                "schemaVersion": .integer(1),
+                "canonicalPath": .string(target.url.path),
+                "rootID": .string(target.rootID.uuidString.lowercased()),
+                "sourceRevision": .string(sourceRevision),
+                "xmpSidecarRevision": .string(xmpSidecarRevision),
+                "appSidecarRevision": .string(appSidecarRevision),
+                "fields": .object(fields),
+                "fieldScope": .string("effective-editorial-metadata"),
+                "effectiveIPTCResolved": .bool(true),
+                // This identifies record selection, not per-field provenance: localized
+                // Titles, GPS, capture date, rating and label can inherit embedded values.
+                "descriptiveRecordCarrier": .string(resolution.descriptiveCarrier.rawValue),
+                "hasPendingChanges": .bool(resolution.hasPendingChanges),
+                "hasXMPConflict": .bool(resolution.hasXMPConflict),
+            ])
+            guard try JSONEncoder().encode(value).count <= MCPServerConstants.maximumToolResultBytes else {
+                throw ReadError.outputLimitExceeded
+            }
+            return value
+        }
     }
 
     enum ReadError: Error {
         case invalidAppSidecar
+        case outputLimitExceeded
     }
 
     static func read(_ snapshot: MCPPhotoCarrierSnapshot) throws -> Result {
@@ -82,7 +118,7 @@ nonisolated enum MCPMetadataSnapshotReader {
         }
         let facts = MetadataEditorSourceFacts(imageURL: snapshot.target.url, xmpMetadata: xmp,
             appSidecar: app, reconciliationVerdict: verdict)
-        return Result(resolution: try EffectiveMetadataResolver.resolve(embedded: embedded, facts: facts,
+        return Result(target: snapshot.target, resolution: try EffectiveMetadataResolver.resolve(embedded: embedded, facts: facts,
             isRaw: MCPPhotoFormatCatalog.rawExtensions.contains(snapshot.target.url.pathExtension.lowercased())),
             sourceRevision: snapshot.sourceRevision, xmpSidecarRevision: snapshot.xmpSidecarRevision,
             appSidecarRevision: snapshot.appSidecarRevision)

@@ -736,7 +736,7 @@ nonisolated private struct MCPAppDraftHeader: Decodable {
 
 /// Persisted IPTC keys shared with the app's editorial JSON schema. This deliberately excludes
 /// history, transcripts, and technical/Develop values. Structured editorial records retain pairing.
-nonisolated private enum MCPAppDraftFieldCatalog {
+nonisolated enum MCPEditorialFieldCatalog {
     static let scalarKeys: Set<String> = [
         "title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
         "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
@@ -748,6 +748,14 @@ nonisolated private enum MCPAppDraftFieldCatalog {
         "keywords", "personShown", "organisationsShownNames", "organisationsShownCodes",
         "creators", "sceneCodes", "subjectCodes",
     ]
+
+    /// Explicit protocol allowlist: new persisted model properties do not automatically
+    /// become public automation fields.
+    static let fieldKeys = scalarKeys.union(arrayKeys).union([
+        "urgency", "rating", "latitude", "longitude", "localizedTitles",
+        "imageSuppliers", "locationsCreated", "locationsShown", "mediaTopics", "genres",
+        "creatorContactInfo",
+    ])
 
     static func read(from record: [String: Any]) -> [String: MCPJSONValue]? {
         guard let metadata = record["metadata"] as? [String: Any] else { return nil }
@@ -963,7 +971,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                     } else {
                         state = "unknown"
                     }
-                    let fields = schema == 1 ? MCPAppDraftFieldCatalog.read(from: object) : nil
+                    let fields = schema == 1 ? MCPEditorialFieldCatalog.read(from: object) : nil
                     return (token(for: bytes, domain: index == 0 ? "app-current" : "app-legacy", identity: identity), state, fields)
                 }
                 if let ownedCarrier = ownedCarrier ?? nil {
