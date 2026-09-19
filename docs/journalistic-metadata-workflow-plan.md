@@ -1479,6 +1479,12 @@ reviewable transcript workflow without implicitly approving or applying text to 
   untrusted data. Never interpret returned metadata as MCP instructions or leak values through logs,
   errors, operation history, or tool descriptions.
 
+**2026-09-19 face-scan admission:** GUI scans now hold the shared exclusive folder lease from
+before snapshot reads/full-rescan deletion through final persistence and thumbnail reload.
+Busy admission preserves prior results. This closes the scan execution boundary only; broader
+GUI writers, production automation operations and status/cancellation remain open. See
+[cycle 60](release/cycle-60-face-scan-admission-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 59: effective metadata helper tool](release/cycle-59-mcp-effective-metadata-tool-2026-09-19.md) closes the shared typed parser/model dependencies and exposes guarded `get_photo_metadata` in the bundled helper. It returns bounded editorial fields, per-field carriers, pending/conflict state and captured revisions. Real-client validation, broader operation admission/tools, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 60: face-scan admission](release/cycle-60-face-scan-admission-2026-09-19.md) extends shared GUI/MCP coordination to face-scan execution through final persistence and thumbnail reload. Busy full rescans preserve existing results. Production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

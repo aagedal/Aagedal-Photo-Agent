@@ -903,16 +903,6 @@ final class FaceRecognitionViewModel {
         let fileSignatureService = self.fileSignatureService
         let pendingPersistence = faceDataPersistenceTask
 
-        if forceFullScan {
-            // Clear presentation immediately; the serialized actor removes the durable snapshot
-            // before detection begins.
-            faceData = nil
-            thumbnailCache.removeAllObjects()
-            thumbnailDataByFaceID.removeAll()
-            scanComplete = false
-            mergeSuggestions = []
-        }
-
         isScanning = true
         isCancellingScan = false
         scanningFolderURL = folderURL.standardizedFileURL
@@ -924,6 +914,38 @@ final class FaceRecognitionViewModel {
 
         activeScanTask = Task(priority: .userInitiated) {
             _ = await pendingPersistence?.value
+            // Acquire off MainActor before reading or deleting the scan snapshot. The folder
+            // lease excludes both helper photo reads and retained GUI writes until the exact
+            // final result (including cancelled partial work) has been persisted and reloaded.
+            let reservation: MCPProcessReservationLease
+            do {
+                reservation = try await Task.detached(priority: .utility) {
+                    try MCPProcessReservation.acquireFolder(folderURL)
+                }.value
+            } catch {
+                self.errorMessage = error.localizedDescription
+                self.isScanning = false
+                self.isCancellingScan = false
+                self.scanningFolderURL = nil
+                self.scanProgress = ""
+                self.scanProcessedCount = 0
+                self.scanTotalCount = 0
+                self.activeScanTask = nil
+                return FaceScanCompletion(
+                    folderURL: folderURL.standardizedFileURL,
+                    persistenceError: nil
+                )
+            }
+            defer { reservation.release() }
+
+            if forceFullScan, self.displayedFolderURL == folderURL.standardizedFileURL {
+                // Refused admission must leave the previous results available.
+                self.faceData = nil
+                self.thumbnailCache.removeAllObjects()
+                self.thumbnailDataByFaceID.removeAll()
+                self.scanComplete = false
+                self.mergeSuggestions = []
+            }
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
                 // Preparation is deliberately detached from later scan cancellation. Rename
@@ -1029,7 +1051,8 @@ final class FaceRecognitionViewModel {
             }
 
             if toScan.isEmpty && !classificationWasCancelled {
-                // Nothing new to scan
+                // Nothing new to scan; release before advertising completion.
+                reservation.release()
                 await MainActor.run {
                     self.isScanning = false
                     self.isCancellingScan = false
@@ -1292,6 +1315,7 @@ final class FaceRecognitionViewModel {
                 refreshedThumbnailData = [:]
             }
 
+            reservation.release()
             await MainActor.run {
                 let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
                 if isDisplayedFolder {

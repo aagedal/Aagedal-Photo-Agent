@@ -10,6 +10,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Face scans now reserve their folder against overlapping MCP reads and retained photo writes through
+  final result persistence. A busy folder refuses a full rescan without clearing existing face results.
+
 - Added `get_photo_metadata` to the bundled local MCP helper. It reads one authorized photo and returns
   typed effective editorial metadata, per-field carrier selection, pending/conflict state and captured
   revision tokens. Busy photos, changed authority, malformed carriers and oversized output fail without

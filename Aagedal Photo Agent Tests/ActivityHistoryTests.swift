@@ -124,6 +124,84 @@ struct ActivityHistoryTests {
         #expect(!viewModel.scanComplete)
     }
 
+    @Test("Busy face scan admission preserves existing results and durable data", arguments: [false, true])
+    func busyScanPreservesResults(folderReservation: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceScanAdmission-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        let lease = try folderReservation
+            ? MCPProcessReservation.acquireFolder(folder)
+            : MCPProcessReservation.acquirePhoto(photo)
+        defer { lease.release() }
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available)
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder, forceFullScan: true)
+        await viewModel.waitForCurrentScan()
+
+        #expect(!viewModel.isScanning)
+        #expect(!viewModel.isCancellingScan)
+        #expect(viewModel.scanningFolderURL == nil)
+        #expect(viewModel.errorMessage == MCPProcessReservationError.busy.localizedDescription)
+        #expect(viewModel.faceData?.lastScanDate == original.lastScanDate)
+        #expect(storage.loadFaceData(for: folder)?.lastScanDate == original.lastScanDate)
+        lease.release()
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+    }
+
+    @Test("Face scan holds admission through final persistence and releases on every exit",
+          arguments: ["complete", "cancelled", "failed", "unchanged"])
+    func scanReservationLifetime(outcome: String) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceScanLifetime-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("invalid.jpg")
+        try Data("not an image".utf8).write(to: photo)
+        let persistenceObserved = MCPServerCoreTests.DataBox()
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+            return nil
+        }, saveFaceData: { data in
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquireFolder(folder)
+            }
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+            persistenceObserved.write(Data([data.scanComplete ? 1 : 0]))
+            if outcome == "failed" { throw CocoaError(.fileWriteUnknown) }
+            try FaceDataStorageService().saveFaceData(data)
+        })
+        let viewModel = FaceRecognitionViewModel(
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available, folderLoadService: service)
+        viewModel.scanFolder(imageURLs: outcome == "unchanged" ? [] : [photo], folderURL: folder)
+        if outcome == "cancelled" { viewModel.cancelScan() }
+        await viewModel.waitForCurrentScan()
+
+        #expect(!viewModel.isScanning)
+        if outcome == "unchanged" {
+            #expect(persistenceObserved.read() == nil)
+        } else {
+            #expect(persistenceObserved.read() == Data([outcome == "cancelled" ? 0 : 1]))
+        }
+        if outcome == "failed" { #expect(viewModel.errorMessage?.contains("Failed to save") == true) }
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+    }
+
     @Test("rename quiescence cancels the exact target scan and awaits its final persistence")
     func renameQuiescenceAwaitsFacePersistence() async throws {
         let folder = FileManager.default.temporaryDirectory
