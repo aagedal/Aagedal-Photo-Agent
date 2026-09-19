@@ -571,6 +571,131 @@ struct MCPServerCoreTests {
         #expect(fifth["appSidecarRevision"] == fourth["appSidecarRevision"])
     }
 
+    @Test("Parser snapshots retain exact carrier bytes and matching revisions", arguments: ["current", "legacy", "foreign", "absent"])
+    func capturesImmutableParserInput(carrier: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        let source = Data([0, 255, 1, 2, 3])
+        let xmpData = Data("<xmp>exact Unicode: æøå</xmp>".utf8)
+        try source.write(to: photo)
+        let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let xmpDate = sourceDate.addingTimeInterval(10)
+        try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: photo.path)
+        if carrier != "absent" {
+            try xmpData.write(to: xmp)
+            try FileManager.default.setAttributes([.modificationDate: xmpDate], ofItemAtPath: xmp.path)
+        }
+        let owned = carrier == "current" || carrier == "legacy"
+        let owner = owned ? "frame.jpg" : "other.jpg"
+        let draft = Data("{\"schemaVersion\":1,\"sourceFile\":\"\(owner)\",\"pendingChanges\":true,\"metadata\":{\"caption\":\"exact\"}}".utf8)
+        if carrier != "absent" {
+            let folder = root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try draft.write(to: folder.appendingPathComponent(carrier == "current" ? "frame.jpg.meta.json" : "frame.meta.json"))
+        }
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let snapshot = try facade.capturePhotoSnapshot(path: photo.path)
+        let revision = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        #expect(snapshot.sourceBytes == source)
+        #expect(snapshot.xmpBytes == (carrier == "absent" ? nil : xmpData))
+        #expect(snapshot.appSidecarBytes == (owned ? draft : nil))
+        #expect(revision["sourceRevision"] == .string(snapshot.sourceRevision))
+        #expect(revision["xmpSidecarRevision"] == .string(snapshot.xmpSidecarRevision))
+        #expect(revision["appSidecarRevision"] == .string(snapshot.appSidecarRevision))
+        #expect(snapshot.sourceModificationDate == sourceDate)
+        #expect(snapshot.xmpModificationDate == (carrier == "absent" ? nil : xmpDate))
+        try Data("replacement".utf8).write(to: photo)
+        #expect(snapshot.sourceBytes == source)
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
+    @Test("Parser snapshots distinguish empty carriers from absent carriers", arguments: [0, Int(MCPPhotoCarrierSnapshot.maximumXMPBytes)])
+    func admitsBoundedParserInput(xmpSize: Int) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        try Data().write(to: photo)
+        let bytes = Data(repeating: 32, count: xmpSize)
+        try bytes.write(to: xmp)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let present = try facade.capturePhotoSnapshot(path: photo.path)
+        #expect(present.sourceBytes.isEmpty)
+        #expect(present.xmpBytes == bytes)
+        #expect(present.xmpModificationDate != nil)
+        try FileManager.default.removeItem(at: xmp)
+        let absent = try facade.capturePhotoSnapshot(path: photo.path)
+        #expect(absent.xmpBytes == nil)
+        #expect(absent.xmpSidecarRevision != present.xmpSidecarRevision)
+    }
+
+    @Test("Parser snapshots refuse oversized source and XMP before allocating their bytes", arguments: ["source", "xmp"])
+    func refusesOversizedParserInput(carrier: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("photo".utf8).write(to: photo)
+        let oversized = carrier == "source" ? photo : root.appendingPathComponent("frame.xmp")
+        if carrier == "xmp" { try Data().write(to: oversized) }
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(carrier == "source"
+            ? MCPPhotoCarrierSnapshot.maximumSourceBytes + 1
+            : MCPPhotoCarrierSnapshot.maximumXMPBytes + 1))
+        try handle.close()
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            _ = try MCPAutomationFacade(authorizationStore: store).capturePhotoSnapshot(path: photo.path)
+        }
+        if carrier == "xmp" {
+            // Revision-only inspection still streams carriers beyond the parser retention cap.
+            #expect(try MCPAutomationFacade(authorizationStore: store)
+                .inspectPhotoRevision(path: photo.path).objectValue?["xmpSidecarPresent"] == .bool(true))
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
+    @Test("Parser snapshots refuse a changed carrier or revoked authorization before publication", arguments: ["source", "xmp", "app", "authorization"])
+    func refusesChangedParserSnapshot(carrier: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        let folder = root.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let app = folder.appendingPathComponent("frame.jpg.meta.json")
+        try Data("photo".utf8).write(to: photo)
+        try Data("xmp".utf8).write(to: xmp)
+        try Data(#"{"schemaVersion":1,"sourceFile":"frame.jpg","pendingChanges":true,"metadata":{}}"#.utf8).write(to: app)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store, onCaptureCheckpoint: {
+            do {
+                if carrier == "authorization" { try store.setEnabled(false) }
+                else { try Data("changed".utf8).write(to: carrier == "source" ? photo : carrier == "xmp" ? xmp : app) }
+            } catch { Issue.record("Could not inject snapshot change: \(error)") }
+        })
+        if carrier == "authorization" {
+            #expect(throws: MCPAuthorizationError.disabled) { _ = try facade.capturePhotoSnapshot(path: photo.path) }
+        } else {
+            #expect(throws: MCPAutomationReadError.photoChanged) { _ = try facade.capturePhotoSnapshot(path: photo.path) }
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
     @Test("Owned sidecar state is bounded, and two owned naming generations are refused")
     func inspectsOwnedDraftStateAndRejectsAmbiguousCarriers() throws {
         let root = try temporaryFolder()

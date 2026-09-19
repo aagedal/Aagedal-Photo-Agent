@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 52: MCP typed draft scalars](release/cycle-52-mcp-typed-draft-scalars-2026-09-19.md) adds capture date, digital source type, label, legacy creator, typed urgency/rating and finite GPS values to bounded owned-draft inspection. Cycle 51's structured editorial records and cycle 49's shared effective resolver remain ready for integration. Production MCP effective typed reads, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 53: MCP immutable parser snapshots](release/cycle-53-mcp-parser-snapshot-2026-09-19.md) retains bounded source, XMP and owned JSON bytes from the same anchored reads as their revision tokens, with captured modification dates and final generation/authorization checks. Connecting production typed parsing and the shared effective resolver remains open, along with broader operation admission, FFmpeg Whisper and release gates.
 
 ## Portfolio
 

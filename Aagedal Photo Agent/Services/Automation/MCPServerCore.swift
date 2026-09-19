@@ -511,6 +511,24 @@ nonisolated protocol MCPToolServing: Sendable {
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue
 }
 
+/// Immutable parser input. Bytes and revisions are captured in the same anchored read;
+/// consumers must parse these values rather than reopen the original paths. This internal
+/// value is deliberately not Codable and is never returned by the protocol transport.
+nonisolated struct MCPPhotoCarrierSnapshot: Sendable {
+    static let maximumSourceBytes: Int64 = 268_435_456
+    static let maximumXMPBytes: Int64 = 8_388_608
+
+    let target: MCPAuthorizedTarget
+    let sourceBytes: Data
+    let xmpBytes: Data?
+    let appSidecarBytes: Data?
+    let sourceModificationDate: Date
+    let xmpModificationDate: Date?
+    let sourceRevision: String
+    let xmpSidecarRevision: String
+    let appSidecarRevision: String
+}
+
 /// Value-only entry point shared by the app and the bundled helper. A read owns the same
 /// cross-process photo reservation as retained writes, and captures all three physical carrier
 /// generations before releasing it. Later mutation preparation can compare these opaque tokens
@@ -564,7 +582,20 @@ nonisolated struct MCPAutomationFacade: Sendable {
         ])
     }
 
-    private func capturePhotoEvidence(path: String) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
+    func capturePhotoSnapshot(path: String) throws -> MCPPhotoCarrierSnapshot {
+        let (target, evidence) = try capturePhotoEvidence(path: path, retainingBytes: true)
+        guard let sourceBytes = evidence.sourceBytes else { throw MCPAutomationReadError.photoChanged }
+        return MCPPhotoCarrierSnapshot(
+            target: target, sourceBytes: sourceBytes, xmpBytes: evidence.xmpBytes,
+            appSidecarBytes: evidence.appSidecarBytes,
+            sourceModificationDate: evidence.sourceModificationDate,
+            xmpModificationDate: evidence.xmpModificationDate,
+            sourceRevision: evidence.source, xmpSidecarRevision: evidence.xmpSidecar,
+            appSidecarRevision: evidence.appSidecar
+        )
+    }
+
+    private func capturePhotoEvidence(path: String, retainingBytes: Bool = false) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
         let target = try authorizationStore.authorizeExistingPath(path)
         guard !target.isDirectory,
               MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()) else {
@@ -579,7 +610,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         }
         let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
         let evidence = try MCPPhotoRevisionEvidence.capture(
-            photoName: target.url.lastPathComponent, in: directory,
+            photoName: target.url.lastPathComponent, in: directory, retainingBytes: retainingBytes,
             onCaptureCheckpoint: onCaptureCheckpoint
         )
         try directory.requireSameAncestors()
@@ -870,21 +901,34 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let appSidecarDraftState: String
     let xmpSidecarPresent: Bool
     let appDraftFields: [String: MCPJSONValue]?
+    let sourceBytes: Data?
+    let xmpBytes: Data?
+    let appSidecarBytes: Data?
+    let sourceModificationDate: Date
+    let xmpModificationDate: Date?
 
     static func capture(
         photoName: String,
         in directory: MCPAnchoredPhotoDirectory,
+        retainingBytes: Bool,
         onCaptureCheckpoint: @Sendable () -> Void
     ) throws -> Self {
-        let source = try token(name: photoName, in: directory.descriptor, domain: "source", required: true)
+        let source = try token(
+            name: photoName, in: directory.descriptor, domain: "source", required: true,
+            maximumRetainedBytes: retainingBytes ? MCPPhotoCarrierSnapshot.maximumSourceBytes : nil
+        )
         let stem = (photoName as NSString).deletingPathExtension
-        let xmpToken = try token(name: "\(stem).xmp", in: directory.descriptor, domain: "xmp", required: false)
+        let xmpToken = try token(
+            name: "\(stem).xmp", in: directory.descriptor, domain: "xmp", required: false,
+            maximumRetainedBytes: retainingBytes ? MCPPhotoCarrierSnapshot.maximumXMPBytes : nil
+        )
         let privateDescriptor = try openSafeDirectoryIfPresent(name: ".photo_metadata", in: directory.descriptor)
         defer { if let privateDescriptor { _ = Darwin.close(privateDescriptor) } }
         let carriers = photoName == stem
             ? ["\(photoName).meta.json"]
             : ["\(photoName).meta.json", "\(stem).meta.json"]
         var ownedTokens: [String] = []
+        var appSidecarBytes: Data?
         var draftState = "absent"
         var draftFields: [String: MCPJSONValue]? = [:]
         var absentCarriers: [String] = []
@@ -903,6 +947,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                         throw MCPAutomationReadError.unsafeCarrier
                     }
                     guard owner == photoName else { return nil }
+                    if retainingBytes { appSidecarBytes = bytes }
                     let state: String
                     // Foundation bridging accepts JSON true as Int(1) and numeric 1 as
                     // Bool(true). Decode authority-bearing header types without coercion.
@@ -973,8 +1018,18 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             appSidecarPresent: !ownedTokens.isEmpty,
             appSidecarDraftState: draftState,
             xmpSidecarPresent: xmpToken.present,
-            appDraftFields: draftFields
+            appDraftFields: draftFields,
+            sourceBytes: source.bytes,
+            xmpBytes: xmpToken.bytes,
+            appSidecarBytes: appSidecarBytes,
+            sourceModificationDate: modificationDate(sourceIdentity),
+            xmpModificationDate: xmpToken.identity.map(modificationDate)
         )
+    }
+
+    private static func modificationDate(_ identity: stat) -> Date {
+        Date(timeIntervalSince1970: Double(identity.st_mtimespec.tv_sec)
+            + Double(identity.st_mtimespec.tv_nsec) / 1_000_000_000)
     }
 
     private static func requireAbsent(name: String, in parent: Int32) throws {
@@ -1081,21 +1136,28 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func token(name: String, in parent: Int32, domain: String, required: Bool) throws -> (token: String, present: Bool, identity: stat?) {
+    private static func token(name: String, in parent: Int32, domain: String, required: Bool, maximumRetainedBytes: Int64?) throws -> (token: String, present: Bool, identity: stat?, bytes: Data?) {
         guard let digest = try withSafeHandleIfPresent(name: name, in: parent, consume: { handle, identity in
+            if let maximumRetainedBytes, identity.st_size > maximumRetainedBytes {
+                throw MCPAutomationReadError.unsafeCarrier
+            }
+            var bytes: Data? = maximumRetainedBytes == nil ? nil : Data()
             var hasher = SHA256()
             hasher.update(data: prefix(domain: domain, identity: identity))
             try MCPBoundedCarrierReader.read(
                 byteCount: identity.st_size,
                 readChunk: { try handle.read(upToCount: $0) },
-                consume: { hasher.update(data: $0) }
+                consume: {
+                    hasher.update(data: $0)
+                    bytes?.append($0)
+                }
             )
-            return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), identity)
+            return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), identity, bytes)
         }) else {
             if required { throw MCPAutomationReadError.photoChanged }
-            return (token(for: Data(), domain: "\(domain)-absent"), false, nil)
+            return (token(for: Data(), domain: "\(domain)-absent"), false, nil, nil)
         }
-        return (digest.0, true, digest.1)
+        return (digest.0, true, digest.1, digest.2)
     }
 
     private static func token(for bytes: Data, domain: String, identity: stat? = nil) -> String {

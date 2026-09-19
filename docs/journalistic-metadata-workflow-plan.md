@@ -1425,6 +1425,11 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 53 continuation (2026-09-19):** The internal shared facade now captures bounded
+immutable source/XMP/owned JSON bytes with matching revisions and modification dates.
+Production typed parser and effective-resolver integration remain open; this prerequisite
+does not close a Phase 5A checkbox. See [cycle 53](release/cycle-53-mcp-parser-snapshot-2026-09-19.md).
+
 **Exit gate:** a signed, opt-in local MCP server can invoke the existing Photo Agent workflows for
 explicitly authorized folders and photos; every mutation uses the same immutable intent,
 source-revision, preservation, conflict, verification, cancellation, and recovery boundaries as the
