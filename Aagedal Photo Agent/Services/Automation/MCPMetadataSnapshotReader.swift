@@ -57,6 +57,14 @@ nonisolated enum MCPMetadataSnapshotReader {
         case incompleteProvenance
     }
 
+    /// The production read boundary: serialization completes before the facade revalidates
+    /// the retained carriers and authority. The returned revisions are not write permission.
+    static func inspectPhoto(path: String, facade: MCPAutomationFacade) throws -> MCPJSONValue {
+        try facade.withPhotoSnapshot(path: path) { snapshot in
+            try read(snapshot).protocolValue()
+        }
+    }
+
     static func read(_ snapshot: MCPPhotoCarrierSnapshot) throws -> Result {
         // Match the production URL reader's TIFF/RAW disambiguation without a URL read.
         let extensionHint = FormatDetector.detectFromExtension(snapshot.target.url.pathExtension)

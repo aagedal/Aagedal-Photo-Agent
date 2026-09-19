@@ -584,6 +584,22 @@ nonisolated struct MCPAutomationFacade: Sendable {
 
     func capturePhotoSnapshot(path: String) throws -> MCPPhotoCarrierSnapshot {
         let (target, evidence) = try capturePhotoEvidence(path: path, retainingBytes: true)
+        return try Self.snapshot(target: target, evidence: evidence)
+    }
+
+    /// Parse and bound a result while the photo lease and carrier descriptors remain held.
+    /// Only return it after carrier, ancestor and current authorization checks pass.
+    /// The body must be a pure read: it must not publish its provisional result itself.
+    func withPhotoSnapshot<Value>(path: String, body: (MCPPhotoCarrierSnapshot) throws -> Value) throws -> Value {
+        var result: Value?
+        _ = try capturePhotoEvidence(path: path, retainingBytes: true) { target, evidence in
+            result = try body(Self.snapshot(target: target, evidence: evidence))
+        }
+        guard let result else { throw MCPAutomationReadError.photoChanged }
+        return result
+    }
+
+    private static func snapshot(target: MCPAuthorizedTarget, evidence: MCPPhotoRevisionEvidence) throws -> MCPPhotoCarrierSnapshot {
         guard let sourceBytes = evidence.sourceBytes else { throw MCPAutomationReadError.photoChanged }
         return MCPPhotoCarrierSnapshot(
             target: target, sourceBytes: sourceBytes, xmpBytes: evidence.xmpBytes,
@@ -595,7 +611,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
         )
     }
 
-    private func capturePhotoEvidence(path: String, retainingBytes: Bool = false) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
+    private func capturePhotoEvidence(
+        path: String, retainingBytes: Bool = false,
+        consume: (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) throws -> Void = { _, _ in }
+    ) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
         let target = try authorizationStore.authorizeExistingPath(path)
         guard !target.isDirectory,
               MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()) else {
@@ -611,7 +630,8 @@ nonisolated struct MCPAutomationFacade: Sendable {
         let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
         let evidence = try MCPPhotoRevisionEvidence.capture(
             photoName: target.url.lastPathComponent, in: directory, retainingBytes: retainingBytes,
-            onCaptureCheckpoint: onCaptureCheckpoint
+            onCaptureCheckpoint: onCaptureCheckpoint,
+            beforeValidation: { try consume(target, $0) }
         )
         try directory.requireSameAncestors()
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
@@ -919,7 +939,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         photoName: String,
         in directory: MCPAnchoredPhotoDirectory,
         retainingBytes: Bool,
-        onCaptureCheckpoint: @Sendable () -> Void
+        onCaptureCheckpoint: @Sendable () -> Void,
+        beforeValidation: (Self) throws -> Void = { _ in }
     ) throws -> Self {
         let source = try token(
             name: photoName, in: directory.descriptor, domain: "source", required: true,
@@ -1001,6 +1022,21 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         // read. Recheck every path entry before publishing the combined revision evidence.
         onCaptureCheckpoint()
         guard let sourceIdentity = source.identity else { throw MCPAutomationReadError.photoChanged }
+        let evidence = Self(
+            source: source.token,
+            appSidecar: appToken,
+            xmpSidecar: xmpToken.token,
+            appSidecarPresent: !ownedTokens.isEmpty,
+            appSidecarDraftState: draftState,
+            xmpSidecarPresent: xmpToken.present,
+            appDraftFields: draftFields,
+            sourceBytes: source.bytes,
+            xmpBytes: xmpToken.bytes,
+            appSidecarBytes: appSidecarBytes,
+            sourceModificationDate: modificationDate(sourceIdentity),
+            xmpModificationDate: xmpToken.identity.map(modificationDate)
+        )
+        try beforeValidation(evidence)
         try requireSameFile(name: photoName, in: directory.descriptor, snapshot: sourceIdentity)
         if let identity = xmpToken.identity {
             try requireSameFile(name: "\(stem).xmp", in: directory.descriptor, snapshot: identity)
@@ -1019,20 +1055,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         } else {
             try requireAbsent(name: ".photo_metadata", in: directory.descriptor)
         }
-        return Self(
-            source: source.token,
-            appSidecar: appToken,
-            xmpSidecar: xmpToken.token,
-            appSidecarPresent: !ownedTokens.isEmpty,
-            appSidecarDraftState: draftState,
-            xmpSidecarPresent: xmpToken.present,
-            appDraftFields: draftFields,
-            sourceBytes: source.bytes,
-            xmpBytes: xmpToken.bytes,
-            appSidecarBytes: appSidecarBytes,
-            sourceModificationDate: modificationDate(sourceIdentity),
-            xmpModificationDate: xmpToken.identity.map(modificationDate)
-        )
+        return evidence
     }
 
     private static func modificationDate(_ identity: stat) -> Date {

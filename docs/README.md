@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 56: effective metadata field provenance](release/cycle-56-mcp-field-provenance-2026-09-19.md) adds complete per-field carrier selection to the shared resolver and bounded MCP output, including inherited values, explicit clears and pending drafts. Helper endpoint integration, publication authorization, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 57: effective metadata publication boundary](release/cycle-57-mcp-publication-boundary-2026-09-19.md) keeps the photo reservation and anchored directory handles through typed parsing and bounded output, then revalidates carrier entries, ancestors and current folder authority before returning. Helper endpoint integration, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

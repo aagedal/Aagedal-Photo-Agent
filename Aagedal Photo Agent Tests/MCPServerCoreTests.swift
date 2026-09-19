@@ -571,6 +571,78 @@ struct MCPServerCoreTests {
         #expect(fifth["appSidecarRevision"] == fourth["appSidecarRevision"])
     }
 
+    @Test("Parsed snapshot publication retains the photo lease and releases it after success or failure",
+          arguments: [false, true])
+    func parsedPublicationLease(parserFails: Bool) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("source".utf8).write(to: photo)
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let parse = {
+            try facade.withPhotoSnapshot(path: photo.path) { snapshot in
+                #expect(throws: (any Error).self) { try MCPProcessReservation.acquirePhoto(photo) }
+                #expect(snapshot.sourceBytes == Data("source".utf8))
+                if parserFails { throw MCPAutomationReadError.unreadableDraft }
+                return "parsed"
+            }
+        }
+        if parserFails {
+            #expect(throws: MCPAutomationReadError.self) { try parse() }
+        } else {
+            #expect(try parse() == "parsed")
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
+    @Test("Changes during parsing refuse provisional results",
+          arguments: ["source", "xmp", "new-xmp", "app", "new-app", "authorization", "ancestor"])
+    func parsedPublicationRevalidation(change: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let photo = folder.appendingPathComponent("frame.jpg")
+        let xmp = folder.appendingPathComponent("frame.xmp")
+        let appFolder = folder.appendingPathComponent(".photo_metadata")
+        let app = appFolder.appendingPathComponent("frame.jpg.meta.json")
+        try Data("source".utf8).write(to: photo)
+        if change == "xmp" { try Data("xmp".utf8).write(to: xmp) }
+        let draft = Data("{\"schemaVersion\":1,\"sourceFile\":\"frame.jpg\",\"pendingChanges\":true,\"metadata\":{}}".utf8)
+        if change == "app" {
+            try FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: false)
+            try draft.write(to: app)
+        }
+        let store = store()
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        #expect(throws: (any Error).self) {
+            try facade.withPhotoSnapshot(path: photo.path) { _ in
+                switch change {
+                case "source": try Data("changed".utf8).write(to: photo)
+                case "xmp", "new-xmp": try Data("changed".utf8).write(to: xmp)
+                case "app": try Data("changed".utf8).write(to: app)
+                case "new-app":
+                    try FileManager.default.createDirectory(at: appFolder, withIntermediateDirectories: false)
+                    try draft.write(to: app)
+                case "authorization": try store.setEnabled(false)
+                default:
+                    try FileManager.default.moveItem(at: folder, to: root.appendingPathComponent("moved"))
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+                    try Data("source".utf8).write(to: photo)
+                }
+                return "must not be published"
+            }
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
     @Test("Parser snapshots retain exact carrier bytes and matching revisions", arguments: ["current", "legacy", "foreign", "absent"])
     func capturesImmutableParserInput(carrier: String) throws {
         let root = try temporaryFolder()

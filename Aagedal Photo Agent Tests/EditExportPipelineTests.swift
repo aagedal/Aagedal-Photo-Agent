@@ -3325,6 +3325,35 @@ struct AdvancedExportLayoutTests {
 
 @Suite("MCP typed immutable metadata snapshots")
 struct MCPMetadataSnapshotReaderTests {
+    @Test("Authorized effective reads integrate captured parsing, bounded output and revision evidence")
+    func authorizedEffectiveRead() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("apa-effective-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = try snapshot()
+        let photo = root.appendingPathComponent("frame.jpg")
+        try input.sourceBytes.write(to: photo)
+        try input.xmpBytes?.write(to: root.appendingPathComponent("frame.xmp"))
+        let box = MCPServerCoreTests.DataBox()
+        let store = MCPAuthorizationStore(readConfigurationData: { box.read() },
+            writeConfigurationData: { box.write($0) })
+        try store.addRoot(root)
+        try store.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: store)
+        let value = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue)
+        let fields = try #require(value["fields"]?.objectValue)
+        #expect(fields["title"] == .string("Sidecar"))
+        #expect(value["effectiveIPTCResolved"] == .bool(true))
+        let revisions = try #require(facade.inspectPhotoRevision(path: photo.path).objectValue)
+        for key in ["canonicalPath", "rootID", "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] {
+            #expect(value[key] == revisions[key])
+        }
+        try store.setEnabled(false)
+        #expect(throws: MCPAuthorizationError.self) {
+            try MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade)
+        }
+    }
+
     @Test("Effective protocol output binds values, state and revisions to the captured target",
           arguments: [false, true])
     func protocolSnapshot(sourceNewer: Bool) throws {
