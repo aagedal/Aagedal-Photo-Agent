@@ -3021,31 +3021,11 @@ struct KeywordsEditorWithDiff: View {
 
     @ViewBuilder
     private var suggestionsPopover: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(visibleSuggestions.enumerated()), id: \.element.canonical) { idx, sug in
-                HStack(spacing: 6) {
-                    Text(sug.canonical)
-                        .font(.body)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer()
-                    if sug.matchKind == .substring {
-                        Image(systemName: "text.magnifyingglass")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(highlightedIndex == idx ? Color.accentColor.opacity(0.2) : Color.clear)
-                .contentShape(Rectangle())
-                .onTapGesture { commitSuggestion(sug) }
-                .onHover { hovering in if hovering { highlightedIndex = idx } }
-            }
-        }
-        .frame(minWidth: 220, idealWidth: 280, maxWidth: 320)
-        .padding(.vertical, 2)
+        TypeaheadSuggestionsList(
+            suggestions: visibleSuggestions,
+            highlightedIndex: $highlightedIndex,
+            onSelect: commitSuggestion
+        )
     }
 
     // MARK: Typeahead helpers

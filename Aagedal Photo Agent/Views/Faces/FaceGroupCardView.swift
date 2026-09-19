@@ -20,31 +20,6 @@ struct FaceGroupCardCallbacks {
     var onNameFromTeamSheet: ((UUID) -> Void)?
 }
 
-// MARK: - Name Suggestions
-
-enum FaceGroupNameSuggestionFilter {
-    /// Keeps the combo box useful as a type-ahead picker without enabling AppKit's
-    /// inline completion, which can replace text the user is still editing.
-    static func matches(in names: [String], query: String) -> [String] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return names }
-
-        var prefixMatches: [String] = []
-        var substringMatches: [String] = []
-        for name in names {
-            guard let match = name.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) else {
-                continue
-            }
-            if match.lowerBound == name.startIndex {
-                prefixMatches.append(name)
-            } else {
-                substringMatches.append(name)
-            }
-        }
-        return prefixMatches + substringMatches
-    }
-}
-
 // MARK: - Face Thumbnail Subview
 
 final class FaceThumbnailSubview: NSView {
@@ -210,22 +185,13 @@ final class FaceGroupCardView: NSView {
     // MARK: - Header views
 
     private let nameLabel = NSTextField(labelWithString: "")
-    private let nameEditor = NSComboBox()
+    private let nameEditor = FaceGroupNameTextField()
     private let countBadge = NSView()
     private let countLabel = NSTextField(labelWithString: "")
     private let menuButton = NSButton()
 
     private var isAddingToKnownPeople = false
     private var isEditingName = false
-    private var selectedSuggestionName: String?
-    private var nameCommitScheduled = false
-    private var nameEditRevision = 0
-    /// Full structured Person Shown vocabulary for the current edit session.
-    private var allStructuredNames: [String] = []
-    /// Filtered names currently backing the name combo box's dropdown list.
-    private var structuredNameCache: [String] = []
-    private var isRefreshingNameSuggestions = false
-    private var isNameSuggestionListOpen = false
 
     // MARK: - Face grid
 
@@ -310,16 +276,8 @@ final class FaceGroupCardView: NSView {
         nameEditor.placeholderString = "Name"
         nameEditor.isHidden = true
         nameEditor.translatesAutoresizingMaskIntoConstraints = false
-        nameEditor.target = self
-        nameEditor.action = #selector(nameEditorCommit)
-        nameEditor.delegate = self
-        // Structured Person Shown suggestions: show a browsable dropdown without
-        // inline completion mutating whatever the user is typing.
-        nameEditor.completes = false
-        nameEditor.usesDataSource = true
-        nameEditor.dataSource = self
-        nameEditor.numberOfVisibleItems = 8
-        nameEditor.hasVerticalScroller = true
+        nameEditor.onCommit = { [weak self] name in self?.commitName(name) }
+        nameEditor.onCancel = { [weak self] in self?.endEditing() }
         addSubview(nameEditor)
 
         countBadge.wantsLayer = true
@@ -860,81 +818,35 @@ final class FaceGroupCardView: NSView {
     private func startEditing() {
         guard !isEditingName, let group = currentGroup else { return }
         isEditingName = true
-        nameEditRevision &+= 1
-        selectedSuggestionName = nil
-        if nameEditor.indexOfSelectedItem != NSNotFound {
-            nameEditor.deselectItem(at: nameEditor.indexOfSelectedItem)
-        }
         nameEditor.stringValue = group.name ?? ""
+        nameEditor.candidates = (settingsViewModel?.loadPersonShownList() ?? [])
+            + StructuredKeywordService.personShown.allSearchableNames()
+            + KnownPeopleService.shared.getAllPeople().map(\.name)
         nameLabel.isHidden = true
         countBadge.isHidden = true
         nameEditor.isHidden = false
-
-        // Refresh the source vocabulary and filter it against an existing name too.
-        allStructuredNames = StructuredKeywordService.personShown.allSearchableNames()
-        refreshNameSuggestions(for: nameEditor.stringValue)
-
         window?.makeFirstResponder(nameEditor)
+        nameEditor.refreshSuggestions()
     }
 
     private func endEditing() {
         guard isEditingName else { return }
         isEditingName = false
-        nameEditRevision &+= 1
-        selectedSuggestionName = nil
-        nameCommitScheduled = false
-        isNameSuggestionListOpen = false
+        nameEditor.dismissSuggestions()
         nameLabel.isHidden = false
         countBadge.isHidden = false
         nameEditor.isHidden = true
     }
 
-    private func refreshNameSuggestions(for query: String) {
-        let matches = FaceGroupNameSuggestionFilter.matches(in: allStructuredNames, query: query)
-        guard matches != structuredNameCache else { return }
-
-        // Reloading can move the combo box's selection to its first row. Treat that
-        // as implementation detail, never as the user's explicit choice.
-        isRefreshingNameSuggestions = true
-        structuredNameCache = matches
-        nameEditor.reloadData()
-        if nameEditor.indexOfSelectedItem != NSNotFound {
-            nameEditor.deselectItem(at: nameEditor.indexOfSelectedItem)
-        }
-        isRefreshingNameSuggestions = false
-    }
-
-    /// Applies a row the user explicitly chose. This intentionally bypasses the
-    /// deferred free-text commit because AppKit may end field editing before it
-    /// delivers the combo-box selection notification.
-    func applyNameSuggestion(_ selectedName: String) {
-        selectedSuggestionName = selectedName
-        nameEditor.stringValue = selectedName
-        if let groupID {
-            viewModel?.nameGroup(groupID, name: selectedName)
-        }
+    private func commitName(_ name: String) {
+        guard isEditingName else { return }
+        let trimmed = name.replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // End the edit before changing the model, which can reload/reuse this card.
         endEditing()
-    }
-
-    @objc private func nameEditorCommit() {
-        // A dropdown choice is committed by comboBoxSelectionDidChange. Letting
-        // the combo box's target action race it can apply the pre-selection text.
-        guard isEditingName, !isNameSuggestionListOpen, !nameCommitScheduled else { return }
-        nameCommitScheduled = true
-        let revision = nameEditRevision
-        // AppKit can send the text-field action/end-editing event before it updates
-        // the field for a clicked combo-box row. Read the final selection next turn.
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard self.nameEditRevision == revision else { return }
-            self.nameCommitScheduled = false
-            guard self.isEditingName else { return }
-            let name = (self.selectedSuggestionName ?? self.nameEditor.stringValue)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let groupID = self.groupID, !name.isEmpty {
-                self.viewModel?.nameGroup(groupID, name: name)
-            }
-            self.endEditing()
+        if let groupID, !trimmed.isEmpty {
+            viewModel?.nameGroup(groupID, name: trimmed)
         }
     }
 
@@ -1138,72 +1050,5 @@ final class FaceGroupCardView: NSView {
     @objc private func menuDeleteGroup() {
         guard let group = currentGroup else { return }
         callbacks.onDeleteGroup?(group)
-    }
-}
-
-// MARK: - NSTextFieldDelegate
-
-extension FaceGroupCardView: NSComboBoxDelegate {
-    func comboBoxWillPopUp(_ notification: Notification) {
-        guard notification.object as? NSComboBox === nameEditor else { return }
-        isNameSuggestionListOpen = true
-    }
-
-    func comboBoxWillDismiss(_ notification: Notification) {
-        guard notification.object as? NSComboBox === nameEditor else { return }
-        isNameSuggestionListOpen = false
-    }
-
-    func comboBoxSelectionDidChange(_ notification: Notification) {
-        guard !isRefreshingNameSuggestions,
-              notification.object as? NSComboBox === nameEditor,
-              structuredNameCache.indices.contains(nameEditor.indexOfSelectedItem) else { return }
-        let selectedName = structuredNameCache[nameEditor.indexOfSelectedItem]
-        applyNameSuggestion(selectedName)
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-            endEditing()
-            return true
-        }
-        return false
-    }
-
-    func controlTextDidChange(_ obj: Notification) {
-        // Filter newlines from name
-        let current = nameEditor.stringValue
-        let filtered = current.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
-        if filtered != current {
-            nameEditor.stringValue = filtered
-        }
-        selectedSuggestionName = nil
-        refreshNameSuggestions(for: filtered)
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        if isEditingName, !isNameSuggestionListOpen {
-            nameEditorCommit()
-        }
-    }
-}
-
-// MARK: - NSComboBoxDataSource (structured Person Shown names)
-
-extension FaceGroupCardView: NSComboBoxDataSource {
-    func numberOfItems(in comboBox: NSComboBox) -> Int {
-        structuredNameCache.count
-    }
-
-    func comboBox(_ comboBox: NSComboBox, objectValueForItemAt index: Int) -> Any? {
-        structuredNameCache.indices.contains(index) ? structuredNameCache[index] : nil
-    }
-
-    func comboBox(_ comboBox: NSComboBox, indexOfItemWithStringValue string: String) -> Int {
-        structuredNameCache.firstIndex { $0.caseInsensitiveCompare(string) == .orderedSame } ?? NSNotFound
-    }
-
-    func comboBox(_ comboBox: NSComboBox, completedString string: String) -> String? {
-        nil
     }
 }

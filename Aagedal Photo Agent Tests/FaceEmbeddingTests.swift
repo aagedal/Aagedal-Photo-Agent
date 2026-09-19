@@ -1750,39 +1750,130 @@ struct ExpandedFaceCardShortcutTests {
 }
 
 @Suite("Expanded face-group name suggestions")
+@MainActor
 struct FaceGroupNameSuggestionFilterTests {
-    private let names = [
-        "Erna Solberg",
-        "Jonas Gahr Støre",
-        "Solfrid Koanda",
-        "Ada Lovelace",
-    ]
+    private final class EditorHarness {
+        let field = FaceGroupNameTextField(frame: NSRect(x: 12, y: 12, width: 220, height: 24))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        var committedName: String?
+        var cancelled = false
 
-    @Test("Typing filters the dropdown case-insensitively")
-    func filtersByTypedText() {
-        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "STØ") == [
-            "Jonas Gahr Støre",
+        init() {
+            field.candidates = ["Jonas Gahr Støre", "Tonje Brenna", "Harald Hansen", "Harald Berg",
+                                "Anne Haraldsen", "  harald hansen  "]
+            window.contentView?.addSubview(field)
+            field.onCommit = { [weak self] in self?.committedName = $0 }
+            field.onCancel = { [weak self] in self?.cancelled = true }
+            window.makeFirstResponder(field)
+        }
+
+        func type(_ text: String) throws {
+            let editor = try #require(field.currentEditor() as? NSTextView)
+            editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        }
+
+        func command(_ selector: Selector) throws {
+            let editor = try #require(field.currentEditor() as? NSTextView)
+            #expect(field.control(field, textView: editor, doCommandBy: selector))
+        }
+
+        func close() {
+            field.onCommit = nil
+            field.dismissSuggestions()
+            window.orderOut(nil)
+        }
+    }
+
+    @Test("Typing filters visible suggestions while preserving keyboard focus")
+    func filtersWhileTyping() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        #expect(harness.field.visibleSuggestions.map(\.canonical) == [
+            "Harald Berg", "Harald Hansen", "Anne Haraldsen"
         ])
+        #expect(harness.field.suggestionsAreVisible)
+        #expect(harness.window.firstResponder === harness.field.currentEditor())
+        #expect(harness.field.highlightedIndex == nil)
+        try harness.type("Tonje")
+        #expect(harness.field.visibleSuggestions.map(\.canonical) == ["Tonje Brenna"])
+        #expect(harness.field.stringValue == "Tonje")
+        #expect(harness.committedName == nil)
     }
 
-    @Test("Prefix matches remain ahead of substring matches")
-    func prioritizesPrefixMatches() {
-        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "sol") == [
-            "Solfrid Koanda",
-            "Erna Solberg",
-        ])
+    @Test("Empty and unmatched queries close the suggestions")
+    func closesForEmptyOrUnmatchedText() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        for query in ["Harald", "", "Harald", "No matching person"] {
+            try harness.type(query)
+            #expect(harness.field.suggestionsAreVisible == (query == "Harald"))
+        }
     }
 
-    @Test("An empty query keeps the full browsable list")
-    func emptyQueryKeepsAllNames() {
-        #expect(FaceGroupNameSuggestionFilter.matches(in: names, query: "  ") == names)
+    @Test("Arrow keys choose a suggestion and Return applies it")
+    func keyboardSelection() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        try harness.command(#selector(NSResponder.moveDown(_:)))
+        try harness.command(#selector(NSResponder.moveDown(_:)))
+        try harness.command(#selector(NSResponder.insertNewline(_:)))
+        #expect(harness.committedName == "Harald Hansen")
+        #expect(!harness.field.suggestionsAreVisible)
     }
 
-    @Test("An explicit dropdown choice applies that exact candidate")
-    @MainActor
-    func explicitSelectionAppliesChosenCandidate() throws {
-        let folder = URL(fileURLWithPath: "/faces/name-suggestion")
-        let data = makeFaceFolderData(folder: folder, faceIDs: [UUID()])
+    @Test("Typing clears an old highlight and Return preserves free text")
+    func freeTextIsNotReplacedBySuggestion() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        try harness.command(#selector(NSResponder.moveDown(_:)))
+        try harness.type("Tonje")
+        #expect(harness.field.highlightedIndex == nil)
+        try harness.command(#selector(NSResponder.insertNewline(_:)))
+        #expect(harness.committedName == "Tonje")
+    }
+
+    @Test("Choosing a suggestion applies its exact name")
+    func explicitSelection() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        let suggestion = try #require(harness.field.visibleSuggestions.last)
+        harness.field.commitSuggestion(suggestion)
+        #expect(harness.committedName == "Anne Haraldsen")
+        #expect(!harness.field.suggestionsAreVisible)
+    }
+
+    @Test("Escape dismisses suggestions before cancelling the rename")
+    func escapeDismissesThenCancels() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        try harness.command(#selector(NSResponder.cancelOperation(_:)))
+        #expect(!harness.field.suggestionsAreVisible)
+        #expect(!harness.cancelled)
+        try harness.command(#selector(NSResponder.cancelOperation(_:)))
+        #expect(harness.cancelled)
+        #expect(harness.committedName == nil)
+    }
+
+    @Test("Losing focus saves typed text and closes suggestions")
+    func focusLossCommitsTypedText() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        try harness.command(#selector(NSResponder.moveDown(_:)))
+        #expect(harness.window.makeFirstResponder(nil))
+        #expect(harness.committedName == "Harald")
+        #expect(!harness.field.suggestionsAreVisible)
+    }
+
+    @Test("Double-click rename saves the field value to the face group")
+    func doubleClickRenameCommitsTypedName() throws {
+        let data = makeFaceFolderData(folder: URL(fileURLWithPath: "/faces/rename"), faceIDs: [UUID()])
         let group = try #require(data.groups.first)
         let viewModel = FaceRecognitionViewModel(
             readService: SwiftExifReadService(),
@@ -1791,18 +1882,36 @@ struct FaceGroupNameSuggestionFilterTests {
         )
         viewModel.faceData = data
         let card = FaceGroupCardView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
-        card.configure(
-            group: group,
-            viewModel: viewModel,
-            selectionState: FaceSelectionState(),
-            settingsViewModel: SettingsViewModel(),
-            isExpanded: true,
-            callbacks: .init()
-        )
+        card.configure(group: group, viewModel: viewModel, selectionState: FaceSelectionState(),
+                       settingsViewModel: SettingsViewModel(), isExpanded: true, callbacks: .init())
+        let window = NSWindow(contentRect: card.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = card
+        card.layoutSubtreeIfNeeded()
+        let click = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: card.convert(NSPoint(x: 30, y: 20), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 2, pressure: 1
+        ))
+        let hitView = try #require(card.hitTest(card.convert(NSPoint(x: 30, y: 20), to: card.superview)))
+        hitView.mouseDown(with: click)
+        let field = try #require(card.subviews.compactMap { $0 as? FaceGroupNameTextField }.first)
+        #expect(!field.isHidden)
+        let editor = try #require(field.currentEditor() as? NSTextView)
+        editor.insertText("Test Person", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        #expect(field.control(field, textView: editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        #expect(viewModel.group(byID: group.id)?.name == "Test Person")
+        #expect(field.isHidden)
+    }
 
-        card.applyNameSuggestion("Second Candidate")
-
-        #expect(viewModel.group(byID: group.id)?.name == "Second Candidate")
+    @Test("Removing a reused editor closes its suggestion panel")
+    func removalClosesSuggestions() throws {
+        let harness = EditorHarness()
+        defer { harness.close() }
+        try harness.type("Harald")
+        #expect(harness.field.suggestionsAreVisible)
+        harness.field.removeFromSuperview()
+        #expect(!harness.field.suggestionsAreVisible)
+        #expect(harness.field.visibleSuggestions.isEmpty)
     }
 }
 
