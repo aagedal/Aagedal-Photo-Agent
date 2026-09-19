@@ -22,22 +22,6 @@ private final class CaptionMetadataCleanupPhase {
     }
 }
 
-enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
-    case embedded
-    case xmp
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .embedded:
-            return "Embedded"
-        case .xmp:
-            return "XMP Sidecar"
-        }
-    }
-}
-
 /// Common/partial projection for an unordered repeatable metadata property across a selection.
 /// Values retain first-seen order for stable presentation even though equality is set-based.
 nonisolated struct BatchListSelection<Value: Hashable & Sendable>: Sendable, Equatable {
@@ -483,56 +467,8 @@ final class MetadataViewModel {
         xmp: IPTCMetadata?,
         imageURL: URL? = nil
     ) -> IPTCMetadata? {
-        switch source {
-        case .embedded:
-            // Develop (CRS) edits made in this app always persist to the XMP
-            // sidecar — the image file itself is never rewritten by the editor
-            // (mandatory for RAW/C2PA, and the default for non-RAW too). So even
-            // when the user prefers embedded IPTC, the sidecar is authoritative
-            // for develop settings: override embedded CRS with non-empty XMP CRS
-            // for ALL file types. This mirrors the grid loader
-            // (BrowserViewModel.applyBatchMetadataResults); previously this was
-            // gated to RAW only, which dropped develop edits for JPEG/JXL on
-            // reload and left the develop view showing the unedited original.
-            if let embedded,
-               let xmpCRS = xmp?.cameraRaw, !xmpCRS.isEmpty {
-                var result = embedded
-                var finalCRS = xmpCRS
-                if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                   let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
-                    finalCRS.localAdjustments = masks
-                }
-                result.cameraRaw = finalCRS
-                return result
-            }
-            return embedded
-        case .xmp:
-            if let embedded, let xmp {
-                // Photo Mechanic semantics: a sidecar with descriptive content IS the
-                // IPTC record — take its descriptive fields wholesale so clears stick
-                // instead of resurrecting embedded values through empty fields. A
-                // develop-only sidecar (no descriptive content) is not a record;
-                // overlay it additively so embedded descriptive values show through.
-                var merged = xmp.hasDescriptiveContent
-                    ? embedded.replacingDescriptiveFields(from: xmp)
-                    : embedded.merged(preferring: xmp)
-                // RAW: XMP sidecar is authoritative for CRS — replace, don't merge,
-                // to avoid stale embedded values leaking through nil sidecar fields
-                // (e.g. Adobe omitting Temperature even with WhiteBalance="Custom").
-                if let url = imageURL, SupportedImageFormats.isRaw(url: url),
-                   let xmpCRS = xmp.cameraRaw {
-                    var finalCRS = xmpCRS
-                    // Preserve localAdjustments from embedded (written to image directly, not to XMP sidecar)
-                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
-                       let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
-                        finalCRS.localAdjustments = masks
-                    }
-                    merged.cameraRaw = finalCRS
-                }
-                return merged
-            }
-            return xmp ?? embedded
-        }
+        EffectiveMetadataResolver.physicalMetadata(for: source, embedded: embedded, xmp: xmp,
+            isRaw: imageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false)
     }
 
     private(set) var selectedHavePendingSidecars = false
@@ -556,27 +492,8 @@ final class MetadataViewModel {
               let facts = snapshot.factsByImageURL[imageURL] else {
             throw CancellationError()
         }
-        let xmp = facts.xmpMetadata
-
-        var resolved = embedded
-        if let xmp {
-            let sidecarIsStale = facts.reconciliationVerdict == .fileNewerConflict
-            if !sidecarIsStale {
-                resolved = xmp.hasDescriptiveContent
-                    ? embedded.replacingDescriptiveFields(from: xmp)
-                    : embedded.merged(preferring: xmp)
-            }
-        }
-
-        if let sidecar = facts.appSidecar,
-           sidecar.pendingChanges {
-            let bestCameraRaw = resolved.cameraRaw ?? sidecar.metadata.cameraRaw
-            let bestOrientation = resolved.exifOrientation
-            resolved = sidecar.metadata
-            resolved.cameraRaw = bestCameraRaw
-            resolved.exifOrientation = bestOrientation
-        }
-        return resolved
+        return try EffectiveMetadataResolver.resolve(embedded: embedded, facts: facts,
+            isRaw: SupportedImageFormats.isRaw(url: imageURL)).metadata
     }
 
     func reportCaptionPersistenceFailure(_ message: String, requestID: UUID?) {
@@ -776,13 +693,8 @@ final class MetadataViewModel {
                         self.sidecarHistory = sidecar.history
                         self.sidecarHistory.trimToHistoryLimit()
                         if sidecar.pendingChanges {
-                            // Best CRS source: XMP/embedded (baseMeta) > JSON sidecar (fallback)
-                            let bestCameraRaw = newEditingMetadata.cameraRaw
-                                ?? sidecar.metadata.cameraRaw
-                            let bestOrientation = newEditingMetadata.exifOrientation
-                            newEditingMetadata = sidecar.metadata
-                            newEditingMetadata.cameraRaw = bestCameraRaw
-                            newEditingMetadata.exifOrientation = bestOrientation
+                            newEditingMetadata = EffectiveMetadataResolver.applyingPendingDraft(
+                                sidecar, to: newEditingMetadata)
                             self.hasChanges = true
                         }
                     }

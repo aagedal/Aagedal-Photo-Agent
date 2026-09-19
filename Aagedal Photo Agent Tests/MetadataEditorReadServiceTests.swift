@@ -47,6 +47,34 @@ private actor HistoryRestoreSuspensionGate {
 
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Copy Previous refuses inconsistent XMP without changing the editor")
+    @MainActor
+    func copyPreviousRefusesIncompleteXMP() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("previous.jpg")
+        let bytes = Data("disposable unreadable image".utf8)
+        try bytes.write(to: image)
+        let boundary = MetadataEditorReadService(access: .init(read: { url, _, _, _ in
+            MetadataEditorSourceFacts(imageURL: url, xmpMetadata: nil,
+                appSidecar: MetadataSidecar(sourceFile: url.lastPathComponent,
+                    pendingChanges: true, metadata: IPTCMetadata(title: "Pending")),
+                reconciliationVerdict: nil, xmpReadFailure: "injected inconsistent carrier")
+        }))
+        let model = MetadataViewModel(readService: SwiftExifReadService(),
+            writeEngine: MetadataCleanupSuccessfulWriter(), editorReadService: boundary)
+        let before = model.editingMetadata
+        do {
+            _ = try await model.loadCaptionCopyPreviousMetadata(for: image)
+            Issue.record("Copy Previous accepted incomplete XMP evidence")
+        } catch EffectiveMetadataResolver.ReadError.incompleteXMP {
+            // A pending JSON draft cannot hide a failed physical-carrier read.
+        }
+        #expect(model.editingMetadata == before)
+        #expect(try Data(contentsOf: image) == bytes)
+    }
+
     @Test("Pending rotations block descriptive completion before physical writes", arguments: ["legacy", "clear", "all"])
     @MainActor
     func pendingOrientationSurvivesDescriptiveWrite(action: String) async throws {

@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 48: bounded MCP carrier reads](release/cycle-48-mcp-bounded-carrier-reads-2026-09-19.md) prevents FIFO sidecars from blocking inspection and bounds JSON capture and revision hashing to the captured file length plus one growth probe. Effective typed IPTC reads, production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 49: shared effective metadata resolution](release/cycle-49-effective-metadata-resolution-2026-09-19.md) unifies editor and Copy Previous carrier selection, reports automatic descriptive provenance, and refuses inconsistent XMP in Copy Previous. The production MCP typed read, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

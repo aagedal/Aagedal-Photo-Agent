@@ -100,3 +100,120 @@ nonisolated enum SidecarReconciliation {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 }
+
+nonisolated enum MetadataReferenceSource: String, CaseIterable, Identifiable, Sendable {
+    case embedded
+    case xmp
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .embedded:
+            return "Embedded"
+        case .xmp:
+            return "XMP Sidecar"
+        }
+    }
+}
+
+/// Pure carrier selection shared by interactive reads and explicit-photo automation.
+/// Callers own byte capture, parsing, authorization and revision validation; this resolver
+/// never reopens a path or grants mutation authority.
+nonisolated enum EffectiveMetadataResolver {
+    enum Carrier: String, Sendable {
+        case embedded, xmp, pendingAppSidecar
+    }
+
+    struct Resolution: Sendable {
+        let metadata: IPTCMetadata
+        let descriptiveCarrier: Carrier
+        let hasPendingChanges: Bool
+        let hasXMPConflict: Bool
+    }
+
+    enum ReadError: LocalizedError {
+        case incompleteXMP
+        var errorDescription: String? {
+            "The XMP sidecar could not be read consistently. Reload before copying metadata."
+        }
+    }
+
+    static func resolve(embedded: IPTCMetadata, facts: MetadataEditorSourceFacts,
+                        isRaw: Bool) throws -> Resolution {
+        guard facts.xmpReadFailure == nil else { throw ReadError.incompleteXMP }
+        let conflict = facts.reconciliationVerdict == .fileNewerConflict
+        let reference: MetadataReferenceSource = facts.xmpMetadata != nil && !conflict ? .xmp : .embedded
+        let physical = physicalMetadata(for: reference, embedded: embedded,
+            xmp: facts.xmpMetadata, isRaw: isRaw) ?? embedded
+        let pending = facts.appSidecar?.pendingChanges == true
+        let metadata = facts.appSidecar.map { applyingPendingDraft($0, to: physical) } ?? physical
+        return Resolution(metadata: metadata,
+            descriptiveCarrier: pending ? .pendingAppSidecar
+                : (reference == .xmp && facts.xmpMetadata?.hasDescriptiveContent == true ? .xmp : .embedded),
+            hasPendingChanges: pending, hasXMPConflict: conflict)
+    }
+
+    static func applyingPendingDraft(_ sidecar: MetadataSidecar, to physical: IPTCMetadata) -> IPTCMetadata {
+        guard sidecar.pendingChanges else { return physical }
+        var metadata = sidecar.metadata
+        metadata.cameraRaw = physical.cameraRaw ?? sidecar.metadata.cameraRaw
+        metadata.exifOrientation = physical.exifOrientation
+        return metadata
+    }
+
+    static func physicalMetadata(for source: MetadataReferenceSource,
+                                 embedded: IPTCMetadata?, xmp: IPTCMetadata?,
+                                 isRaw: Bool) -> IPTCMetadata? {
+        switch source {
+        case .embedded:
+            // Develop (CRS) edits made in this app always persist to the XMP
+            // sidecar — the image file itself is never rewritten by the editor
+            // (mandatory for RAW/C2PA, and the default for non-RAW too). So even
+            // when the user prefers embedded IPTC, the sidecar is authoritative
+            // for develop settings: override embedded CRS with non-empty XMP CRS
+            // for ALL file types. This mirrors the grid loader
+            // (BrowserViewModel.applyBatchMetadataResults); previously this was
+            // gated to RAW only, which dropped develop edits for JPEG/JXL on
+            // reload and left the develop view showing the unedited original.
+            if let embedded,
+               let xmpCRS = xmp?.cameraRaw, !xmpCRS.isEmpty {
+                var result = embedded
+                var finalCRS = xmpCRS
+                if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                   let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
+                    finalCRS.localAdjustments = masks
+                }
+                result.cameraRaw = finalCRS
+                return result
+            }
+            return embedded
+        case .xmp:
+            if let embedded, let xmp {
+                // Photo Mechanic semantics: a sidecar with descriptive content IS the
+                // IPTC record — take its descriptive fields wholesale so clears stick
+                // instead of resurrecting embedded values through empty fields. A
+                // develop-only sidecar (no descriptive content) is not a record;
+                // overlay it additively so embedded descriptive values show through.
+                var merged = xmp.hasDescriptiveContent
+                    ? embedded.replacingDescriptiveFields(from: xmp)
+                    : embedded.merged(preferring: xmp)
+                // RAW: XMP sidecar is authoritative for CRS — replace, don't merge,
+                // to avoid stale embedded values leaking through nil sidecar fields
+                // (e.g. Adobe omitting Temperature even with WhiteBalance="Custom").
+                if isRaw,
+                   let xmpCRS = xmp.cameraRaw {
+                    var finalCRS = xmpCRS
+                    // Preserve localAdjustments from embedded (written to image directly, not to XMP sidecar)
+                    if (xmpCRS.localAdjustments?.isEmpty ?? true),
+                       let masks = embedded.cameraRaw?.localAdjustments, !masks.isEmpty {
+                        finalCRS.localAdjustments = masks
+                    }
+                    merged.cameraRaw = finalCRS
+                }
+                return merged
+            }
+            return xmp ?? embedded
+        }
+    }
+}

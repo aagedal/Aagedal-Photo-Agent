@@ -1639,6 +1639,12 @@ and ancestor generation checks remain. The focused 25-test suite, complete 2,956
 suite and repository validation pass. Effective IPTC and production operations remain open;
 this correction does not close a Phase 5A checkbox.
 
+**Progress — cycle 49:** [Shared effective metadata resolution](release/cycle-49-effective-metadata-resolution-2026-09-19.md)
+extracts production editor carrier selection into a pure resolver shared with Copy Previous,
+including pending-draft precedence and descriptive-source/conflict reporting. Copy Previous now
+refuses incomplete XMP reads. Connecting typed production parsing and this policy to the MCP
+helper's coherent carrier capture remains open; no Phase 5A checkbox is closed.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

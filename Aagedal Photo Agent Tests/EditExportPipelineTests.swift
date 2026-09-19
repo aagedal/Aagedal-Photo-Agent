@@ -1164,6 +1164,101 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
 
 @Suite("SidecarReconciliation descriptive diff")
 struct SidecarReconciliationTests {
+    @Test("Effective reads preserve XMP clears and identify the descriptive carrier")
+    func effectiveReadClears() throws {
+        let embedded = IPTCMetadata(title: "Old", description: "Embedded", keywords: ["old"])
+        let xmp = IPTCMetadata(description: "Sidecar")
+        let result = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp), isRaw: false)
+        #expect(result.metadata.title == nil)
+        #expect(result.metadata.description == "Sidecar")
+        #expect(result.metadata.keywords.isEmpty)
+        #expect(result.descriptiveCarrier == .xmp)
+        #expect(!result.hasPendingChanges)
+        #expect(!result.hasXMPConflict)
+    }
+
+    @Test("A stale descriptive XMP still supplies current Develop settings", arguments: [false, true])
+    func effectiveConflictRetainsDevelop(isRaw: Bool) throws {
+        var embedded = IPTCMetadata(title: "New embedded")
+        embedded.cameraRaw = CameraRawSettings()
+        embedded.cameraRaw?.exposure2012 = 1
+        var xmp = IPTCMetadata(title: "Stale caption")
+        xmp.cameraRaw = CameraRawSettings()
+        xmp.cameraRaw?.exposure2012 = 2
+        let result = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp, conflict: true), isRaw: isRaw)
+        #expect(result.metadata.title == "New embedded")
+        #expect(result.metadata.cameraRaw?.exposure2012 == 2)
+        #expect(result.descriptiveCarrier == .embedded)
+        #expect(result.hasXMPConflict)
+    }
+
+    @Test("RAW resolution does not resurrect an omitted embedded Develop value")
+    func effectiveRAWReplacesDevelop() throws {
+        var embedded = IPTCMetadata(title: "Embedded")
+        embedded.cameraRaw = CameraRawSettings()
+        embedded.cameraRaw?.temperature = 5500
+        var xmp = IPTCMetadata(title: "Sidecar")
+        xmp.cameraRaw = CameraRawSettings()
+        xmp.cameraRaw?.exposure2012 = 2
+        let result = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(xmp: xmp), isRaw: true)
+        #expect(result.metadata.cameraRaw?.temperature == nil)
+        #expect(result.metadata.cameraRaw?.exposure2012 == 2)
+    }
+
+    @Test("Develop-only XMP is not reported as the descriptive source")
+    func effectiveDevelopOnly() throws {
+        var xmp = IPTCMetadata()
+        xmp.cameraRaw = CameraRawSettings()
+        xmp.cameraRaw?.exposure2012 = 2
+        let result = try EffectiveMetadataResolver.resolve(embedded: IPTCMetadata(title: "Embedded"),
+            facts: resolutionFacts(xmp: xmp), isRaw: true)
+        #expect(result.metadata.title == "Embedded")
+        #expect(result.metadata.cameraRaw?.exposure2012 == 2)
+        #expect(result.descriptiveCarrier == .embedded)
+    }
+
+    @Test("Pending drafts win without replacing physical orientation or Develop", arguments: [false, true])
+    func effectivePendingDraft(pending: Bool) throws {
+        var embedded = IPTCMetadata(title: "Physical")
+        embedded.exifOrientation = 6
+        embedded.cameraRaw = CameraRawSettings()
+        embedded.cameraRaw?.exposure2012 = 2
+        var draft = IPTCMetadata(title: "Draft")
+        draft.exifOrientation = 3
+        draft.cameraRaw = CameraRawSettings()
+        draft.cameraRaw?.exposure2012 = 4
+        let record = MetadataSidecar(sourceFile: "frame.arw", pendingChanges: pending, metadata: draft)
+        let result = try EffectiveMetadataResolver.resolve(embedded: embedded,
+            facts: resolutionFacts(app: record), isRaw: true)
+        #expect(result.metadata.title == (pending ? "Draft" : "Physical"))
+        #expect(result.metadata.exifOrientation == 6)
+        #expect(result.metadata.cameraRaw?.exposure2012 == 2)
+        #expect(result.descriptiveCarrier == (pending ? .pendingAppSidecar : .embedded))
+        #expect(result.hasPendingChanges == pending)
+    }
+
+    @Test("Incomplete XMP is refused even when a pending draft exists", arguments: [false, true])
+    func effectiveIncompleteXMP(pending: Bool) {
+        let facts = MetadataEditorSourceFacts(imageURL: URL(fileURLWithPath: "/fixture/frame.arw"),
+            xmpMetadata: nil,
+            appSidecar: MetadataSidecar(sourceFile: "frame.arw", pendingChanges: pending),
+            reconciliationVerdict: nil, xmpReadFailure: "injected read failure")
+        #expect(throws: EffectiveMetadataResolver.ReadError.self) {
+            try EffectiveMetadataResolver.resolve(embedded: IPTCMetadata(title: "Embedded"),
+                facts: facts, isRaw: true)
+        }
+    }
+
+    private func resolutionFacts(xmp: IPTCMetadata? = nil, app: MetadataSidecar? = nil,
+                                 conflict: Bool = false) -> MetadataEditorSourceFacts {
+        MetadataEditorSourceFacts(imageURL: URL(fileURLWithPath: "/fixture/frame.arw"),
+            xmpMetadata: xmp, appSidecar: app,
+            reconciliationVerdict: conflict ? .fileNewerConflict : .sidecarMaster)
+    }
+
     @Test("identical descriptive fields don't differ (keywords order-insensitive)")
     func identical() {
         let a = IPTCMetadata(title: "T", keywords: ["x", "y"], creator: "C")
