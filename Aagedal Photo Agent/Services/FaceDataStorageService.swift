@@ -3,6 +3,12 @@ import os.log
 
 nonisolated private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "FaceDataStorageService")
 
+/// The explicit deletion intent is applied to the latest reserved disk snapshot.
+nonisolated enum FaceDataDeletionSelection: Sendable {
+    case photos(Set<URL>)
+    case faces(Set<UUID>)
+}
+
 nonisolated struct FaceDataStorageService: Sendable {
 
     static let faceDataDirectoryName = ".face_data"
@@ -578,12 +584,19 @@ actor FaceDataFolderLoadService {
         return load(folderURL: folderURL, cleanupPolicy: cleanupPolicy)
     }
 
-    /// Lazy photo deletion must not release admission between its snapshot and commit.
+    /// Face deletion must not release admission between its snapshot and commit.
     /// Return the original snapshot on write failure and the committed snapshot even if
     /// thumbnail cleanup fails; callers must not confuse cleanup with a failed document write.
     func deletePhotoFacesWithFolderReservation(
         folderURL: URL,
         imageURLs: Set<URL>
+    ) throws -> (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?) {
+        try deleteFacesWithFolderReservation(folderURL: folderURL, selection: .photos(imageURLs))
+    }
+
+    func deleteFacesWithFolderReservation(
+        folderURL: URL,
+        selection: FaceDataDeletionSelection
     ) throws -> (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?) {
         guard !Task.isCancelled else {
             return (.cancelled(CancelledFaceDataFolderLoadEvidence(
@@ -598,16 +611,22 @@ actor FaceDataFolderLoadService {
             return (loaded, nil)
         }
         // A persisted URL must never redirect this transaction outside its reserved folder.
-        guard data.folderURL.standardizedFileURL.path == folderURL.standardizedFileURL.path,
-              imageURLs.allSatisfy({
-                  $0.deletingLastPathComponent().standardizedFileURL.path == folderURL.standardizedFileURL.path
-              }) else {
+        guard data.folderURL.standardizedFileURL.path == folderURL.standardizedFileURL.path else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let paths = Set(imageURLs.map { $0.standardizedFileURL.path })
-        let removedIDs = Set(data.faces.filter {
-            paths.contains($0.imageURL.standardizedFileURL.path)
-        }.map(\.id))
+        let removedIDs: Set<UUID>
+        switch selection {
+        case .photos(let imageURLs):
+            guard imageURLs.allSatisfy({
+                $0.deletingLastPathComponent().standardizedFileURL.path == folderURL.standardizedFileURL.path
+            }) else { throw CocoaError(.fileReadCorruptFile) }
+            let paths = Set(imageURLs.map { $0.standardizedFileURL.path })
+            removedIDs = Set(data.faces.filter {
+                paths.contains($0.imageURL.standardizedFileURL.path)
+            }.map(\.id))
+        case .faces(let faceIDs):
+            removedIDs = faceIDs.intersection(data.faces.map(\.id))
+        }
         guard !removedIDs.isEmpty else { return (loaded, nil) }
         for index in data.groups.indices {
             data.groups[index].faceIDs.removeAll { removedIDs.contains($0) }

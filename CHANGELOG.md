@@ -10,6 +10,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Individual face deletion now removes only the selected face IDs from the latest saved
+  folder data. Newer faces and group names are preserved, and busy-folder or failed-save
+  errors retain visible faces and thumbnails for retry. Queued stale edits cannot restore
+  faces deleted by this transaction.
+
 - Photo-based face deletion without a loaded folder now holds one reservation from loading
   through document save and thumbnail cleanup. Failed saves retain visible faces, and a
   document pointing to another folder is refused before writing.

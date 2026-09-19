@@ -855,7 +855,7 @@ final class FaceRecognitionViewModel {
                   self.photoDeletionGenerations[folderIdentity, default: 0] == expectedDeletionGeneration else {
                 self.stalePhotoDeletionFolders.insert(folderIdentity)
                 if self.faceDataRevision == expectedRevision {
-                    self.errorMessage = "Face data changed during photo deletion. This edit was not saved. Reload the folder and reapply the edit."
+                    self.errorMessage = "Face data changed during deletion. This edit was not saved. Reload the folder and reapply the edit."
                 }
                 return
             }
@@ -3158,6 +3158,10 @@ final class FaceRecognitionViewModel {
               faceData == nil || faceData?.folderURL.standardizedFileURL.path == targetFolder.standardizedFileURL.path
         else { return }
 
+        scheduleReservedFaceDeletion(in: targetFolder, selection: .photos(imageURLs))
+    }
+
+    private func scheduleReservedFaceDeletion(in targetFolder: URL, selection: FaceDataDeletionSelection) {
         let alreadyLoaded = faceData != nil
         if !alreadyLoaded { faceDataLoadTask?.cancel() }
         let requestID = UUID()
@@ -3171,8 +3175,8 @@ final class FaceRecognitionViewModel {
             if !alreadyLoaded, self.faceDataLoadRequestID != requestID { return }
             let result: (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?)
             do {
-                result = try await service.deletePhotoFacesWithFolderReservation(
-                    folderURL: targetFolder, imageURLs: imageURLs
+                result = try await service.deleteFacesWithFolderReservation(
+                    folderURL: targetFolder, selection: selection
                 )
             } catch {
                 guard !Task.isCancelled, self.faceDataLoadRequestID == requestID,
@@ -3201,26 +3205,8 @@ final class FaceRecognitionViewModel {
 
     /// Permanently delete faces from the data set (removes from groups, face list, thumbnail cache, and disk).
     func deleteFaces(_ faceIDs: Set<UUID>) {
-        guard var data = faceData, !faceIDs.isEmpty else { return }
-
-        // Remove from groups (cleans up empties)
-        removeFacesFromGroups(faceIDs, in: &data)
-
-        // Remove from the face list
-        data.faces.removeAll { faceIDs.contains($0.id) }
-
-        // Remove thumbnails from the presentation immediately; serialized persistence installs
-        // the updated document before cleaning up the now-unreferenced files.
-        for faceID in faceIDs {
-            thumbnailCache.removeObject(forKey: faceID as NSUUID)
-            thumbnailDataByFaceID.removeValue(forKey: faceID)
-        }
-
-        faceData = data
-        scheduleFaceDataPersistence(
-            data,
-            deletingThumbnailIDs: faceIDs.sorted { $0.uuidString < $1.uuidString }
-        )
+        guard let data = faceData, !faceIDs.isEmpty else { return }
+        scheduleReservedFaceDeletion(in: data.folderURL, selection: .faces(faceIDs))
     }
 
     /// Delete an entire group: removes all face data and optionally trashes the source photos.

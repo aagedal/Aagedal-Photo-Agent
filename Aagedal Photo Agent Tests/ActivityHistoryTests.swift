@@ -478,8 +478,8 @@ struct ActivityHistoryTests {
         #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([1]))
     }
 
-    @Test("Loaded photo deletion preserves newer disk groups and faces", arguments: ["success", "busy", "queued", "overlappingEdit"])
-    func loadedPhotoDeletionReconcilesDisk(outcome: String) async throws {
+    @Test("Loaded photo deletion preserves newer disk groups and faces", arguments: ["success", "busy", "queued", "overlappingEdit"], [false, true])
+    func loadedPhotoDeletionReconcilesDisk(outcome: String, byID: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let photos = ["removed.jpg", "survivor.jpg", "new.jpg"].map { folder.appendingPathComponent($0) }
@@ -505,8 +505,13 @@ struct ActivityHistoryTests {
         let busy = outcome == "busy"
         let lease = try busy ? MCPProcessReservation.acquireFolder(folder) : nil
         defer { lease?.release() }
-        viewModel.deleteFaces(forImageURLs: [photos[0]])
-        if outcome == "queued" { viewModel.deleteFaces(forImageURLs: [photos[1]]) }
+        if byID {
+            viewModel.deleteFaces([faces[0].id])
+            if outcome == "queued" { viewModel.deleteFaces([faces[1].id]) }
+        } else {
+            viewModel.deleteFaces(forImageURLs: [photos[0]])
+            if outcome == "queued" { viewModel.deleteFaces(forImageURLs: [photos[1]]) }
+        }
         if outcome == "overlappingEdit" { viewModel.nameGroup(groupID, name: "Unsaved local edit") }
         await viewModel.waitForCurrentFaceDataPersistence()
         let saved = try #require(storage.loadFaceData(for: folder))
@@ -537,6 +542,38 @@ struct ActivityHistoryTests {
             #expect(storage.loadThumbnail(for: faces[0].id, folderURL: folder) == nil)
             #expect(storage.loadThumbnail(for: faces[2].id, folderURL: folder) == Data([1]))
         }
+    }
+
+    @Test("Individual deletion preserves other faces in the same photo and unknown IDs are harmless")
+    func individualDeletionKeepsPhotoPeers() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("group-photo.jpg")
+        let faces = (0..<2).map { _ in DetectedFace(id: UUID(), imageURL: photo,
+            faceRect: .zero, featurePrintData: Data([1]), detectedAt: Date()) }
+        let group = FaceGroup(id: UUID(), name: "People", representativeFaceID: faces[0].id,
+            faceIDs: faces.map(\.id))
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(FolderFaceData(folderURL: folder, faces: faces, groups: [group],
+            lastScanDate: Date(), scanComplete: true))
+        for face in faces { try storage.saveThumbnail(Data([1]), for: face.id, folderURL: folder) }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        viewModel.deleteFaces([faces[0].id, UUID()])
+        await viewModel.waitForCurrentFaceDataPersistence()
+        let saved = try #require(storage.loadFaceData(for: folder))
+        #expect(saved.faces.map(\.id) == [faces[1].id])
+        #expect(saved.groups.first?.faceIDs == [faces[1].id])
+        #expect(saved.groups.first?.representativeFaceID == faces[1].id)
+        #expect(viewModel.faceData?.faces.map(\.id) == [faces[1].id])
+        #expect(storage.loadThumbnail(for: faces[0].id, folderURL: folder) == nil)
+        #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([1]))
+        viewModel.deleteFaces([faces[0].id, UUID()])
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(storage.loadFaceData(for: folder)?.faces.map(\.id) == saved.faces.map(\.id))
+        #expect(viewModel.errorMessage == nil)
     }
 
     @Test("Lazy deletion owns one reservation through read, commit and cleanup",
@@ -609,8 +646,8 @@ struct ActivityHistoryTests {
         released.release()
     }
 
-    @Test("Photo deletion write failure preserves visible faces and reports the failure", arguments: [false, true])
-    func lazyFaceDeletionWriteFailurePresentation(alreadyLoaded: Bool) async {
+    @Test("Photo deletion write failure preserves visible faces and reports the failure", arguments: ["lazyPhoto", "loadedPhoto", "faceID"])
+    func lazyFaceDeletionWriteFailurePresentation(mode: String) async {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let photo = folder.appendingPathComponent("photo.jpg")
         let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
@@ -624,11 +661,12 @@ struct ActivityHistoryTests {
             deleteThumbnail: { _, _ in Issue.record("A failed save must preserve thumbnails") })
         let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
-        if alreadyLoaded {
+        if mode != "lazyPhoto" {
             viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
             await viewModel.waitForCurrentFaceDataLoad()
         }
-        viewModel.deleteFaces(forImageURLs: [photo])
+        if mode == "faceID" { viewModel.deleteFaces([face.id]) }
+        else { viewModel.deleteFaces(forImageURLs: [photo]) }
         await viewModel.waitForCurrentFaceDataLoad()
         #expect(viewModel.faceData?.faces.map(\.id) == [face.id])
         #expect(viewModel.scanComplete)
