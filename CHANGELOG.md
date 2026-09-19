@@ -10,6 +10,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added `get_photo_metadata` to the bundled local MCP helper. It reads one authorized photo and returns
+  typed effective editorial metadata, per-field carrier selection, pending/conflict state and captured
+  revision tokens. Busy photos, changed authority, malformed carriers and oversized output fail without
+  modifying files or returning a partial record.
+
 - Bundled the reviewed AuraFace face model with the app so face recognition works offline immediately, without a separate model download.
 - Updated SwiftMediaMetadata to 3.0.1. Sony RTMD track discovery now avoids materializing top-level
   media payloads while retaining file-absolute sample offsets, reducing peak memory use when scanning
@@ -18,8 +23,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   executable bundled with the app. Automation is off by default; Settings manages explicit folder
   grants and a copyable Codex install command. The initial server exposes read-only capability,
   authorized-root and path-admission tools, rejects aliases/links, traversal, special files,
-  changed roots and Photo Agent private folders, and never opens a network listener. Production
-  metadata, face, template, transcription and mutation tools remain unavailable until their shared
+  changed roots and Photo Agent private folders, and never opens a network listener.
+  Face, template, transcription and mutation tools remain unavailable until their shared
   operation/recovery boundaries are implemented.
 - Retained field mutations, variable/template metadata completion, Write All and Primary Develop
   saves now reserve their photo and folder across processes while they prepare, write and verify.

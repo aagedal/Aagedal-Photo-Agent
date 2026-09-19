@@ -1425,6 +1425,13 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 59 continuation (2026-09-19):** The bundled helper now links the production typed
+reader and exposes guarded `get_photo_metadata` for one explicit photo. Values, field carriers,
+pending/conflict state and captured revisions are bounded and verified before publication.
+The single-photo endpoint implementation is complete; real-client validation and the remaining
+workflow/mutation/provider tools stay open. See
+[cycle 59](release/cycle-59-mcp-effective-metadata-tool-2026-09-19.md).
+
 **Cycle 58 continuation (2026-09-19):** Captured XMP decoding now has a shared byte-only
 reader used by the interactive sidecar service and guarded MCP snapshot reads. This removes
 the XMP write-service dependency before helper integration. Remaining helper target wiring
@@ -1477,7 +1484,7 @@ reviewable transcript workflow without implicitly approving or applying text to 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.
-- [ ] Implement `get_photo_metadata` for explicit photo URLs. Return typed descriptive IPTC values,
+- [x] Implement `get_photo_metadata` for explicit photo URLs. Return typed descriptive IPTC values,
   their effective source/carrier, pending/conflict state, and opaque revision tokens for the source,
   app sidecar, and XMP evidence required by a later write. Bound batch and text output sizes.
 - [ ] Implement `start_face_scan` for one authorized folder, with incremental/full-scan intent,

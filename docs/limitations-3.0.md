@@ -109,11 +109,13 @@ This is separate from the unapproved AI-origin analyzer described above.
 
 - Local MCP automation is off by default, uses a bundled STDIO helper, and opens no network listener.
   Only explicitly selected, unchanged folder roots are eligible. The current implementation exposes
-  read-only capability/photo-input-format/root/path-admission tools; production metadata, Develop, face, transcription,
+  read-only capability/photo-input-format/root/path-admission, revision, owned-draft and effective editorial
+  metadata tools. Effective reads accept one explicit photo per call and refuse malformed or oversized
+  records without truncation. Develop, face, template, transcription,
   status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.
 - Folder authorization limits Photo Agent, not the connected client's own filesystem or network access.
-  Tool results can contain sensitive paths and, once metadata inspection is added, editorial values. The
+  Tool results can contain sensitive paths and editorial values. The
   connected client has its own privacy, retention, confirmation, and network behavior.
 - The bundled helper and strict admission tests do not yet constitute native end-to-end evidence from a
   real MCP client. Cross-process GUI/MCP operation coordination, disconnect/relaunch/fault injection, and

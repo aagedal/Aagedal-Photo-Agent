@@ -250,6 +250,17 @@
     "cleanup": "Restore preferences, retain artifact comparisons and remove only disposable obstructions. Record any blocked format or timing case separately."
   },
   {
+    "id": "A21",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Local MCP effective metadata and authorization",
+    "source": "../journalistic-metadata-workflow-plan.md",
+    "setup": "Use disposable client configurations and a disposable JPEG/RAW + XMP folder with embedded text, localized Title, explicit clears and pending/saved Photo Agent drafts. Record the candidate helper path, hash and original Automation Settings. Do not grant personal photo folders.",
+    "steps": "Connect the bundled helper from each targeted client (Codex CLI, Claude Code, OpenCode 1.x and v2). Discover get_photo_metadata and call it with one explicit absolute path. Compare fields, carrier selections, pending/conflict state and revisions with Photo Agent for embedded, XMP and pending/saved draft cases. Test malformed XMP, oversized text, a busy photo, unknown arguments and an unauthorized path. Disable automation or remove the test root while still connected and repeat the read.",
+    "expected": "Complete typed editorial values and explicit clears agree with Photo Agent. Technical/Develop fields and private history are absent. Invalid, busy, unsupported and oversized inputs return a whole-call refusal; revoked authority refuses on the existing connection. Revisions describe captured evidence and never imply write permission. No source or sidecar bytes change. Record outcomes separately for every client; the standalone STDIO smoke is not client validation.",
+    "cleanup": "Remove disposable client entries and test-root grants, restore original automation enablement, and preserve only non-private protocol evidence and hashes."
+  },
+  {
     "id": "U01",
     "lane": "Final user acceptance",
     "priority": "P0",

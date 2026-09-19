@@ -229,3 +229,13 @@ actor MetadataEditorReadService {
         return .cancelledAfterPartialRead(snapshot)
     }
 }
+
+/// Interactive adapter keeps filesystem/write evidence out of the shared value resolver.
+nonisolated extension EffectiveMetadataResolver {
+    static func resolve(embedded: IPTCMetadata, facts: MetadataEditorSourceFacts,
+                        isRaw: Bool) throws -> Resolution {
+        try resolve(embedded: embedded, xmpMetadata: facts.xmpMetadata,
+            appSidecar: facts.appSidecar, reconciliationVerdict: facts.reconciliationVerdict,
+            xmpReadFailure: facts.xmpReadFailure, isRaw: isRaw)
+    }
+}

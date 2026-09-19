@@ -169,10 +169,10 @@ struct AutomationSettingsView: View {
             }
 
             Section("Privacy and activity") {
-                Text("Filenames and metadata are treated as untrusted data and are never instructions. Tool output can contain private metadata from authorized photos. Mutating tools will use Photo Agent's preview, conflict, preservation, verification, and recovery boundaries; this implementation stage exposes read-only capability and authorization inspection only.")
+                Text("Filenames and metadata are treated as untrusted data and are never instructions. Tool output can contain private metadata from authorized photos. Mutating tools will use Photo Agent's preview, conflict, preservation, verification, and recovery boundaries; this implementation stage exposes read-only discovery, authorization, revision, owned-draft and effective editorial metadata inspection.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Current read-only capability and authorization checks are not retained. Mutation tools will not become available until their privacy-safe operation history and recovery evidence are implemented.")
+                Text("Current read-only checks and metadata results are not retained by Photo Agent. Mutation tools will not become available until their privacy-safe operation history and recovery evidence are implemented.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

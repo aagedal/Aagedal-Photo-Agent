@@ -3325,6 +3325,71 @@ struct AdvancedExportLayoutTests {
 
 @Suite("MCP typed immutable metadata snapshots")
 struct MCPMetadataSnapshotReaderTests {
+    @Test("Effective metadata tool dispatch preserves typed results and refuses invalid authority or carriers",
+          arguments: ["success", "disabled", "extraArgument", "missingPath", "wrongPathType", "busy", "invalidSource", "invalidXMP", "oversized"])
+    func effectiveToolDispatch(mode: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("apa-mcp-dispatch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = try snapshot(invalidSource: mode == "invalidSource", invalidXMP: mode == "invalidXMP")
+        let photo = root.appendingPathComponent("frame.jpg")
+        let xmp = root.appendingPathComponent("frame.xmp")
+        try input.sourceBytes.write(to: photo)
+        try input.xmpBytes?.write(to: xmp)
+        if mode == "oversized" {
+            let folder = root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(MetadataSidecar(sourceFile: "frame.jpg", pendingChanges: true,
+                metadata: IPTCMetadata(description: String(repeating: "x", count: 32_769))))
+                .write(to: folder.appendingPathComponent("frame.jpg.meta.json"))
+        }
+        let box = MCPServerCoreTests.DataBox()
+        let store = MCPAuthorizationStore(readConfigurationData: { box.read() },
+            writeConfigurationData: { box.write($0) })
+        try store.addRoot(root)
+        try store.setEnabled(mode != "disabled")
+        let lease = mode == "busy" ? try MCPProcessReservation.acquirePhoto(photo) : nil
+        defer { lease?.release() }
+        let session = MCPServerSession(authorizationStore: store)
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8))
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+        var arguments: [String: MCPJSONValue] = ["path": .string(photo.path)]
+        if mode == "extraArgument" { arguments["includePrivateHistory"] = .bool(true) }
+        if mode == "missingPath" { arguments = [:] }
+        if mode == "wrongPathType" { arguments["path"] = .bool(true) }
+        let request = MCPJSONValue.object([
+            "jsonrpc": .string("2.0"), "id": .integer(2), "method": .string("tools/call"),
+            "params": .object(["name": .string("get_photo_metadata"), "arguments": .object(arguments)])])
+        let response = try #require(session.response(forLine: JSONEncoder().encode(request)))
+        let result = try #require(JSONDecoder().decode(MCPJSONValue.self, from: response)
+            .objectValue?["result"]?.objectValue)
+        #expect(result["isError"] == .bool(mode != "success"))
+        let content = try #require(result["structuredContent"]?.objectValue)
+        if mode == "success" {
+            #expect(content["fields"]?.objectValue?["title"] == .string("Sidecar"))
+            #expect(content["fieldCarriers"]?.objectValue?["title"] == .string("xmp"))
+            #expect(content["effectiveIPTCResolved"] == .bool(true))
+            #expect(content["sourceRevision"]?.stringValue?.isEmpty == false)
+            #expect(content["fields"]?.objectValue?["cameraRaw"] == nil)
+        } else {
+            let expected = switch mode {
+            case "disabled": "disabled"
+            case "extraArgument", "missingPath", "wrongPathType": "invalid_arguments"
+            case "busy": "busy"
+            default: "metadata_read_failed"
+            }
+            #expect(content["code"] == .string(expected))
+            #expect(content["fields"] == nil)
+        }
+        #expect(try Data(contentsOf: photo) == input.sourceBytes)
+        #expect(try Data(contentsOf: xmp) == input.xmpBytes)
+        lease?.release()
+        let released = try MCPProcessReservation.acquirePhoto(photo)
+        released.release()
+    }
+
     @Test("Authorized effective reads integrate captured parsing, bounded output and revision evidence")
     func authorizedEffectiveRead() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("apa-effective-\(UUID().uuidString)")

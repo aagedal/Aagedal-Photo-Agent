@@ -163,6 +163,23 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
+		29599D40E434A32BA684F191 /* MCPMetadataSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */; };
+		74D5A32E223669E678301D28 /* XMPMetadataReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */; };
+		EF969DB683347FFC3E64F2F9 /* SwiftExifDictAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */; };
+		A909807563B7ED07A0C78D51 /* IPTCMetadataParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */; };
+		9ABD0EF549177C39234F1AB4 /* SidecarReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */; };
+		4B7D57A22AB4E768534E9893 /* IPTCMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */; };
+		2C7398777E1B755B39AC0B58 /* MetadataSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */; };
+		77EC73DD3CDDF758E2863489 /* MetadataFieldID.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */; };
+		DD5FDACD1A42E920D0219776 /* MetadataFieldKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */; };
+		1A021A74D4587B8447E8AE88 /* ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */; };
+		C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
+		336FE8FEED13D97CB310C181 /* UserDefaultsKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */; };
+		8F97448B587181440275097A /* EditorialImageSupplier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */; };
+		99CE7D65C8B7FDAAD992CC54 /* EditorialDateCreated.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */; };
+		AB96DD502657CA81F3D05475 /* IPTCMetadataVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */; };
+		3C01ADAD5FE443AEA4BB439A /* ISO3166Country.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494B37051D772365BB0908B9 /* ISO3166Country.swift */; };
+		31B9081D449A9F0EEE29CEC7 /* EditorialJSONSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -363,6 +380,22 @@
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
+		EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift"; sourceTree = SOURCE_ROOT; };
+		BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/XMPMetadataReader.swift"; sourceTree = SOURCE_ROOT; };
+		0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
+		EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/IPTCMetadataParsing.swift"; sourceTree = SOURCE_ROOT; };
+		F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
+		4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadata.swift"; sourceTree = SOURCE_ROOT; };
+		D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataSidecar.swift"; sourceTree = SOURCE_ROOT; };
+		ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldID.swift"; sourceTree = SOURCE_ROOT; };
+		7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldKey.swift"; sourceTree = SOURCE_ROOT; };
+		EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ColorLabel.swift"; sourceTree = SOURCE_ROOT; };
+		69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/UserDefaultsKeys.swift"; sourceTree = SOURCE_ROOT; };
+		37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialImageSupplier.swift"; sourceTree = SOURCE_ROOT; };
+		F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
+		2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadataVerification.swift"; sourceTree = SOURCE_ROOT; };
+		494B37051D772365BB0908B9 /* ISO3166Country.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ISO3166Country.swift"; sourceTree = SOURCE_ROOT; };
+		D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -407,6 +440,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -606,6 +640,22 @@
 			children = (
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
+				D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */,
+				494B37051D772365BB0908B9 /* ISO3166Country.swift */,
+				2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */,
+				F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */,
+				37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */,
+				69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */,
+				EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */,
+				7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */,
+				ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */,
+				D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */,
+				4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */,
+				F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */,
+				EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */,
+				0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */,
+				BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */,
+				EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */,
 			);
 			path = "PhotoAgent MCP";
 			sourceTree = "<group>";
@@ -655,6 +705,7 @@
 			);
 			dependencies = (
 			);
+			packageProductDependencies = (8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */,);
 			name = "Photo Agent MCP";
 			productName = "photo-agent-mcp";
 			productReference = C5A000000000000000000003 /* photo-agent-mcp */;
@@ -960,6 +1011,22 @@
 			files = (
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
+				31B9081D449A9F0EEE29CEC7 /* EditorialJSONSchema.swift in Sources */,
+				3C01ADAD5FE443AEA4BB439A /* ISO3166Country.swift in Sources */,
+				AB96DD502657CA81F3D05475 /* IPTCMetadataVerification.swift in Sources */,
+				99CE7D65C8B7FDAAD992CC54 /* EditorialDateCreated.swift in Sources */,
+				8F97448B587181440275097A /* EditorialImageSupplier.swift in Sources */,
+				336FE8FEED13D97CB310C181 /* UserDefaultsKeys.swift in Sources */,
+				1A021A74D4587B8447E8AE88 /* ColorLabel.swift in Sources */,
+				DD5FDACD1A42E920D0219776 /* MetadataFieldKey.swift in Sources */,
+				77EC73DD3CDDF758E2863489 /* MetadataFieldID.swift in Sources */,
+				2C7398777E1B755B39AC0B58 /* MetadataSidecar.swift in Sources */,
+				4B7D57A22AB4E768534E9893 /* IPTCMetadata.swift in Sources */,
+				9ABD0EF549177C39234F1AB4 /* SidecarReconciliation.swift in Sources */,
+				A909807563B7ED07A0C78D51 /* IPTCMetadataParsing.swift in Sources */,
+				EF969DB683347FFC3E64F2F9 /* SwiftExifDictAdapter.swift in Sources */,
+				74D5A32E223669E678301D28 /* XMPMetadataReader.swift in Sources */,
+				29599D40E434A32BA684F191 /* MCPMetadataSnapshotReader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

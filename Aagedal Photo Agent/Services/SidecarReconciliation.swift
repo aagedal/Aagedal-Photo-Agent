@@ -149,17 +149,18 @@ nonisolated enum EffectiveMetadataResolver {
         }
     }
 
-    static func resolve(embedded: IPTCMetadata, facts: MetadataEditorSourceFacts,
-                        isRaw: Bool) throws -> Resolution {
-        guard facts.xmpReadFailure == nil else { throw ReadError.incompleteXMP }
-        let conflict = facts.reconciliationVerdict == .fileNewerConflict
-        let reference: MetadataReferenceSource = facts.xmpMetadata != nil && !conflict ? .xmp : .embedded
+    static func resolve(embedded: IPTCMetadata, xmpMetadata: IPTCMetadata?,
+                        appSidecar: MetadataSidecar?, reconciliationVerdict: SidecarReconciliation.Verdict?,
+                        xmpReadFailure: String? = nil, isRaw: Bool) throws -> Resolution {
+        guard xmpReadFailure == nil else { throw ReadError.incompleteXMP }
+        let conflict = reconciliationVerdict == .fileNewerConflict
+        let reference: MetadataReferenceSource = xmpMetadata != nil && !conflict ? .xmp : .embedded
         let physical = physicalMetadata(for: reference, embedded: embedded,
-            xmp: facts.xmpMetadata, isRaw: isRaw) ?? embedded
-        let pending = facts.appSidecar?.pendingChanges == true
-        let metadata = facts.appSidecar.map { applyingPendingDraft($0, to: physical) } ?? physical
+            xmp: xmpMetadata, isRaw: isRaw) ?? embedded
+        let pending = appSidecar?.pendingChanges == true
+        let metadata = appSidecar.map { applyingPendingDraft($0, to: physical) } ?? physical
         let descriptiveCarrier: Carrier = pending ? .pendingAppSidecar
-            : (reference == .xmp && facts.xmpMetadata?.hasDescriptiveContent == true ? .xmp : .embedded)
+            : (reference == .xmp && xmpMetadata?.hasDescriptiveContent == true ? .xmp : .embedded)
         var fieldCarriers = Dictionary(uniqueKeysWithValues:
             IPTCMetadata.persistedJSONFieldNames.map { ($0, descriptiveCarrier) })
         if !pending {
@@ -168,7 +169,7 @@ nonisolated enum EffectiveMetadataResolver {
             for key in ["localizedTitles", "captureDate", "latitude", "longitude", "rating", "label"] {
                 fieldCarriers[key] = .embedded
             }
-            if reference == .xmp, let xmp = facts.xmpMetadata {
+            if reference == .xmp, let xmp = xmpMetadata {
                 if xmp.localizedTitles != nil { fieldCarriers["localizedTitles"] = .xmp }
                 if let value = xmp.captureDate, !value.isEmpty { fieldCarriers["captureDate"] = .xmp }
                 if xmp.latitude != nil { fieldCarriers["latitude"] = .xmp }

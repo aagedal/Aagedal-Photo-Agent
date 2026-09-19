@@ -143,14 +143,3 @@ extension MetadataWriteEngine {
         try await writeFieldsToRenderedFiles(fields, to: urls, structuredData: .empty)
     }
 }
-
-/// Format a number in ACR's style: integers for whole numbers, minimal trailing decimals otherwise.
-nonisolated func acrNum(_ value: Double) -> String {
-    if value == value.rounded(.toNearestOrEven) && abs(value) < 1_000_000 {
-        return String(Int(value))
-    }
-    var s = String(format: "%.6f", value)
-    while s.hasSuffix("0") { s.removeLast() }
-    if s.hasSuffix(".") { s.removeLast() }
-    return s
-}

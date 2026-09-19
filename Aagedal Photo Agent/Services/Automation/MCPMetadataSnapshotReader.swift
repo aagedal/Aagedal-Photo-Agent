@@ -2,7 +2,7 @@ import Foundation
 import ImageIO
 import SwiftMediaMetadata
 
-/// Production typed parsing of captured bytes. This app-side adapter never reopens a
+/// Production typed parsing of captured bytes. This shared adapter never reopens a
 /// carrier, and its result describes the captured revisions, not current write authority.
 nonisolated enum MCPMetadataSnapshotReader {
     struct Result: Sendable {
@@ -129,9 +129,8 @@ nonisolated enum MCPMetadataSnapshotReader {
             SidecarReconciliation.verdict(imageModificationDate: snapshot.sourceModificationDate,
                 sidecarModificationDate: snapshot.xmpModificationDate, embedded: embedded, sidecar: $0)
         }
-        let facts = MetadataEditorSourceFacts(imageURL: snapshot.target.url, xmpMetadata: xmp,
-            appSidecar: app, reconciliationVerdict: verdict)
-        return Result(target: snapshot.target, resolution: try EffectiveMetadataResolver.resolve(embedded: embedded, facts: facts,
+        return Result(target: snapshot.target, resolution: try EffectiveMetadataResolver.resolve(embedded: embedded,
+            xmpMetadata: xmp, appSidecar: app, reconciliationVerdict: verdict,
             isRaw: MCPPhotoFormatCatalog.rawExtensions.contains(snapshot.target.url.pathExtension.lowercased())),
             sourceRevision: snapshot.sourceRevision, xmpSidecarRevision: snapshot.xmpSidecarRevision,
             appSidecarRevision: snapshot.appSidecarRevision)

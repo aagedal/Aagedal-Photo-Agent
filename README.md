@@ -108,8 +108,9 @@ the support table and validation records.
 - The current foundation exposes read-only server, photo-input-format, root, path-admission and photo-revision tools with strict canonical-path,
   identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
   with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. Photo-revision inspection
-  captures opaque source, XMP and owned app-sidecar tokens without returning IPTC values. Production metadata, template, face,
-  transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
+  captures opaque source, XMP and owned app-sidecar tokens. `get_photo_metadata` returns bounded, typed
+  effective editorial values with field provenance, pending/conflict state and those revision tokens.
+  Template, face, transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 
 ### Face Recognition
 
