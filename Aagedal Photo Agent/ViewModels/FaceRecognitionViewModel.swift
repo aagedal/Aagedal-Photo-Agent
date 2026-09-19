@@ -95,6 +95,8 @@ final class FaceRecognitionViewModel {
         }
     }
     @ObservationIgnored private var faceDataRevision: UInt64 = 0
+    @ObservationIgnored private var photoDeletionGenerations: [String: UInt64] = [:]
+    @ObservationIgnored private var stalePhotoDeletionFolders: Set<String> = []
 
     /// Live "minimum sharpness" filter (0...1 face capture-quality). Faces below this are hidden
     /// from the displayed face set without re-scanning. Bound to the slider in the expanded face
@@ -801,6 +803,7 @@ final class FaceRecognitionViewModel {
             case .cancelled:
                 return
             case .complete(let evidence):
+                self.stalePhotoDeletionFolders.remove(folderURL.standardizedFileURL.path)
                 self.faceData = evidence.faceData
                 self.scanComplete = evidence.faceData?.scanComplete ?? false
                 self.installThumbnails(evidence.thumbnailData)
@@ -839,15 +842,28 @@ final class FaceRecognitionViewModel {
         failurePrefix: String = "Failed to save face data"
     ) -> Task<Void, Never> {
         let expectedRevision = faceDataRevision
+        let folderIdentity = data.folderURL.standardizedFileURL.path
+        let expectedDeletionGeneration = photoDeletionGenerations[folderIdentity, default: 0]
         let precedingTask = faceDataPersistenceTask
         let service = folderLoadService
         let task = Task(priority: .utility) { [weak self] in
             _ = await precedingTask?.value
+            guard let self else { return }
+            // An edit captured before a pending photo deletion cannot restore its removed
+            // faces by replaying an old whole-document snapshot after the transaction.
+            guard !self.stalePhotoDeletionFolders.contains(folderIdentity),
+                  self.photoDeletionGenerations[folderIdentity, default: 0] == expectedDeletionGeneration else {
+                self.stalePhotoDeletionFolders.insert(folderIdentity)
+                if self.faceDataRevision == expectedRevision {
+                    self.errorMessage = "Face data changed during photo deletion. This edit was not saved. Reload the folder and reapply the edit."
+                }
+                return
+            }
             let result = await service.persistWithFolderReservation(
                 data,
                 deletingThumbnailIDs: deletingThumbnailIDs
             )
-            guard let self, self.faceDataRevision == expectedRevision,
+            guard self.faceDataRevision == expectedRevision,
                   let failure = result.failureMessage else { return }
             self.errorMessage = "\(failurePrefix): \(failure)"
         }
@@ -3135,48 +3151,52 @@ final class FaceRecognitionViewModel {
     func deleteFaces(forImageURLs imageURLs: Set<URL>) {
         guard !imageURLs.isEmpty else { return }
 
-        let targetFolder = imageURLs.first?.deletingLastPathComponent()
-        if faceData == nil, let targetFolder {
-            faceDataLoadTask?.cancel()
-            let requestID = UUID()
-            faceDataLoadRequestID = requestID
-            let service = folderLoadService
-            let pendingPersistence = faceDataPersistenceTask
-            faceDataLoadTask = Task(priority: .utility) { [weak self] in
-                _ = await pendingPersistence?.value
-                let result: (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?)
-                do {
-                    result = try await service.deletePhotoFacesWithFolderReservation(
-                        folderURL: targetFolder, imageURLs: imageURLs
-                    )
-                } catch {
-                    guard let self, !Task.isCancelled,
-                          self.faceDataLoadRequestID == requestID else { return }
-                    self.errorMessage = "Failed to delete face data: \(error.localizedDescription)"
-                    return
-                }
-                guard let self, !Task.isCancelled, self.faceDataLoadRequestID == requestID,
-                      self.faceData == nil,
-                      case .complete(let evidence) = result.load else { return }
-                self.faceData = evidence.faceData
-                self.scanComplete = evidence.faceData?.scanComplete ?? false
-                self.installThumbnails(evidence.thumbnailData)
-                if let failure = result.persistence?.failureMessage {
-                    self.errorMessage = "Failed to delete face data: \(failure)"
-                }
+        guard let targetFolder = imageURLs.first?.deletingLastPathComponent(),
+              imageURLs.allSatisfy({
+                  $0.deletingLastPathComponent().standardizedFileURL.path == targetFolder.standardizedFileURL.path
+              }),
+              faceData == nil || faceData?.folderURL.standardizedFileURL.path == targetFolder.standardizedFileURL.path
+        else { return }
+
+        let alreadyLoaded = faceData != nil
+        if !alreadyLoaded { faceDataLoadTask?.cancel() }
+        let requestID = UUID()
+        let expectedRevision = faceDataRevision
+        faceDataLoadRequestID = requestID
+        let service = folderLoadService
+        let pendingPersistence = faceDataPersistenceTask
+        let task = Task(priority: .utility) { [weak self] in
+            _ = await pendingPersistence?.value
+            guard let self, !Task.isCancelled else { return }
+            if !alreadyLoaded, self.faceDataLoadRequestID != requestID { return }
+            let result: (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?)
+            do {
+                result = try await service.deletePhotoFacesWithFolderReservation(
+                    folderURL: targetFolder, imageURLs: imageURLs
+                )
+            } catch {
+                guard !Task.isCancelled, self.faceDataLoadRequestID == requestID,
+                      self.faceDataRevision == expectedRevision else { return }
+                self.errorMessage = "Failed to delete face data: \(error.localizedDescription)"
+                return
             }
-            return
+            if case .committed = result.persistence {
+                self.photoDeletionGenerations[targetFolder.standardizedFileURL.path, default: 0] &+= 1
+            }
+            guard !Task.isCancelled, self.faceDataLoadRequestID == requestID,
+                  self.faceDataRevision == expectedRevision,
+                  case .complete(let evidence) = result.load else { return }
+            self.stalePhotoDeletionFolders.remove(targetFolder.standardizedFileURL.path)
+            self.faceData = evidence.faceData
+            self.scanComplete = evidence.faceData?.scanComplete ?? false
+            self.installThumbnails(evidence.thumbnailData)
+            if let failure = result.persistence?.failureMessage {
+                self.errorMessage = "Failed to delete face data: \(failure)"
+            }
         }
-
-        guard let data = faceData,
-              targetFolder == nil
-                || data.folderURL.standardizedFileURL.path == targetFolder?.standardizedFileURL.path else { return }
-
-        let faceIDs = Set(data.faces.compactMap { face in
-            imageURLs.contains(face.imageURL) ? face.id : nil
-        })
-
-        deleteFaces(faceIDs)
+        faceDataLoadTask = task
+        // Subsequent queued writes must also wait for this transaction.
+        faceDataPersistenceTask = task
     }
 
     /// Permanently delete faces from the data set (removes from groups, face list, thumbnail cache, and disk).

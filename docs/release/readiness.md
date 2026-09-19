@@ -2,13 +2,17 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-19
-**Latest implementation state:** Cycle 64 keeps lazy photo-face deletion inside one folder reservation from snapshot loading through commit and thumbnail cleanup. Failed saves preserve visible results, and foreign-folder documents are refused before writing. Focused validation passes 23 tests / 44 executions with zero failures/skips/runtime warnings; complete serial validation passes 3,015 tests / 3,939 executions with zero failures/skips and the same four known QoS warnings. Repository checks pass. Already-loaded stale face snapshots, production workflow tools, broader GUI admission, FFmpeg Whisper and real-client evidence remain open.
+**Latest implementation state:** Cycle 65 extends the reserved photo-face deletion transaction to already-loaded folders. It preserves newer disk faces/group names, queues repeated deletions, and refuses stale local whole-document edits until reload/reapply. Focused validation passes 24 tests / 49 executions; the complete final-source suite passes 3,016 tests / 3,944 executions across 319 suites, zero failures/skips and the same four known QoS warnings. Repository validation passes. General cross-process stale-save reconciliation, other face mutation routes, production MCP workflows and FFmpeg Whisper remain open.
 **Latest native evidence:** Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `e097ade` for cycle 64; checkout initially clean. Working-tree changes contain the lazy deletion transaction and regression coverage. No broad release-readiness gate is claimed complete.
+**Cycle baseline:** `56ea553` for cycle 65; checkout initially clean. Working-tree changes contain loaded photo-face deletion reconciliation and regression coverage. No broad release-readiness gate is claimed complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 65 loaded photo-face deletion](cycle-65-loaded-photo-face-deletion-2026-09-19.md)
+extends transactional disk reconciliation to loaded photo-URL deletions and prevents queued
+local snapshots from resurrecting removed faces. Other face mutation routes remain open.
 
 [Cycle 64 transactional lazy face deletion](cycle-64-lazy-face-deletion-transaction-2026-09-19.md)
 closes the unreserved fallback read/edit/write interval, preserves presentation after save
@@ -541,7 +545,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Remaining production MCP tools/coordination and FFmpeg Whisper implementation/verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 63 final-source complete serial suite passes 3,012 tests / 3,932 executions, zero failures and zero skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
+| Automated regression and package | Cycle 65 final-source complete serial suite passes 3,016 tests / 3,944 executions, zero failures and zero skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
 | Computer-use workflows | Native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -613,12 +617,12 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Cycle 64 closes the lazy face-deletion read/edit/write reservation gap on baseline `e097ade`
-plus working-tree changes. Focused validation passes 23 tests / 44 executions with zero
-failures/skips/runtime warnings. The [cycle 64 evidence](cycle-64-lazy-face-deletion-transaction-2026-09-19.md)
-records the passing 3,015-test / 3,939-execution integrated suite, four known QoS warnings and
-repository checks. No native/client evidence or broad release gate is newly closed.
-Already-loaded face snapshots and the mandatory MCP/FFmpeg Whisper implementation remain open.
+Cycle 65 extends photo-URL deletion to loaded folders on baseline `56ea553` plus working-tree
+changes. Disk reconciliation preserves external additions and group names. Overlapping local
+edits are refused until reload/reapply instead of resurrecting removed faces. Focused and complete final-source validation pass (24 / 3,016 tests respectively), with
+zero failures/skips and the same four integrated QoS warnings. Repository checks pass; see [cycle 65 evidence](cycle-65-loaded-photo-face-deletion-2026-09-19.md).
+Other face mutation routes, general cross-process stale-save reconciliation and mandatory
+MCP/FFmpeg Whisper implementation remain open. No native or broad release gate is newly closed.
 
 The Known People core interchange checkpoint is implemented on source based at `78f0209`
 and recorded in [cycle 16](cycle-16-known-people-core-2026-09-12.md). Directory packages

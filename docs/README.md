@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 64: transactional lazy face deletion](release/cycle-64-lazy-face-deletion-transaction-2026-09-19.md) keeps fallback loading, deletion and thumbnail cleanup inside one folder reservation and preserves visible results after save failure. Cross-process reconciliation for already-loaded face snapshots, production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 65: loaded photo-face deletion](release/cycle-65-loaded-photo-face-deletion-2026-09-19.md) extends reserved disk reconciliation to loaded photo-URL deletion, preserves external face/group changes, and refuses overlapping stale saves until reload/reapply. General cross-process reconciliation for other face edits, production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 
