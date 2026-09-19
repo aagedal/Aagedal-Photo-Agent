@@ -147,6 +147,174 @@ struct MetadataTemplatePersistenceTests {
         #expect(try storage.loadAll().map(\.name) == ["Replacement"])
     }
 
+    @Test("Template CRUD refuses another process owner without changing files and permits retry",
+          arguments: ["load", "save", "delete", "export"])
+    func processReservationForCRUD(operation: String) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Templates")
+        let recovery = root.appendingPathComponent("recovered.json")
+        let storage = TemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: {
+            try FileManager.default.moveItem(at: $0, to: recovery)
+        }))
+        let original = MetadataTemplate(name: "Original", shortcutSlot: 1)
+        try storage.save(original)
+        var replacement = MetadataTemplate(name: "Replacement")
+        replacement.shortcutSlot = 1
+        let requested = replacement
+        let source = folder.appendingPathComponent("\(original.id.uuidString).json")
+        let before = try Data(contentsOf: source)
+        let exported = root.appendingPathComponent("export.templatebundle")
+        let sentinel = Data("Previous export".utf8)
+        try sentinel.write(to: exported)
+        // A different spelling must reserve the same canonical folder.
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        let owner = try MCPProcessReservation.acquireFolder(alias)
+        defer { owner.release() }
+        let service = TemplateCRUDService(access: .storage(storage))
+        let run: @Sendable () async throws -> Void = {
+            switch operation {
+            case "load": _ = try await service.load(requestID: UUID())
+            case "save": _ = try await service.save(requested, requestID: UUID())
+            case "delete": _ = try await service.delete(original, requestID: UUID())
+            default: _ = try await service.exportAll(to: exported, requestID: UUID())
+            }
+        }
+        do {
+            try await run()
+            Issue.record("Busy template transaction was admitted")
+        } catch let error as MCPProcessReservationError {
+            guard case .busy = error else { throw error }
+        }
+        #expect(try Data(contentsOf: source) == before)
+        #expect(try Data(contentsOf: exported) == sentinel)
+        #expect(try storage.loadAll().map(\.id) == [original.id])
+        #expect(!FileManager.default.fileExists(atPath: recovery.path))
+        owner.release()
+        try await run()
+        switch operation {
+        case "save":
+            let inventory = try storage.loadAll()
+            #expect(inventory.first(where: { $0.id == original.id })?.shortcutSlot == nil)
+            #expect(inventory.first(where: { $0.id == requested.id })?.shortcutSlot == 1)
+        case "delete":
+            #expect(try storage.loadAll().isEmpty)
+            #expect(try Data(contentsOf: recovery) == before)
+        case "export":
+            #expect(try storage.loadBundle(from: exported).templates.map(\.id) == [original.id])
+        default: #expect(try Data(contentsOf: source) == before)
+        }
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
+    @Test("Template import preview and commit refuse a process owner and retry without partial changes",
+          arguments: [false, true])
+    func processReservationForImport(commit: Bool) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Templates")
+        let storage = TemplateStorageService(directoryURL: folder)
+        let original = MetadataTemplate(name: "Original")
+        try storage.save(original)
+        var updated = original
+        updated.name = "Imported"
+        let bundle = TemplateBundle(templates: [updated])
+        let source = root.appendingPathComponent("input.templatebundle")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(bundle).write(to: source)
+        let stored = folder.appendingPathComponent("\(original.id.uuidString).json")
+        let before = try Data(contentsOf: stored)
+        let owner = try MCPProcessReservation.acquireFolder(folder)
+        defer { owner.release() }
+        let run: @Sendable () async throws -> Void = {
+            if commit {
+                _ = try await TemplateImportCommitService(storage: storage).commit(
+                    bundle, sourceURL: source, requestID: UUID())
+            } else {
+                _ = try await TemplateImportPreviewService(storage: storage).preparePreview(
+                    from: source, requestID: UUID())
+            }
+        }
+        do {
+            try await run()
+            Issue.record("Busy template import was admitted")
+        } catch let error as MCPProcessReservationError {
+            guard case .busy = error else { throw error }
+        }
+        #expect(try Data(contentsOf: stored) == before)
+        owner.release()
+        try await run()
+        #expect(try storage.loadAll().map(\.name) == [commit ? "Imported" : "Original"])
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
+    @Test("Template reservation covers storage callbacks and releases after storage failure",
+          arguments: ["load", "save", "delete", "export"], [false, true])
+    func processReservationLifetime(operation: String, fail: Bool) async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = MetadataTemplate(name: "Existing", shortcutSlot: 1)
+        let replacement = MetadataTemplate(name: "New", shortcutSlot: 1)
+        let verifyOwned: @Sendable () throws -> Void = {
+            do {
+                let unexpected = try MCPProcessReservation.acquireFolder(root)
+                unexpected.release()
+                Issue.record("Template storage callback ran without process ownership")
+            } catch let error as MCPProcessReservationError {
+                guard case .busy = error else { throw error }
+            }
+        }
+        let raw = TemplateCRUDAccess<MetadataTemplate>(
+            loadAll: {
+                try verifyOwned()
+                if fail && operation == "load" { throw CocoaError(.fileReadNoPermission) }
+                return [original]
+            },
+            save: { _ in
+                try verifyOwned()
+                if fail { throw CocoaError(.fileWriteNoPermission) }
+            },
+            delete: { _ in
+                try verifyOwned()
+                if fail { throw CocoaError(.fileWriteNoPermission) }
+            },
+            exportAll: { _ in
+                try verifyOwned()
+                if fail { throw CocoaError(.fileWriteNoPermission) }
+                return 1
+            },
+            shortcutSlot: { $0.shortcutSlot },
+            clearingShortcutSlot: {
+                var copy = $0
+                copy.shortcutSlot = nil
+                return copy
+            },
+            sorted: { $0 }
+        )
+        var access = raw
+        access.prepareTransaction = {
+            TemplateStorageScope(access: raw, directoryURL: root, release: {})
+        }
+        let service = TemplateCRUDService(access: access)
+        do {
+            switch operation {
+            case "load": _ = try await service.load(requestID: UUID())
+            case "save": _ = try await service.save(replacement, requestID: UUID())
+            case "delete": _ = try await service.delete(original, requestID: UUID())
+            default: _ = try await service.exportAll(to: root.appendingPathComponent("export"), requestID: UUID())
+            }
+            #expect(!fail)
+        } catch {
+            #expect(fail)
+        }
+        let released = try MCPProcessReservation.acquireFolder(root)
+        released.release()
+    }
+
     private func makeTempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("MetadataTemplateTests-\(UUID().uuidString)")

@@ -144,7 +144,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
 
     private func withStorageTransaction<Result: Sendable>(
         _ operation: @Sendable (TemplateCRUDService<Value>) async throws -> Result
-    ) async rethrows -> Result {
+    ) async throws -> Result {
         guard let prepare = access.prepareTransaction else {
             return try await operation(self)
         }
@@ -152,7 +152,11 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         defer { scope.release() }
         let worker = TemplateCRUDService(access: scope.access, filesystemQueue: filesystemQueue)
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
-            try await operation(worker)
+            // Acquire after in-process admission so queued GUI work retains its existing
+            // ordering. Cancelled workers return their typed pre-operation result.
+            let reservation = Task.isCancelled ? nil : try MCPProcessReservation.acquireFolder(scope.directoryURL)
+            defer { reservation?.release() }
+            return try await operation(worker)
         }
     }
 

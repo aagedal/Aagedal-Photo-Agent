@@ -4,6 +4,63 @@ import Testing
 
 @Suite("Develop templates")
 struct DevelopTemplateTests {
+    @Test("Develop template CRUD refuses a process owner and releases admission after retry",
+          arguments: ["load", "save", "delete", "export"])
+    func processReservationForCRUD(operation: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("DevelopTemplates")
+        let recovery = root.appendingPathComponent("recovered.json")
+        let storage = DevelopTemplateStorageService(directoryURL: folder, trashAccess: .init(moveItem: {
+            try FileManager.default.moveItem(at: $0, to: recovery)
+        }))
+        let original = DevelopTemplate(name: "Original", shortcutSlot: 1)
+        let replacement = DevelopTemplate(name: "Replacement", shortcutSlot: 1)
+        try storage.save(original)
+        let source = folder.appendingPathComponent("\(original.id.uuidString).json")
+        let before = try Data(contentsOf: source)
+        let exported = root.appendingPathComponent("export.json")
+        let sentinel = Data("Previous export".utf8)
+        try sentinel.write(to: exported)
+        let owner = try MCPProcessReservation.acquireFolder(folder)
+        defer { owner.release() }
+        let service = TemplateCRUDService(access: .storage(storage))
+        let run: @Sendable () async throws -> Void = {
+            switch operation {
+            case "load": _ = try await service.load(requestID: UUID())
+            case "save": _ = try await service.save(replacement, requestID: UUID())
+            case "delete": _ = try await service.delete(original, requestID: UUID())
+            default: _ = try await service.exportAll(to: exported, requestID: UUID())
+            }
+        }
+        do {
+            try await run()
+            Issue.record("Busy Develop template transaction was admitted")
+        } catch let error as MCPProcessReservationError {
+            guard case .busy = error else { throw error }
+        }
+        #expect(try Data(contentsOf: source) == before)
+        #expect(try Data(contentsOf: exported) == sentinel)
+        #expect(!FileManager.default.fileExists(atPath: recovery.path))
+        owner.release()
+        try await run()
+        switch operation {
+        case "save":
+            let inventory = try storage.loadAll()
+            #expect(inventory.first(where: { $0.id == original.id })?.shortcutSlot == nil)
+            #expect(inventory.first(where: { $0.id == replacement.id })?.shortcutSlot == 1)
+        case "delete":
+            #expect(try storage.loadAll().isEmpty)
+            #expect(try Data(contentsOf: recovery) == before)
+        case "export":
+            #expect(try JSONDecoder().decode([DevelopTemplate].self,
+                from: Data(contentsOf: exported)).map(\.id) == [original.id])
+        default: #expect(try Data(contentsOf: source) == before)
+        }
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
     @Test("Develop services serialize complete shortcut transactions across instances")
     @MainActor
     func sharedRootShortcutTransactions() async throws {

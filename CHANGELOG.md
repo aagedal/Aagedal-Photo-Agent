@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Metadata and Develop template transactions now reserve their storage folder across
+  Photo Agent processes. Busy saves, deletes, imports and exports refuse before changing
+  templates, and can be retried after the competing operation finishes.
+
 - Delete Group & Photos now reserves its folder before Trash, reconciles the confirmed
   face selection against the latest saved data, and preserves newer faces and group edits.
   Busy folders refuse before moving photos; failed face-data saves retain visible results

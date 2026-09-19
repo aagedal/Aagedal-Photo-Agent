@@ -1514,6 +1514,13 @@ reapplication, and another editor's reload cannot authorize stale writes. This i
 refusal rather than merging; broader writers and production operation coordination remain
 open. See [cycle 68](release/cycle-68-face-save-baselines-2026-09-19.md).
 
+**2026-09-19 template process admission:** Metadata/Develop template CRUD and metadata
+import preview/commit now retain a process folder reservation through their captured-root
+transactions, including shortcut reassignment and refreshed inventory. Contention refuses
+before worker I/O and permits retry; existing queued cancellation semantics remain intact.
+Stable-UUID discovery, automated application, stale-template authority and external-writer
+coordination remain open. See [cycle 70](release/cycle-70-template-process-admission-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

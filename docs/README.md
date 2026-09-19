@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 69: full-scan reset failure](release/cycle-69-face-scan-reset-failure-2026-09-19.md) stops replacement face scans if deleting prior data fails. Visible results remain available, no replacement scan writes occur, and explicit retry is verified. Production MCP workflows, broader writer admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 70: template process admission](release/cycle-70-template-process-admission-2026-09-19.md) extends shared folder reservations to metadata/Develop template CRUD and metadata imports, preserving complete shortcut transactions across cooperating processes. Contention refuses before template worker I/O and permits retry. Production MCP template discovery/application, broader writer admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

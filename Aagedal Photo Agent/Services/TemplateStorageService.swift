@@ -257,7 +257,9 @@ actor TemplateImportPreviewService {
         defer { scope.release() }
         let worker = TemplateImportPreviewService(access: scope.access, filesystemQueue: filesystemQueue)
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
-            try await worker.preparePreviewInTransaction(from: sourceURL, requestID: requestID)
+            let reservation = Task.isCancelled ? nil : try MCPProcessReservation.acquireFolder(scope.directoryURL)
+            defer { reservation?.release() }
+            return try await worker.preparePreviewInTransaction(from: sourceURL, requestID: requestID)
         }
     }
 
@@ -385,7 +387,9 @@ actor TemplateImportCommitService {
         defer { scope.release() }
         let worker = TemplateImportCommitService(access: scope.access, filesystemQueue: filesystemQueue)
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
-            try await worker.commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
+            let reservation = Task.isCancelled ? nil : try MCPProcessReservation.acquireFolder(scope.directoryURL)
+            defer { reservation?.release() }
+            return try await worker.commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
         }
     }
 
