@@ -696,6 +696,13 @@ nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
     }
 }
 
+/// Strict JSON types prevent NSNumber's Bool/Int bridging from admitting malformed drafts.
+nonisolated private struct MCPAppDraftHeader: Decodable {
+    let schemaVersion: Int?
+    let version: Int?
+    let pendingChanges: Bool?
+}
+
 /// Persisted IPTC keys shared with the app's editorial JSON schema. This deliberately excludes
 /// structured suppliers, location records, history, transcripts, and technical/Develop values.
 nonisolated private enum MCPAppDraftFieldCatalog {
@@ -728,6 +735,21 @@ nonisolated private enum MCPAppDraftFieldCatalog {
             byteCount += values.reduce(0) { $0 + $1.utf8.count }
             guard byteCount <= 65_536 else { return nil }
             result[key] = .array(values.map(MCPJSONValue.string))
+        }
+        // Preserve the production distinction: `title` is Headline; localizedTitles is
+        // dc:title. Missing/null means unmodeled, while [] is an explicit clear.
+        if let value = metadata["localizedTitles"], !(value is NSNull) {
+            guard let titles = value as? [[String: Any]], titles.count <= 128 else { return nil }
+            var alternatives: [MCPJSONValue] = []
+            for title in titles {
+                guard let languageTag = title["languageTag"] as? String,
+                      let text = title["value"] as? String,
+                      languageTag.utf8.count <= 1_024, text.utf8.count <= 32_768 else { return nil }
+                byteCount += languageTag.utf8.count + text.utf8.count
+                guard byteCount <= 65_536 else { return nil }
+                alternatives.append(.object(["languageTag": .string(languageTag), "value": .string(text)]))
+            }
+            result["localizedTitles"] = .array(alternatives)
         }
         return result
     }
@@ -796,11 +818,14 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                     }
                     guard owner == photoName else { return nil }
                     let state: String
-                    let schema = (object["schemaVersion"] ?? object["version"]) as? Int
+                    // Foundation bridging accepts JSON true as Int(1) and numeric 1 as
+                    // Bool(true). Decode authority-bearing header types without coercion.
+                    let header = try? JSONDecoder().decode(MCPAppDraftHeader.self, from: bytes)
+                    let schema = header?.schemaVersion ?? header?.version
                     if let schema, schema > 1 {
                         state = "unsupported-schema"
                     } else if schema == 1,
-                              let pending = object["pendingChanges"] as? Bool {
+                              let pending = header?.pendingChanges {
                         let orientationDraftPresent = object["orientationDraft"] != nil
                             && !(object["orientationDraft"] is NSNull)
                         state = pending || orientationDraftPresent ? "pending" : "saved"

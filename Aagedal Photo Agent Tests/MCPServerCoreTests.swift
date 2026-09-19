@@ -239,6 +239,87 @@ struct MCPServerCoreTests {
         #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("unsupported-schema"))
     }
 
+    @Test("Draft Title alternatives preserve order, clears, and Headline independently")
+    func inspectsLocalizedDraftTitles() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("image".utf8).write(to: photo)
+        let folder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let sidecar = folder.appendingPathComponent("frame.jpg.meta.json")
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        let titles = [LocalizedMetadataText(languageTag: "nb", value: "Norsk tittel"),
+                      LocalizedMetadataText(languageTag: "x-default", value: "English title")]
+        let encoded = try JSONEncoder().encode(titles)
+        let alternatives = try JSONSerialization.jsonObject(with: encoded)
+        for value in [alternatives, [], NSNull()] as [Any] {
+            let record: [String: Any] = [
+                "schemaVersion": 1, "sourceFile": "frame.jpg", "pendingChanges": true,
+                "metadata": ["title": "Independent headline", "localizedTitles": value],
+            ]
+            try JSONSerialization.data(withJSONObject: record).write(to: sidecar)
+            let fields = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+            #expect(fields["title"] == .string("Independent headline"))
+            if value is NSNull {
+                #expect(fields["localizedTitles"] == nil)
+            } else {
+                let expected = try JSONDecoder().decode(MCPJSONValue.self, from: JSONSerialization.data(withJSONObject: value))
+                #expect(fields["localizedTitles"] == expected)
+            }
+        }
+        let invalidTitles: [Any] = [
+            Array(repeating: ["languageTag": "en", "value": "title"], count: 129),
+            [["languageTag": String(repeating: "n", count: 1_025), "value": "title"]],
+            [["languageTag": "en", "value": String(repeating: "ø", count: 16_385)]],
+            Array(repeating: ["languageTag": "en", "value": String(repeating: "a", count: 32_768)], count: 2),
+        ]
+        for value in invalidTitles {
+            let record: [String: Any] = [
+                "schemaVersion": 1, "sourceFile": "frame.jpg", "pendingChanges": true,
+                "metadata": ["localizedTitles": value],
+            ]
+            try JSONSerialization.data(withJSONObject: record).write(to: sidecar)
+            #expect(throws: MCPAutomationReadError.unreadableDraft) {
+                _ = try facade.inspectAppPhotoDraft(path: photo.path)
+            }
+        }
+    }
+
+    @Test("Draft reads refuse coerced headers and malformed localized Title", arguments: [
+        #"{"schemaVersion":true,"pendingChanges":true,"metadata":{}}"#,
+        #"{"schemaVersion":1,"pendingChanges":1,"metadata":{}}"#,
+        #"{"schemaVersion":"1","pendingChanges":true,"metadata":{}}"#,
+        #"{"version":true,"pendingChanges":true,"metadata":{}}"#,
+        #"{"schemaVersion":1,"pendingChanges":true,"metadata":{"localizedTitles":[{"languageTag":"en","value":7}]}}"#,
+        #"{"schemaVersion":1,"pendingChanges":true,"metadata":{"localizedTitles":[{"value":"missing language"}]}}"#,
+        #"{"schemaVersion":1,"pendingChanges":true,"metadata":{"localizedTitles":"invalid"}}"#,
+    ])
+    func refusesMalformedDraftTypes(record: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("image".utf8).write(to: photo)
+        let folder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let sidecar = folder.appendingPathComponent("frame.jpg.meta.json")
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        var object = try #require(JSONSerialization.jsonObject(with: Data(record.utf8)) as? [String: Any])
+        object["sourceFile"] = "frame.jpg"
+        try JSONSerialization.data(withJSONObject: object).write(to: sidecar)
+        #expect(throws: MCPAutomationReadError.unreadableDraft) {
+            _ = try facade.inspectAppPhotoDraft(path: photo.path)
+        }
+        let lease = try MCPProcessReservation.acquirePhoto(photo)
+        lease.release()
+    }
+
     @Test("Revision tokens detect an in-place rewrite of identical bytes after modification time is restored")
     func detectsRestoredModificationTime() throws {
         let root = try temporaryFolder()
