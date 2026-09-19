@@ -76,6 +76,7 @@ nonisolated struct FaceGroupDeletionResult: Sendable, Equatable {
         case groupNotFound
         case cancelledBeforeMutation
         case staleStatePreserved
+        case failed(String)
     }
 
     let trashedPhotoURLs: Set<URL>
@@ -3209,93 +3210,98 @@ final class FaceRecognitionViewModel {
         scheduleReservedFaceDeletion(in: data.folderURL, selection: .faces(faceIDs))
     }
 
-    /// Delete an entire group: removes all face data and optionally trashes the source photos.
-    ///
-    /// Photo trashing runs on the serialized filesystem actor. If cancellation reaches that actor
-    /// before any item is attempted, face data is left untouched. If visible face data changes
-    /// while the actor is working, committed trash results are returned to the caller but the
-    /// newer model is preserved instead of being overwritten with this operation's stale snapshot.
+    /// Apply the confirmed face selection to the latest disk document while reserving
+    /// the folder through photo Trash, document persistence, and thumbnail cleanup.
     @discardableResult
     func deleteGroup(_ groupID: UUID, includePhotos: Bool) async -> FaceGroupDeletionResult {
-        guard var data = faceData,
-              let group = groupLookup[groupID] else {
-            return FaceGroupDeletionResult(
-                trashedPhotoURLs: [],
-                failures: [],
-                cancellationStoppedRemainingPhotos: false,
-                faceDataDisposition: .groupNotFound
-            )
+        guard let data = faceData, let group = groupLookup[groupID] else {
+            return FaceGroupDeletionResult(trashedPhotoURLs: [], failures: [],
+                cancellationStoppedRemainingPhotos: false, faceDataDisposition: .groupNotFound)
         }
-
         let faceIDs = Set(group.faceIDs)
-        let capturedRevision = faceDataRevision
-
-        // Collect photo URLs before removing face data
-        let trashResult: FileSystemService.BatchMutationResult
-        if includePhotos {
-            let urls = Set(group.faceIDs.compactMap { faceID in
-                faceLookup[faceID]?.imageURL
-            })
-            trashResult = await fileSystemService.trashItems(
-                Array(urls),
-                using: imageTrashHandler
-            )
-        } else {
-            trashResult = FileSystemService.BatchMutationResult(
-                completedSourceURLs: [],
-                failures: [],
-                cancellationStoppedRemainingItems: false
-            )
+        let photosByID = Dictionary(uniqueKeysWithValues: data.faces.filter {
+            faceIDs.contains($0.id)
+        }.map { ($0.id, $0.imageURL.standardizedFileURL.path) })
+        let folder = data.folderURL
+        let folderIdentity = folder.standardizedFileURL.path
+        let revision = faceDataRevision
+        let preceding = faceDataPersistenceTask
+        let operation = Task { [self] in
+            _ = await preceding?.value
+            var trash = FileSystemService.BatchMutationResult(completedSourceURLs: [],
+                failures: [], cancellationStoppedRemainingItems: false)
+            func result(_ disposition: FaceGroupDeletionResult.FaceDataDisposition) -> FaceGroupDeletionResult {
+                FaceGroupDeletionResult(trashedPhotoURLs: trash.completedSourceURLs,
+                    failures: trash.failures,
+                    cancellationStoppedRemainingPhotos: trash.cancellationStoppedRemainingItems,
+                    faceDataDisposition: disposition)
+            }
+            guard !Task.isCancelled else {
+                trash = FileSystemService.BatchMutationResult(completedSourceURLs: [], failures: [],
+                    cancellationStoppedRemainingItems: true)
+                return result(.cancelledBeforeMutation)
+            }
+            do {
+                let reservation = try MCPProcessReservation.acquireFolder(folder)
+                defer { reservation.release() }
+                guard case .complete(let snapshot) = await folderLoadService.loadDocument(folderURL: folder),
+                      let latest = snapshot.faceData,
+                      latest.folderURL.standardizedFileURL.path == folderIdentity else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                // Never let a replaced document redirect a confirmed Trash request.
+                let selected = latest.faces.filter { faceIDs.contains($0.id) }
+                guard selected.allSatisfy({
+                    $0.imageURL.deletingLastPathComponent().standardizedFileURL.path == folderIdentity
+                        && photosByID[$0.id] == $0.imageURL.standardizedFileURL.path
+                }) else { throw CocoaError(.fileReadCorruptFile) }
+                if includePhotos {
+                    trash = await fileSystemService.trashItems(
+                        Array(Set(selected.map(\.imageURL))), using: imageTrashHandler)
+                }
+                if Task.isCancelled, trash.completedSourceURLs.isEmpty, trash.failures.isEmpty {
+                    trash = FileSystemService.BatchMutationResult(completedSourceURLs: [], failures: [],
+                    cancellationStoppedRemainingItems: true)
+                    return result(.cancelledBeforeMutation)
+                }
+                let deletion = try await folderLoadService.deleteFaces(
+                    folderURL: folder, selection: .faces(faceIDs))
+                if case .committed = deletion.persistence {
+                    photoDeletionGenerations[folderIdentity, default: 0] &+= 1
+                }
+                if case .failedBeforeCommit(_, let failure) = deletion.persistence {
+                    if faceDataRevision == revision { errorMessage = "Failed to delete face data: \(failure)" }
+                    return result(.failed(failure))
+                }
+                if case .cancelledBeforeCommit = deletion.persistence {
+                    return result(.failed("Face-data deletion was cancelled. Reload the folder before retrying."))
+                }
+                guard case .complete(let evidence) = deletion.load else {
+                    return result(.failed("Face-data deletion was cancelled. Reload the folder before retrying."))
+                }
+                guard faceDataRevision == revision else { return result(.staleStatePreserved) }
+                stalePhotoDeletionFolders.remove(folderIdentity)
+                faceData = evidence.faceData
+                scanComplete = evidence.faceData?.scanComplete ?? false
+                installThumbnails(evidence.thumbnailData)
+                if let failure = deletion.persistence?.failureMessage {
+                    errorMessage = "Failed to delete face data: \(failure)"
+                    return result(.failed(failure))
+                }
+                return result(.applied)
+            } catch {
+                if faceDataRevision == revision {
+                    errorMessage = "Failed to delete face data: \(error.localizedDescription)"
+                }
+                return result(.failed(error.localizedDescription))
+            }
         }
-
-        // A pre-commit cancellation should have no model-side effect. Once at least one item was
-        // attempted, preserve the historical behavior of deleting the requested face group even
-        // if an individual photo failed to move to Trash.
-        if trashResult.cancellationStoppedRemainingItems,
-           trashResult.completedSourceURLs.isEmpty,
-           trashResult.failures.isEmpty {
-            return FaceGroupDeletionResult(
-                trashedPhotoURLs: [],
-                failures: [],
-                cancellationStoppedRemainingPhotos: true,
-                faceDataDisposition: .cancelledBeforeMutation
-            )
+        faceDataPersistenceTask = Task { _ = await operation.value }
+        return await withTaskCancellationHandler {
+            await operation.value
+        } onCancel: {
+            operation.cancel()
         }
-
-        guard faceDataRevision == capturedRevision else {
-            return FaceGroupDeletionResult(
-                trashedPhotoURLs: trashResult.completedSourceURLs,
-                failures: trashResult.failures,
-                cancellationStoppedRemainingPhotos: trashResult.cancellationStoppedRemainingItems,
-                faceDataDisposition: .staleStatePreserved
-            )
-        }
-
-        // Remove from groups
-        removeFacesFromGroups(faceIDs, in: &data)
-
-        // Remove from the face list
-        data.faces.removeAll { faceIDs.contains($0.id) }
-
-        // Clean up the presentation immediately. The persistence actor commits the document
-        // first and then removes its orphaned thumbnail files.
-        for faceID in faceIDs {
-            thumbnailCache.removeObject(forKey: faceID as NSUUID)
-            thumbnailDataByFaceID.removeValue(forKey: faceID)
-        }
-
-        faceData = data
-        let persistence = scheduleFaceDataPersistence(
-            data,
-            deletingThumbnailIDs: faceIDs.sorted { $0.uuidString < $1.uuidString }
-        )
-        await persistence.value
-        return FaceGroupDeletionResult(
-            trashedPhotoURLs: trashResult.completedSourceURLs,
-            failures: trashResult.failures,
-            cancellationStoppedRemainingPhotos: trashResult.cancellationStoppedRemainingItems,
-            faceDataDisposition: .applied
-        )
     }
 
     // MARK: - Delete Face Data

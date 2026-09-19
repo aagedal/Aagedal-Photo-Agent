@@ -606,6 +606,14 @@ actor FaceDataFolderLoadService {
         }
         let reservation = try MCPProcessReservation.acquireFolder(folderURL)
         defer { reservation.release() }
+        return try deleteFaces(folderURL: folderURL, selection: selection)
+    }
+
+    /// The caller owns the folder reservation through photo Trash and this commit.
+    func deleteFaces(
+        folderURL: URL,
+        selection: FaceDataDeletionSelection
+    ) throws -> (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?) {
         let loaded = load(folderURL: folderURL, cleanupPolicy: .never)
         guard case .complete(let evidence) = loaded, var data = evidence.faceData else {
             return (loaded, nil)

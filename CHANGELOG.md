@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Delete Group & Photos now reserves its folder before Trash, reconciles the confirmed
+  face selection against the latest saved data, and preserves newer faces and group edits.
+  Busy folders refuse before moving photos; failed face-data saves retain visible results
+  and report any photo moves that already completed. Queued stale edits cannot restore
+  faces removed by the group transaction.
+
 - Individual face deletion now removes only the selected face IDs from the latest saved
   folder data. Newer faces and group names are preserved, and busy-folder or failed-save
   errors retain visible faces and thumbnails for retry. Queued stale edits cannot restore

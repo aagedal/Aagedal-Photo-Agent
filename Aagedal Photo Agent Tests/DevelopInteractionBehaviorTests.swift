@@ -139,7 +139,7 @@ struct DevelopInteractionBehaviorTests {
             #expect(feedback.details.contains("newer face data was preserved"))
         case .groupNotFound:
             #expect(feedback.details.contains("No photos or face data were changed"))
-        case .applied:
+        case .applied, .failed:
             Issue.record("Unexpected test input")
         }
     }

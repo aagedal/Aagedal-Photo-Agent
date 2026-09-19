@@ -2565,6 +2565,7 @@ struct FaceGroupDeletionTests {
         let fixture = makeFaceGroup(folder: folder, imageURLs: [firstURL, secondURL])
         let trashProbe = FaceGroupTrashProbe(failingURLs: [secondURL])
         let viewModel = makeViewModel(trashHandler: trashProbe)
+        try FaceDataStorageService().saveFaceData(fixture.data)
         viewModel.faceData = fixture.data
 
         let result = await viewModel.deleteGroup(fixture.groupID, includePhotos: true)
@@ -2590,6 +2591,7 @@ struct FaceGroupDeletionTests {
         let original = makeFaceGroup(folder: folder, imageURLs: [originalURL])
         let trashProbe = FaceGroupTrashProbe(blocksUntilReleased: true)
         let viewModel = makeViewModel(trashHandler: trashProbe)
+        try FaceDataStorageService().saveFaceData(original.data)
         viewModel.faceData = original.data
 
         let deletion = Task {
@@ -2599,6 +2601,12 @@ struct FaceGroupDeletionTests {
             await Task.yield()
         }
 
+        #expect(throws: MCPProcessReservationError.busy) {
+            try MCPProcessReservation.acquirePhoto(originalURL)
+        }
+        #expect(throws: MCPProcessReservationError.busy) {
+            try MCPProcessReservation.acquireFolder(folder)
+        }
         let replacementURL = folder.appendingPathComponent("replacement.jpg")
         let replacement = makeFaceGroup(folder: folder, imageURLs: [replacementURL])
         viewModel.faceData = replacement.data
@@ -2622,6 +2630,7 @@ struct FaceGroupDeletionTests {
         )
         let trashProbe = FaceGroupTrashProbe()
         let viewModel = makeViewModel(trashHandler: trashProbe)
+        try FaceDataStorageService().saveFaceData(fixture.data)
         viewModel.faceData = fixture.data
 
         let deletion = Task {
@@ -2638,6 +2647,118 @@ struct FaceGroupDeletionTests {
         #expect(viewModel.faceData?.groups.map(\.id) == [fixture.groupID])
         #expect(viewModel.faceData?.faces.count == 1)
         #expect(trashProbe.attemptedURLs.isEmpty)
+    }
+
+    @Test("Group deletion refuses busy folders before Trash", arguments: [false, true])
+    func busyGroupDeletion(includePhotos: Bool) async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [folder.appendingPathComponent("photo.jpg")])
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(fixture.data)
+        let probe = FaceGroupTrashProbe()
+        let model = makeViewModel(trashHandler: probe)
+        model.faceData = fixture.data
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        let result = await model.deleteGroup(fixture.groupID, includePhotos: includePhotos)
+        lease.release()
+        #expect(result.faceDataDisposition == .failed(MCPProcessReservationError.busy.localizedDescription))
+        #expect(probe.attemptedURLs.isEmpty)
+        #expect(model.faceData?.faces.map(\.id) == fixture.data.faces.map(\.id))
+        #expect(storage.loadFaceData(for: folder)?.faces.map(\.id) == fixture.data.faces.map(\.id))
+        let retry = await model.deleteGroup(fixture.groupID, includePhotos: includePhotos)
+        #expect(retry.faceDataDisposition == .applied)
+    }
+
+    @Test("Group deletion preserves externally added faces and group edits", arguments: [false, true])
+    func reconcileGroupDeletion(includePhotos: Bool) async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [folder.appendingPathComponent("photo.jpg")])
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(fixture.data)
+        let probe = FaceGroupTrashProbe()
+        let model = makeViewModel(trashHandler: probe)
+        model.faceData = fixture.data
+        var latest = fixture.data
+        let added = DetectedFace(id: UUID(), imageURL: folder.appendingPathComponent("new.jpg"),
+            faceRect: .zero, featurePrintData: Data([1]), groupID: fixture.groupID, detectedAt: Date())
+        latest.faces.append(added)
+        latest.groups[0].faceIDs.append(added.id)
+        latest.groups[0].name = "External rename"
+        try storage.saveFaceData(latest)
+        let result = await model.deleteGroup(fixture.groupID, includePhotos: includePhotos)
+        #expect(result.faceDataDisposition == .applied)
+        #expect(model.faceData?.faces.map(\.id) == [added.id])
+        #expect(model.faceData?.groups.first?.name == "External rename")
+        #expect(model.faceData?.groups.first?.representativeFaceID == added.id)
+        #expect(storage.loadFaceData(for: folder)?.faces.map(\.id) == [added.id])
+        #expect(!probe.attemptedURLs.contains(added.imageURL))
+    }
+
+    @Test("An edit queued during group Trash cannot restore deleted faces")
+    func queuedEditCannotRestoreGroup() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [folder.appendingPathComponent("photo.jpg")])
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(fixture.data)
+        let probe = FaceGroupTrashProbe(blocksUntilReleased: true)
+        let model = makeViewModel(trashHandler: probe)
+        model.faceData = fixture.data
+        let deletion = Task { await model.deleteGroup(fixture.groupID, includePhotos: true) }
+        while !probe.hasStarted { await Task.yield() }
+        model.nameGroup(fixture.groupID, name: "Queued edit")
+        probe.release()
+        let result = await deletion.value
+        await model.waitForCurrentFaceDataPersistence()
+        #expect(result.faceDataDisposition == .staleStatePreserved)
+        #expect(storage.loadFaceData(for: folder)?.faces.isEmpty == true)
+        #expect(model.errorMessage?.contains("This edit was not saved") == true)
+    }
+
+    @Test("A changed face photo cannot redirect confirmed group Trash")
+    func redirectedPhotoRefused() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [folder.appendingPathComponent("photo.jpg")])
+        let storage = FaceDataStorageService()
+        let probe = FaceGroupTrashProbe()
+        let model = makeViewModel(trashHandler: probe)
+        model.faceData = fixture.data
+        var changed = fixture.data
+        changed.faces[0].imageURL = folder.appendingPathComponent("replacement.jpg")
+        try storage.saveFaceData(changed)
+        let result = await model.deleteGroup(fixture.groupID, includePhotos: true)
+        #expect(result.faceDataDisposition == .failed(CocoaError(.fileReadCorruptFile).localizedDescription))
+        #expect(probe.attemptedURLs.isEmpty)
+        #expect(storage.loadFaceData(for: folder)?.faces.first?.imageURL == changed.faces[0].imageURL)
+        #expect(model.faceData?.faces.first?.imageURL == fixture.data.faces[0].imageURL)
+    }
+
+    @Test("Failed group document save preserves faces and thumbnails after confirmed Trash")
+    func failedGroupSave() async throws {
+        let folder = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fixture = makeFaceGroup(folder: folder, imageURLs: [folder.appendingPathComponent("photo.jpg")])
+        let document = fixture.data
+        let failure = CocoaError(.fileWriteNoPermission)
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in document },
+            loadThumbnail: { _, _ in Data([1]) },
+            saveFaceData: { _ in throw failure },
+            deleteThumbnail: { _, _ in Issue.record("Failed document save must preserve thumbnails") })
+        let probe = FaceGroupTrashProbe()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), fileSystemService: FileSystemService(),
+            imageTrashHandler: probe, folderLoadService: service)
+        model.faceData = document
+        let result = await model.deleteGroup(fixture.groupID, includePhotos: true)
+        #expect(result.trashedPhotoURLs == Set(document.faces.map(\.imageURL)))
+        #expect(result.faceDataDisposition == .failed(failure.localizedDescription))
+        #expect(model.faceData?.faces.map(\.id) == document.faces.map(\.id))
+        #expect(TrashOperationFeedback(result: result)?.details.contains(failure.localizedDescription) == true)
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
     }
 
     private func makeViewModel(

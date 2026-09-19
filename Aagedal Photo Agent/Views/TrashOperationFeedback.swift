@@ -20,7 +20,9 @@ nonisolated struct TrashOperationFeedback: Sendable, Equatable {
         let faceDataNeedsAttention = faceDataDisposition.map { $0 != .applied } ?? false
         guard !failures.isEmpty || cancelled || faceDataNeedsAttention else { return nil }
 
-        summary = "\(completedURLs.count) photo(s) moved to Trash; \(failures.count) issue(s) need attention."
+        let faceFailureCount: Int
+        if case .failed = faceDataDisposition { faceFailureCount = 1 } else { faceFailureCount = 0 }
+        summary = "\(completedURLs.count) photo(s) moved to Trash; \(failures.count + faceFailureCount) issue(s) need attention."
         var paragraphs: [String] = []
         if cancelled {
             paragraphs.append("The operation stopped before all remaining photos were processed. Completed moves are listed in the count above.")
@@ -33,6 +35,8 @@ nonisolated struct TrashOperationFeedback: Sendable, Equatable {
                 paragraphs.append("The face group was no longer available. No photos or face data were changed by this request.")
             case .cancelledBeforeMutation:
                 paragraphs.append("The request was cancelled before changing the face data.")
+            case .failed(let message):
+                paragraphs.append("Face-data deletion needs attention: \(message). Review any completed photo moves before retrying.")
             case .staleStatePreserved:
                 paragraphs.append("The face data changed while the photos were being processed. The newer face data was preserved; review the group and the completed photo moves.")
             }

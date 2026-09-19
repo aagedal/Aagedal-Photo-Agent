@@ -1498,6 +1498,14 @@ Save failures preserve the original visible snapshot; foreign-folder document ow
 refused before writing. Already-loaded interactive snapshots still need cross-process
 reconciliation. See [cycle 64](release/cycle-64-lazy-face-deletion-transaction-2026-09-19.md).
 
+**2026-09-19 group/photo deletion reconciliation:** Group deletion now holds shared folder
+admission before Trash through latest-document face removal and thumbnail cleanup. Confirmed
+face IDs preserve newer disk additions and group edits; changed photo identities refuse before
+Trash. Failed saves retain presentation and completed photo moves remain explicit in failure
+feedback. Committed deletions prevent queued stale snapshots from restoring faces. Other
+whole-document edit routes still need general cross-process reconciliation. See
+[cycle 67](release/cycle-67-group-deletion-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
