@@ -5,6 +5,8 @@ import Foundation
 /// Image-specific decoder state is deliberately excluded when a template is
 /// created and restored from the destination image when it is applied.
 nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
+    static let currentSchemaVersion = 1
+
     var id: UUID
     var name: String
     var settings: CameraRawSettings
@@ -26,11 +28,23 @@ nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, settings, shortcutSlot, includesCrop
+        case schemaVersion, id, name, settings, shortcutSlot, includesCrop
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Only an absent version denotes the legacy format. Explicit null or
+        // malformed versions must not grant permission to rewrite the document.
+        let version = try container.contains(.schemaVersion)
+            ? container.decode(Int.self, forKey: .schemaVersion) : 1
+        guard version > 0 else {
+            throw EditorialJSONSchemaError.missingOrInvalidSchemaVersion
+        }
+        guard version <= Self.currentSchemaVersion else {
+            throw EditorialJSONSchemaError.newerSchemaRequiresReadOnly(
+                document: "Develop template", found: version, supported: Self.currentSchemaVersion
+            )
+        }
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         settings = try container.decode(CameraRawSettings.self, forKey: .settings).settingsForDevelopTemplate
@@ -42,6 +56,7 @@ nonisolated struct DevelopTemplate: Codable, Identifiable, Sendable, Equatable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(name, forKey: .name)
         try container.encode(settings, forKey: .settings)

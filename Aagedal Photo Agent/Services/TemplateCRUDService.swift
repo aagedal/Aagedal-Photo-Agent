@@ -3,6 +3,7 @@ import Foundation
 nonisolated struct TemplateInventorySnapshot<Value: Sendable>: Sendable {
     let requestID: UUID
     let templates: [Value]
+    var directoryURL: URL? = nil
 }
 
 nonisolated enum TemplateInventoryOperationResult<Value: Sendable>: Sendable {
@@ -19,6 +20,7 @@ nonisolated struct TemplateMutationCommit<Value: Sendable>: Sendable {
     let refreshedTemplates: [Value]
     let inventoryRefreshFailureReason: String?
     let cancellationObservedAfterCommit: Bool
+    var directoryURL: URL? = nil
 }
 
 nonisolated enum TemplateMutationOperationResult<Value: Sendable>: Sendable {
@@ -33,6 +35,7 @@ nonisolated struct TemplateMutationError<Value: Sendable>: LocalizedError, Senda
     let refreshedTemplates: [Value]
 
     var isSnapshotConflict: Bool = false
+    var directoryURL: URL? = nil
 
     var errorDescription: String? { reason }
 }
@@ -131,16 +134,19 @@ nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
 /// Each method returns immutable evidence so MainActor clients can reject stale completions.
 actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Value.ID == UUID {
     private let access: TemplateCRUDAccess<Value>
+    private let transactionDirectoryURL: URL?
     nonisolated let filesystemQueue: DispatchSerialQueue
     nonisolated var unownedExecutor: UnownedSerialExecutor {
         filesystemQueue.asUnownedSerialExecutor()
     }
 
     init(access: TemplateCRUDAccess<Value>,
+         transactionDirectoryURL: URL? = nil,
          filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.templates.crud", qos: .utility
          )) {
         self.access = access
+        self.transactionDirectoryURL = transactionDirectoryURL
         self.filesystemQueue = filesystemQueue
     }
 
@@ -152,7 +158,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         }
         let scope = prepare()
         defer { scope.release() }
-        let worker = TemplateCRUDService(access: scope.access, filesystemQueue: filesystemQueue)
+        let worker = TemplateCRUDService(access: scope.access, transactionDirectoryURL: scope.directoryURL, filesystemQueue: filesystemQueue)
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
             // Acquire after in-process admission so queued GUI work retains its existing
             // ordering. Cancelled workers return their typed pre-operation result.
@@ -167,17 +173,17 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         return try await withStorageTransaction { try await $0.loadInTransaction(requestID: requestID) }
     }
 
-    func save(_ template: Value, expectedExisting: Value? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+    func save(_ template: Value, expectedExisting: Value? = nil, expectedDirectoryURL: URL? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
         return try await withStorageTransaction {
-            try await $0.saveInTransaction(template, expectedExisting: expectedExisting, requestID: requestID)
+            try await $0.saveInTransaction(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
         }
     }
 
-    func delete(_ template: Value, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+    func delete(_ template: Value, expectedDirectoryURL: URL? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
         return try await withStorageTransaction {
-            try await $0.deleteInTransaction(template, requestID: requestID)
+            try await $0.deleteInTransaction(template, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
         }
     }
 
@@ -198,16 +204,27 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         guard !Task.isCancelled else {
             return .cancelledAfterRead(requestID: requestID, templateCount: templates.count)
         }
-        return .loaded(TemplateInventorySnapshot(requestID: requestID, templates: templates))
+        return .loaded(TemplateInventorySnapshot(requestID: requestID, templates: templates, directoryURL: transactionDirectoryURL))
     }
 
     private func saveInTransaction(
         _ template: Value,
         expectedExisting: Value?,
+        expectedDirectoryURL: URL?,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
+        }
+
+        // The root comes from the inventory the editor opened, not current preferences.
+        // Check before reading or reassigning shortcuts in the newly selected store.
+        if let expectedDirectoryURL, expectedDirectoryURL != transactionDirectoryURL {
+            throw TemplateMutationError<Value>(
+                requestID: requestID,
+                reason: "The templates folder changed. Your edits are still here. Save a new copy, or reopen the template from the current folder.",
+                durableTemplateIDs: [], refreshedTemplates: [], isSnapshotConflict: true
+            )
         }
 
         var inventory = try access.loadAll()
@@ -226,7 +243,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                     reason: "This template changed or is no longer available. Your edits are still here. Save a new copy, or reopen the latest template and reapply your changes.",
                     durableTemplateIDs: [],
                     refreshedTemplates: inventory,
-                    isSnapshotConflict: true
+                    isSnapshotConflict: true, directoryURL: transactionDirectoryURL
                 )
             }
         }
@@ -304,14 +321,35 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
 
     private func deleteInTransaction(
         _ template: Value,
+        expectedDirectoryURL: URL?,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
         }
+        if let expectedDirectoryURL, expectedDirectoryURL != transactionDirectoryURL {
+            throw TemplateMutationError<Value>(
+                requestID: requestID,
+                reason: "The templates folder changed. Reload the template list before deleting.",
+                durableTemplateIDs: [], refreshedTemplates: [], isSnapshotConflict: true
+            )
+        }
         var inventory = try access.loadAll()
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
+        }
+        // The visible inventory is the user's deletion snapshot. Recheck it under
+        // storage admission so a newer, missing, unreadable, or ambiguous record
+        // cannot be moved to Trash by an outdated selection.
+        let matches = inventory.filter { $0.id == template.id }
+        guard matches.count == 1, matches.first == template else {
+            throw TemplateMutationError<Value>(
+                requestID: requestID,
+                reason: "This template changed or is no longer available. Review the refreshed templates before deleting again.",
+                durableTemplateIDs: [],
+                refreshedTemplates: inventory,
+                isSnapshotConflict: true, directoryURL: transactionDirectoryURL
+            )
         }
         do {
             try access.delete(template)
@@ -374,7 +412,8 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                 durableTemplateIDs: durableTemplateIDs,
                 refreshedTemplates: refreshed,
                 inventoryRefreshFailureReason: nil,
-                cancellationObservedAfterCommit: false
+                cancellationObservedAfterCommit: false,
+                directoryURL: transactionDirectoryURL
             ))
         } catch {
             return .committed(TemplateMutationCommit(
@@ -384,7 +423,8 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                 durableTemplateIDs: durableTemplateIDs,
                 refreshedTemplates: access.sorted(derivedInventory),
                 inventoryRefreshFailureReason: error.localizedDescription,
-                cancellationObservedAfterCommit: false
+                cancellationObservedAfterCommit: false,
+                directoryURL: transactionDirectoryURL
             ))
         }
     }
@@ -406,7 +446,8 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
             durableTemplateIDs: durableTemplateIDs,
             refreshedTemplates: access.sorted(inventory),
             inventoryRefreshFailureReason: nil,
-            cancellationObservedAfterCommit: true
+            cancellationObservedAfterCommit: true,
+            directoryURL: transactionDirectoryURL
         ))
     }
 

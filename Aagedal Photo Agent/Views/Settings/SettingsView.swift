@@ -10,8 +10,8 @@ struct SettingsView: View {
     @State private var ftpViewModel = FTPViewModel()
     @AppStorage(UserDefaultsKeys.ftpAlwaysRenderRAW) private var ftpAlwaysRenderRAW = true
     @AppStorage(UserDefaultsKeys.knownPeopleRetainUpgradeSources) private var retainKnownPeopleUpgradeSources = false
-    @State private var templateViewModel = TemplateViewModel()
-    @State private var developTemplateViewModel = DevelopTemplateViewModel()
+    @State private var templateViewModel: TemplateViewModel
+    @State private var developTemplateViewModel: DevelopTemplateViewModel
     @State private var selectedTemplateKind: TemplateKind = .metadata
     @StateObject private var sparkle = SparkleUpdaterService.shared
     @StateObject private var auraFaceComponent = AuraFaceComponentManager.shared
@@ -77,6 +77,15 @@ struct SettingsView: View {
 
     init(settingsViewModel: SettingsViewModel) {
         _settingsViewModel = State(initialValue: settingsViewModel)
+        // Reuse the existing opt-in smoke-test root so native editor/recovery
+        // validation cannot touch the user's template library.
+        let testRoot = UITestLaunchConfiguration.current.templateRootURL
+        _templateViewModel = State(initialValue: TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: testRoot)
+        ))
+        _developTemplateViewModel = State(initialValue: DevelopTemplateViewModel(
+            storage: DevelopTemplateStorageService(directoryURL: testRoot?.appendingPathComponent("Develop"))
+        ))
     }
 
     private enum TemplateKind: String, CaseIterable, Identifiable {

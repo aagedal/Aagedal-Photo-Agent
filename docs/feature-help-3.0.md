@@ -78,8 +78,10 @@ entry into your existing config. OpenCode v2 uses `mcp.servers` when configured 
 `photo-agent-mcp` process communicates through STDIO and does not listen on the network. Removing a folder
 or disabling automation applies to later calls from an already connected client.
 
-The server exposes read-only capability, photo-format, authorized-root, path-admission, revision, owned-draft,
-and effective metadata tools. Call `get_photo_metadata` with one absolute `path` to read the same effective
+The server exposes read-only capability, photo-format, metadata-field, authorized-root, path-admission, revision, owned-draft,
+and effective metadata tools. Call `list_metadata_fields` to discover the stable editorial JSON keys,
+typed value shapes and read limits. This catalog contains no photo values and grants no write authority.
+Call `get_photo_metadata` with one absolute `path` to read the same effective
 editorial values selected by Photo Agent, including per-field carrier, pending/conflict state and captured
 revision tokens. These tokens describe that read and do not authorize a later write. It rejects
 relative/traversal paths, symlinks, Finder aliases, hard links, special files, changed folder identities,

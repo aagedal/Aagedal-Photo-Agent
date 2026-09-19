@@ -32,6 +32,10 @@ final class TemplateViewModel {
     private(set) var saveError: TemplateSaveError?
 
     @ObservationIgnored private var editingBaseline: MetadataTemplate?
+    @ObservationIgnored private var inventoryDirectoryURL: URL?
+    @ObservationIgnored private var hasInventoryProvenance = false
+    @ObservationIgnored private var editingDirectoryURL: URL?
+    @ObservationIgnored private var editingHasInventoryProvenance = false
 
     private let crudService: TemplateCRUDService<MetadataTemplate>
     private let importPreviewService: TemplateImportPreviewService
@@ -76,6 +80,8 @@ final class TemplateViewModel {
                 self.loadRequestID = nil
                 guard case .loaded(let snapshot) = result else { return }
                 self.templates = snapshot.templates
+                self.inventoryDirectoryURL = snapshot.directoryURL
+                self.hasInventoryProvenance = true
                 self.errorMessage = nil
                 onLoaded?(snapshot.templates)
             } catch {
@@ -90,14 +96,14 @@ final class TemplateViewModel {
     }
 
     @discardableResult
-    func saveTemplate(_ template: MetadataTemplate, expectedExisting: MetadataTemplate? = nil) async -> Result<MetadataTemplate, TemplateSaveError> {
+    func saveTemplate(_ template: MetadataTemplate, expectedExisting: MetadataTemplate? = nil, expectedDirectoryURL: URL? = nil) async -> Result<MetadataTemplate, TemplateSaveError> {
         saveError = nil
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.save(template, expectedExisting: expectedExisting, requestID: requestID)
+            try await crudService.save(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
         }
         mutationTask = task
         do {
@@ -112,6 +118,8 @@ final class TemplateViewModel {
                 return recordSaveFailure(reason: "Save was cancelled.", kind: .metadata)
             }
             templates = commit.refreshedTemplates
+            inventoryDirectoryURL = commit.directoryURL
+            hasInventoryProvenance = true
             if let reason = commit.inventoryRefreshFailureReason {
                 errorMessage = "Template was saved, but the list could not be refreshed: \(reason)"
             } else {
@@ -126,6 +134,7 @@ final class TemplateViewModel {
             mutationRequestID = nil
             if !error.durableTemplateIDs.isEmpty {
                 templates = error.refreshedTemplates
+                hasInventoryProvenance = false
             }
             return recordSaveFailure(reason: error.reason, kind: .metadata, isSnapshotConflict: error.isSnapshotConflict)
         } catch {
@@ -139,12 +148,17 @@ final class TemplateViewModel {
     }
 
     func deleteTemplate(_ template: MetadataTemplate) {
+        guard hasInventoryProvenance else {
+            errorMessage = "Reload the template list before deleting."
+            return
+        }
+        let expectedDirectoryURL = inventoryDirectoryURL
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.delete(template, requestID: requestID)
+            try await crudService.delete(template, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
         }
         mutationTask = task
         Task { [weak self] in
@@ -155,13 +169,17 @@ final class TemplateViewModel {
                 self.mutationRequestID = nil
                 guard case .committed(let commit) = result else { return }
                 self.templates = commit.refreshedTemplates
+                self.inventoryDirectoryURL = commit.directoryURL
+                self.hasInventoryProvenance = true
                 self.errorMessage = commit.inventoryRefreshFailureReason
             } catch let error as TemplateMutationError<MetadataTemplate> {
                 guard let self, self.mutationRequestID == requestID else { return }
                 self.mutationTask = nil
                 self.mutationRequestID = nil
-                if !error.durableTemplateIDs.isEmpty {
+                if !error.durableTemplateIDs.isEmpty || error.isSnapshotConflict {
                     self.templates = error.refreshedTemplates
+                    self.inventoryDirectoryURL = error.directoryURL
+                    self.hasInventoryProvenance = error.directoryURL != nil
                 }
                 self.errorMessage = error.reason
             } catch {
@@ -175,6 +193,8 @@ final class TemplateViewModel {
 
     func startEditing(_ template: MetadataTemplate? = nil) {
         editingBaseline = template
+        editingDirectoryURL = template == nil ? nil : inventoryDirectoryURL
+        editingHasInventoryProvenance = hasInventoryProvenance && template.map { templates.contains($0) } == true
         editingTemplate = template ?? MetadataTemplate()
         isEditingExistingTemplate = template != nil
         saveError = nil
@@ -183,7 +203,15 @@ final class TemplateViewModel {
 
     @discardableResult
     func saveEditingTemplate() async -> Result<MetadataTemplate, TemplateSaveError> {
-        finishEditingIfSaved(await saveTemplate(editingTemplate, expectedExisting: editingBaseline))
+        guard editingBaseline == nil || editingHasInventoryProvenance else {
+            return recordSaveFailure(
+                reason: "Reopen this template from the loaded template list before saving, or save a new copy.", kind: .metadata,
+                isSnapshotConflict: true
+            )
+        }
+        return finishEditingIfSaved(await saveTemplate(
+            editingTemplate, expectedExisting: editingBaseline, expectedDirectoryURL: editingDirectoryURL
+        ))
     }
 
     @discardableResult
@@ -199,6 +227,8 @@ final class TemplateViewModel {
 
     func cancelEditing() {
         editingBaseline = nil
+        editingDirectoryURL = nil
+        editingHasInventoryProvenance = false
         isEditingExistingTemplate = false
         saveError = nil
         isEditing = false
@@ -210,6 +240,8 @@ final class TemplateViewModel {
     ) -> Result<MetadataTemplate, TemplateSaveError> {
         if case .success = result {
             editingBaseline = nil
+            editingDirectoryURL = nil
+            editingHasInventoryProvenance = false
             isEditingExistingTemplate = false
             isEditing = false
         }
@@ -400,6 +432,8 @@ final class TemplateViewModel {
                 switch result {
                 case .committed(let commit):
                     self.templates = commit.refreshedTemplates
+                    self.inventoryDirectoryURL = commit.directoryURL
+                    self.hasInventoryProvenance = true
                     self.errorMessage = commit.inventoryRefreshFailureReason
                 case .cancelledBeforeCommit:
                     break
@@ -410,6 +444,8 @@ final class TemplateViewModel {
                 self.importCommitRequestID = nil
                 if let commitError = error as? TemplateImportCommitError {
                     self.templates = commitError.refreshedTemplates
+                    self.inventoryDirectoryURL = commitError.directoryURL
+                    self.hasInventoryProvenance = true
                 }
                 self.errorMessage = error.localizedDescription
             }

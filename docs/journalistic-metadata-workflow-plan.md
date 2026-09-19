@@ -1529,6 +1529,16 @@ editor conflict detection, not byte-level template-store authority for automatio
 identity, unknown JSON fields, import/delete authority and external-writer races remain.
 See [cycle 71](release/cycle-71-template-editor-conflicts-2026-09-19.md).
 
+**2026-09-20 template store boundaries and field discovery:** Existing template editors and
+deletion retain canonical store provenance; changed roots and stale deletion snapshots refuse
+before file changes. Imports return their captured inventory/root together. Develop templates
+migrate unversioned JSON and preserve unsupported or unreadable originals. Native metadata and
+Develop conflict/Save as New recovery plus stale Develop deletion passed. The helper now exposes
+`list_metadata_fields` with 43 typed editorial JSON read keys and shared limits, explicitly without
+mutation authority. Same-path root identity, byte-level/unknown-field template authority,
+stable-UUID template discovery/application and provider readiness remain open.
+See [cycle 72](release/cycle-72-template-authority-field-discovery-2026-09-20.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

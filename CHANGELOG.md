@@ -10,6 +10,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Metadata and Develop template editors retain the storage folder where the template was
+  opened. Saving or deleting after the folder changes refuses before touching the new store.
+  Stale template deletion also refuses changed, missing, unreadable and duplicate records.
+- Develop templates now have a versioned JSON format with legacy migration; newer or
+  unreadable stored templates are preserved instead of overwritten.
+- Added the read-only MCP `list_metadata_fields` catalog, with stable editorial JSON keys,
+  typed scalar/list/structured values and shared read limits. It does not enable mutations.
+
 - Existing metadata and Develop template editors now refuse saves when their original
   template changed, disappeared, became unreadable or has duplicate identities. Refusal
   preserves the draft and shortcut assignments, with guidance to reopen or Save as New.

@@ -40,8 +40,14 @@ nonisolated struct DevelopTemplateStorageService: Sendable {
     func save(_ template: DevelopTemplate) throws {
         let (directory, release) = resolvedDirectory()
         defer { release() }
-        let data = try JSONEncoder().encode(template)
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
+        if CloudCoordinatedIO.itemExists(at: url) {
+            // Preserve newer or unreadable documents, including members this
+            // build cannot understand, rather than silently replacing them.
+            let existingData = try CloudCoordinatedIO.readData(at: url)
+            _ = try JSONDecoder().decode(DevelopTemplate.self, from: existingData)
+        }
+        let data = try JSONEncoder().encode(template)
         try CloudCoordinatedIO.writeData(data, to: url)
     }
 

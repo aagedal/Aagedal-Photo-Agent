@@ -88,6 +88,8 @@
 		AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */; };
 		AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */; };
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
+		DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */; };
+		DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
 		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
@@ -306,6 +308,8 @@
 		AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComparisonCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionCatalogTests.swift; sourceTree = "<group>"; };
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
+		DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateSchemaTests.swift; sourceTree = "<group>"; };
+		DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateDeletionConflictTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
 		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
@@ -555,6 +559,8 @@
 				D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */,
 				D3C00A000000000000000001 /* CleanFeedBrowseRenderServiceTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
+				DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */,
+				DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
 				D4A700000000000000000001 /* MetadataReviewValidationTests.swift */,
@@ -943,6 +949,8 @@
 				D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */,
 				D3C00A000000000000000002 /* CleanFeedBrowseRenderServiceTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
+				DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */,
+				DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,
 				D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */,

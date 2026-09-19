@@ -301,6 +301,7 @@ nonisolated struct TemplateImportCommit: Sendable {
     let refreshedTemplates: [MetadataTemplate]
     let inventoryRefreshFailureReason: String?
     let cancellationObservedAfterCommit: Bool
+    var directoryURL: URL? = nil
 }
 
 nonisolated enum TemplateImportCommitOperationResult: Sendable {
@@ -316,6 +317,7 @@ nonisolated struct TemplateImportCommitError: LocalizedError, Sendable {
     let overwrittenCount: Int
     let committedTemplateIDs: [UUID]
     let refreshedTemplates: [MetadataTemplate]
+    var directoryURL: URL? = nil
 
     var errorDescription: String? {
         let committedCount = committedTemplateIDs.count
@@ -354,6 +356,7 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
 /// save prevents mutation; cancellation after any save reports the exact durable partial commit.
 actor TemplateImportCommitService {
     private let access: TemplateImportCommitAccess
+    private let transactionDirectoryURL: URL?
     // Retain a dedicated worker for blocking provider calls while preserving task context.
     nonisolated let filesystemQueue: DispatchSerialQueue
     nonisolated var unownedExecutor: UnownedSerialExecutor {
@@ -361,10 +364,12 @@ actor TemplateImportCommitService {
     }
 
     init(access: TemplateImportCommitAccess,
+         transactionDirectoryURL: URL? = nil,
          filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.templates.import-commit", qos: .utility
          )) {
         self.access = access
+        self.transactionDirectoryURL = transactionDirectoryURL
         self.filesystemQueue = filesystemQueue
     }
 
@@ -373,6 +378,7 @@ actor TemplateImportCommitService {
             label: "com.aagedal.photo-agent.templates.import-commit", qos: .utility
          )) {
         self.access = .storage(storage)
+        self.transactionDirectoryURL = nil
         self.filesystemQueue = filesystemQueue
     }
 
@@ -385,7 +391,7 @@ actor TemplateImportCommitService {
         }
         let scope = prepare()
         defer { scope.release() }
-        let worker = TemplateImportCommitService(access: scope.access, filesystemQueue: filesystemQueue)
+        let worker = TemplateImportCommitService(access: scope.access, transactionDirectoryURL: scope.directoryURL, filesystemQueue: filesystemQueue)
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
             let reservation = Task.isCancelled ? nil : try MCPProcessReservation.acquireFolder(scope.directoryURL)
             defer { reservation?.release() }
@@ -431,7 +437,8 @@ actor TemplateImportCommitService {
                     addedCount: addedCount,
                     overwrittenCount: overwrittenCount,
                     committedTemplateIDs: committedTemplateIDs,
-                    refreshedTemplates: refreshedTemplates
+                    refreshedTemplates: refreshedTemplates,
+                    directoryURL: transactionDirectoryURL
                 )
             }
             committedTemplateIDs.append(template.id)
@@ -472,7 +479,8 @@ actor TemplateImportCommitService {
                 committedTemplateIDs: committedTemplateIDs,
                 refreshedTemplates: refreshedTemplates,
                 inventoryRefreshFailureReason: nil,
-                cancellationObservedAfterCommit: false
+                cancellationObservedAfterCommit: false,
+                directoryURL: transactionDirectoryURL
             ))
         } catch {
             return .committed(TemplateImportCommit(
@@ -483,7 +491,8 @@ actor TemplateImportCommitService {
                 committedTemplateIDs: committedTemplateIDs,
                 refreshedTemplates: refreshedTemplates,
                 inventoryRefreshFailureReason: error.localizedDescription,
-                cancellationObservedAfterCommit: false
+                cancellationObservedAfterCommit: false,
+                directoryURL: transactionDirectoryURL
             ))
         }
     }
@@ -507,7 +516,8 @@ actor TemplateImportCommitService {
             committedTemplateIDs: committedTemplateIDs,
             refreshedTemplates: refreshedTemplates,
             inventoryRefreshFailureReason: nil,
-            cancellationObservedAfterCommit: true
+            cancellationObservedAfterCommit: true,
+            directoryURL: transactionDirectoryURL
         ))
     }
 }

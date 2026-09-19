@@ -174,7 +174,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_server_capabilities", "list_supported_photo_formats", "list_authorized_roots", "inspect_path_authorization",
+            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -999,6 +999,59 @@ struct MCPServerCoreTests {
         #expect(Set(try #require(structured["rawSidecarExtensions"] as? [String])) == SupportedImageFormats.rawExtensions)
         #expect(structured["embeddedWriteSupport"] as? String == "format-and-carrier-dependent")
         #expect(result["isError"] as? Bool == false)
+    }
+
+    @Test("Field discovery is available while disabled and describes only implemented read contracts")
+    func discoversEditorialFields() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        _ = session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+        ))
+        _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+        let response = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_metadata_fields","arguments":{}}}"#.utf8
+        )))
+        let result = try #require((try json(response))["result"] as? [String: Any])
+        #expect(result["isError"] as? Bool == false)
+        let catalog = try #require(result["structuredContent"] as? [String: Any])
+        let fields = try #require(catalog["fields"] as? [[String: Any]])
+        let ids = try fields.map { try #require($0["id"] as? String) }
+        #expect(ids == MCPEditorialFieldCatalog.fieldKeys.sorted())
+        #expect(catalog["mutationToolsAvailable"] as? Bool == false)
+        #expect(catalog["effectiveAbsentValue"] is NSNull)
+        #expect(catalog["draftAbsentValue"] as? String == "omitted")
+        #expect(catalog["embeddedWriteSupport"] as? String == "format-and-carrier-dependent")
+        for field in fields {
+            #expect((field["mutationOperations"] as? [String])?.isEmpty == true)
+            #expect(field["readTools"] as? [String] == ["get_photo_metadata", "inspect_app_photo_draft"])
+        }
+        func schema(_ id: String) throws -> [String: Any] {
+            try #require(fields.first { $0["id"] as? String == id }?["valueSchema"] as? [String: Any])
+        }
+        #expect(try schema("title")["type"] as? String == "string")
+        #expect(try schema("urgency")["type"] as? String == "integer")
+        #expect(try schema("latitude")["type"] as? String == "number")
+        #expect(try schema("keywords")["type"] as? String == "array")
+        let titleItem = try #require(try schema("localizedTitles")["items"] as? [String: Any])
+        #expect(titleItem["required"] as? [String] == ["languageTag", "value"])
+        let locationItem = try #require(try schema("locationsShown")["items"] as? [String: Any])
+        let properties = try #require(locationItem["properties"] as? [String: [String: Any]])
+        #expect(properties["latitude"]?["type"] as? String == "number")
+        #expect(properties["identifiers"]?["type"] as? String == "array")
+        #expect(locationItem["additionalProperties"] as? Bool == false)
+        let termItem = try #require(try schema("mediaTopics")["items"] as? [String: Any])
+        #expect(termItem["required"] as? [String] == ["termIdentifier"])
+        #expect(try schema("creatorContactInfo")["type"] as? String == "object")
+        #expect(!ids.contains("voiceMemoTranscript"))
+        #expect(!ids.contains("cameraRaw"))
+        #expect(response.count < MCPServerConstants.maximumToolResultBytes)
+
+        let extra = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_metadata_fields","arguments":{"path":"/tmp"}}}"#.utf8
+        )))
+        let error = try #require((try json(extra))["result"] as? [String: Any])
+        #expect(error["isError"] as? Bool == true)
+        #expect((error["structuredContent"] as? [String: Any])?["code"] as? String == "invalid_arguments")
     }
 
     @Test("Malformed tool-call shapes and unknown names fail at the protocol boundary")

@@ -1,14 +1,20 @@
 # 3.0 coordinator state
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-09-19
-**Latest implementation state:** Cycle 71 protects existing metadata/Develop editor saves with an original typed snapshot checked under storage admission before shortcut changes. Changed, missing, corrupt or duplicate records refuse; drafts and newer stored data survive, and inventory reload cannot authorize a stale editor. The final-source full suite passes 3,031 tests across 319 suites, zero failures; repository validation passes. Native conflict-message verification, byte-level template-store authority, production MCP workflows and FFmpeg Whisper remain open.
-**Latest native evidence:** Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `d3b0f73` for cycle 71; checkout initially clean. Working-tree changes contain template editor conflict protection, regression coverage and planning records. No broad release-readiness gate is claimed complete.
+**Updated:** 2026-09-20
+**Latest implementation state:** Cycle 72 binds template editor saves and deletion to their original canonical store, refuses stale deletion, versions Develop JSON with unsupported/unreadable overwrite protection, and adds read-only MCP field discovery. Import results carry inventory/root evidence together. The final integrated suite passes 3,040 tests across 321 suites (4,022 parameter-expanded executions), zero failures/skips; repository validation passes. Byte-level template authority, production MCP workflows and FFmpeg Whisper remain open.
+**Latest native evidence:** Cycle 72 verifies metadata and Develop stale-save refusal, retained drafts and Save as New with exact peer-byte preservation, plus native stale Develop deletion refusal and list refresh. Disposable template storage is gated through UI-test launch arguments; no user templates or authorization preferences changed. Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
+**Cycle baseline:** `85a6ff8` for cycle 72; checkout initially clean. Changes comprise template store/schema safety, MCP read-field discovery, regressions, native test routing and planning records. No broad release-readiness gate is claimed complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 72 template store boundaries and MCP discovery](cycle-72-template-authority-field-discovery-2026-09-20.md)
+closes canonical-root editor/deletion protection, typed stale-deletion refusal and Develop
+schema overwrite protection, with native conflict recovery. The helper exposes 43 typed
+read-field definitions. Complete regression, direct executable protocol and repository checks
+pass. Same-path directory identity, byte-level template authority and production workflow tools remain open.
 
 [Cycle 70 template process admission](cycle-70-template-process-admission-2026-09-19.md)
 reserves metadata/Develop template CRUD and metadata import transactions across cooperating
@@ -568,8 +574,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Remaining production MCP tools/coordination and FFmpeg Whisper implementation/verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 71 final-source complete serial suite passes 3,031 tests / 319 suites, zero failures; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
-| Computer-use workflows | Native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
+| Automated regression and package | Cycle 72 final-source complete serial suite passes 3,040 tests / 321 suites, zero failures/skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
+| Computer-use workflows | Native template conflict/recovery and stale deletion; native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
 | External interoperability/transport | Open | Actual Bridge/Photo Mechanic and disposable FTP/FTPS/SFTP evidence |
@@ -639,6 +645,18 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 72 on baseline `85a6ff8` completes template canonical-store binding, stale deletion,
+Develop schema preservation and read-only metadata-field discovery. Full final-source tests:
+3,040 / 321 suites, zero failures/skips, 121.946 seconds. Native metadata/Develop conflict
+recovery and stale Develop deletion preserve exact peer bytes; direct bundled MCP discovery
+returns 43 fields. Repository checks and independent review pass. See
+[cycle 72 evidence](cycle-72-template-authority-field-discovery-2026-09-20.md).
+Next implement byte-level template authority and stable-UUID discovery/application, then
+remaining production operation tools and Whisper. Same-path root replacement, unknown fields,
+import-preview authority and full accessibility/real-environment gates remain open. Template
+row buttons are merged in the observed accessibility tree; narrow native testing used screenshot
+coordinates and does not close keyboard/VoiceOver acceptance. The notes below are historical.
 
 Cycle 71 on baseline `d3b0f73` completes typed conflict refusal for existing metadata
 and Develop editor saves. The full final-source suite passes 3,031 tests / 319 suites,

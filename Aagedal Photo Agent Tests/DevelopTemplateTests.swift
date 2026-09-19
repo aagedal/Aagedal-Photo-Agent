@@ -5,6 +5,83 @@ import Testing
 @Suite("Develop templates")
 struct DevelopTemplateTests {
 
+    @Test("Existing editor binds its inventory root across folder switches and reloads",
+          arguments: ["beforeOpen", "afterOpen", "sameRoot"])
+    @MainActor
+    func editorStorageRootConflict(timing: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("First")
+        let second = root.appendingPathComponent("Second")
+        let alias = root.appendingPathComponent("Selected")
+        let firstStorage = DevelopTemplateStorageService(directoryURL: first)
+        let secondStorage = DevelopTemplateStorageService(directoryURL: second)
+        let original = DevelopTemplate(name: "Original")
+        let peer = DevelopTemplate(name: "Shortcut owner", shortcutSlot: 2)
+        for storage in [firstStorage, secondStorage] {
+            try storage.save(original)
+            try storage.save(peer)
+        }
+        let tracked = [first, second].flatMap { directory in
+            [original.id, peer.id].map { directory.appendingPathComponent("\($0.uuidString).json") }
+        }
+        let before = try tracked.map { try Data(contentsOf: $0) }
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first)
+        let editor = DevelopTemplateViewModel(storage: DevelopTemplateStorageService(directoryURL: alias))
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
+        if timing != "beforeOpen" { editor.startEditing(original) }
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(
+            at: alias, withDestinationURL: timing == "sameRoot" ? first : second
+        )
+        if timing == "beforeOpen" { editor.startEditing(original) }
+        editor.editingTemplate.name = "Retained draft"
+        editor.editingTemplate.shortcutSlot = 2
+        if timing != "sameRoot" {
+            editor.deleteTemplate(original)
+            let deadline = ContinuousClock.now + .seconds(10)
+            while editor.errorMessage == nil {
+                guard ContinuousClock.now < deadline else {
+                    Issue.record("Root-bound delete did not complete"); return
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(editor.errorMessage?.contains("folder changed") == true)
+            #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+            // Refusal did not read the new root, so it cannot authorize a retry.
+            editor.deleteTemplate(original)
+            #expect(editor.errorMessage == "Reload the template list before deleting.")
+            #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+        }
+        // Refreshing a list cannot replace the open editor's original root.
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
+        let result = await editor.saveEditingTemplate()
+        if timing == "sameRoot" {
+            guard case .success = result else { Issue.record("Same canonical root refused"); return }
+            #expect(try firstStorage.loadAll().first { $0.id == original.id }?.name == "Retained draft")
+            #expect(try secondStorage.loadAll().first { $0.id == original.id } == original)
+            return
+        }
+        guard case .failure(let failure) = result else { Issue.record("Different store authorized stale editor"); return }
+        #expect(failure.isSnapshotConflict)
+        #expect(failure.reason.contains("folder changed"))
+        #expect(editor.isEditing)
+        #expect(editor.editingTemplate.name == "Retained draft")
+        #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+        editor.editingTemplate.shortcutSlot = nil
+        guard case .success(let copy) = await editor.saveEditingTemplateAsNew() else {
+            Issue.record("Explicit new copy failed"); return
+        }
+        #expect(copy.id != original.id)
+        #expect(try secondStorage.loadAll().contains(copy))
+        #expect(try !firstStorage.loadAll().contains(copy))
+        #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+    }
+
     @Test("Existing editor saves refuse stale snapshots before shortcut writes and retain recovery",
           arguments: ["changed", "removed", "corrupt", "duplicate", "unchanged"])
     @MainActor
@@ -20,6 +97,9 @@ struct DevelopTemplateTests {
         let peerURL = root.appendingPathComponent("\(peer.id.uuidString).json")
         let peerBytes = try Data(contentsOf: peerURL)
         let editor = DevelopTemplateViewModel(storage: storage)
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
         editor.startEditing(original)
         editor.editingTemplate.name = "My draft"
         editor.editingTemplate.shortcutSlot = 2
@@ -180,7 +260,9 @@ struct DevelopTemplateTests {
         #expect(try Data(contentsOf: source) == bytes)
         #expect(try failingStorage.loadAll().map(\.id) == [template.id])
         let viewModel = DevelopTemplateViewModel(storage: failingStorage)
-        viewModel.templates = [template]
+        await withCheckedContinuation { continuation in
+            viewModel.loadTemplates { _ in continuation.resume() }
+        }
         viewModel.deleteTemplate(template)
         let deadline = ContinuousClock.now + .seconds(30)
         while viewModel.errorMessage == nil {
@@ -329,7 +411,6 @@ struct DevelopTemplateTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let storageLocation = root.appendingPathComponent("templates")
-        try Data("blocks directory creation".utf8).write(to: storageLocation)
 
         var settings = CameraRawSettings()
         settings.exposure2012 = 1.5
@@ -337,7 +418,13 @@ struct DevelopTemplateTests {
         let viewModel = DevelopTemplateViewModel(
             storage: DevelopTemplateStorageService(directoryURL: storageLocation)
         )
+        try DevelopTemplateStorageService(directoryURL: storageLocation).save(original)
+        await withCheckedContinuation { continuation in
+            viewModel.loadTemplates { _ in continuation.resume() }
+        }
         viewModel.startEditing(original)
+        try FileManager.default.removeItem(at: storageLocation)
+        try Data("blocks directory creation".utf8).write(to: storageLocation)
         viewModel.editingTemplate.name = "Edited develop draft"
 
         let failedResult = await viewModel.saveEditingTemplate()

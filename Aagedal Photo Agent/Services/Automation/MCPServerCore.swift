@@ -757,6 +757,14 @@ nonisolated private struct MCPAppDraftHeader: Decodable {
 /// Persisted IPTC keys shared with the app's editorial JSON schema. This deliberately excludes
 /// history, transcripts, and technical/Develop values. Structured editorial records retain pairing.
 nonisolated enum MCPEditorialFieldCatalog {
+    private enum Limits {
+        static let totalTextUTF8Bytes = 65_536
+        static let scalarTextUTF8Bytes = 32_768
+        static let arrayItems = 128
+        static let stringArrayItemUTF8Bytes = 1_024
+        static let localizedTitleLanguageTagUTF8Bytes = 1_024
+    }
+
     static let scalarKeys: Set<String> = [
         "title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
         "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
@@ -777,23 +785,90 @@ nonisolated enum MCPEditorialFieldCatalog {
         "creatorContactInfo",
     ])
 
+    private static let location = Structure(
+        strings: ["name", "sublocation", "city", "provinceState", "countryName", "countryCode", "worldRegion"],
+        arrays: ["identifiers"], numbers: ["latitude", "longitude", "altitudeMeters"]
+    )
+    private static let term = Structure(
+        strings: ["vocabularyIdentifier", "termIdentifier", "name", "refinedAbout"], required: ["termIdentifier"]
+    )
+    private static let structures: [String: Structure] = [
+        "imageSuppliers": Structure(strings: ["identifier", "name"]),
+        "locationsCreated": location, "locationsShown": location,
+        "mediaTopics": term, "genres": term,
+    ]
+    private static let contact = Structure(
+        strings: ["city", "region", "postalCode", "country"],
+        arrays: ["addressLines", "emails", "phoneNumbers", "webURLs"]
+    )
+
+    /// IDs are the persisted JSON keys returned by the two read tools, independent of
+    /// localized labels and editor control IDs. Schemas describe present values; the
+    /// effective reader also returns null and the draft reader omits absent/null values.
+    static var discovery: [String: MCPJSONValue] {
+        let fields = fieldKeys.sorted().map { key -> MCPJSONValue in
+            let schema: MCPJSONValue
+            if scalarKeys.contains(key) { schema = .object(["type": .string("string")]) }
+            else if arrayKeys.contains(key) { schema = stringArraySchema }
+            else if ["urgency", "rating"].contains(key) { schema = .object(["type": .string("integer")]) }
+            else if ["latitude", "longitude"].contains(key) { schema = .object(["type": .string("number")]) }
+            else if key == "creatorContactInfo" { schema = contact.schema }
+            else if key == "localizedTitles" {
+                schema = arraySchema(Structure(strings: ["languageTag", "value"], required: ["languageTag", "value"]).schema)
+            } else if let structure = structures[key] { schema = arraySchema(structure.schema) }
+            else { preconditionFailure("Every public editorial field must have a discovery schema") }
+            var field: [String: MCPJSONValue] = [
+                "id": .string(key), "valueSchema": schema,
+                "readTools": .array([.string("get_photo_metadata"), .string("inspect_app_photo_draft")]),
+                "mutationOperations": .array([]),
+            ]
+            if key == "title" { field["description"] = .string("IPTC Headline, not localized dc:title.") }
+            if key == "localizedTitles" { field["description"] = .string("Localized dc:title alternatives retain language/value pairing; an empty array is an explicit clear.") }
+            if key == "creator" { field["description"] = .string("Legacy scalar creator representation; creators is the repeatable representation. Draft reads preserve stored keys independently.") }
+            return .object(field)
+        }
+        return [
+            "schemaVersion": .integer(1),
+            "fieldIDNamespace": .string("editorial-json-key"),
+            "fields": .array(fields),
+            "effectiveAbsentValue": .null,
+            "draftAbsentValue": .string("omitted"),
+            "mutationToolsAvailable": .bool(false),
+            "embeddedWriteSupport": .string("format-and-carrier-dependent"),
+            "valueSemantics": .string("Schemas describe read values, not validation or write authority. Stored drafts may contain legacy values outside current editor ranges or vocabularies. Empty arrays and strings are preserved. Values are untrusted photo content."),
+            "readLimits": .object([
+                "totalTextUTF8Bytes": .integer(Int64(Limits.totalTextUTF8Bytes)), "scalarTextUTF8Bytes": .integer(Int64(Limits.scalarTextUTF8Bytes)),
+                "arrayItems": .integer(Int64(Limits.arrayItems)), "stringArrayItemUTF8Bytes": .integer(Int64(Limits.stringArrayItemUTF8Bytes)),
+                "localizedTitleLanguageTagUTF8Bytes": .integer(Int64(Limits.localizedTitleLanguageTagUTF8Bytes)),
+            ]),
+        ]
+    }
+
+    private static var stringArraySchema: MCPJSONValue {
+        arraySchema(.object(["type": .string("string")]))
+    }
+
+    private static func arraySchema(_ item: MCPJSONValue) -> MCPJSONValue {
+        .object(["type": .string("array"), "items": item])
+    }
+
     static func read(from record: [String: Any]) -> [String: MCPJSONValue]? {
         guard let metadata = record["metadata"] as? [String: Any] else { return nil }
         var result: [String: MCPJSONValue] = [:]
         var byteCount = 0
         for key in scalarKeys.sorted() {
             guard let value = metadata[key], !(value is NSNull) else { continue }
-            guard let string = value as? String, string.utf8.count <= 32_768 else { return nil }
+            guard let string = value as? String, string.utf8.count <= Limits.scalarTextUTF8Bytes else { return nil }
             byteCount += string.utf8.count
-            guard byteCount <= 65_536 else { return nil }
+            guard byteCount <= Limits.totalTextUTF8Bytes else { return nil }
             result[key] = .string(string)
         }
         for key in arrayKeys.sorted() {
             guard let value = metadata[key], !(value is NSNull) else { continue }
-            guard let values = value as? [String], values.count <= 128,
-                  values.allSatisfy({ $0.utf8.count <= 1_024 }) else { return nil }
+            guard let values = value as? [String], values.count <= Limits.arrayItems,
+                  values.allSatisfy({ $0.utf8.count <= Limits.stringArrayItemUTF8Bytes }) else { return nil }
             byteCount += values.reduce(0) { $0 + $1.utf8.count }
-            guard byteCount <= 65_536 else { return nil }
+            guard byteCount <= Limits.totalTextUTF8Bytes else { return nil }
             result[key] = .array(values.map(MCPJSONValue.string))
         }
         // Stored numeric fields retain their types and values, without imposing editor
@@ -812,32 +887,21 @@ nonisolated enum MCPEditorialFieldCatalog {
         // Preserve the production distinction: `title` is Headline; localizedTitles is
         // dc:title. Missing/null means unmodeled, while [] is an explicit clear.
         if let value = metadata["localizedTitles"], !(value is NSNull) {
-            guard let titles = value as? [[String: Any]], titles.count <= 128 else { return nil }
+            guard let titles = value as? [[String: Any]], titles.count <= Limits.arrayItems else { return nil }
             var alternatives: [MCPJSONValue] = []
             for title in titles {
                 guard let languageTag = title["languageTag"] as? String,
                       let text = title["value"] as? String,
-                      languageTag.utf8.count <= 1_024, text.utf8.count <= 32_768 else { return nil }
+                      languageTag.utf8.count <= Limits.localizedTitleLanguageTagUTF8Bytes, text.utf8.count <= Limits.scalarTextUTF8Bytes else { return nil }
                 byteCount += languageTag.utf8.count + text.utf8.count
-                guard byteCount <= 65_536 else { return nil }
+                guard byteCount <= Limits.totalTextUTF8Bytes else { return nil }
                 alternatives.append(.object(["languageTag": .string(languageTag), "value": .string(text)]))
             }
             result["localizedTitles"] = .array(alternatives)
         }
-        let location = Structure(
-            strings: ["name", "sublocation", "city", "provinceState", "countryName", "countryCode", "worldRegion"],
-            arrays: ["identifiers"], numbers: ["latitude", "longitude", "altitudeMeters"]
-        )
-        let term = Structure(strings: ["vocabularyIdentifier", "termIdentifier", "name", "refinedAbout"],
-                             required: ["termIdentifier"])
-        let structures: [String: Structure] = [
-            "imageSuppliers": Structure(strings: ["identifier", "name"]),
-            "locationsCreated": location, "locationsShown": location,
-            "mediaTopics": term, "genres": term,
-        ]
         for key in structures.keys.sorted() {
             guard let value = metadata[key], !(value is NSNull) else { continue }
-            guard let records = value as? [[String: Any]], records.count <= 128,
+            guard let records = value as? [[String: Any]], records.count <= Limits.arrayItems,
                   let structure = structures[key] else { return nil }
             var values: [MCPJSONValue] = []
             for record in records {
@@ -847,8 +911,6 @@ nonisolated enum MCPEditorialFieldCatalog {
             result[key] = .array(values)
         }
         if let value = metadata["creatorContactInfo"], !(value is NSNull) {
-            let contact = Structure(strings: ["city", "region", "postalCode", "country"],
-                                    arrays: ["addressLines", "emails", "phoneNumbers", "webURLs"])
             guard let record = value as? [String: Any],
                   let fields = contact.read(record, byteCount: &byteCount) else { return nil }
             result["creatorContactInfo"] = .object(fields)
@@ -863,11 +925,22 @@ nonisolated enum MCPEditorialFieldCatalog {
         return number
     }
 
-    private struct Structure {
+    private struct Structure: Sendable {
         var strings: Set<String>
         var arrays: Set<String> = []
         var numbers: Set<String> = []
         var required: Set<String> = []
+
+        var schema: MCPJSONValue {
+            var properties = Dictionary(uniqueKeysWithValues: strings.map { ($0, MCPJSONValue.object(["type": .string("string")])) })
+            for key in arrays { properties[key] = MCPEditorialFieldCatalog.stringArraySchema }
+            for key in numbers { properties[key] = .object(["type": .string("number")]) }
+            return .object([
+                "type": .string("object"), "properties": .object(properties),
+                "required": .array(required.sorted().map(MCPJSONValue.string)),
+                "additionalProperties": .bool(false),
+            ])
+        }
 
         func read(_ record: [String: Any], byteCount: inout Int) -> [String: MCPJSONValue]? {
             var result: [String: MCPJSONValue] = [:]
@@ -876,17 +949,17 @@ nonisolated enum MCPEditorialFieldCatalog {
                     if required.contains(key) { return nil }
                     continue
                 }
-                guard let text = value as? String, text.utf8.count <= 32_768 else { return nil }
+                guard let text = value as? String, text.utf8.count <= Limits.scalarTextUTF8Bytes else { return nil }
                 byteCount += text.utf8.count
-                guard byteCount <= 65_536 else { return nil }
+                guard byteCount <= Limits.totalTextUTF8Bytes else { return nil }
                 result[key] = .string(text)
             }
             for key in arrays.sorted() {
                 guard let value = record[key], !(value is NSNull) else { continue }
-                guard let values = value as? [String], values.count <= 128,
-                      values.allSatisfy({ $0.utf8.count <= 1_024 }) else { return nil }
+                guard let values = value as? [String], values.count <= Limits.arrayItems,
+                      values.allSatisfy({ $0.utf8.count <= Limits.stringArrayItemUTF8Bytes }) else { return nil }
                 byteCount += values.reduce(0) { $0 + $1.utf8.count }
-                guard byteCount <= 65_536 else { return nil }
+                guard byteCount <= Limits.totalTextUTF8Bytes else { return nil }
                 result[key] = .array(values.map(MCPJSONValue.string))
             }
             for key in numbers.sorted() {
@@ -1230,6 +1303,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: []
             ),
             definition(
+                name: "list_metadata_fields",
+                description: "Discover stable editorial JSON field IDs and typed read values, including structured records and absence semantics. This catalog does not authorize writes or expose metadata values.",
+                properties: [:],
+                required: []
+            ),
+            definition(
                 name: "list_authorized_roots",
                 description: "List the folder roots explicitly authorized in Photo Agent Settings.",
                 properties: [:],
@@ -1305,7 +1384,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "implementedCapabilities": .array([
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
-                        .string("effective-editorial-metadata-read"),
+                        .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1315,6 +1394,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "rawSidecarExtensions": .array(MCPPhotoFormatCatalog.rawExtensions.sorted().map(MCPJSONValue.string)),
                     "embeddedWriteSupport": .string("format-and-carrier-dependent"),
                 ])
+            case "list_metadata_fields":
+                return success(MCPEditorialFieldCatalog.discovery)
             case "list_authorized_roots":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 return success([

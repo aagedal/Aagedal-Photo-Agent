@@ -5,6 +5,83 @@ import Testing
 @Suite("Metadata template persistence")
 struct MetadataTemplatePersistenceTests {
 
+    @Test("Existing editor binds its inventory root across folder switches and reloads",
+          arguments: ["beforeOpen", "afterOpen", "sameRoot"])
+    @MainActor
+    func editorStorageRootConflict(timing: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("First")
+        let second = root.appendingPathComponent("Second")
+        let alias = root.appendingPathComponent("Selected")
+        let firstStorage = TemplateStorageService(directoryURL: first)
+        let secondStorage = TemplateStorageService(directoryURL: second)
+        let original = MetadataTemplate(name: "Original")
+        let peer = MetadataTemplate(name: "Shortcut owner", shortcutSlot: 2)
+        for storage in [firstStorage, secondStorage] {
+            try storage.save(original)
+            try storage.save(peer)
+        }
+        let tracked = [first, second].flatMap { directory in
+            [original.id, peer.id].map { directory.appendingPathComponent("\($0.uuidString).json") }
+        }
+        let before = try tracked.map { try Data(contentsOf: $0) }
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first)
+        let editor = TemplateViewModel(storage: TemplateStorageService(directoryURL: alias))
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
+        if timing != "beforeOpen" { editor.startEditing(original) }
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(
+            at: alias, withDestinationURL: timing == "sameRoot" ? first : second
+        )
+        if timing == "beforeOpen" { editor.startEditing(original) }
+        editor.editingTemplate.name = "Retained draft"
+        editor.editingTemplate.shortcutSlot = 2
+        if timing != "sameRoot" {
+            editor.deleteTemplate(original)
+            let deadline = ContinuousClock.now + .seconds(10)
+            while editor.errorMessage == nil {
+                guard ContinuousClock.now < deadline else {
+                    Issue.record("Root-bound delete did not complete"); return
+                }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(editor.errorMessage?.contains("folder changed") == true)
+            #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+            // Refusal did not read the new root, so it cannot authorize a retry.
+            editor.deleteTemplate(original)
+            #expect(editor.errorMessage == "Reload the template list before deleting.")
+            #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+        }
+        // Refreshing a list cannot replace the open editor's original root.
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
+        let result = await editor.saveEditingTemplate()
+        if timing == "sameRoot" {
+            guard case .success = result else { Issue.record("Same canonical root refused"); return }
+            #expect(try firstStorage.loadAll().first { $0.id == original.id }?.name == "Retained draft")
+            #expect(try secondStorage.loadAll().first { $0.id == original.id } == original)
+            return
+        }
+        guard case .failure(let failure) = result else { Issue.record("Different store authorized stale editor"); return }
+        #expect(failure.isSnapshotConflict)
+        #expect(failure.reason.contains("folder changed"))
+        #expect(editor.isEditing)
+        #expect(editor.editingTemplate.name == "Retained draft")
+        #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+        editor.editingTemplate.shortcutSlot = nil
+        guard case .success(let copy) = await editor.saveEditingTemplateAsNew() else {
+            Issue.record("Explicit new copy failed"); return
+        }
+        #expect(copy.id != original.id)
+        #expect(try secondStorage.loadAll().contains(copy))
+        #expect(try !firstStorage.loadAll().contains(copy))
+        #expect(try tracked.map { try Data(contentsOf: $0) } == before)
+    }
+
     @Test("Existing editor saves refuse stale snapshots before shortcut writes and retain recovery",
           arguments: ["changed", "removed", "corrupt", "duplicate", "unchanged"])
     @MainActor
@@ -20,6 +97,9 @@ struct MetadataTemplatePersistenceTests {
         let peerURL = root.appendingPathComponent("\(peer.id.uuidString).json")
         let peerBytes = try Data(contentsOf: peerURL)
         let editor = TemplateViewModel(storage: storage)
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
         editor.startEditing(original)
         editor.editingTemplate.name = "My draft"
         editor.editingTemplate.shortcutSlot = 2
@@ -179,10 +259,38 @@ struct MetadataTemplatePersistenceTests {
         }
         #expect(commit.addedCount == 0)
         #expect(commit.overwrittenCount == 1)
+        #expect(commit.directoryURL == key)
         #expect(commit.refreshedTemplates.map(\.name) == ["Imported"])
         #expect(prepared.preview.newCount == 0)
         #expect(prepared.preview.overwriteCount == 1)
         #expect(try storage.loadAll().map(\.name) == ["Imported"])
+    }
+
+    @Test("Partial import failure retains the canonical root of its returned inventory")
+    func importFailureRootProvenance() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = TemplateStorageService(directoryURL: root)
+        let protected = MetadataTemplate(name: "Newer format")
+        try storage.save(protected)
+        let target = root.appendingPathComponent("\(protected.id.uuidString).json")
+        var future = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: target)) as? [String: Any])
+        future["schemaVersion"] = 999
+        let futureBytes = try JSONSerialization.data(withJSONObject: future)
+        try futureBytes.write(to: target)
+        let added = MetadataTemplate(name: "Durable import")
+        do {
+            _ = try await TemplateImportCommitService(storage: storage).commit(
+                TemplateBundle(templates: [added, protected]),
+                sourceURL: root.appendingPathComponent("source.templatebundle"), requestID: UUID()
+            )
+            Issue.record("Expected future-version overwrite refusal")
+        } catch let error as TemplateImportCommitError {
+            #expect(error.directoryURL == SafePathComponent.resolvingExistingSymlinks(in: root))
+            #expect(error.committedTemplateIDs == [added.id])
+            #expect(error.refreshedTemplates == [added])
+        }
+        #expect(try Data(contentsOf: target) == futureBytes)
     }
 
     @Test("Repeated import identities have matching preview and durable commit counts")
@@ -440,7 +548,9 @@ struct MetadataTemplatePersistenceTests {
         #expect(try storage.loadAll().map(\.id) == [template.id])
 
         let viewModel = TemplateViewModel(storage: storage)
-        viewModel.templates = [template]
+        await withCheckedContinuation { continuation in
+            viewModel.loadTemplates { _ in continuation.resume() }
+        }
         viewModel.deleteTemplate(template)
         let deadline = ContinuousClock.now + .seconds(30)
         while viewModel.errorMessage == nil {
@@ -640,7 +750,6 @@ struct MetadataTemplatePersistenceTests {
         let root = try makeTempFolder()
         defer { try? FileManager.default.removeItem(at: root) }
         let storageLocation = root.appendingPathComponent("templates")
-        try Data("blocks directory creation".utf8).write(to: storageLocation)
 
         let original = MetadataTemplate(
             name: "Original",
@@ -649,7 +758,13 @@ struct MetadataTemplatePersistenceTests {
         let viewModel = TemplateViewModel(
             storage: TemplateStorageService(directoryURL: storageLocation)
         )
+        try TemplateStorageService(directoryURL: storageLocation).save(original)
+        await withCheckedContinuation { continuation in
+            viewModel.loadTemplates { _ in continuation.resume() }
+        }
         viewModel.startEditing(original)
+        try FileManager.default.removeItem(at: storageLocation)
+        try Data("blocks directory creation".utf8).write(to: storageLocation)
         viewModel.editingTemplate.name = "Edited name"
 
         let failedResult = await viewModel.saveEditingTemplate()
