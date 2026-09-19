@@ -10,6 +10,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Template saves and deletion now check the exact loaded file bytes and storage-folder
+  identity. Reloading a list cannot authorize an older open draft, and ambiguous filenames,
+  duplicate IDs and conflicting shortcut records refuse mutation.
+- Template saves preserve supported extension fields. Unsupported nested Develop settings,
+  numeric extensions and ambiguous JSON refuse an overwrite while keeping the original file.
+- Metadata and Develop template rows expose separate, named Edit and Trash actions.
+  Editors focus the name field on opening, support Escape to cancel and Return to save.
+
 - Metadata and Develop template editors retain the storage folder where the template was
   opened. Saving or deleting after the folder changes refuses before touching the new store.
   Stale template deletion also refuses changed, missing, unreadable and duplicate records.

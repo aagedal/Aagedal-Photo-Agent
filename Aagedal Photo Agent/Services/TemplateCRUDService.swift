@@ -4,6 +4,7 @@ nonisolated struct TemplateInventorySnapshot<Value: Sendable>: Sendable {
     let requestID: UUID
     let templates: [Value]
     var directoryURL: URL? = nil
+    var authorities: [UUID: TemplateFileAuthority] = [:]
 }
 
 nonisolated enum TemplateInventoryOperationResult<Value: Sendable>: Sendable {
@@ -20,7 +21,9 @@ nonisolated struct TemplateMutationCommit<Value: Sendable>: Sendable {
     let refreshedTemplates: [Value]
     let inventoryRefreshFailureReason: String?
     let cancellationObservedAfterCommit: Bool
+    var inventoryWasRead: Bool = false
     var directoryURL: URL? = nil
+    var authorities: [UUID: TemplateFileAuthority] = [:]
 }
 
 nonisolated enum TemplateMutationOperationResult<Value: Sendable>: Sendable {
@@ -36,6 +39,7 @@ nonisolated struct TemplateMutationError<Value: Sendable>: LocalizedError, Senda
 
     var isSnapshotConflict: Bool = false
     var directoryURL: URL? = nil
+    var authorities: [UUID: TemplateFileAuthority] = [:]
 
     var errorDescription: String? { reason }
 }
@@ -60,6 +64,7 @@ nonisolated struct TemplateCRUDAccess<Value: Identifiable & Sendable>: Sendable 
     let shortcutSlot: @Sendable (Value) -> Int?
     let clearingShortcutSlot: @Sendable (Value) -> Value
     let sorted: @Sendable ([Value]) -> [Value]
+    var readInventory: (@Sendable () throws -> TemplateFileInventory<Value>)? = nil
     var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
 }
 
@@ -83,8 +88,11 @@ nonisolated extension TemplateCRUDAccess where Value == MetadataTemplate {
         if prepareTransaction {
             access.prepareTransaction = {
                 let scope = storage.resolvedForTransaction()
+                var bound = Self.storage(scope.access, prepareTransaction: false)
+                let sorted = bound.sorted
+                bound.readInventory = { try TemplateFileInventory.read(at: scope.directoryURL, sorted: sorted) }
                 return TemplateStorageScope(
-                    access: .storage(scope.access, prepareTransaction: false),
+                    access: bound,
                     directoryURL: scope.directoryURL, release: scope.release
                 )
             }
@@ -119,8 +127,11 @@ nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
         if prepareTransaction {
             access.prepareTransaction = {
                 let scope = storage.resolvedForTransaction()
+                var bound = Self.storage(scope.access, prepareTransaction: false)
+                let sorted = bound.sorted
+                bound.readInventory = { try TemplateFileInventory.read(at: scope.directoryURL, sorted: sorted) }
                 return TemplateStorageScope(
-                    access: .storage(scope.access, prepareTransaction: false),
+                    access: bound,
                     directoryURL: scope.directoryURL, release: scope.release
                 )
             }
@@ -173,17 +184,17 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         return try await withStorageTransaction { try await $0.loadInTransaction(requestID: requestID) }
     }
 
-    func save(_ template: Value, expectedExisting: Value? = nil, expectedDirectoryURL: URL? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+    func save(_ template: Value, expectedExisting: Value? = nil, expectedDirectoryURL: URL? = nil, expectedAuthority: TemplateFileAuthority? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
         return try await withStorageTransaction {
-            try await $0.saveInTransaction(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
+            try await $0.saveInTransaction(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, expectedAuthority: expectedAuthority, requestID: requestID)
         }
     }
 
-    func delete(_ template: Value, expectedDirectoryURL: URL? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+    func delete(_ template: Value, expectedDirectoryURL: URL? = nil, expectedAuthority: TemplateFileAuthority? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
         return try await withStorageTransaction {
-            try await $0.deleteInTransaction(template, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
+            try await $0.deleteInTransaction(template, expectedDirectoryURL: expectedDirectoryURL, expectedAuthority: expectedAuthority, requestID: requestID)
         }
     }
 
@@ -200,17 +211,19 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID)
         }
-        let templates = try access.loadAll()
+        let snapshot = try readInventory()
+        let templates = snapshot.templates
         guard !Task.isCancelled else {
             return .cancelledAfterRead(requestID: requestID, templateCount: templates.count)
         }
-        return .loaded(TemplateInventorySnapshot(requestID: requestID, templates: templates, directoryURL: transactionDirectoryURL))
+        return .loaded(TemplateInventorySnapshot(requestID: requestID, templates: templates, directoryURL: transactionDirectoryURL, authorities: snapshot.authorities))
     }
 
     private func saveInTransaction(
         _ template: Value,
         expectedExisting: Value?,
         expectedDirectoryURL: URL?,
+        expectedAuthority: TemplateFileAuthority?,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else {
@@ -227,7 +240,17 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
             )
         }
 
-        var inventory = try access.loadAll()
+        let snapshot = try readInventory()
+        var inventory = snapshot.templates
+        if (access.readInventory != nil && (expectedExisting != nil || snapshot.occupiedFileIDs.contains(template.id) || inventory.contains { $0.id == template.id }) && expectedAuthority == nil)
+            || (expectedAuthority != nil && snapshot.authorities[template.id] != expectedAuthority) {
+            throw TemplateMutationError<Value>(
+                requestID: requestID,
+                reason: "This template changed or is no longer available. The file bytes or templates folder identity changed. Reload the list, or save a new copy of your edits.",
+                durableTemplateIDs: [], refreshedTemplates: inventory, isSnapshotConflict: true,
+                directoryURL: transactionDirectoryURL, authorities: snapshot.authorities
+            )
+        }
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
         }
@@ -243,7 +266,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                     reason: "This template changed or is no longer available. Your edits are still here. Save a new copy, or reopen the latest template and reapply your changes.",
                     durableTemplateIDs: [],
                     refreshedTemplates: inventory,
-                    isSnapshotConflict: true, directoryURL: transactionDirectoryURL
+                    isSnapshotConflict: true, directoryURL: transactionDirectoryURL, authorities: snapshot.authorities
                 )
             }
         }
@@ -252,6 +275,14 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         if let slot = access.shortcutSlot(template) {
             let conflicts = inventory.filter {
                 access.shortcutSlot($0) == slot && $0.id != template.id
+            }
+            if access.readInventory != nil && conflicts.contains(where: { snapshot.authorities[$0.id] == nil }) {
+                throw TemplateMutationError<Value>(
+                    requestID: requestID,
+                    reason: "A conflicting shortcut belongs to an ambiguous template file. Reload and resolve the duplicate or mismatched files before saving.",
+                    durableTemplateIDs: [], refreshedTemplates: inventory, isSnapshotConflict: true,
+                    directoryURL: transactionDirectoryURL, authorities: snapshot.authorities
+                )
             }
             for conflict in conflicts {
                 guard !Task.isCancelled else {
@@ -322,6 +353,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
     private func deleteInTransaction(
         _ template: Value,
         expectedDirectoryURL: URL?,
+        expectedAuthority: TemplateFileAuthority?,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else {
@@ -334,7 +366,17 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                 durableTemplateIDs: [], refreshedTemplates: [], isSnapshotConflict: true
             )
         }
-        var inventory = try access.loadAll()
+        let snapshot = try readInventory()
+        var inventory = snapshot.templates
+        if (access.readInventory != nil && expectedAuthority == nil)
+            || (expectedAuthority != nil && snapshot.authorities[template.id] != expectedAuthority) {
+            throw TemplateMutationError<Value>(
+                requestID: requestID,
+                reason: "This template changed or is no longer available. The file bytes or templates folder identity changed. Reload the list, or save a new copy of your edits.",
+                durableTemplateIDs: [], refreshedTemplates: inventory, isSnapshotConflict: true,
+                directoryURL: transactionDirectoryURL, authorities: snapshot.authorities
+            )
+        }
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
         }
@@ -348,7 +390,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
                 reason: "This template changed or is no longer available. Review the refreshed templates before deleting again.",
                 durableTemplateIDs: [],
                 refreshedTemplates: inventory,
-                isSnapshotConflict: true, directoryURL: transactionDirectoryURL
+                isSnapshotConflict: true, directoryURL: transactionDirectoryURL, authorities: snapshot.authorities
             )
         }
         do {
@@ -404,16 +446,17 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
         derivedInventory: [Value]
     ) -> TemplateMutationOperationResult<Value> {
         do {
-            let refreshed = try access.loadAll()
+            let refreshed = try readInventory()
             return .committed(TemplateMutationCommit(
                 requestID: requestID,
                 requestedTemplate: requestedTemplate,
                 requestedTemplateCommitted: requestedTemplateCommitted,
                 durableTemplateIDs: durableTemplateIDs,
-                refreshedTemplates: refreshed,
+                refreshedTemplates: refreshed.templates,
                 inventoryRefreshFailureReason: nil,
                 cancellationObservedAfterCommit: false,
-                directoryURL: transactionDirectoryURL
+                inventoryWasRead: true, directoryURL: transactionDirectoryURL,
+                authorities: refreshed.authorities
             ))
         } catch {
             return .committed(TemplateMutationCommit(
@@ -463,6 +506,11 @@ actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Valu
             durableTemplateIDs: durableTemplateIDs,
             refreshedTemplates: access.sorted(inventory)
         )
+    }
+
+    private func readInventory() throws -> TemplateFileInventory<Value> {
+        if let read = access.readInventory { return try read() }
+        return TemplateFileInventory(templates: try access.loadAll(), authorities: [:])
     }
 
     private func replace(_ template: Value, in inventory: inout [Value]) {

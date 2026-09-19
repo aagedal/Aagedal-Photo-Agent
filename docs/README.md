@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 72: template store boundaries and MCP field discovery](release/cycle-72-template-authority-field-discovery-2026-09-20.md) binds existing template edits/deletion to their captured store, refuses stale deletion, protects newer Develop schemas, and exposes the helper's typed editorial field catalog. Native conflict recovery and stale deletion are verified. Production MCP workflow tools, byte-level template authority, FFmpeg Whisper and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 73: template byte authority and accessible editor actions](release/cycle-73-template-byte-authority-2026-09-20.md) binds saves/deletion to exact decoded files and directory identity, protects shortcut reassignment and import provenance, and preserves supported extensions or refuses unsafe overwrites. Template rows expose separate actions and editors support keyboard cancellation. See the evidence record for current validation. Production MCP workflows, import-preview authority, FFmpeg Whisper and broader release gates remain open.
 
 ## Portfolio
 

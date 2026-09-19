@@ -169,6 +169,11 @@ struct DevelopTemplateTests {
         let exported = root.appendingPathComponent("export.json")
         let sentinel = Data("Previous export".utf8)
         try sentinel.write(to: exported)
+        let inventoryReader = TemplateCRUDService(access: .storage(storage))
+        guard case .loaded(let loadedInventory) = try await inventoryReader.load(requestID: UUID()) else {
+            Issue.record("Expected original inventory"); return
+        }
+        let originalAuthority = try #require(loadedInventory.authorities[original.id])
         let owner = try MCPProcessReservation.acquireFolder(folder)
         defer { owner.release() }
         let service = TemplateCRUDService(access: .storage(storage))
@@ -176,7 +181,7 @@ struct DevelopTemplateTests {
             switch operation {
             case "load": _ = try await service.load(requestID: UUID())
             case "save": _ = try await service.save(replacement, requestID: UUID())
-            case "delete": _ = try await service.delete(original, requestID: UUID())
+            case "delete": _ = try await service.delete(original, expectedAuthority: originalAuthority, requestID: UUID())
             default: _ = try await service.exportAll(to: exported, requestID: UUID())
             }
         }

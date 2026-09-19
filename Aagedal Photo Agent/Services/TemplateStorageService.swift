@@ -77,6 +77,7 @@ nonisolated struct TemplateStorageService: Sendable {
         let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
+        var data = try JSONEncoder().encode(template)
         if CloudCoordinatedIO.itemExists(at: url) {
             let existingData = try CloudCoordinatedIO.readData(at: url)
             try EditorialJSONSchema.requireWritableVersion(
@@ -85,8 +86,12 @@ nonisolated struct TemplateStorageService: Sendable {
                 documentName: "metadata template",
                 unversionedLegacyVersion: 1
             )
+            let existing = try JSONDecoder().decode(MetadataTemplate.self, from: existingData)
+            guard existing.id == template.id else {
+                throw TemplateJSONPreservation.PreservationError.mismatchedIdentity
+            }
+            data = try TemplateJSONPreservation.metadata(replacement: data, existing: existingData)
         }
-        let data = try JSONEncoder().encode(template)
         try CloudCoordinatedIO.writeData(data, to: url)
     }
 
@@ -302,6 +307,8 @@ nonisolated struct TemplateImportCommit: Sendable {
     let inventoryRefreshFailureReason: String?
     let cancellationObservedAfterCommit: Bool
     var directoryURL: URL? = nil
+    var authorities: [UUID: TemplateFileAuthority] = [:]
+    var inventoryWasRead: Bool = false
 }
 
 nonisolated enum TemplateImportCommitOperationResult: Sendable {
@@ -318,6 +325,8 @@ nonisolated struct TemplateImportCommitError: LocalizedError, Sendable {
     let committedTemplateIDs: [UUID]
     let refreshedTemplates: [MetadataTemplate]
     var directoryURL: URL? = nil
+    var authorities: [UUID: TemplateFileAuthority] = [:]
+    var inventoryWasRead: Bool = false
 
     var errorDescription: String? {
         let committedCount = committedTemplateIDs.count
@@ -331,6 +340,7 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
     let loadAll: @Sendable () throws -> [MetadataTemplate]
     let save: @Sendable (MetadataTemplate) throws -> Void
 
+    var readInventory: (@Sendable () throws -> TemplateFileInventory<MetadataTemplate>)? = nil
     var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
 
     static func storage(_ storage: TemplateStorageService, prepareTransaction: Bool = true) -> Self {
@@ -341,8 +351,14 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
         if prepareTransaction {
             access.prepareTransaction = {
                 let scope = storage.resolvedForTransaction()
+                var bound = Self.storage(scope.access, prepareTransaction: false)
+                bound.readInventory = {
+                    try TemplateFileInventory.read(at: scope.directoryURL, sorted: {
+                        $0.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    })
+                }
                 return TemplateStorageScope(
-                    access: .storage(scope.access, prepareTransaction: false),
+                    access: bound,
                     directoryURL: scope.directoryURL, release: scope.release
                 )
             }
@@ -470,7 +486,13 @@ actor TemplateImportCommitService {
         }
 
         do {
-            refreshedTemplates = try access.loadAll()
+            let inventory: TemplateFileInventory<MetadataTemplate>
+            if let read = access.readInventory {
+                inventory = try read()
+            } else {
+                inventory = TemplateFileInventory(templates: try access.loadAll(), authorities: [:])
+            }
+            refreshedTemplates = inventory.templates
             return .committed(TemplateImportCommit(
                 requestID: requestID,
                 sourceURL: sourceURL,
@@ -480,7 +502,8 @@ actor TemplateImportCommitService {
                 refreshedTemplates: refreshedTemplates,
                 inventoryRefreshFailureReason: nil,
                 cancellationObservedAfterCommit: false,
-                directoryURL: transactionDirectoryURL
+                directoryURL: transactionDirectoryURL,
+                authorities: inventory.authorities, inventoryWasRead: true
             ))
         } catch {
             return .committed(TemplateImportCommit(

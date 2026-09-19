@@ -37,11 +37,21 @@ struct DevelopTemplateListView: View {
                             Button("Edit") {
                                 viewModel.startEditing(template)
                             }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Edit \(template.name)")
+                            .accessibilityIdentifier("develop-template-edit-\(template.id.uuidString)")
 
                             Button("Move to Trash", role: .destructive) {
                                 viewModel.deleteTemplate(template)
                             }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Move \(template.name) to Trash")
+                            .accessibilityIdentifier("develop-template-trash-\(template.id.uuidString)")
                         }
+                        // Keep both native buttons available to VoiceOver and keyboard
+                        // navigation instead of allowing List to combine the row.
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(template.name)
                     }
                 }
             }
@@ -62,6 +72,7 @@ struct DevelopTemplateListView: View {
 
 struct DevelopTemplateEditorView: View {
     @Bindable var viewModel: DevelopTemplateViewModel
+    @FocusState private var isTemplateNameFocused: Bool
     @AccessibilityFocusState private var isSaveErrorFocused: Bool
 
     var body: some View {
@@ -71,6 +82,8 @@ struct DevelopTemplateEditorView: View {
 
             TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Template Name")
+                .focused($isTemplateNameFocused)
 
             Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
                 Text("None").tag(nil as Int?)
@@ -123,15 +136,20 @@ struct DevelopTemplateEditorView: View {
                     AccessibilityAnnouncementCenter.post(.cancellation(.templateEditing))
                     viewModel.cancelEditing()
                 }
+                .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     saveTemplate(isRecovery: false)
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut(viewModel.saveError == nil ? .defaultAction : nil)
                 .disabled(viewModel.editingTemplate.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding()
         .frame(minWidth: 380)
+        .onAppear {
+            isTemplateNameFocused = true
+        }
         .onChange(of: viewModel.saveError) { _, newError in
             guard newError != nil else { return }
             DispatchQueue.main.async {

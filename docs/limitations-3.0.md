@@ -126,3 +126,14 @@ This is separate from the unapproved AI-origin analyzer described above.
 The repository contains a [3.0 privacy draft](../PRIVACY.md) and automated privacy checks. Runtime log
 capture, filesystem-interruption/network-capture review, and external legal/privacy approval remain open
 release gates; this documentation does not claim those reviews have occurred.
+
+### Template compatibility
+
+Template editors refuse stale file bytes or a replaced storage folder and retain the draft
+for Save as New. Supported string, boolean, null, array and object extension values are
+preserved in metadata templates and at the root of Develop templates. Unknown numeric
+extensions and unsupported nested Develop settings refuse in-place saves rather than being
+silently discarded. Save as New keeps supported fields in an independent template; the original
+file remains unchanged. Template bundle exports still use the typed supported schema and are
+not an archival backup of unknown extensions. Import-preview conflict authority and races with
+noncooperating external writers remain separate limitations.

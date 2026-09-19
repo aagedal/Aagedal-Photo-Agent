@@ -1539,6 +1539,15 @@ mutation authority. Same-path root identity, byte-level/unknown-field template a
 stable-UUID template discovery/application and provider readiness remain open.
 See [cycle 72](release/cycle-72-template-authority-field-discovery-2026-09-20.md).
 
+**2026-09-20 exact template file authority:** Editor snapshots now retain exact decoded
+bytes and storage-directory identity. Production CRUD requires matching evidence for existing
+records, preflights ambiguous shortcut conflicts, and imports publish fresh inventory authority
+without rereading from the UI. Metadata extensions follow retained field UUIDs; unknown numeric
+extensions, unsupported nested Develop settings and ambiguous JSON refuse overwrite. Independent
+row controls and keyboard editor actions are implemented. Import-preview authority, external-writer
+races and MCP template tools remain open; no Phase 5A checkbox is closed by this prerequisite.
+See [cycle 73](release/cycle-73-template-byte-authority-2026-09-20.md) for verification status.
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

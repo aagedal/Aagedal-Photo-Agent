@@ -50,6 +50,11 @@ struct TemplateDeletionConflictTests {
         let duplicate = root.appendingPathComponent("duplicate.json")
         let peerURL = root.appendingPathComponent("\(peer.id.uuidString).json")
         let peerBytes = try Data(contentsOf: peerURL)
+        let service = TemplateCRUDService(access: access)
+        guard case .loaded(let loaded) = try await service.load(requestID: UUID()) else {
+            Issue.record("Expected original inventory"); return
+        }
+        let authority = try #require(loaded.authorities[original.id])
         switch state {
         case "changed": try JSONEncoder().encode(changed).write(to: source)
         case "removed": try FileManager.default.removeItem(at: source)
@@ -60,9 +65,8 @@ struct TemplateDeletionConflictTests {
         let before = try? Data(contentsOf: source)
         let duplicateBefore = try? Data(contentsOf: duplicate)
         let requestID = UUID()
-        let service = TemplateCRUDService(access: access)
         do {
-            let result = try await service.delete(original, requestID: requestID)
+            let result = try await service.delete(original, expectedAuthority: authority, requestID: requestID)
             guard state == "unchanged", case .committed(let commit) = result else {
                 Issue.record("Stale selection was allowed to delete")
                 return
@@ -79,14 +83,14 @@ struct TemplateDeletionConflictTests {
             #expect(error.isSnapshotConflict)
             #expect(error.durableTemplateIDs.isEmpty)
             #expect(error.refreshedTemplates == (try access.loadAll()))
-            #expect(error.reason.contains("before deleting again"))
+            #expect(error.reason.contains("changed or is no longer available"))
             #expect(trash.count == 0)
             #expect((try? Data(contentsOf: source)) == before)
             #expect((try? Data(contentsOf: duplicate)) == duplicateBefore)
 
             // Retrying the original selection cannot silently adopt the new snapshot.
             do {
-                _ = try await service.delete(original, requestID: UUID())
+                _ = try await service.delete(original, expectedAuthority: authority, requestID: UUID())
                 Issue.record("Retry authorized stale deletion")
             } catch let retry as TemplateMutationError<Value> {
                 #expect(retry.isSnapshotConflict)
@@ -96,7 +100,8 @@ struct TemplateDeletionConflictTests {
 
             // A deliberate fresh selection can delete a peer's newer version.
             if state == "changed" {
-                guard case .committed(let commit) = try await service.delete(changed, requestID: UUID()) else {
+                let refreshedAuthority = try #require(error.authorities[changed.id])
+                guard case .committed(let commit) = try await service.delete(changed, expectedAuthority: refreshedAuthority, requestID: UUID()) else {
                     Issue.record("Fresh selection was refused")
                     return
                 }

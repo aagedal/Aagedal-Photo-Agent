@@ -10,6 +10,8 @@ final class DevelopTemplateViewModel {
     private(set) var saveError: TemplateSaveError?
 
     @ObservationIgnored private var editingBaseline: DevelopTemplate?
+    @ObservationIgnored private var inventoryAuthorities: [UUID: TemplateFileAuthority] = [:]
+    @ObservationIgnored private var editingAuthority: TemplateFileAuthority?
     @ObservationIgnored private var inventoryDirectoryURL: URL?
     @ObservationIgnored private var hasInventoryProvenance = false
     @ObservationIgnored private var editingDirectoryURL: URL?
@@ -44,6 +46,7 @@ final class DevelopTemplateViewModel {
                 guard case .loaded(let snapshot) = result else { return }
                 self.templates = snapshot.templates
                 self.inventoryDirectoryURL = snapshot.directoryURL
+                self.inventoryAuthorities = snapshot.authorities
                 self.hasInventoryProvenance = true
                 self.errorMessage = nil
                 onLoaded?(snapshot.templates)
@@ -74,14 +77,14 @@ final class DevelopTemplateViewModel {
     }
 
     @discardableResult
-    func saveTemplate(_ template: DevelopTemplate, expectedExisting: DevelopTemplate? = nil, expectedDirectoryURL: URL? = nil) async -> Result<DevelopTemplate, TemplateSaveError> {
+    func saveTemplate(_ template: DevelopTemplate, expectedExisting: DevelopTemplate? = nil, expectedDirectoryURL: URL? = nil, expectedAuthority: TemplateFileAuthority? = nil) async -> Result<DevelopTemplate, TemplateSaveError> {
         saveError = nil
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.save(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
+            try await crudService.save(template, expectedExisting: expectedExisting, expectedDirectoryURL: expectedDirectoryURL, expectedAuthority: expectedAuthority, requestID: requestID)
         }
         mutationTask = task
         do {
@@ -97,7 +100,8 @@ final class DevelopTemplateViewModel {
             }
             templates = commit.refreshedTemplates
             inventoryDirectoryURL = commit.directoryURL
-            hasInventoryProvenance = true
+            inventoryAuthorities = commit.authorities
+            hasInventoryProvenance = commit.inventoryWasRead
             if let reason = commit.inventoryRefreshFailureReason {
                 errorMessage = "Template was saved, but the list could not be refreshed: \(reason)"
             } else {
@@ -126,17 +130,18 @@ final class DevelopTemplateViewModel {
     }
 
     func deleteTemplate(_ template: DevelopTemplate) {
-        guard hasInventoryProvenance else {
+        guard hasInventoryProvenance, inventoryDirectoryURL == nil || inventoryAuthorities[template.id] != nil else {
             errorMessage = "Reload the template list before deleting."
             return
         }
         let expectedDirectoryURL = inventoryDirectoryURL
+        let expectedAuthority = inventoryAuthorities[template.id]
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.delete(template, expectedDirectoryURL: expectedDirectoryURL, requestID: requestID)
+            try await crudService.delete(template, expectedDirectoryURL: expectedDirectoryURL, expectedAuthority: expectedAuthority, requestID: requestID)
         }
         mutationTask = task
         Task { [weak self] in
@@ -148,7 +153,8 @@ final class DevelopTemplateViewModel {
                 guard case .committed(let commit) = result else { return }
                 self.templates = commit.refreshedTemplates
                 self.inventoryDirectoryURL = commit.directoryURL
-                self.hasInventoryProvenance = true
+                self.inventoryAuthorities = commit.authorities
+                self.hasInventoryProvenance = commit.inventoryWasRead
                 self.errorMessage = commit.inventoryRefreshFailureReason
             } catch let error as TemplateMutationError<DevelopTemplate> {
                 guard let self, self.mutationRequestID == requestID else { return }
@@ -157,7 +163,8 @@ final class DevelopTemplateViewModel {
                 if !error.durableTemplateIDs.isEmpty || error.isSnapshotConflict {
                     self.templates = error.refreshedTemplates
                     self.inventoryDirectoryURL = error.directoryURL
-                    self.hasInventoryProvenance = error.directoryURL != nil
+                    self.inventoryAuthorities = error.authorities
+                    self.hasInventoryProvenance = error.directoryURL != nil && !error.authorities.isEmpty
                 }
                 self.errorMessage = error.reason
             } catch {
@@ -171,6 +178,7 @@ final class DevelopTemplateViewModel {
 
     func startEditing(_ template: DevelopTemplate) {
         editingBaseline = template
+        editingAuthority = inventoryAuthorities[template.id]
         editingDirectoryURL = inventoryDirectoryURL
         editingHasInventoryProvenance = hasInventoryProvenance && templates.contains(template)
         editingTemplate = template
@@ -181,14 +189,14 @@ final class DevelopTemplateViewModel {
 
     @discardableResult
     func saveEditingTemplate() async -> Result<DevelopTemplate, TemplateSaveError> {
-        guard editingBaseline == nil || editingHasInventoryProvenance else {
+        guard editingBaseline == nil || (editingHasInventoryProvenance && (editingDirectoryURL == nil || editingAuthority != nil)) else {
             return recordSaveFailure(
                 reason: "Reopen this template from the loaded template list before saving, or save a new copy.",
                 isSnapshotConflict: true
             )
         }
         return finishEditingIfSaved(await saveTemplate(
-            editingTemplate, expectedExisting: editingBaseline, expectedDirectoryURL: editingDirectoryURL
+            editingTemplate, expectedExisting: editingBaseline, expectedDirectoryURL: editingDirectoryURL, expectedAuthority: editingAuthority
         ))
     }
 
@@ -205,6 +213,7 @@ final class DevelopTemplateViewModel {
 
     func cancelEditing() {
         editingBaseline = nil
+        editingAuthority = nil
         editingDirectoryURL = nil
         editingHasInventoryProvenance = false
         isEditingExistingTemplate = false
@@ -218,6 +227,7 @@ final class DevelopTemplateViewModel {
     ) -> Result<DevelopTemplate, TemplateSaveError> {
         if case .success = result {
             editingBaseline = nil
+            editingAuthority = nil
             editingDirectoryURL = nil
             editingHasInventoryProvenance = false
             isEditingExistingTemplate = false

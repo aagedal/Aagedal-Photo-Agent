@@ -15,6 +15,8 @@ struct TemplateListView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("New metadata template")
+                .help("Create a metadata template")
             }
 
             if viewModel.templates.isEmpty {
@@ -38,11 +40,21 @@ struct TemplateListView: View {
                             Button("Edit") {
                                 viewModel.startEditing(template)
                             }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Edit \(template.name)")
+                            .accessibilityIdentifier("metadata-template-edit-\(template.id.uuidString)")
 
                             Button("Move to Trash", role: .destructive) {
                                 viewModel.deleteTemplate(template)
                             }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Move \(template.name) to Trash")
+                            .accessibilityIdentifier("metadata-template-trash-\(template.id.uuidString)")
                         }
+                        // Keep both native buttons available to VoiceOver and keyboard
+                        // navigation instead of allowing List to combine the row.
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(template.name)
                     }
                 }
             }

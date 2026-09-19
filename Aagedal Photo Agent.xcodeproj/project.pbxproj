@@ -182,6 +182,8 @@
 		AB96DD502657CA81F3D05475 /* IPTCMetadataVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */; };
 		3C01ADAD5FE443AEA4BB439A /* ISO3166Country.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494B37051D772365BB0908B9 /* ISO3166Country.swift */; };
 		31B9081D449A9F0EEE29CEC7 /* EditorialJSONSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */; };
+		EE73F0000000000000000002 /* TemplateJSONPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE73F0000000000000000001 /* TemplateJSONPreservationTests.swift */; };
+		EE73F0000000000000000012 /* TemplateFileAuthorityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE73F0000000000000000011 /* TemplateFileAuthorityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -400,6 +402,8 @@
 		2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadataVerification.swift"; sourceTree = SOURCE_ROOT; };
 		494B37051D772365BB0908B9 /* ISO3166Country.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ISO3166Country.swift"; sourceTree = SOURCE_ROOT; };
 		D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
+		EE73F0000000000000000001 /* TemplateJSONPreservationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateJSONPreservationTests.swift; sourceTree = "<group>"; };
+		EE73F0000000000000000011 /* TemplateFileAuthorityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateFileAuthorityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -560,6 +564,8 @@
 				D3C00A000000000000000001 /* CleanFeedBrowseRenderServiceTests.swift */,
 				AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */,
 				DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */,
+				EE73F0000000000000000001 /* TemplateJSONPreservationTests.swift */,
+				EE73F0000000000000000011 /* TemplateFileAuthorityTests.swift */,
 				DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */,
 				AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */,
 				AB5200000000000000000001 /* MetadataValidationTests.swift */,
@@ -950,6 +956,8 @@
 				D3C00A000000000000000002 /* CleanFeedBrowseRenderServiceTests.swift in Sources */,
 				AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */,
 				DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */,
+				EE73F0000000000000000002 /* TemplateJSONPreservationTests.swift in Sources */,
+				EE73F0000000000000000012 /* TemplateFileAuthorityTests.swift in Sources */,
 				DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */,
 				AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */,
 				AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */,

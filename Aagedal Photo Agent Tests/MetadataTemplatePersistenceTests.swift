@@ -342,6 +342,11 @@ struct MetadataTemplatePersistenceTests {
         let exported = root.appendingPathComponent("export.templatebundle")
         let sentinel = Data("Previous export".utf8)
         try sentinel.write(to: exported)
+        let inventoryReader = TemplateCRUDService(access: .storage(storage))
+        guard case .loaded(let loadedInventory) = try await inventoryReader.load(requestID: UUID()) else {
+            Issue.record("Expected original inventory"); return
+        }
+        let originalAuthority = try #require(loadedInventory.authorities[original.id])
         // A different spelling must reserve the same canonical folder.
         let alias = root.appendingPathComponent("Alias")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
@@ -352,7 +357,7 @@ struct MetadataTemplatePersistenceTests {
             switch operation {
             case "load": _ = try await service.load(requestID: UUID())
             case "save": _ = try await service.save(requested, requestID: UUID())
-            case "delete": _ = try await service.delete(original, requestID: UUID())
+            case "delete": _ = try await service.delete(original, expectedAuthority: originalAuthority, requestID: UUID())
             default: _ = try await service.exportAll(to: exported, requestID: UUID())
             }
         }
@@ -763,7 +768,8 @@ struct MetadataTemplatePersistenceTests {
             viewModel.loadTemplates { _ in continuation.resume() }
         }
         viewModel.startEditing(original)
-        try FileManager.default.removeItem(at: storageLocation)
+        let retainedStorage = root.appendingPathComponent("retained-templates")
+        try FileManager.default.moveItem(at: storageLocation, to: retainedStorage)
         try Data("blocks directory creation".utf8).write(to: storageLocation)
         viewModel.editingTemplate.name = "Edited name"
 
@@ -782,9 +788,9 @@ struct MetadataTemplatePersistenceTests {
         #expect(viewModel.editingTemplate.fields.first?.templateValue == "Draft headline")
 
         try FileManager.default.removeItem(at: storageLocation)
-        try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
-
-        try TemplateStorageService(directoryURL: storageLocation).save(original)
+        // Restore the same directory and bytes. Recreating it would now correctly
+        // refuse as a replaced store, covered by TemplateFileAuthorityTests.
+        try FileManager.default.moveItem(at: retainedStorage, to: storageLocation)
 
         let retryResult = await viewModel.saveEditingTemplate()
 

@@ -390,6 +390,97 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTemplateEditorActionsAndByteConflictRecovery() throws {
+        let root = fixtureRoot.appendingPathComponent("Templates", isDirectory: true)
+        let developRoot = root.appendingPathComponent("Develop", isDirectory: true)
+        try FileManager.default.createDirectory(at: developRoot, withIntermediateDirectories: true)
+        let metadataID = UUID().uuidString
+        let developID = UUID().uuidString
+        let metadataURL = root.appendingPathComponent("\(metadataID).json")
+        let developURL = developRoot.appendingPathComponent("\(developID).json")
+        let metadataData = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1, "id": metadataID, "name": "Smoke Metadata",
+            "templateType": "Full", "fields": [], "processInstantly": false,
+        ])
+        let developData = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1, "id": developID, "name": "Smoke Develop",
+            "settings": ["exposure2012": 0.5], "includesCrop": true,
+        ])
+        try metadataData.write(to: metadataURL)
+        try developData.write(to: developURL)
+        launch(workflow: "open-folder", folder: try makePhotoFolder(count: 1), templateRoot: root)
+        app.typeKey(",", modifierFlags: .command)
+        let templates = app.staticTexts["Templates"].firstMatch
+        XCTAssertTrue(templates.waitForExistence(timeout: 10))
+        templates.click()
+
+        var preservedMetadataData = metadataData
+        var preservedDevelopData = developData
+        for (kind, id, name) in [
+            ("metadata", metadataID, "Smoke Metadata"),
+            ("develop", developID, "Smoke Develop"),
+        ] {
+            if kind == "develop" {
+                let selector = app.radioButtons["Develop"]
+                XCTAssertTrue(selector.waitForExistence(timeout: 5))
+                selector.click()
+            }
+            let edit = app.buttons["\(kind)-template-edit-\(id)"]
+            let trash = app.buttons["\(kind)-template-trash-\(id)"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 10))
+            XCTAssertTrue(trash.exists)
+            XCTAssertEqual(edit.label, "Edit \(name)")
+            XCTAssertEqual(trash.label, "Move \(name) to Trash")
+            edit.click()
+            let templateName = app.textFields["Template Name"]
+            XCTAssertTrue(templateName.waitForExistence(timeout: 5))
+            // Do not refocus: typing must reach the editor's initial responder.
+            app.typeKey("a", modifierFlags: .command)
+            app.typeText("Cancelled draft")
+            XCTAssertEqual(templateName.value as? String, "Cancelled draft")
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(edit.waitForExistence(timeout: 5))
+            let editorClosed = NSPredicate { _, _ in !templateName.exists }
+            expectation(for: editorClosed, evaluatedWith: app)
+            waitForExpectations(timeout: 5)
+            XCTAssertEqual(try Data(contentsOf: metadataURL), preservedMetadataData)
+            XCTAssertEqual(try Data(contentsOf: developURL), preservedDevelopData)
+
+            let templateDirectory = kind == "metadata" ? root : developRoot
+            let beforeRecovery = Set(try FileManager.default.contentsOfDirectory(
+                at: templateDirectory, includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" })
+            edit.click()
+            XCTAssertTrue(templateName.waitForExistence(timeout: 5))
+            app.typeKey("a", modifierFlags: .command)
+            let recoveredName = "Recovered \(name)"
+            app.typeText(recoveredName)
+            let peerURL = kind == "metadata" ? metadataURL : developURL
+            var peerBytes = try Data(contentsOf: peerURL)
+            peerBytes.append(10) // A peer change invisible to the typed template model.
+            try peerBytes.write(to: peerURL)
+            if kind == "metadata" { preservedMetadataData = peerBytes }
+            else { preservedDevelopData = peerBytes }
+            app.typeKey(.return, modifierFlags: [])
+            XCTAssertTrue(app.buttons["Retry Save"].waitForExistence(timeout: 10))
+            XCTAssertEqual(templateName.value as? String, recoveredName)
+            XCTAssertEqual(try Data(contentsOf: peerURL), peerBytes)
+            app.buttons["Save as New"].click()
+            expectation(for: editorClosed, evaluatedWith: app)
+            waitForExpectations(timeout: 5)
+            XCTAssertEqual(try Data(contentsOf: peerURL), peerBytes)
+            let documents = try FileManager.default.contentsOfDirectory(
+                at: templateDirectory, includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" }
+            XCTAssertEqual(documents.count, beforeRecovery.count + 1)
+            let copy = try XCTUnwrap(documents.first { !beforeRecovery.contains($0) })
+            let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: copy)) as? [String: Any])
+            XCTAssertEqual(saved["name"] as? String, recoveredName)
+            XCTAssertNotEqual(saved["id"] as? String, id)
+        }
+    }
+
+    @MainActor
     private func launch(
         workflow: String,
         folder: URL? = nil,

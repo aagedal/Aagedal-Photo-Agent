@@ -8,6 +8,7 @@ struct TemplateEditorView: View {
     @State private var activeFieldID: UUID?
     @State private var fieldSelections: [UUID: NSRange] = [:]
     @FocusState private var focusedTemplateValueFieldID: UUID?
+    @FocusState private var isTemplateNameFocused: Bool
     @AccessibilityFocusState private var isSaveErrorFocused: Bool
 
     /// Returns field keys that are already used in the template
@@ -34,6 +35,8 @@ struct TemplateEditorView: View {
 
             TextField("Template Name", text: $viewModel.editingTemplate.name)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Template Name")
+                .focused($isTemplateNameFocused)
 
             HStack(spacing: 20) {
                 Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
@@ -99,7 +102,7 @@ struct TemplateEditorView: View {
             ForEach($viewModel.editingTemplate.fields) { $field in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Picker("", selection: $field.fieldKey) {
+                        Picker("Metadata Field", selection: $field.fieldKey) {
                             ForEach(availableFieldsForPicker(currentKey: field.fieldKey), id: \.key) { f in
                                 Text(f.label).tag(f.key)
                             }
@@ -111,7 +114,7 @@ struct TemplateEditorView: View {
                             // Digital Source Type is an enum — offer its cases as a
                             // dropdown rather than free text. The template stores the
                             // short raw value for compatibility with existing template JSON.
-                            Picker("", selection: Binding(
+                            Picker("Digital Source Type", selection: Binding(
                                 get: { DigitalSourceType(metadataValue: $field.templateValue.wrappedValue) },
                                 set: { $field.templateValue.wrappedValue = $0?.rawValue ?? "" }
                             )) {
@@ -124,7 +127,7 @@ struct TemplateEditorView: View {
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .leading)
                         } else if field.fieldKey == "urgency" {
-                            Picker("", selection: Binding(
+                            Picker("Urgency", selection: Binding(
                                 get: { Int($field.templateValue.wrappedValue) },
                                 set: { $field.templateValue.wrappedValue = $0.map(String.init) ?? "" }
                             )) {
@@ -152,7 +155,10 @@ struct TemplateEditorView: View {
                                 .foregroundStyle(.red)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Remove \(TemplateField.label(for: field.fieldKey)) field")
+                        .help("Remove this field from the template")
                     }
+                    .accessibilityElement(children: .contain)
                     if field.templateValue.contains(VoiceMemoTranscriptVariablePolicy.token),
                        !VoiceMemoTranscriptVariablePolicy.isCompatible(templateFieldKey: field.fieldKey) {
                         Label("Choose a free-text field before using the voice-memo transcript.",
@@ -184,11 +190,13 @@ struct TemplateEditorView: View {
                     AccessibilityAnnouncementCenter.post(.cancellation(.templateEditing))
                     viewModel.cancelEditing()
                 }
+                .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     saveTemplate(isRecovery: false)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.editingTemplate.name.isEmpty)
+                .keyboardShortcut(viewModel.saveError == nil ? .defaultAction : nil)
+                .disabled(viewModel.editingTemplate.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding()
@@ -210,6 +218,9 @@ struct TemplateEditorView: View {
             if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                 fieldSelections[newValue] = editor.selectedRange()
             }
+        }
+        .onAppear {
+            isTemplateNameFocused = true
         }
         .onChange(of: viewModel.saveError) { _, newError in
             guard newError != nil else { return }
@@ -251,6 +262,7 @@ struct TemplateEditorView: View {
             TextField("Template value", text: field.templateValue, axis: .vertical)
                 .lineLimit(3...8)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("\(TemplateField.label(for: field.wrappedValue.fieldKey)) template value")
                 .focused($focusedTemplateValueFieldID, equals: fieldID)
                 .onTapGesture {
                     activeFieldID = fieldID
@@ -261,6 +273,7 @@ struct TemplateEditorView: View {
         } else {
             TextField("Template value", text: field.templateValue)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("\(TemplateField.label(for: field.wrappedValue.fieldKey)) template value")
                 .focused($focusedTemplateValueFieldID, equals: fieldID)
                 .onTapGesture {
                     activeFieldID = fieldID
@@ -300,6 +313,8 @@ struct TemplateEditorView: View {
                 .font(.caption)
         }
         .menuStyle(.borderlessButton)
+        .accessibilityLabel("Insert variable into \(TemplateField.label(for: field.wrappedValue.fieldKey))")
+        .help("Insert a metadata variable")
         .frame(width: 24)
         .onTapGesture {
             activeFieldID = fieldID
