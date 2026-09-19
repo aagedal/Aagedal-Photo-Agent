@@ -578,6 +578,60 @@ actor FaceDataFolderLoadService {
         return load(folderURL: folderURL, cleanupPolicy: cleanupPolicy)
     }
 
+    /// Lazy photo deletion must not release admission between its snapshot and commit.
+    /// Return the original snapshot on write failure and the committed snapshot even if
+    /// thumbnail cleanup fails; callers must not confuse cleanup with a failed document write.
+    func deletePhotoFacesWithFolderReservation(
+        folderURL: URL,
+        imageURLs: Set<URL>
+    ) throws -> (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?) {
+        guard !Task.isCancelled else {
+            return (.cancelled(CancelledFaceDataFolderLoadEvidence(
+                folderURL: folderURL.standardizedFileURL,
+                requestedThumbnailCount: 0, processedThumbnailCount: 0
+            )), nil)
+        }
+        let reservation = try MCPProcessReservation.acquireFolder(folderURL)
+        defer { reservation.release() }
+        let loaded = load(folderURL: folderURL, cleanupPolicy: .never)
+        guard case .complete(let evidence) = loaded, var data = evidence.faceData else {
+            return (loaded, nil)
+        }
+        // A persisted URL must never redirect this transaction outside its reserved folder.
+        guard data.folderURL.standardizedFileURL.path == folderURL.standardizedFileURL.path,
+              imageURLs.allSatisfy({
+                  $0.deletingLastPathComponent().standardizedFileURL.path == folderURL.standardizedFileURL.path
+              }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let paths = Set(imageURLs.map { $0.standardizedFileURL.path })
+        let removedIDs = Set(data.faces.filter {
+            paths.contains($0.imageURL.standardizedFileURL.path)
+        }.map(\.id))
+        guard !removedIDs.isEmpty else { return (loaded, nil) }
+        for index in data.groups.indices {
+            data.groups[index].faceIDs.removeAll { removedIDs.contains($0) }
+            if removedIDs.contains(data.groups[index].representativeFaceID),
+               let replacement = data.groups[index].faceIDs.first {
+                data.groups[index].representativeFaceID = replacement
+            }
+        }
+        data.groups.removeAll { $0.faceIDs.isEmpty }
+        data.faces.removeAll { removedIDs.contains($0.id) }
+        let persistence = persist(data, deletingThumbnailIDs: removedIDs.sorted {
+            $0.uuidString < $1.uuidString
+        })
+        guard case .committed = persistence else { return (loaded, persistence) }
+        return (.complete(FaceDataFolderLoadEvidence(
+            folderURL: evidence.folderURL,
+            faceData: data,
+            thumbnailData: evidence.thumbnailData.filter { !removedIDs.contains($0.key) },
+            requestedThumbnailCount: evidence.requestedThumbnailCount,
+            processedThumbnailCount: evidence.processedThumbnailCount,
+            cleanupDisposition: evidence.cleanupDisposition
+        )), persistence)
+    }
+
     /// The caller must own the enclosing folder reservation (for example a face scan).
     /// Document-only consumers use the non-mutating `loadDocument` path instead.
     func load(

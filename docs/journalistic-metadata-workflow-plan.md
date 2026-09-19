@@ -1492,6 +1492,12 @@ storage mutation. Navigation cleanup, corrupt-document recovery, stale in-memory
 reconciliation and other GUI writers still need separate coverage. See
 [cycle 61](release/cycle-61-interactive-face-admission-2026-09-19.md).
 
+**2026-09-19 lazy face-deletion transaction:** Fallback photo-face deletion now retains a
+single folder reservation across snapshot loading, document commit and thumbnail cleanup.
+Save failures preserve the original visible snapshot; foreign-folder document ownership is
+refused before writing. Already-loaded interactive snapshots still need cross-process
+reconciliation. See [cycle 64](release/cycle-64-lazy-face-deletion-transaction-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

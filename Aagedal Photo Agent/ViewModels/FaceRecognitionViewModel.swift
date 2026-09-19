@@ -3144,25 +3144,26 @@ final class FaceRecognitionViewModel {
             let pendingPersistence = faceDataPersistenceTask
             faceDataLoadTask = Task(priority: .utility) { [weak self] in
                 _ = await pendingPersistence?.value
-                let result: FaceDataFolderLoadResult
+                let result: (load: FaceDataFolderLoadResult, persistence: FaceDataPersistenceResult?)
                 do {
-                    result = try await service.loadWithFolderReservation(
-                        folderURL: targetFolder, cleanupPolicy: .never
+                    result = try await service.deletePhotoFacesWithFolderReservation(
+                        folderURL: targetFolder, imageURLs: imageURLs
                     )
                 } catch {
                     guard let self, !Task.isCancelled,
                           self.faceDataLoadRequestID == requestID else { return }
-                    self.errorMessage = "Failed to load face data for deletion: \(error.localizedDescription)"
+                    self.errorMessage = "Failed to delete face data: \(error.localizedDescription)"
                     return
                 }
                 guard let self, !Task.isCancelled, self.faceDataLoadRequestID == requestID,
                       self.faceData == nil,
-                      case .complete(let evidence) = result,
-                      let loaded = evidence.faceData else { return }
-                self.faceData = loaded
-                self.scanComplete = loaded.scanComplete
+                      case .complete(let evidence) = result.load else { return }
+                self.faceData = evidence.faceData
+                self.scanComplete = evidence.faceData?.scanComplete ?? false
                 self.installThumbnails(evidence.thumbnailData)
-                self.deleteFaces(forImageURLs: imageURLs)
+                if let failure = result.persistence?.failureMessage {
+                    self.errorMessage = "Failed to delete face data: \(failure)"
+                }
             }
             return
         }

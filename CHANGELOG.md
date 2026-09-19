@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Photo-based face deletion without a loaded folder now holds one reservation from loading
+  through document save and thumbnail cleanup. Failed saves retain visible faces, and a
+  document pointing to another folder is refused before writing.
+
 - Photo-based face deletion now reserves fallback folder loading before corrupt-data recovery,
   reports busy failures, and handles equivalent folder URLs with or without trailing slashes.
   Failed automatic expiration cleanup now reports its error while retaining visible results.

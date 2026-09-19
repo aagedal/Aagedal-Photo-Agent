@@ -478,6 +478,115 @@ struct ActivityHistoryTests {
         #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([1]))
     }
 
+    @Test("Lazy deletion owns one reservation through read, commit and cleanup",
+          arguments: ["success", "saveFailure", "cleanupFailure", "cancelDuringRead", "cancelAfterCommit"])
+    func lazyFaceDeletionTransaction(outcome: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("removed.jpg")
+        let survivor = folder.appendingPathComponent("survivor.jpg")
+        let faces = [photo, survivor].map { DetectedFace(id: UUID(), imageURL: $0,
+            faceRect: .zero, featurePrintData: Data([1]), detectedAt: Date()) }
+        // Group cleanup must also repair records whose face-side groupID is missing.
+        let group = FaceGroup(id: UUID(), name: "Preserved name",
+            representativeFaceID: faces[0].id, faceIDs: faces.map(\.id))
+        let original = FolderFaceData(folderURL: folder, faces: faces, groups: [group],
+            lastScanDate: Date(), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        for face in faces { try storage.saveThumbnail(Data([1]), for: face.id, folderURL: folder) }
+        let check: @Sendable () -> Void = {
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+        }
+        let service = FaceDataFolderLoadService(loadFaceData: { url in
+            check()
+            if outcome == "cancelDuringRead" { withUnsafeCurrentTask { $0?.cancel() } }
+            return storage.loadFaceData(for: url)
+        }, loadThumbnail: { id, url in
+            check()
+            return storage.loadThumbnail(for: id, folderURL: url)
+        }, saveFaceData: { data in
+            check()
+            if outcome == "saveFailure" { throw CocoaError(.fileWriteNoPermission) }
+            try storage.saveFaceData(data)
+            if outcome == "cancelAfterCommit" { withUnsafeCurrentTask { $0?.cancel() } }
+        }, deleteThumbnail: { id, url in
+            check()
+            if outcome == "cleanupFailure" { throw CocoaError(.fileWriteNoPermission) }
+            try storage.deleteThumbnail(for: id, folderURL: url)
+        })
+        let result = try await Task {
+            try await service.deletePhotoFacesWithFolderReservation(folderURL: folder, imageURLs: [photo])
+        }.value
+        let saved = try #require(storage.loadFaceData(for: folder))
+        if outcome == "cancelDuringRead" {
+            guard case .cancelled = result.load else { Issue.record("Expected cancellation"); return }
+            #expect(result.persistence == nil)
+            #expect(saved.faces.count == 2)
+        } else if outcome == "saveFailure" {
+            #expect(result.persistence?.failureMessage != nil)
+            #expect(saved.faces.count == 2)
+            guard case .complete(let evidence) = result.load else { Issue.record("Missing original"); return }
+            #expect(evidence.faceData?.faces.count == 2)
+        } else {
+            #expect(saved.faces.map(\.id) == [faces[1].id])
+            #expect(saved.groups.first?.faceIDs == [faces[1].id])
+            #expect(saved.groups.first?.representativeFaceID == faces[1].id)
+            #expect(saved.groups.first?.name == "Preserved name")
+            guard case .committed(let commit) = result.persistence,
+                  case .complete(let evidence) = result.load else { Issue.record("Missing commit"); return }
+            #expect(commit.cancellationRequestedAfterCommit == (outcome == "cancelAfterCommit"))
+            #expect(commit.thumbnailFailures.isEmpty == (outcome != "cleanupFailure"))
+            #expect(evidence.faceData?.faces.map(\.id) == [faces[1].id])
+            #expect(evidence.thumbnailData[faces[0].id] == nil)
+        }
+        #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([1]))
+        #expect((storage.loadThumbnail(for: faces[0].id, folderURL: folder) == nil) == (outcome == "success"))
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
+    @Test("Lazy deletion write failure preserves visible faces and reports the failure")
+    func lazyFaceDeletionWriteFailurePresentation() async {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
+            featurePrintData: Data([1]), detectedAt: Date())
+        let document = FolderFaceData(folderURL: folder, faces: [face], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        let failure = CocoaError(.fileWriteNoPermission)
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in document },
+            loadThumbnail: { _, _ in Data([1]) },
+            saveFaceData: { _ in throw failure },
+            deleteThumbnail: { _, _ in Issue.record("A failed save must preserve thumbnails") })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        viewModel.deleteFaces(forImageURLs: [photo])
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(viewModel.faceData?.faces.map(\.id) == [face.id])
+        #expect(viewModel.scanComplete)
+        #expect(viewModel.errorMessage == "Failed to delete face data: \(failure.localizedDescription)")
+    }
+
+    @Test("Lazy deletion refuses a document owned by another folder")
+    func lazyFaceDeletionWrongOwner() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let other = folder.appendingPathComponent("Other")
+        let document = FolderFaceData(folderURL: other, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in document },
+            saveFaceData: { _ in Issue.record("Wrong-folder data must never be written") })
+        do {
+            _ = try await service.deletePhotoFacesWithFolderReservation(folderURL: folder,
+                imageURLs: [folder.appendingPathComponent("photo.jpg")])
+            Issue.record("Expected owner refusal")
+        } catch { #expect(error as? CocoaError == CocoaError(.fileReadCorruptFile)) }
+        let released = try MCPProcessReservation.acquireFolder(folder)
+        released.release()
+    }
+
     @Test("Superseded lazy deletion cannot recover data or publish a busy error")
     func lazyFaceDeletionSuperseded() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

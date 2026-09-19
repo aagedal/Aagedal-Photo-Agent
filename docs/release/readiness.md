@@ -2,13 +2,17 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-19
-**Latest implementation state:** Cycle 63 admits lazy photo-face-deletion loads before recovery, fixes equivalent directory-URL deletion, and surfaces failed expiration cleanup while preserving results. Focused validation passes 34 tests / 51 executions with zero failures/skips/runtime warnings. Complete serial validation passes 3,012 tests / 3,932 executions with zero failures/skips; four previously recorded QoS warnings remain. Repository checks pass. Cross-process stale face snapshots, production workflow tools, broader GUI admission, FFmpeg Whisper and real-client evidence remain open.
+**Latest implementation state:** Cycle 64 keeps lazy photo-face deletion inside one folder reservation from snapshot loading through commit and thumbnail cleanup. Failed saves preserve visible results, and foreign-folder documents are refused before writing. Focused validation passes 23 tests / 44 executions with zero failures/skips/runtime warnings; complete serial validation passes 3,015 tests / 3,939 executions with zero failures/skips and the same four known QoS warnings. Repository checks pass. Already-loaded stale face snapshots, production workflow tools, broader GUI admission, FFmpeg Whisper and real-client evidence remain open.
 **Latest native evidence:** Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `bb786f9` for cycle 63; checkout initially clean. Working-tree changes contain fallback admission, directory identity and cleanup error presentation fixes plus regression coverage. No broad release-readiness gate is claimed complete.
+**Cycle baseline:** `e097ade` for cycle 64; checkout initially clean. Working-tree changes contain the lazy deletion transaction and regression coverage. No broad release-readiness gate is claimed complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 64 transactional lazy face deletion](cycle-64-lazy-face-deletion-transaction-2026-09-19.md)
+closes the unreserved fallback read/edit/write interval, preserves presentation after save
+failure and rejects foreign-folder ownership. Already-loaded snapshot reconciliation remains open.
 
 [Cycle 63 face deletion fallback and cleanup errors](cycle-63-face-deletion-fallback-2026-09-19.md)
 admits the fallback load before corrupt-data recovery, reports busy refusal without publishing
@@ -609,12 +613,12 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Cycle 63 fixes lazy face-deletion loading and failure presentation on baseline `bb786f9` plus
-working-tree changes. Focused validation passes 34 tests / 51 executions; complete serial
-validation passes 3,012 tests / 3,932 executions with zero failures/skips. The same four
-previously recorded QoS warnings remain. Repository checks pass. See [cycle 63 evidence](cycle-63-face-deletion-fallback-2026-09-19.md).
-The retry regression also exposed and fixes directory URL equality rejecting the same path with
-a different trailing slash. No native/client evidence or broad release gate is newly closed.
+Cycle 64 closes the lazy face-deletion read/edit/write reservation gap on baseline `e097ade`
+plus working-tree changes. Focused validation passes 23 tests / 44 executions with zero
+failures/skips/runtime warnings. The [cycle 64 evidence](cycle-64-lazy-face-deletion-transaction-2026-09-19.md)
+records the passing 3,015-test / 3,939-execution integrated suite, four known QoS warnings and
+repository checks. No native/client evidence or broad release gate is newly closed.
+Already-loaded face snapshots and the mandatory MCP/FFmpeg Whisper implementation remain open.
 
 The Known People core interchange checkpoint is implemented on source based at `78f0209`
 and recorded in [cycle 16](cycle-16-known-people-core-2026-09-12.md). Directory packages
