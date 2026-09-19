@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 67: group deletion transaction](release/cycle-67-group-deletion-2026-09-19.md) extends reserved disk reconciliation to Delete Group & Photos, retains visible face data on failed saves, reports committed photo moves separately, and refuses stale queued saves. General cross-process reconciliation for other face edits, production workflow tools, broader writer admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 68: guarded face saves](release/cycle-68-face-save-baselines-2026-09-19.md) checks each editor's durable snapshot inside the folder reservation before saving interactive face edits. Changed or unavailable documents refuse without replacing disk data or deleting thumbnails; successful queued edits advance authority and failed writes retain retry authority. Production MCP workflows, broader writer admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

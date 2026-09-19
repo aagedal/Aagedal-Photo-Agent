@@ -726,8 +726,84 @@ struct ActivityHistoryTests {
         #expect(viewModel.errorMessage == "Failed to remove expired face data: \(failure.localizedDescription)")
     }
 
-    @Test("Interactive group edits report busy admission without overwriting durable names")
-    func interactiveFaceEditRetry() async throws {
+    @Test("Guarded interactive saves preserve changed, removed, corrupt and foreign documents",
+          arguments: ["changed", "removed", "corrupt", "foreign"])
+    func staleInteractiveSaveRefused(change: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceStale-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let storage = FaceDataStorageService()
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        try storage.saveFaceData(original)
+        let documentURL = folder.appendingPathComponent(".face_data/face_data.json")
+        let thumbnailID = UUID()
+        try storage.saveThumbnail(Data([1, 2]), for: thumbnailID, folderURL: folder)
+        switch change {
+        case "changed":
+            var latest = original
+            latest.scanComplete = false
+            try storage.saveFaceData(latest)
+        case "removed": try FileManager.default.removeItem(at: documentURL)
+        case "corrupt": try Data("invalid".utf8).write(to: documentURL)
+        default:
+            var latest = original
+            latest.folderURL = folder.appendingPathComponent("foreign")
+            try JSONEncoder().encode(latest).write(to: documentURL)
+        }
+        let before = try? Data(contentsOf: documentURL)
+        let service = FaceDataFolderLoadService(loadFaceData: { url in
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(url.appendingPathComponent("photo.jpg"))
+            }
+            return storage.loadFaceData(for: url)
+        })
+        let result = await service.persistWithFolderReservation(original,
+            deletingThumbnailIDs: [thumbnailID], expectedSnapshot: original)
+        #expect(result.failureMessage?.contains("Reload the folder") == true)
+        #expect((try? Data(contentsOf: documentURL)) == before)
+        #expect(storage.loadThumbnail(for: thumbnailID, folderURL: folder) == Data([1, 2]))
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        lease.release()
+    }
+
+    @Test("Each face editor retains its own baseline and reload allows ordered edits")
+    func independentInteractiveBaselines() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceEditors-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let group = FaceGroup(id: UUID(), name: "Original", representativeFaceID: UUID(),
+            faceIDs: [], userCreated: true, manualNumber: nil)
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [group],
+            lastScanDate: Date(), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        let service = FaceDataFolderLoadService()
+        let first = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        let second = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        first.loadFaceData(for: folder, cleanupPolicy: .never)
+        await first.waitForCurrentFaceDataLoad()
+        var latest = original
+        latest.groups[0].name = "External"
+        try storage.saveFaceData(latest)
+        second.loadFaceData(for: folder, cleanupPolicy: .never)
+        await second.waitForCurrentFaceDataLoad()
+        first.nameGroup(group.id, name: "Stale")
+        await first.waitForCurrentFaceDataPersistence()
+        #expect(first.errorMessage?.contains("Reload the folder") == true)
+        #expect(storage.loadFaceData(for: folder)?.groups[0].name == "External")
+        first.loadFaceData(for: folder, cleanupPolicy: .never)
+        await first.waitForCurrentFaceDataLoad()
+        first.nameGroup(group.id, name: "Reapplied")
+        first.setManualNumber(42, forGroup: group.id)
+        await first.waitForCurrentFaceDataPersistence()
+        #expect(storage.loadFaceData(for: folder)?.groups[0].name == "Reapplied")
+        #expect(storage.loadFaceData(for: folder)?.groups[0].manualNumber == 42)
+    }
+
+    @Test("Interactive group edits retain their baseline after busy admission or failed saves",
+          arguments: [false, true])
+    func interactiveFaceEditRetry(saveFailure: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("FaceEditRetry-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -737,15 +813,22 @@ struct ActivityHistoryTests {
             lastScanDate: Date(), scanComplete: true)
         let storage = FaceDataStorageService()
         try storage.saveFaceData(original)
+        let service = FaceDataFolderLoadService(saveFaceData: { data in
+            if saveFailure, data.groups.first?.name == "Edited" { throw CocoaError(.fileWriteUnknown) }
+            try storage.saveFaceData(data)
+        })
         let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
-            writeEngine: SwiftExifWriteEngine())
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
         viewModel.faceData = original
         let lease = try MCPProcessReservation.acquirePhoto(folder.appendingPathComponent("photo.jpg"))
         defer { lease.release() }
+        if saveFailure { lease.release() }
         viewModel.nameGroup(group.id, name: "Edited")
         await viewModel.waitForCurrentFaceDataPersistence()
         #expect(storage.loadFaceData(for: folder)?.groups.first?.name == "Original")
-        #expect(viewModel.errorMessage?.contains(MCPProcessReservationError.busy.localizedDescription) == true)
+        let expectedError = saveFailure ? CocoaError(.fileWriteUnknown).localizedDescription
+            : MCPProcessReservationError.busy.localizedDescription
+        #expect(viewModel.errorMessage?.contains(expectedError) == true)
         lease.release()
         viewModel.nameGroup(group.id, name: "Retried")
         await viewModel.waitForCurrentFaceDataPersistence()

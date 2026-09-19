@@ -91,10 +91,14 @@ final class FaceRecognitionViewModel {
     static let unmatchedGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     var faceData: FolderFaceData? {
         didSet {
+            previousFaceDataSnapshot = oldValue
             faceDataRevision &+= 1
             invalidateCaches()
         }
     }
+    @ObservationIgnored private var previousFaceDataSnapshot: FolderFaceData?
+    /// Per-view-model durable authority; another window's reload cannot authorize our stale edit.
+    @ObservationIgnored private var durableFaceSnapshots: [String: FolderFaceData] = [:]
     @ObservationIgnored private var faceDataRevision: UInt64 = 0
     @ObservationIgnored private var photoDeletionGenerations: [String: UInt64] = [:]
     @ObservationIgnored private var stalePhotoDeletionFolders: Set<String> = []
@@ -805,6 +809,11 @@ final class FaceRecognitionViewModel {
                 return
             case .complete(let evidence):
                 self.stalePhotoDeletionFolders.remove(folderURL.standardizedFileURL.path)
+                // Reload establishes a new authority and invalidates edits queued from the
+                // pre-load presentation. Retire old folders' potentially large embeddings.
+                self.photoDeletionGenerations[folderURL.standardizedFileURL.path, default: 0] &+= 1
+                self.durableFaceSnapshots.removeAll()
+                self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = evidence.faceData
                 self.faceData = evidence.faceData
                 self.scanComplete = evidence.faceData?.scanComplete ?? false
                 self.installThumbnails(evidence.thumbnailData)
@@ -844,6 +853,11 @@ final class FaceRecognitionViewModel {
     ) -> Task<Void, Never> {
         let expectedRevision = faceDataRevision
         let folderIdentity = data.folderURL.standardizedFileURL.path
+        if durableFaceSnapshots[folderIdentity] == nil,
+           let previous = previousFaceDataSnapshot,
+           previous.folderURL.standardizedFileURL.path == folderIdentity {
+            durableFaceSnapshots[folderIdentity] = previous
+        }
         let expectedDeletionGeneration = photoDeletionGenerations[folderIdentity, default: 0]
         let precedingTask = faceDataPersistenceTask
         let service = folderLoadService
@@ -856,14 +870,24 @@ final class FaceRecognitionViewModel {
                   self.photoDeletionGenerations[folderIdentity, default: 0] == expectedDeletionGeneration else {
                 self.stalePhotoDeletionFolders.insert(folderIdentity)
                 if self.faceDataRevision == expectedRevision {
-                    self.errorMessage = "Face data changed during deletion. This edit was not saved. Reload the folder and reapply the edit."
+                    self.errorMessage = "Face data changed before this edit could be saved. This edit was not saved. Reload the folder and reapply the edit."
+                }
+                return
+            }
+            guard let baseline = self.durableFaceSnapshots[folderIdentity] else {
+                if self.faceDataRevision == expectedRevision {
+                    self.errorMessage = "Face data has no saved baseline. Reload the folder and reapply the edit."
                 }
                 return
             }
             let result = await service.persistWithFolderReservation(
                 data,
-                deletingThumbnailIDs: deletingThumbnailIDs
+                deletingThumbnailIDs: deletingThumbnailIDs,
+                expectedSnapshot: baseline
             )
+            if case .committed = result {
+                self.durableFaceSnapshots[folderIdentity] = data
+            }
             guard self.faceDataRevision == expectedRevision,
                   let failure = result.failureMessage else { return }
             self.errorMessage = "\(failurePrefix): \(failure)"
@@ -1107,6 +1131,8 @@ final class FaceRecognitionViewModel {
                     }
                     if let existingData,
                        self.displayedFolderURL == folderURL.standardizedFileURL {
+                        self.photoDeletionGenerations[folderURL.standardizedFileURL.path, default: 0] &+= 1
+                        self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = existingData
                         self.faceData = existingData
                         self.installThumbnails(initialSnapshot?.thumbnailData ?? [:])
                         self.updateMergeSuggestions()
@@ -1358,6 +1384,10 @@ final class FaceRecognitionViewModel {
 
             reservation.release()
             await MainActor.run {
+                self.photoDeletionGenerations[folderURL.standardizedFileURL.path, default: 0] &+= 1
+                if case .complete(let evidence) = thumbnailRefresh {
+                    self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = evidence.faceData
+                }
                 let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
                 if isDisplayedFolder {
                     self.faceData = folderData
@@ -3187,6 +3217,9 @@ final class FaceRecognitionViewModel {
             }
             if case .committed = result.persistence {
                 self.photoDeletionGenerations[targetFolder.standardizedFileURL.path, default: 0] &+= 1
+                if case .complete(let evidence) = result.load {
+                    self.durableFaceSnapshots[targetFolder.standardizedFileURL.path] = evidence.faceData
+                }
             }
             guard !Task.isCancelled, self.faceDataLoadRequestID == requestID,
                   self.faceDataRevision == expectedRevision,
@@ -3268,6 +3301,9 @@ final class FaceRecognitionViewModel {
                     folderURL: folder, selection: .faces(faceIDs))
                 if case .committed = deletion.persistence {
                     photoDeletionGenerations[folderIdentity, default: 0] &+= 1
+                    if case .complete(let evidence) = deletion.load {
+                        durableFaceSnapshots[folderIdentity] = evidence.faceData
+                    }
                 }
                 if case .failedBeforeCommit(_, let failure) = deletion.persistence {
                     if faceDataRevision == revision { errorMessage = "Failed to delete face data: \(failure)" }

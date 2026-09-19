@@ -456,7 +456,8 @@ actor FaceDataFolderLoadService {
     /// filesystem executor and retain ownership through document and thumbnail changes.
     func persistWithFolderReservation(
         _ faceData: FolderFaceData,
-        deletingThumbnailIDs thumbnailIDs: [UUID] = []
+        deletingThumbnailIDs thumbnailIDs: [UUID] = [],
+        expectedSnapshot: FolderFaceData? = nil
     ) -> FaceDataPersistenceResult {
         let folderURL = faceData.folderURL.standardizedFileURL
         guard !Task.isCancelled else {
@@ -465,6 +466,22 @@ actor FaceDataFolderLoadService {
         do {
             let reservation = try MCPProcessReservation.acquireFolder(folderURL)
             defer { reservation.release() }
+            if let expectedSnapshot {
+                // Decode without recovery: corrupt, removed, or foreign-owned documents must
+                // never be replaced by an older interactive whole-document snapshot.
+                guard expectedSnapshot.folderURL.standardizedFileURL.path == folderURL.path,
+                      let current = loadDocumentFaceData(folderURL),
+                      current.folderURL.standardizedFileURL.path == folderURL.path else {
+                    return .failedBeforeCommit(folderURL: folderURL,
+                        message: "Face data changed on disk. Reload the folder and reapply the edit.")
+                }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                guard try encoder.encode(current) == encoder.encode(expectedSnapshot) else {
+                    return .failedBeforeCommit(folderURL: folderURL,
+                        message: "Face data changed on disk. Reload the folder and reapply the edit.")
+                }
+            }
             return persist(faceData, deletingThumbnailIDs: thumbnailIDs)
         } catch {
             return .failedBeforeCommit(folderURL: folderURL, message: error.localizedDescription)

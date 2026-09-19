@@ -1506,6 +1506,14 @@ feedback. Committed deletions prevent queued stale snapshots from restoring face
 whole-document edit routes still need general cross-process reconciliation. See
 [cycle 67](release/cycle-67-group-deletion-2026-09-19.md).
 
+**2026-09-19 guarded interactive face saves:** The shared queued whole-document save path
+now compares each editor's last loaded/committed typed snapshot under folder admission.
+Changed, missing, corrupt or foreign-owned documents refuse before save/thumbnail cleanup;
+ordered successful saves advance authority and failures retain it for retry. Reload requires
+reapplication, and another editor's reload cannot authorize stale writes. This is conflict
+refusal rather than merging; broader writers and production operation coordination remain
+open. See [cycle 68](release/cycle-68-face-save-baselines-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

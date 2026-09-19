@@ -1976,9 +1976,12 @@ struct FaceGroupNameSuggestionFilterTests {
 
     @Test("Reset to Unnamed clears identification and persists the intact group")
     func resetNamePreservesFacesAndKeyArt() async throws {
-        var data = makeFaceFolderData(folder: URL(fileURLWithPath: "/faces/reset-name"), faceIDs: [UUID(), UUID()])
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("reset-name-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var data = makeFaceFolderData(folder: folder, faceIDs: [UUID(), UUID()])
         data.groups[0].name = "Incorrect Person"
         data.groups[0].knownPersonID = UUID()
+        try FaceDataStorageService().saveFaceData(data)
         let original = data.groups[0]
         let probe = FaceDataPersistenceProbe()
         let viewModel = FaceRecognitionViewModel(
@@ -1986,6 +1989,7 @@ struct FaceGroupNameSuggestionFilterTests {
             folderLoadService: FaceDataFolderLoadService(saveFaceData: { snapshot in
                 let saved = snapshot.groups[0]
                 probe.record("\(saved.name ?? "unnamed")/\(saved.knownPersonID == nil)/\(saved.faceIDs.count)")
+                try FaceDataStorageService().saveFaceData(snapshot)
             })
         )
         viewModel.faceData = data
@@ -2005,6 +2009,10 @@ struct FaceGroupNameSuggestionFilterTests {
         #expect(viewModel.unnamedGroups.contains { $0.id == original.id })
         await viewModel.waitForCurrentFaceDataPersistence()
         #expect(probe.events == ["unnamed/true/2"])
+        let persisted = try #require(FaceDataStorageService().loadFaceData(for: folder)?.groups.first)
+        #expect(persisted.name == nil && persisted.knownPersonID == nil)
+        #expect(persisted.faceIDs == original.faceIDs)
+        #expect(persisted.representativeFaceID == original.representativeFaceID)
 
         card.configure(group: reset, viewModel: viewModel, selectionState: FaceSelectionState(),
                        settingsViewModel: SettingsViewModel(), isExpanded: true, callbacks: .init())
@@ -2443,16 +2451,19 @@ struct FaceFolderLoadServiceTests {
 
     @Test @MainActor
     func viewModelMutationPublishesImmediatelyAndPersistsOffMainActor() async throws {
-        let folder = URL(fileURLWithPath: "/faces/view-model-persistence")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("view-model-persistence-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
         let faceID = UUID()
         let data = makeFaceFolderData(folder: folder, faceIDs: [faceID])
+        try FaceDataStorageService().saveFaceData(data)
         let groupID = try #require(data.groups.first?.id)
         let gate = FaceFolderLoadGate()
         let probe = FaceDataPersistenceProbe()
         let service = FaceDataFolderLoadService(
-            saveFaceData: { _ in
+            saveFaceData: { snapshot in
                 probe.record("document")
                 gate.block()
+                try FaceDataStorageService().saveFaceData(snapshot)
             }
         )
         let viewModel = FaceRecognitionViewModel(
@@ -2477,14 +2488,17 @@ struct FaceFolderLoadServiceTests {
 
     @Test @MainActor
     func rapidViewModelMutationsPersistInVisibleRevisionOrder() async throws {
-        let folder = URL(fileURLWithPath: "/faces/ordered-persistence")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ordered-persistence-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
         let faceID = UUID()
         let data = makeFaceFolderData(folder: folder, faceIDs: [faceID])
+        try FaceDataStorageService().saveFaceData(data)
         let groupID = try #require(data.groups.first?.id)
         let probe = FaceDataPersistenceProbe()
         let service = FaceDataFolderLoadService(
             saveFaceData: { snapshot in
                 probe.record(snapshot.groups.first?.name ?? "unnamed")
+                try FaceDataStorageService().saveFaceData(snapshot)
             }
         )
         let viewModel = FaceRecognitionViewModel(
