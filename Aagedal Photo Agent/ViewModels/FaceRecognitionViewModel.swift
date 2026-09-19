@@ -805,6 +805,10 @@ final class FaceRecognitionViewModel {
                 self.scanComplete = evidence.faceData?.scanComplete ?? false
                 self.installThumbnails(evidence.thumbnailData)
 
+                if case .deletionFailed(let message) = evidence.cleanupDisposition {
+                    self.errorMessage = "Failed to remove expired face data: \(message)"
+                }
+
                 guard evidence.faceData != nil else { return }
                 if self.deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
                     if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
@@ -3140,8 +3144,18 @@ final class FaceRecognitionViewModel {
             let pendingPersistence = faceDataPersistenceTask
             faceDataLoadTask = Task(priority: .utility) { [weak self] in
                 _ = await pendingPersistence?.value
-                let result = await service.load(folderURL: targetFolder, cleanupPolicy: .never)
-                guard let self, self.faceDataLoadRequestID == requestID,
+                let result: FaceDataFolderLoadResult
+                do {
+                    result = try await service.loadWithFolderReservation(
+                        folderURL: targetFolder, cleanupPolicy: .never
+                    )
+                } catch {
+                    guard let self, !Task.isCancelled,
+                          self.faceDataLoadRequestID == requestID else { return }
+                    self.errorMessage = "Failed to load face data for deletion: \(error.localizedDescription)"
+                    return
+                }
+                guard let self, !Task.isCancelled, self.faceDataLoadRequestID == requestID,
                       self.faceData == nil,
                       case .complete(let evidence) = result,
                       let loaded = evidence.faceData else { return }
@@ -3154,7 +3168,8 @@ final class FaceRecognitionViewModel {
         }
 
         guard let data = faceData,
-              targetFolder == nil || data.folderURL == targetFolder else { return }
+              targetFolder == nil
+                || data.folderURL.standardizedFileURL.path == targetFolder?.standardizedFileURL.path else { return }
 
         let faceIDs = Set(data.faces.compactMap { face in
             imageURLs.contains(face.imageURL) ? face.id : nil

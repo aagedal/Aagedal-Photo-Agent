@@ -422,6 +422,98 @@ struct ActivityHistoryTests {
         #expect(!storage.faceDataExists(for: folder))
     }
 
+    @Test("Lazy photo-face deletion refuses a busy folder before reading or recovering it",
+          arguments: [false, true])
+    func lazyFaceDeletionAdmission(folderReservation: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in
+            Issue.record("Refused deletion must not read or recover a document")
+            return nil
+        }, saveFaceData: { _ in Issue.record("Refused deletion must not save") })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        let lease = try folderReservation ? MCPProcessReservation.acquireFolder(folder)
+            : MCPProcessReservation.acquirePhoto(photo)
+        defer { lease.release() }
+        viewModel.deleteFaces(forImageURLs: [photo])
+        await viewModel.waitForCurrentFaceDataLoad()
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(viewModel.faceData == nil)
+        #expect(viewModel.errorMessage?.contains(MCPProcessReservationError.busy.localizedDescription) == true)
+    }
+
+    @Test("Lazy photo-face deletion retries after contention and preserves other photos",
+          arguments: [false, true])
+    func lazyFaceDeletionRetry(directoryURL: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString, isDirectory: directoryURL)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photos = ["removed.jpg", "retained.jpg"].map { folder.appendingPathComponent($0) }
+        let groupID = UUID()
+        let faces = photos.map { DetectedFace(id: UUID(), imageURL: $0, faceRect: .zero,
+            featurePrintData: Data([1]), groupID: groupID, detectedAt: Date()) }
+        let group = FaceGroup(id: groupID, name: "Person", representativeFaceID: faces[0].id,
+            faceIDs: faces.map(\.id))
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(FolderFaceData(folderURL: folder, faces: faces, groups: [group],
+            lastScanDate: Date(), scanComplete: true))
+        for face in faces { try storage.saveThumbnail(Data([1]), for: face.id, folderURL: folder) }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        defer { lease.release() }
+        viewModel.deleteFaces(forImageURLs: [photos[0]])
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(storage.loadFaceData(for: folder)?.faces.count == 2)
+        lease.release()
+        viewModel.deleteFaces(forImageURLs: [photos[0]])
+        await viewModel.waitForCurrentFaceDataLoad()
+        await viewModel.waitForCurrentFaceDataPersistence()
+        let saved = try #require(storage.loadFaceData(for: folder))
+        #expect(saved.faces.map(\.id) == [faces[1].id])
+        #expect(saved.groups.first?.faceIDs == [faces[1].id])
+        #expect(saved.groups.first?.representativeFaceID == faces[1].id)
+        #expect(storage.loadThumbnail(for: faces[0].id, folderURL: folder) == nil)
+        #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([1]))
+    }
+
+    @Test("Superseded lazy deletion cannot recover data or publish a busy error")
+    func lazyFaceDeletionSuperseded() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let nextFolder = folder.appendingPathComponent("Next")
+        let service = FaceDataFolderLoadService(loadFaceData: { url in
+            #expect(url == nextFolder)
+            return nil
+        })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        defer { lease.release() }
+        viewModel.deleteFaces(forImageURLs: [folder.appendingPathComponent("photo.jpg")])
+        viewModel.loadFaceData(for: nextFolder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(viewModel.faceData == nil)
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test("Failed expiration cleanup retains results and reports the storage error")
+    func faceExpirationFailurePresentation() async {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let document = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        let failure = CocoaError(.fileWriteNoPermission)
+        let service = FaceDataFolderLoadService(loadFaceData: { _ in document },
+            deleteFaceData: { _ in throw failure })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), folderLoadService: service)
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .sevenDays)
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(viewModel.faceData?.lastScanDate == document.lastScanDate)
+        #expect(viewModel.scanComplete)
+        #expect(viewModel.errorMessage == "Failed to remove expired face data: \(failure.localizedDescription)")
+    }
+
     @Test("Interactive group edits report busy admission without overwriting durable names")
     func interactiveFaceEditRetry() async throws {
         let folder = FileManager.default.temporaryDirectory

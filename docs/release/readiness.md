@@ -2,13 +2,18 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-19
-**Latest implementation state:** Cycle 62 reserves interactive face-folder loads through expiration cleanup, corrupt-document recovery and thumbnail loading. Document-only reads preserve corrupt files; busy same-folder reloads retain displayed results. Focused validation passes 49 tests / 64 executions with zero failures/skips/runtime warnings. Complete serial validation passes 3,008 tests / 3,926 executions with zero failures/skips; the same four previously recorded QoS warnings remain. Repository checks pass. Production workflow tools, broader GUI admission, FFmpeg Whisper and real-client evidence remain open.
+**Latest implementation state:** Cycle 63 admits lazy photo-face-deletion loads before recovery, fixes equivalent directory-URL deletion, and surfaces failed expiration cleanup while preserving results. Focused validation passes 34 tests / 51 executions with zero failures/skips/runtime warnings. Complete serial validation passes 3,012 tests / 3,932 executions with zero failures/skips; four previously recorded QoS warnings remain. Repository checks pass. Cross-process stale face snapshots, production workflow tools, broader GUI admission, FFmpeg Whisper and real-client evidence remain open.
 **Latest native evidence:** Cycle 34 observes the exact built app's Automation Settings surface with automation off, no authorized folders, the bundled helper path/install command and its local-authority disclosures; no preference was changed. This does not claim a production real-client workflow. Cycle 33's two-photo/eight-field preview accessibility tree and keyboard cancellation, cycle 32's complete-batch refusal/application, cycle 31's cancel/confirm/read-back, cycle 30's review/approval, cycle 18's Known People interchange and cycle 15's Primary/Develop recovery evidence remain valid.
-**Cycle baseline:** `d47be7a` for cycle 62; checkout initially clean. Changes add face-folder-load admission, non-mutating document reads and regression coverage. No broad release-readiness gate is claimed complete.
+**Cycle baseline:** `bb786f9` for cycle 63; checkout initially clean. Working-tree changes contain fallback admission, directory identity and cleanup error presentation fixes plus regression coverage. No broad release-readiness gate is claimed complete.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 63 face deletion fallback and cleanup errors](cycle-63-face-deletion-fallback-2026-09-19.md)
+admits the fallback load before corrupt-data recovery, reports busy refusal without publishing
+superseded errors, fixes trailing-slash directory identity, and presents failed expiration cleanup.
+The load and queued save retain separate leases; stale snapshot reconciliation remains open.
 
 [Cycle 62 face-folder-load admission](cycle-62-face-load-admission-2026-09-19.md)
 reserves interactive cleanup/recovery and thumbnail loading, while document-only consumers
@@ -532,7 +537,7 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Remaining production MCP tools/coordination and FFmpeg Whisper implementation/verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 62 final-source complete serial suite passes 3,008 tests / 3,926 executions, zero failures and zero skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
+| Automated regression and package | Cycle 63 final-source complete serial suite passes 3,012 tests / 3,932 executions, zero failures and zero skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
 | Computer-use workflows | Native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
@@ -604,11 +609,12 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
-Cycle 62 adds face-folder-load admission on baseline `d47be7a` plus working-tree changes.
-Focused validation passes 49 tests / 64 executions; complete serial validation passes 3,008 tests / 3,926 executions with zero failures/skips. Repository checks pass.
-See [cycle 62 evidence](cycle-62-face-load-admission-2026-09-19.md). Busy interactive loads
-refuse before cleanup/recovery and preserve same-folder presentation. Document-only consumers
-no longer relocate corrupt data. No native/client evidence or broad release gate is newly closed.
+Cycle 63 fixes lazy face-deletion loading and failure presentation on baseline `bb786f9` plus
+working-tree changes. Focused validation passes 34 tests / 51 executions; complete serial
+validation passes 3,012 tests / 3,932 executions with zero failures/skips. The same four
+previously recorded QoS warnings remain. Repository checks pass. See [cycle 63 evidence](cycle-63-face-deletion-fallback-2026-09-19.md).
+The retry regression also exposed and fixes directory URL equality rejecting the same path with
+a different trailing slash. No native/client evidence or broad release gate is newly closed.
 
 The Known People core interchange checkpoint is implemented on source based at `78f0209`
 and recorded in [cycle 16](cycle-16-known-people-core-2026-09-12.md). Directory packages

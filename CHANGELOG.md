@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Photo-based face deletion now reserves fallback folder loading before corrupt-data recovery,
+  reports busy failures, and handles equivalent folder URLs with or without trailing slashes.
+  Failed automatic expiration cleanup now reports its error while retaining visible results.
+
 - Opening a folder now reserves face-data expiration and corrupt-document recovery against
   competing photo operations. Busy reloads preserve that folder's displayed results; metadata
   and rename document reads preserve corrupt files for later explicit folder recovery.
