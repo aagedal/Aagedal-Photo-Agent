@@ -201,3 +201,14 @@ Agent's report reproducibility boundary.
 - [Privacy draft](../PRIVACY.md)
 - [Metadata field and delivery support](metadata-field-support.md)
 - [Bundled licenses and source offer](../README.md#license)
+
+## Apple RAW decoder
+
+In Settings, **Apple RAW Decoder → Auto (Newest)** explicitly selects the newest decoder
+Apple supports for each file. This includes RAW 9 on macOS 27 for supported cameras.
+Choose **Version 8** to retain the older processing when available. A version unsupported
+for a particular file falls back to Auto.
+
+This controls sensor decoding in Develop and rendered previews/exports. Embedded camera
+JPEG previews are unaffected. Restart the app after changing the decoder to clear existing
+decoded images.

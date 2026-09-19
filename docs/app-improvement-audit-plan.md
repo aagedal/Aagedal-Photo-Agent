@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**RAW preview resolution continuation (2026-09-19):** Full-screen primary-cache and
+awaited-prefetch hits now require sufficient pixels for the display/source target. Undersized
+RAW ImageIO screen/zoom results use a validated sensor-decode fallback instead of becoming
+completed high-resolution images. Camera-specific reproduction remains open.
+See [implementation and validation](plan-status-raw-preview-resolution-continuation-2026-09-19.md).
+
 **Status:** implementation in progress — 66 of 75 checklist substeps complete
 **Created:** 2026-08-24  
 **Baseline reconciled:** 2026-08-25  

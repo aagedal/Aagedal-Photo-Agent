@@ -535,7 +535,11 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("Pin RAW decoding to an older Apple decoder instead of always using the newest available. Falls back to Auto for files that do not support the selected version. Requires re-opening the folder or image to take effect.")
+                Text("Auto explicitly selects the newest decoder supported for each file, including RAW 9 on macOS 27 where supported. Choose Version 8 to retain the older processing. Unsupported selections fall back to Auto.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("Applies to Apple sensor decoding in Develop and rendered previews/exports, not embedded camera JPEG previews. Restart the app after changing this setting to clear existing decoded images.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

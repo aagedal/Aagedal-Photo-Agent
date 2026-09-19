@@ -216,10 +216,13 @@ final class FullScreenImageCache: @unchecked Sendable {
         for url: URL,
         orientation: Int? = nil,
         renderToken: String? = nil,
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        minimumPixelSize: CGFloat = 0
     ) -> CGImage? {
         let c = isEdited ? editedCache : cache
-        return c.object(forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken))
+        guard let image = c.object(forKey: Self.cacheKey(for: url, orientation: orientation, renderToken: renderToken)),
+              Self.hasEnoughPixels(image, for: minimumPixelSize) else { return nil }
+        return image
     }
 
     nonisolated func store(
@@ -520,7 +523,8 @@ final class FullScreenImageCache: @unchecked Sendable {
         for url: URL,
         orientation: Int? = nil,
         renderToken: String? = nil,
-        isEdited: Bool = false
+        isEdited: Bool = false,
+        minimumPixelSize: CGFloat = 0
     ) async -> CGImage? {
         let key = PrefetchKey(
             url: url,
@@ -528,12 +532,12 @@ final class FullScreenImageCache: @unchecked Sendable {
             renderToken: renderToken,
             isEdited: isEdited
         )
-        if let cached = cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited) {
+        if let cached = cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited, minimumPixelSize: minimumPixelSize) {
             return cached
         }
         guard let task = lock.withLock({ prefetchTasks[key] }) else { return nil }
         await task.value
-        return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited)
+        return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited, minimumPixelSize: minimumPixelSize)
     }
 
     /// Proactively re-render edited screen-res previews for specific URLs into the edited cache,
@@ -837,12 +841,45 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
+        let candidate = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let image = isRawFile(url)
+            ? rawPreviewFallback(candidate: candidate, from: url, requiredSize: targetSize)
+            : candidate
+        guard let image else { return nil }
         return (image, orientation)
     }
     
+    /// ImageIO can return an embedded RAW thumbnail even when asked to generate a
+    /// larger image. Never promote those pixels to a completed screen/zoom decode.
+    /// Allow 2% for active-sensor borders and decoder rounding, not thumbnail upscaling.
+    nonisolated static func hasEnoughPixels(_ image: CGImage, for requiredSize: CGFloat) -> Bool {
+        CGFloat(max(image.width, image.height)) >= requiredSize * 0.98
+    }
+
+    nonisolated static func resolvedRAWPreview(
+        candidate: CGImage?,
+        requiredSize: CGFloat,
+        decode: () -> CGImage?
+    ) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        if let candidate, hasEnoughPixels(candidate, for: requiredSize) { return candidate }
+        guard let decoded = decode(), !Task.isCancelled,
+              hasEnoughPixels(decoded, for: requiredSize) else { return nil }
+        return decoded
+    }
+
+    nonisolated private static func rawPreviewFallback(
+        candidate: CGImage?, from url: URL, requiredSize: CGFloat
+    ) -> CGImage? {
+        resolvedRAWPreview(candidate: candidate, requiredSize: requiredSize) {
+            cacheLogger.info("RAW preview below requested size for \(url.lastPathComponent): \(candidate?.width ?? 0)x\(candidate?.height ?? 0), requested \(requiredSize); decoding sensor pixels")
+            guard let raw = loadRAWImage(from: url, draftMode: false, maxPixelSize: requiredSize, decodeProfile: .camera),
+                  !Task.isCancelled else { return nil }
+            let image = downsample(raw.image, maxPixelSize: requiredSize)
+            return CameraRawApproximation.createDisplayCGImage(image, from: image.extent)
+        }
+    }
+
     struct RAWDecodeResult: @unchecked Sendable {
         let image: CIImage
         let neutralTemperature: Float
@@ -900,6 +937,16 @@ final class FullScreenImageCache: @unchecked Sendable {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
             return nil
         }
+        // RAW 9 requires explicit opt-in. Auto and unsupported pins select the
+        // newest decoder advertised for this file, including its DNG variant.
+        // Apply the decoder before configuring its profile/render properties.
+        let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
+        let decoderPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
+        if let selected = decoderPreference.selectedDecoder(in: rawFilter.supportedDecoderVersions.map(\.rawValue)),
+           let version = rawFilter.supportedDecoderVersions.first(where: { $0.rawValue == selected }) {
+            rawFilter.decoderVersion = version
+        }
+
         rawFilter.isDraftModeEnabled = draftMode
 
         // Camera RAW (default) leaves CIRAWFilter's own camera-matched boost/tone curve
@@ -915,15 +962,6 @@ final class FullScreenImageCache: @unchecked Sendable {
         if profile == .linear {
             rawFilter.boostAmount = 0
             rawFilter.boostShadowAmount = 0
-        }
-
-        // Auto leaves CIRAWFilter on the newest supported decoder for this image. Pinned
-        // versions are matched against the image-specific supported versions, which may be
-        // reported as e.g. "9" or "9DNG" depending on the container.
-        let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
-        if let token = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "")?.matchToken,
-           let match = rawFilter.supportedDecoderVersions.first(where: { $0.rawValue.contains(token) }) {
-            rawFilter.decoderVersion = match
         }
 
         // Decode straight to the requested preview size: demosaic at the reduced scale
@@ -1029,9 +1067,11 @@ final class FullScreenImageCache: @unchecked Sendable {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
+        let candidate = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        let image = isRawFile(url)
+            ? rawPreviewFallback(candidate: candidate, from: url, requiredSize: maxDimension)
+            : candidate
+        guard let image else { return nil }
         return (image, orientation)
     }
 

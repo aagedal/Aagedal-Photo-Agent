@@ -1317,16 +1317,23 @@ struct FullScreenImageView: View {
             sourcePixelSize = CGSize(width: size.height, height: size.width)
         }
 
+        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
+        let screenMaxPx = screenLogicalPx * screenScale
+        let requiredPixelSize = min(screenMaxPx, sourcePixelSize.map { max($0.width, $0.height) } ?? screenMaxPx)
+
         // Phase 0: Instant — check retina cache, then display preview cache, then thumbnail
         if let cached = imageCache.cachedImage(
             for: url,
             orientation: imageOrientation,
             renderToken: renderToken,
-            isEdited: isEdited
+            isEdited: isEdited,
+            minimumPixelSize: requiredPixelSize
         ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
             lastLoadedOrientation = imageOrientation
+            hiResApplied = true
             isLoading = false
             triggerPrefetch(for: url)
             return
@@ -1350,9 +1357,6 @@ struct FullScreenImageView: View {
         isLoading = true
 
         let isRAW = SupportedImageFormats.isRaw(url: url)
-        let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let screenLogicalPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160)
-        let screenMaxPx = screenLogicalPx * screenScale
         let nativeSize: CGSize?
         if let width = presentationFacts.pixelWidth, let height = presentationFacts.pixelHeight {
             nativeSize = CGSize(width: width, height: height)
@@ -1380,7 +1384,8 @@ struct FullScreenImageView: View {
                 for: url,
                 orientation: imageOrientation,
                 renderToken: renderToken,
-                isEdited: isEdited
+                isEdited: isEdited,
+                minimumPixelSize: requiredPixelSize
             )
             if image == nil, needsHDRLoad {
                 if isRAW {

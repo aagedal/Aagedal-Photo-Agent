@@ -2,6 +2,7 @@ import Testing
 import AppKit
 import Foundation
 import CoreGraphics
+import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 @testable import Aagedal_Photo_Agent
@@ -183,6 +184,86 @@ private nonisolated final class FullScreenImagePresentationFactsAccessProbe: @un
 
 @Suite("FullScreenImageCache")
 struct FullScreenImageCacheTests {
+
+    @Test("Auto explicitly opts into the newest supported Apple RAW decoder")
+    func automaticRAWDecoderSelection() {
+        #expect(RAWDecoderVersionPreference.auto.selectedDecoder(in: ["8", "9", "7"]) == "9")
+        #expect(RAWDecoderVersionPreference.auto.selectedDecoder(in: ["9", "8", "7"]) == "9")
+        #expect(RAWDecoderVersionPreference.auto.selectedDecoder(in: ["8", "7"]) == "8")
+        #expect(RAWDecoderVersionPreference.auto.selectedDecoder(in: ["9", "10", "8"]) == "10")
+        #expect(RAWDecoderVersionPreference.auto.selectedDecoder(in: []) == nil)
+    }
+
+    @Test("Decoder pins match actual Apple RAW and DNG identifiers exactly")
+    func pinnedRAWDecoderSelection() {
+        #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: [CIRAWDecoderVersion.version9.rawValue, CIRAWDecoderVersion.version8.rawValue]) == CIRAWDecoderVersion.version8.rawValue)
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: [CIRAWDecoderVersion.version8DNG.rawValue, CIRAWDecoderVersion.version9DNG.rawValue]) == CIRAWDecoderVersion.version9DNG.rawValue)
+        #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: ["9.dng", "8.dng"]) == "8.dng")
+        #expect(RAWDecoderVersionPreference.v7.selectedDecoder(in: ["8", "7"]) == "7")
+        #expect(RAWDecoderVersionPreference.v6.selectedDecoder(in: ["8.dng", "6.dng"]) == "6.dng")
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: ["19", "9"]) == "9")
+    }
+
+    @Test("Unavailable pinned decoders fall back to the newest supported file decoder")
+    func unsupportedRAWDecoderSelection() {
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: ["7", "8"]) == "8")
+        #expect(RAWDecoderVersionPreference.v8.selectedDecoder(in: ["7", "9"]) == "9")
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: ["8.dng"]) == "8.dng")
+        #expect(RAWDecoderVersionPreference.v9.selectedDecoder(in: []) == nil)
+    }
+
+    @Test("undersized primary and prefetched cache hits cannot finish a larger display request")
+    @MainActor
+    func undersizedCacheHit() async throws {
+        let url = try makeTempPNG(width: 120, height: 80)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let image = try #require(FullScreenImageCache.loadFullResolution(from: url))
+        let cache = FullScreenImageCache()
+        cache.store(image, for: url, orientation: 6, renderToken: "edited", isEdited: true)
+        #expect(cache.cachedImage(for: url, orientation: 6, renderToken: "edited", isEdited: true, minimumPixelSize: 120) != nil)
+        #expect(cache.cachedImage(for: url, orientation: 6, renderToken: "edited", isEdited: true, minimumPixelSize: 960) == nil)
+        #expect(await cache.awaitPrefetchedImage(for: url, orientation: 6, renderToken: "edited", isEdited: true, minimumPixelSize: 960) == nil)
+        // A larger request must not evict a valid smaller-display cache entry.
+        #expect(cache.cachedImage(for: url, orientation: 6, renderToken: "edited", isEdited: true) != nil)
+    }
+
+    @Test("RAW thumbnail fallback requires real pixels and skips decoding adequate previews")
+    func rawPreviewResolution() throws {
+        let url = try makeTempPNG(width: 120, height: 80)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let full = try #require(FullScreenImageCache.loadFullResolution(from: url))
+        let small = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 30))
+        var decodes = 0
+        let upgraded = FullScreenImageCache.resolvedRAWPreview(candidate: small, requiredSize: 120) {
+            decodes += 1
+            return full
+        }
+        #expect(upgraded?.width == 120)
+        #expect(decodes == 1)
+        let sufficient = FullScreenImageCache.resolvedRAWPreview(candidate: full, requiredSize: 120) {
+            decodes += 1
+            return nil
+        }
+        #expect(sufficient?.width == 120)
+        #expect(decodes == 1)
+        #expect(FullScreenImageCache.resolvedRAWPreview(candidate: small, requiredSize: 120) { nil } == nil)
+        #expect(FullScreenImageCache.resolvedRAWPreview(candidate: nil, requiredSize: 120) { small } == nil)
+        #expect(FullScreenImageCache.resolvedRAWPreview(candidate: nil, requiredSize: 120) { full }?.width == 120)
+    }
+
+    @Test("RAW fallback drops pixels when cancelled during decoding")
+    func cancelledRAWFallback() async throws {
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let full = try #require(FullScreenImageCache.loadFullResolution(from: url))
+        let result = await Task {
+            FullScreenImageCache.resolvedRAWPreview(candidate: nil, requiredSize: 64) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return full
+            }
+        }.value
+        #expect(result == nil)
+    }
 
     /// Writes a small solid-color PNG to a unique temp file and returns its URL.
     /// Caller is responsible for removing the parent directory.

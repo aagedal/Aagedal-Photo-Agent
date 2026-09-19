@@ -83,22 +83,27 @@ nonisolated enum RAWDecoderVersionPreference: String, CaseIterable, Identifiable
         }
     }
 
-    /// Substring matched against CIRAWFilter.supportedDecoderVersions (which reports
-    /// e.g. "9" or "9DNG" depending on container). nil leaves decoderVersion untouched.
-    nonisolated var matchToken: String? {
-        switch self {
-        case .auto:
-            return nil
-        case .v9:
-            return "9"
-        case .v8:
-            return "8"
-        case .v7:
-            return "7"
-        case .v6:
-            return "6"
+    /// Select only an identifier advertised for this file. RAW 9 is opt-in, so
+    /// Auto must explicitly choose the newest version instead of trusting the
+    /// filter's initial decoder. Sort numerically rather than relying on API order.
+    nonisolated func selectedDecoder(in supportedVersions: [String]) -> String? {
+        let newest = supportedVersions.filter { $0.first?.isNumber == true }.max {
+            $0.compare($1, options: .numeric) == .orderedAscending
         }
+        guard self != .auto else { return newest }
+        let version: String
+        switch self {
+        case .auto: return newest
+        case .v9: version = "9"
+        case .v8: version = "8"
+        case .v7: version = "7"
+        case .v6: version = "6"
+        }
+        // Apple's actual identifiers are "9" and "9.dng", not "9DNG".
+        // Exact matching prevents a pin to 9 from accidentally selecting 19.
+        return supportedVersions.first { $0 == version || $0 == version + ".dng" } ?? newest
     }
+
 }
 
 nonisolated enum QuickListType: String, CaseIterable, Identifiable, Sendable {

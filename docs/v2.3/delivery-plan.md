@@ -1,5 +1,11 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**RAW preview resolution continuation (2026-09-19):** Full-screen primary-cache and
+awaited-prefetch hits now require sufficient pixels for the display/source target. Undersized
+RAW ImageIO screen/zoom results use a validated sensor-decode fallback instead of becoming
+completed high-resolution images. Camera-specific reproduction remains open.
+See [implementation and validation](../plan-status-raw-preview-resolution-continuation-2026-09-19.md).
+
 ## Delivery strategy
 
 Build the next release as independently shippable vertical slices. The shared foundation comes first;
