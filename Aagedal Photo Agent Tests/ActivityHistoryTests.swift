@@ -158,6 +158,68 @@ struct ActivityHistoryTests {
         next.release()
     }
 
+    @Test("Failed full-scan reset preserves results and allows explicit retry", arguments: [false, true])
+    func fullScanResetFailure(cancelImmediately: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceResetFailure-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("invalid.jpg")
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
+            featurePrintData: Data([1]), detectedAt: Date())
+        let original = FolderFaceData(folderURL: folder, faces: [face], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        try storage.saveThumbnail(Data([1, 2]), for: face.id, folderURL: folder)
+        try Data("not an image".utf8).write(to: photo)
+        let documentURL = folder.appendingPathComponent(".face_data/face_data.json")
+        let originalBytes = try Data(contentsOf: documentURL)
+        let allowReset = MCPServerCoreTests.DataBox()
+        let saved = MCPServerCoreTests.DataBox()
+        let failure = CocoaError(.fileWriteNoPermission)
+        let service = FaceDataFolderLoadService(deleteFaceData: { url in
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+            guard allowReset.read() != nil else { throw failure }
+            try FaceDataStorageService().deleteFaceData(for: url)
+        }, saveFaceData: { document in
+            saved.write(Data([1]))
+            try FaceDataStorageService().saveFaceData(document)
+        })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: service)
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder, forceFullScan: true)
+        if cancelImmediately { viewModel.cancelScan() }
+        await viewModel.waitForCurrentScan()
+
+        #expect(!viewModel.isScanning)
+        #expect(!viewModel.isCancellingScan)
+        #expect(viewModel.scanningFolderURL == nil)
+        #expect(viewModel.scanProgress.isEmpty)
+        #expect(viewModel.scanProcessedCount == 0)
+        #expect(viewModel.scanTotalCount == 0)
+        #expect(viewModel.faceData?.faces.map(\.id) == [face.id])
+        #expect(viewModel.scanComplete)
+        #expect(viewModel.errorMessage == "Failed to remove previous face data: \(failure.localizedDescription)")
+        #expect(saved.read() == nil)
+        #expect(try Data(contentsOf: documentURL) == originalBytes)
+        #expect(storage.loadThumbnail(for: face.id, folderURL: folder) == Data([1, 2]))
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+
+        allowReset.write(Data([1]))
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder, forceFullScan: true)
+        await viewModel.waitForCurrentScan()
+        #expect(!viewModel.isScanning)
+        #expect(saved.read() != nil)
+        #expect(storage.loadFaceData(for: folder)?.faces.isEmpty == true)
+        #expect(storage.loadThumbnail(for: face.id, folderURL: folder) == nil)
+    }
+
     @Test("Face scan holds admission through final persistence and releases on every exit",
           arguments: ["complete", "cancelled", "failed", "unchanged"])
     func scanReservationLifetime(outcome: String) async throws {

@@ -1003,14 +1003,6 @@ final class FaceRecognitionViewModel {
             }
             defer { reservation.release() }
 
-            if forceFullScan, self.displayedFolderURL == folderURL.standardizedFileURL {
-                // Refused admission must leave the previous results available.
-                self.faceData = nil
-                self.thumbnailCache.removeAllObjects()
-                self.thumbnailDataByFaceID.removeAll()
-                self.scanComplete = false
-                self.mergeSuggestions = []
-            }
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
                 // Preparation is deliberately detached from later scan cancellation. Rename
@@ -1019,8 +1011,31 @@ final class FaceRecognitionViewModel {
                 let deletion = await Task.detached(priority: .utility) {
                     await folderLoadService.deleteAll(for: folderURL)
                 }.value
-                if let failure = deletion.failureMessage {
-                    self.errorMessage = "Failed to remove previous face data: \(failure)"
+                guard case .committed = deletion else {
+                    // A failed reset must never become permission to overwrite the previous
+                    // document with a fresh scan. Retain presentation and its durable baseline
+                    // so the user can inspect the results and explicitly retry the reset.
+                    self.errorMessage = deletion.failureMessage.map {
+                        "Failed to remove previous face data: \($0)"
+                    } ?? "Face scan stopped before previous face data was removed."
+                    self.isScanning = false
+                    self.isCancellingScan = false
+                    self.scanningFolderURL = nil
+                    self.scanProgress = ""
+                    self.scanProcessedCount = 0
+                    self.scanTotalCount = 0
+                    self.activeScanTask = nil
+                    return FaceScanCompletion(
+                        folderURL: folderURL.standardizedFileURL,
+                        persistenceError: deletion.failureMessage
+                    )
+                }
+                if self.displayedFolderURL == folderURL.standardizedFileURL {
+                    self.faceData = nil
+                    self.thumbnailCache.removeAllObjects()
+                    self.thumbnailDataByFaceID.removeAll()
+                    self.scanComplete = false
+                    self.mergeSuggestions = []
                 }
                 initialSnapshot = nil
             } else {
