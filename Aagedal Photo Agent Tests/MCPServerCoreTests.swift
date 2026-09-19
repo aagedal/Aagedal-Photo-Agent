@@ -239,6 +239,70 @@ struct MCPServerCoreTests {
         #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("unsupported-schema"))
     }
 
+    @Test("Structured editorial draft records preserve production pairing, order, and clears")
+    func inspectsStructuredDraftRecords() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("image".utf8).write(to: photo)
+        let folder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let sidecar = folder.appendingPathComponent("frame.jpg.meta.json")
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        var metadata = IPTCMetadata()
+        metadata.imageSuppliers = [.init(identifier: "agency:1", name: "News, North"), .init(name: "Second")]
+        metadata.locationsCreated = [.init(identifiers: ["place:1"], city: "Oslo", latitude: 59.9, longitude: 10.7)]
+        metadata.locationsShown = []
+        metadata.creatorContactInfo = .init(addressLines: ["First", "Second"], emails: ["news@example.test"])
+        metadata.mediaTopics = [.init(termIdentifier: "urn:topic:1", name: "Topic")]
+        metadata.genres = []
+        let encoded = try JSONEncoder().encode(metadata)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let expected = try #require(JSONDecoder().decode(MCPJSONValue.self, from: encoded).objectValue)
+        func write(_ fields: [String: Any]) throws {
+            try JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 1, "sourceFile": "frame.jpg", "pendingChanges": true, "metadata": fields,
+            ]).write(to: sidecar)
+        }
+        try write(object)
+        let fields = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+        for key in ["imageSuppliers", "locationsCreated", "locationsShown", "creatorContactInfo", "mediaTopics", "genres"] {
+            #expect(fields[key] == expected[key])
+        }
+        try write(["imageSuppliers": NSNull(), "creatorContactInfo": [:], "locationsShown": []])
+        let cleared = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+        #expect(cleared["imageSuppliers"] == nil)
+        #expect(cleared["creatorContactInfo"] == .object([:]))
+        #expect(cleared["locationsShown"] == .array([]))
+        try write(["imageSuppliers": [["name": "Agency", "privateExtension": "secret"]]])
+        let filtered = try #require(facade.inspectAppPhotoDraft(path: photo.path).objectValue?["fields"]?.objectValue)
+        #expect(filtered["imageSuppliers"] == .array([.object(["name": .string("Agency")])]))
+
+        let invalid: [[String: Any]] = [
+            ["imageSuppliers": "flattened"], ["imageSuppliers": [["name": 1]]],
+            ["locationsShown": [["latitude": true]]], ["locationsCreated": [["longitude": "10.7"]]],
+            ["creatorContactInfo": ["emails": [1]]], ["creatorContactInfo": []],
+            ["mediaTopics": [["name": "missing identifier"]]], ["genres": [["termIdentifier": NSNull()]]],
+            ["imageSuppliers": Array(repeating: ["name": "a"], count: 129)],
+            ["locationsShown": [["identifiers": Array(repeating: "a", count: 129)]]],
+            ["creatorContactInfo": ["emails": [String(repeating: "ø", count: 513)]]],
+            ["imageSuppliers": [["name": String(repeating: "ø", count: 16_385)]]],
+            ["description": String(repeating: "a", count: 32_768),
+             "imageSuppliers": [["name": String(repeating: "b", count: 32_768), "identifier": "overflow"]]],
+        ]
+        for fields in invalid {
+            try write(fields)
+            #expect(throws: MCPAutomationReadError.unreadableDraft) {
+                _ = try facade.inspectAppPhotoDraft(path: photo.path)
+            }
+            let lease = try MCPProcessReservation.acquirePhoto(photo)
+            lease.release()
+        }
+    }
+
     @Test("Draft Title alternatives preserve order, clears, and Headline independently")
     func inspectsLocalizedDraftTitles() throws {
         let root = try temporaryFolder()

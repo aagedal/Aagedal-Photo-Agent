@@ -559,7 +559,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
             "xmpSidecarRevision": .string(evidence.xmpSidecar),
             "appSidecarDraftState": .string(evidence.appSidecarDraftState),
             "fields": .object(fields),
-            "fieldScope": .string("basic-app-json-descriptive-draft"),
+            "fieldScope": .string("editorial-app-json-descriptive-draft"),
             "effectiveIPTCResolved": .bool(false),
         ])
     }
@@ -704,7 +704,7 @@ nonisolated private struct MCPAppDraftHeader: Decodable {
 }
 
 /// Persisted IPTC keys shared with the app's editorial JSON schema. This deliberately excludes
-/// structured suppliers, location records, history, transcripts, and technical/Develop values.
+/// history, transcripts, and technical/Develop values. Structured editorial records retain pairing.
 nonisolated private enum MCPAppDraftFieldCatalog {
     static let scalarKeys: Set<String> = [
         "title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
@@ -751,7 +751,74 @@ nonisolated private enum MCPAppDraftFieldCatalog {
             }
             result["localizedTitles"] = .array(alternatives)
         }
+        let location = Structure(
+            strings: ["name", "sublocation", "city", "provinceState", "countryName", "countryCode", "worldRegion"],
+            arrays: ["identifiers"], numbers: ["latitude", "longitude", "altitudeMeters"]
+        )
+        let term = Structure(strings: ["vocabularyIdentifier", "termIdentifier", "name", "refinedAbout"],
+                             required: ["termIdentifier"])
+        let structures: [String: Structure] = [
+            "imageSuppliers": Structure(strings: ["identifier", "name"]),
+            "locationsCreated": location, "locationsShown": location,
+            "mediaTopics": term, "genres": term,
+        ]
+        for key in structures.keys.sorted() {
+            guard let value = metadata[key], !(value is NSNull) else { continue }
+            guard let records = value as? [[String: Any]], records.count <= 128,
+                  let structure = structures[key] else { return nil }
+            var values: [MCPJSONValue] = []
+            for record in records {
+                guard let value = structure.read(record, byteCount: &byteCount) else { return nil }
+                values.append(.object(value))
+            }
+            result[key] = .array(values)
+        }
+        if let value = metadata["creatorContactInfo"], !(value is NSNull) {
+            let contact = Structure(strings: ["city", "region", "postalCode", "country"],
+                                    arrays: ["addressLines", "emails", "phoneNumbers", "webURLs"])
+            guard let record = value as? [String: Any],
+                  let fields = contact.read(record, byteCount: &byteCount) else { return nil }
+            result["creatorContactInfo"] = .object(fields)
+        }
         return result
+    }
+
+    private struct Structure {
+        var strings: Set<String>
+        var arrays: Set<String> = []
+        var numbers: Set<String> = []
+        var required: Set<String> = []
+
+        func read(_ record: [String: Any], byteCount: inout Int) -> [String: MCPJSONValue]? {
+            var result: [String: MCPJSONValue] = [:]
+            for key in strings.sorted() {
+                guard let value = record[key], !(value is NSNull) else {
+                    if required.contains(key) { return nil }
+                    continue
+                }
+                guard let text = value as? String, text.utf8.count <= 32_768 else { return nil }
+                byteCount += text.utf8.count
+                guard byteCount <= 65_536 else { return nil }
+                result[key] = .string(text)
+            }
+            for key in arrays.sorted() {
+                guard let value = record[key], !(value is NSNull) else { continue }
+                guard let values = value as? [String], values.count <= 128,
+                      values.allSatisfy({ $0.utf8.count <= 1_024 }) else { return nil }
+                byteCount += values.reduce(0) { $0 + $1.utf8.count }
+                guard byteCount <= 65_536 else { return nil }
+                result[key] = .array(values.map(MCPJSONValue.string))
+            }
+            for key in numbers.sorted() {
+                guard let value = record[key], !(value is NSNull) else { continue }
+                // Decode rather than bridge NSNumber: JSON booleans are not coordinates.
+                guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+                      let number = try? JSONDecoder().decode(Double.self, from: data),
+                      number.isFinite else { return nil }
+                result[key] = .number(number)
+            }
+            return result
+        }
     }
 }
 
@@ -1080,7 +1147,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "inspect_app_photo_draft",
-                description: "Read bounded basic descriptive fields from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
+                description: "Read bounded descriptive fields and structured editorial records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
                 properties: [
                     "path": .object([
                         "type": .string("string"),

@@ -1645,6 +1645,12 @@ including pending-draft precedence and descriptive-source/conflict reporting. Co
 refuses incomplete XMP reads. Connecting typed production parsing and this policy to the MCP
 helper's coherent carrier capture remains open; no Phase 5A checkbox is closed.
 
+**Progress — 2026-09-19:** [Cycle 51](release/cycle-51-mcp-structured-draft-2026-09-19.md)
+extends owned MCP JSON draft inspection with bounded suppliers, contact information,
+locations and vocabulary structures. Pairing, order and explicit clears are preserved;
+malformed known values refuse the entire read. Production effective IPTC reconciliation
+remains open; no Phase 5A checkbox is closed.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support
