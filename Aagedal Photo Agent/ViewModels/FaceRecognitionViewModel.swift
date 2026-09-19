@@ -826,7 +826,7 @@ final class FaceRecognitionViewModel {
         let service = folderLoadService
         let task = Task(priority: .utility) { [weak self] in
             _ = await precedingTask?.value
-            let result = await service.persist(
+            let result = await service.persistWithFolderReservation(
                 data,
                 deletingThumbnailIDs: deletingThumbnailIDs
             )
@@ -845,10 +845,17 @@ final class FaceRecognitionViewModel {
         let service = folderLoadService
         let task = Task(priority: .utility) { [weak self] in
             _ = await precedingTask?.value
-            let result = await service.deleteAll(for: folderURL)
-            guard let self, self.faceDataRevision == expectedRevision,
-                  let failure = result.failureMessage else { return }
-            self.errorMessage = "Failed to delete face data: \(failure)"
+            let result = await service.deleteAllWithFolderReservation(for: folderURL)
+            guard let self, self.faceDataRevision == expectedRevision else { return }
+            if let failure = result.failureMessage {
+                self.errorMessage = "Failed to delete face data: \(failure)"
+            } else if case .committed = result,
+                      self.displayedFolderURL == folderURL.standardizedFileURL {
+                self.faceData = nil
+                self.thumbnailCache.removeAllObjects()
+                self.thumbnailDataByFaceID.removeAll()
+                self.scanComplete = false
+            }
         }
         faceDataPersistenceTask = task
         return task
@@ -3260,10 +3267,10 @@ final class FaceRecognitionViewModel {
 
     func deleteFaceData(for folderURL: URL) {
         lensPrewarmTask?.cancel()
-        faceData = nil
-        thumbnailCache.removeAllObjects()
-        thumbnailDataByFaceID.removeAll()
-        scanComplete = false
+        if displayedFolderURL == folderURL.standardizedFileURL {
+            faceDataLoadTask?.cancel()
+            faceDataLoadRequestID = UUID()
+        }
         scheduleFaceDataDeletion(for: folderURL)
     }
 

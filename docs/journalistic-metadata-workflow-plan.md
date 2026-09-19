@@ -1485,6 +1485,13 @@ Busy admission preserves prior results. This closes the scan execution boundary 
 GUI writers, production automation operations and status/cancellation remain open. See
 [cycle 60](release/cycle-60-face-scan-admission-2026-09-19.md).
 
+**2026-09-19 interactive face-data admission:** Queued GUI face-data saves hold a folder
+reservation through document persistence and thumbnail cleanup; explicit deletion holds the
+same reservation and clears displayed results only after success. Busy operations refuse before
+storage mutation. Navigation cleanup, corrupt-document recovery, stale in-memory snapshot
+reconciliation and other GUI writers still need separate coverage. See
+[cycle 61](release/cycle-61-interactive-face-admission-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Interactive face-data saves and deletion now reserve their folder against overlapping local
+  automation and face scans. Busy deletion preserves displayed results and durable data so it
+  can be retried after the other operation finishes.
+
 - Face scans now reserve their folder against overlapping MCP reads and retained photo writes through
   final result persistence. A busy folder refuses a full rescan without clearing existing face results.
 

@@ -202,6 +202,173 @@ struct ActivityHistoryTests {
         next.release()
     }
 
+    @Test("Interactive face writes refuse busy folders before document or thumbnail mutation",
+          arguments: [false, true])
+    func interactiveFaceWriteAdmission(folderReservation: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceWriteAdmission-\(UUID().uuidString)")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let lease = try folderReservation
+            ? MCPProcessReservation.acquireFolder(folder)
+            : MCPProcessReservation.acquirePhoto(photo)
+        defer { lease.release() }
+        let service = FaceDataFolderLoadService(deleteFaceData: { _ in
+            Issue.record("Busy deletion reached storage")
+        }, saveFaceData: { _ in
+            Issue.record("Busy write reached storage")
+        }, deleteThumbnail: { _, _ in
+            Issue.record("Busy thumbnail cleanup reached storage")
+        })
+        let document = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        #expect(await service.persistWithFolderReservation(document, deletingThumbnailIDs: [UUID()])
+            == .failedBeforeCommit(folderURL: folder.standardizedFileURL,
+                message: MCPProcessReservationError.busy.localizedDescription))
+        #expect(await service.deleteAllWithFolderReservation(for: folder)
+            == .failed(folderURL: folder.standardizedFileURL,
+                message: MCPProcessReservationError.busy.localizedDescription))
+    }
+
+    @Test("Interactive face writes hold admission through cleanup and release after failure or cancellation",
+          arguments: ["success", "saveFailure", "cleanupFailure", "deleteFailure", "cancelAfterCommit", "cancelBeforeCommit"])
+    func interactiveFaceWriteLifetime(outcome: String) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceWriteLifetime-\(UUID().uuidString)")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let check: @Sendable () -> Void = {
+            #expect(outcome != "cancelBeforeCommit")
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(photo)
+            }
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquireFolder(folder)
+            }
+        }
+        let service = FaceDataFolderLoadService(deleteFaceData: { _ in
+            check()
+            if outcome == "deleteFailure" { throw CocoaError(.fileWriteUnknown) }
+        }, saveFaceData: { _ in
+            check()
+            if outcome == "saveFailure" { throw CocoaError(.fileWriteUnknown) }
+            if outcome == "cancelAfterCommit" { withUnsafeCurrentTask { $0?.cancel() } }
+        }, deleteThumbnail: { _, _ in
+            check()
+            #expect(outcome != "cancelAfterCommit")
+            if outcome == "cleanupFailure" { throw CocoaError(.fileWriteUnknown) }
+        })
+        let document = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        let faceID = UUID()
+        let result = await Task {
+            if outcome == "cancelBeforeCommit" { withUnsafeCurrentTask { $0?.cancel() } }
+            return await service.persistWithFolderReservation(document, deletingThumbnailIDs: [faceID])
+        }.value
+        switch result {
+        case .committed(let evidence):
+            #expect(outcome != "saveFailure" && outcome != "cancelBeforeCommit")
+            #expect(evidence.deletedThumbnailIDs ==
+                (["cleanupFailure", "cancelAfterCommit"].contains(outcome) ? [] : [faceID]))
+            #expect(evidence.thumbnailFailures.count == (outcome == "cleanupFailure" ? 1 : 0))
+            #expect(evidence.cancellationRequestedAfterCommit == (outcome == "cancelAfterCommit"))
+        case .failedBeforeCommit:
+            #expect(outcome == "saveFailure")
+        case .cancelledBeforeCommit:
+            #expect(outcome == "cancelBeforeCommit")
+        }
+        let deletion = await Task {
+            if outcome == "cancelBeforeCommit" { withUnsafeCurrentTask { $0?.cancel() } }
+            return await service.deleteAllWithFolderReservation(for: folder)
+        }.value
+        switch deletion {
+        case .committed: #expect(outcome != "deleteFailure" && outcome != "cancelBeforeCommit")
+        case .failed: #expect(outcome == "deleteFailure")
+        case .cancelledBeforeCommit: #expect(outcome == "cancelBeforeCommit")
+        }
+        let next = try MCPProcessReservation.acquireFolder(folder)
+        next.release()
+    }
+
+    @Test("Interactive group edits report busy admission without overwriting durable names")
+    func interactiveFaceEditRetry() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceEditRetry-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let group = FaceGroup(id: UUID(), name: "Original", representativeFaceID: UUID(),
+            faceIDs: [], userCreated: true, manualNumber: nil)
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [group],
+            lastScanDate: Date(), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        viewModel.faceData = original
+        let lease = try MCPProcessReservation.acquirePhoto(folder.appendingPathComponent("photo.jpg"))
+        defer { lease.release() }
+        viewModel.nameGroup(group.id, name: "Edited")
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(storage.loadFaceData(for: folder)?.groups.first?.name == "Original")
+        #expect(viewModel.errorMessage?.contains(MCPProcessReservationError.busy.localizedDescription) == true)
+        lease.release()
+        viewModel.nameGroup(group.id, name: "Retried")
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(storage.loadFaceData(for: folder)?.groups.first?.name == "Retried")
+    }
+
+    @Test("Busy interactive face deletion preserves visible and durable results, then permits retry")
+    func interactiveFaceDeletionRetry() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceDeleteRetry-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: Date(timeIntervalSince1970: 100), scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        defer { lease.release() }
+        viewModel.deleteFaceData(for: folder)
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(viewModel.faceData?.lastScanDate == original.lastScanDate)
+        #expect(viewModel.scanComplete)
+        #expect(storage.faceDataExists(for: folder))
+        #expect(viewModel.errorMessage?.contains(MCPProcessReservationError.busy.localizedDescription) == true)
+        lease.release()
+        viewModel.deleteFaceData(for: folder)
+        await viewModel.waitForCurrentFaceDataPersistence()
+        #expect(viewModel.faceData == nil)
+        #expect(!viewModel.scanComplete)
+        #expect(!storage.faceDataExists(for: folder))
+    }
+
+    @Test("Face deletion completion does not clear a newly displayed folder")
+    func interactiveFaceDeletionNavigation() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceDeleteNavigation-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let deletedFolder = root.appendingPathComponent("Deleted")
+        let displayedFolder = root.appendingPathComponent("Displayed")
+        let storage = FaceDataStorageService()
+        for folder in [deletedFolder, displayedFolder] {
+            try storage.saveFaceData(FolderFaceData(folderURL: folder, faces: [], groups: [],
+                lastScanDate: Date(), scanComplete: true))
+        }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine())
+        viewModel.loadFaceData(for: deletedFolder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        viewModel.deleteFaceData(for: deletedFolder)
+        viewModel.loadFaceData(for: displayedFolder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataPersistence()
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(!storage.faceDataExists(for: deletedFolder))
+        #expect(storage.faceDataExists(for: displayedFolder))
+        #expect(viewModel.faceData?.folderURL == displayedFolder)
+        #expect(viewModel.scanComplete)
+    }
+
     @Test("rename quiescence cancels the exact target scan and awaits its final persistence")
     func renameQuiescenceAwaitsFacePersistence() async throws {
         let folder = FileManager.default.temporaryDirectory

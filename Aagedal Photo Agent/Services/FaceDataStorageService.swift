@@ -440,6 +440,27 @@ actor FaceDataFolderLoadService {
         return Task.isCancelled ? .cancelled : .complete(data)
     }
 
+    /// Interactive mutations do not own the scan's long-lived lease. Admit them on this
+    /// filesystem executor and retain ownership through document and thumbnail changes.
+    func persistWithFolderReservation(
+        _ faceData: FolderFaceData,
+        deletingThumbnailIDs thumbnailIDs: [UUID] = []
+    ) -> FaceDataPersistenceResult {
+        let folderURL = faceData.folderURL.standardizedFileURL
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(folderURL: folderURL)
+        }
+        do {
+            let reservation = try MCPProcessReservation.acquireFolder(folderURL)
+            defer { reservation.release() }
+            return persist(faceData, deletingThumbnailIDs: thumbnailIDs)
+        } catch {
+            return .failedBeforeCommit(folderURL: folderURL, message: error.localizedDescription)
+        }
+    }
+
+    /// The caller of this primitive must supply any enclosing operation reservation (as
+    /// face scans do). Interactive callers use `persistWithFolderReservation` instead.
     func persist(
         _ faceData: FolderFaceData,
         deletingThumbnailIDs thumbnailIDs: [UUID] = []
@@ -497,6 +518,20 @@ actor FaceDataFolderLoadService {
             )
         } catch {
             return .failed(faceID: faceID, message: error.localizedDescription)
+        }
+    }
+
+    func deleteAllWithFolderReservation(for folderURL: URL) -> FaceDataDeletionResult {
+        let folderURL = folderURL.standardizedFileURL
+        guard !Task.isCancelled else {
+            return .cancelledBeforeCommit(folderURL: folderURL)
+        }
+        do {
+            let reservation = try MCPProcessReservation.acquireFolder(folderURL)
+            defer { reservation.release() }
+            return deleteAll(for: folderURL)
+        } catch {
+            return .failed(folderURL: folderURL, message: error.localizedDescription)
         }
     }
 
