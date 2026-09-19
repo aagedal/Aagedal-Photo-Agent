@@ -32,6 +32,8 @@ nonisolated struct TemplateMutationError<Value: Sendable>: LocalizedError, Senda
     let durableTemplateIDs: [UUID]
     let refreshedTemplates: [Value]
 
+    var isSnapshotConflict: Bool = false
+
     var errorDescription: String? { reason }
 }
 
@@ -127,7 +129,7 @@ nonisolated extension TemplateCRUDAccess where Value == DevelopTemplate {
 /// Owns synchronous template filesystem work on a retained Dispatch serial executor.
 /// Blocking provider calls preserve caller task context without occupying cooperative threads.
 /// Each method returns immutable evidence so MainActor clients can reject stale completions.
-actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID {
+actor TemplateCRUDService<Value: Identifiable & Sendable & Equatable> where Value.ID == UUID {
     private let access: TemplateCRUDAccess<Value>
     nonisolated let filesystemQueue: DispatchSerialQueue
     nonisolated var unownedExecutor: UnownedSerialExecutor {
@@ -165,10 +167,10 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         return try await withStorageTransaction { try await $0.loadInTransaction(requestID: requestID) }
     }
 
-    func save(_ template: Value, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
+    func save(_ template: Value, expectedExisting: Value? = nil, requestID: UUID) async throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else { return .cancelledBeforeCommit(requestID: requestID) }
         return try await withStorageTransaction {
-            try await $0.saveInTransaction(template, requestID: requestID)
+            try await $0.saveInTransaction(template, expectedExisting: expectedExisting, requestID: requestID)
         }
     }
 
@@ -201,6 +203,7 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
 
     private func saveInTransaction(
         _ template: Value,
+        expectedExisting: Value?,
         requestID: UUID
     ) throws -> TemplateMutationOperationResult<Value> {
         guard !Task.isCancelled else {
@@ -210,6 +213,22 @@ actor TemplateCRUDService<Value: Identifiable & Sendable> where Value.ID == UUID
         var inventory = try access.loadAll()
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID)
+        }
+        // Compare the editor's original snapshot under both storage admissions, before
+        // shortcut reassignment can mutate any other template. A missing/unreadable
+        // record must not turn an existing-template edit into a creation.
+        if let expectedExisting {
+            let matches = inventory.filter { $0.id == template.id }
+            guard expectedExisting.id == template.id,
+                  matches.count == 1, matches.first == expectedExisting else {
+                throw TemplateMutationError<Value>(
+                    requestID: requestID,
+                    reason: "This template changed or is no longer available. Your edits are still here. Save a new copy, or reopen the latest template and reapply your changes.",
+                    durableTemplateIDs: [],
+                    refreshedTemplates: inventory,
+                    isSnapshotConflict: true
+                )
+            }
         }
         var durableTemplateIDs: [UUID] = []
 

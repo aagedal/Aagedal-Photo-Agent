@@ -8,13 +8,16 @@ nonisolated struct TemplateSaveError: Error, Equatable, LocalizedError, Sendable
 
     let templateKind: TemplateKind
     let reason: String
+    var isSnapshotConflict: Bool = false
 
     var errorDescription: String? {
         "\(templateKind.rawValue) template wasn’t saved: \(reason)"
     }
 
     var recoverySuggestion: String? {
-        "Your edits are still here. Retry the save or save a new copy."
+        isSnapshotConflict
+            ? "This template changed or is no longer available. Save a new copy, or reopen the latest template and reapply your changes. Your edits are still here."
+            : "Your edits are still here. Retry the save or save a new copy."
     }
 }
 
@@ -27,6 +30,8 @@ final class TemplateViewModel {
     var editingTemplate = MetadataTemplate()
     var errorMessage: String?
     private(set) var saveError: TemplateSaveError?
+
+    @ObservationIgnored private var editingBaseline: MetadataTemplate?
 
     private let crudService: TemplateCRUDService<MetadataTemplate>
     private let importPreviewService: TemplateImportPreviewService
@@ -85,14 +90,14 @@ final class TemplateViewModel {
     }
 
     @discardableResult
-    func saveTemplate(_ template: MetadataTemplate) async -> Result<MetadataTemplate, TemplateSaveError> {
+    func saveTemplate(_ template: MetadataTemplate, expectedExisting: MetadataTemplate? = nil) async -> Result<MetadataTemplate, TemplateSaveError> {
         saveError = nil
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.save(template, requestID: requestID)
+            try await crudService.save(template, expectedExisting: expectedExisting, requestID: requestID)
         }
         mutationTask = task
         do {
@@ -122,7 +127,7 @@ final class TemplateViewModel {
             if !error.durableTemplateIDs.isEmpty {
                 templates = error.refreshedTemplates
             }
-            return recordSaveFailure(reason: error.reason, kind: .metadata)
+            return recordSaveFailure(reason: error.reason, kind: .metadata, isSnapshotConflict: error.isSnapshotConflict)
         } catch {
             guard mutationRequestID == requestID else {
                 return .failure(supersededSaveError(kind: .metadata))
@@ -169,6 +174,7 @@ final class TemplateViewModel {
     }
 
     func startEditing(_ template: MetadataTemplate? = nil) {
+        editingBaseline = template
         editingTemplate = template ?? MetadataTemplate()
         isEditingExistingTemplate = template != nil
         saveError = nil
@@ -177,7 +183,7 @@ final class TemplateViewModel {
 
     @discardableResult
     func saveEditingTemplate() async -> Result<MetadataTemplate, TemplateSaveError> {
-        finishEditingIfSaved(await saveTemplate(editingTemplate))
+        finishEditingIfSaved(await saveTemplate(editingTemplate, expectedExisting: editingBaseline))
     }
 
     @discardableResult
@@ -192,6 +198,7 @@ final class TemplateViewModel {
     }
 
     func cancelEditing() {
+        editingBaseline = nil
         isEditingExistingTemplate = false
         saveError = nil
         isEditing = false
@@ -202,6 +209,7 @@ final class TemplateViewModel {
         _ result: Result<MetadataTemplate, TemplateSaveError>
     ) -> Result<MetadataTemplate, TemplateSaveError> {
         if case .success = result {
+            editingBaseline = nil
             isEditingExistingTemplate = false
             isEditing = false
         }
@@ -317,9 +325,10 @@ final class TemplateViewModel {
 
     private func recordSaveFailure(
         reason: String,
-        kind: TemplateSaveError.TemplateKind
+        kind: TemplateSaveError.TemplateKind,
+        isSnapshotConflict: Bool = false
     ) -> Result<MetadataTemplate, TemplateSaveError> {
-        let failure = TemplateSaveError(templateKind: kind, reason: reason)
+        let failure = TemplateSaveError(templateKind: kind, reason: reason, isSnapshotConflict: isSnapshotConflict)
         saveError = failure
         errorMessage = failure.localizedDescription
         return .failure(failure)

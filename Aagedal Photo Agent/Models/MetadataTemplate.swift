@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct MetadataTemplate: Codable, Identifiable, Sendable {
+nonisolated struct MetadataTemplate: Codable, Identifiable, Sendable, Equatable {
     static let currentSchemaVersion = 1
 
     var schemaVersion: Int

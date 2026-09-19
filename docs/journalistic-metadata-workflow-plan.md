@@ -1521,6 +1521,14 @@ before worker I/O and permits retry; existing queued cancellation semantics rema
 Stable-UUID discovery, automated application, stale-template authority and external-writer
 coordination remain open. See [cycle 70](release/cycle-70-template-process-admission-2026-09-19.md).
 
+**2026-09-19 template editor conflict refusal:** Existing metadata and Develop editors
+retain their original typed template and compare it under storage admission before any
+shortcut reassignment. Changed, missing, unreadable or duplicate records refuse while
+preserving the draft. Inventory reload does not authorize an old editor. This is typed
+editor conflict detection, not byte-level template-store authority for automation; root
+identity, unknown JSON fields, import/delete authority and external-writer races remain.
+See [cycle 71](release/cycle-71-template-editor-conflicts-2026-09-19.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

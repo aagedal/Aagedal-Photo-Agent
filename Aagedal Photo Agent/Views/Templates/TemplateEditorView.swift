@@ -61,7 +61,7 @@ struct TemplateEditorView: View {
                             AppAccessibilityAnnouncement.failure(.templateSave).spokenText
                         )
 
-                    Text("Your edits are still here. Retry the save or save a new copy.")
+                    Text(viewModel.saveError?.recoverySuggestion ?? "Your edits are still here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

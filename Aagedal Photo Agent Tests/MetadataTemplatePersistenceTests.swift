@@ -4,6 +4,73 @@ import Testing
 
 @Suite("Metadata template persistence")
 struct MetadataTemplatePersistenceTests {
+
+    @Test("Existing editor saves refuse stale snapshots before shortcut writes and retain recovery",
+          arguments: ["changed", "removed", "corrupt", "duplicate", "unchanged"])
+    @MainActor
+    func editorSnapshotConflict(state: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = TemplateStorageService(directoryURL: root)
+        let original = MetadataTemplate(name: "Original")
+        let peer = MetadataTemplate(name: "Shortcut owner", shortcutSlot: 2)
+        try storage.save(original)
+        try storage.save(peer)
+        let source = root.appendingPathComponent("\(original.id.uuidString).json")
+        let peerURL = root.appendingPathComponent("\(peer.id.uuidString).json")
+        let peerBytes = try Data(contentsOf: peerURL)
+        let editor = TemplateViewModel(storage: storage)
+        editor.startEditing(original)
+        editor.editingTemplate.name = "My draft"
+        editor.editingTemplate.shortcutSlot = 2
+        switch state {
+        case "changed":
+            var changed = original
+            changed.name = "Newer peer edit"
+            try storage.save(changed)
+        case "removed": try FileManager.default.removeItem(at: source)
+        case "corrupt": try Data("broken JSON".utf8).write(to: source)
+        case "duplicate":
+            try Data(contentsOf: source).write(to: root.appendingPathComponent("duplicate.json"))
+        default: break
+        }
+        let before = try? Data(contentsOf: source)
+        let result = await editor.saveEditingTemplate()
+        if state == "unchanged" {
+            guard case .success = result else { Issue.record("Unchanged baseline refused"); return }
+            #expect(!editor.isEditing)
+            #expect(try storage.loadAll().first { $0.id == original.id }?.name == "My draft")
+            #expect(try storage.loadAll().first { $0.id == peer.id }?.shortcutSlot == nil)
+            return
+        }
+        guard case .failure = result else { Issue.record("Stale editor saved"); return }
+        #expect(editor.isEditing)
+        #expect(editor.editingTemplate.name == "My draft")
+        #expect(editor.saveError?.reason.contains("changed or is no longer available") == true)
+        #expect((try? Data(contentsOf: source)) == before)
+        #expect(try Data(contentsOf: peerURL) == peerBytes)
+
+        // An inventory reload must not silently bless the open editor's stale draft.
+        await withCheckedContinuation { continuation in
+            editor.loadTemplates { _ in continuation.resume() }
+        }
+        guard case .failure = await editor.saveEditingTemplate() else {
+            Issue.record("Reload authorized a stale editor"); return
+        }
+        #expect((try? Data(contentsOf: source)) == before)
+        #expect(try Data(contentsOf: peerURL) == peerBytes)
+        editor.editingTemplate.shortcutSlot = nil
+        guard case .success(let copy) = await editor.saveEditingTemplateAsNew() else {
+            Issue.record("Save as New failed"); return
+        }
+        #expect(copy.id != original.id)
+        #expect(copy.name == "My draft")
+        #expect(!editor.isEditing)
+        #expect((try? Data(contentsOf: source)) == before)
+        #expect(try Data(contentsOf: peerURL) == peerBytes)
+        #expect(try storage.loadAll().contains { $0.id == copy.id })
+    }
+
     @Test("Separate template services share a captured canonical root for shortcut transactions",
           arguments: [false, true])
     @MainActor
@@ -601,6 +668,8 @@ struct MetadataTemplatePersistenceTests {
 
         try FileManager.default.removeItem(at: storageLocation)
         try FileManager.default.createDirectory(at: storageLocation, withIntermediateDirectories: false)
+
+        try TemplateStorageService(directoryURL: storageLocation).save(original)
 
         let retryResult = await viewModel.saveEditingTemplate()
 

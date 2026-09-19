@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Existing metadata and Develop template editors now refuse saves when their original
+  template changed, disappeared, became unreadable or has duplicate identities. Refusal
+  preserves the draft and shortcut assignments, with guidance to reopen or Save as New.
+
 - Metadata and Develop template transactions now reserve their storage folder across
   Photo Agent processes. Busy saves, deletes, imports and exports refuse before changing
   templates, and can be retried after the competing operation finishes.

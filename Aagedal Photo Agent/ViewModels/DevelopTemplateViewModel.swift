@@ -9,6 +9,8 @@ final class DevelopTemplateViewModel {
     var errorMessage: String?
     private(set) var saveError: TemplateSaveError?
 
+    @ObservationIgnored private var editingBaseline: DevelopTemplate?
+
     private let crudService: TemplateCRUDService<DevelopTemplate>
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID: UUID?
@@ -66,14 +68,14 @@ final class DevelopTemplateViewModel {
     }
 
     @discardableResult
-    func saveTemplate(_ template: DevelopTemplate) async -> Result<DevelopTemplate, TemplateSaveError> {
+    func saveTemplate(_ template: DevelopTemplate, expectedExisting: DevelopTemplate? = nil) async -> Result<DevelopTemplate, TemplateSaveError> {
         saveError = nil
         invalidatePendingLoad()
         mutationTask?.cancel()
         let requestID = UUID()
         mutationRequestID = requestID
         let task = Task { [crudService] in
-            try await crudService.save(template, requestID: requestID)
+            try await crudService.save(template, expectedExisting: expectedExisting, requestID: requestID)
         }
         mutationTask = task
         do {
@@ -103,7 +105,7 @@ final class DevelopTemplateViewModel {
             if !error.durableTemplateIDs.isEmpty {
                 templates = error.refreshedTemplates
             }
-            return recordSaveFailure(reason: error.reason)
+            return recordSaveFailure(reason: error.reason, isSnapshotConflict: error.isSnapshotConflict)
         } catch {
             guard mutationRequestID == requestID else {
                 return .failure(supersededSaveError())
@@ -150,6 +152,7 @@ final class DevelopTemplateViewModel {
     }
 
     func startEditing(_ template: DevelopTemplate) {
+        editingBaseline = template
         editingTemplate = template
         isEditingExistingTemplate = true
         saveError = nil
@@ -158,7 +161,7 @@ final class DevelopTemplateViewModel {
 
     @discardableResult
     func saveEditingTemplate() async -> Result<DevelopTemplate, TemplateSaveError> {
-        finishEditingIfSaved(await saveTemplate(editingTemplate))
+        finishEditingIfSaved(await saveTemplate(editingTemplate, expectedExisting: editingBaseline))
     }
 
     @discardableResult
@@ -173,6 +176,7 @@ final class DevelopTemplateViewModel {
     }
 
     func cancelEditing() {
+        editingBaseline = nil
         isEditingExistingTemplate = false
         saveError = nil
         isEditing = false
@@ -183,6 +187,7 @@ final class DevelopTemplateViewModel {
         _ result: Result<DevelopTemplate, TemplateSaveError>
     ) -> Result<DevelopTemplate, TemplateSaveError> {
         if case .success = result {
+            editingBaseline = nil
             isEditingExistingTemplate = false
             isEditing = false
         }
@@ -193,8 +198,8 @@ final class DevelopTemplateViewModel {
         templates.first { $0.shortcutSlot == slot }
     }
 
-    private func recordSaveFailure(reason: String) -> Result<DevelopTemplate, TemplateSaveError> {
-        let failure = TemplateSaveError(templateKind: .develop, reason: reason)
+    private func recordSaveFailure(reason: String, isSnapshotConflict: Bool = false) -> Result<DevelopTemplate, TemplateSaveError> {
+        let failure = TemplateSaveError(templateKind: .develop, reason: reason, isSnapshotConflict: isSnapshotConflict)
         saveError = failure
         errorMessage = failure.localizedDescription
         return .failure(failure)
