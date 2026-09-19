@@ -424,6 +424,97 @@ struct MCPServerCoreTests {
         }
     }
 
+    @Test("FIFO sidecars are refused without waiting for a writer", arguments: ["xmp", "current", "legacy"])
+    func refusesFIFOWithoutBlocking(carrier: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("photo".utf8).write(to: photo)
+        let privateFolder = root.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateFolder, withIntermediateDirectories: false)
+        let fifo = carrier == "xmp" ? root.appendingPathComponent("frame.xmp")
+            : privateFolder.appendingPathComponent(carrier == "current" ? "frame.jpg.meta.json" : "frame.meta.json")
+        try #require(Darwin.mkfifo(fifo.path, 0o600) == 0)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        let completed = DispatchSemaphore(value: 0)
+        let outcome = DataBox()
+        DispatchQueue.global().async {
+            defer { completed.signal() }
+            do {
+                _ = try facade.inspectPhotoRevision(path: photo.path)
+                outcome.write(Data("unexpected-success".utf8))
+            } catch MCPAutomationReadError.unsafeCarrier {
+                outcome.write(Data("unsafe-carrier".utf8))
+            } catch {
+                outcome.write(Data("unexpected-error".utf8))
+            }
+        }
+        let finishedWithoutWriter = completed.wait(timeout: .now() + 2) == .success
+        #expect(finishedWithoutWriter)
+        if !finishedWithoutWriter {
+            // Unblock the old implementation so a regression fails instead of hanging the suite.
+            let rescue = Darwin.open(fifo.path, O_RDWR | O_NONBLOCK | O_CLOEXEC)
+            defer { if rescue >= 0 { _ = Darwin.close(rescue) } }
+            try #require(completed.wait(timeout: .now() + 2) == .success)
+        }
+        #expect(outcome.read() == Data("unsafe-carrier".utf8))
+        try FileManager.default.removeItem(at: fifo)
+        // The refusal must also release the shared photo lease for the next request.
+        #expect(try facade.inspectPhotoRevision(path: photo.path).objectValue?["appSidecarDraftState"] == .string("absent"))
+    }
+
+    @Test("Carrier streaming accepts short chunks and limits each read to the captured length")
+    func boundedCarrierShortReads() throws {
+        var remaining = 1_048_579
+        var consumed = 0
+        var requests: [Int] = []
+        try MCPBoundedCarrierReader.read(byteCount: Int64(remaining), readChunk: { requested in
+            requests.append(requested)
+            let count = min(remaining, min(requested, 524_288))
+            remaining -= count
+            return Data(repeating: 42, count: count)
+        }, consume: { consumed += $0.count })
+        #expect(consumed == 1_048_579)
+        #expect(requests == [1_048_576, 524_291, 3, 1])
+    }
+
+    @Test("Carrier growth is bounded to one probe byte and never consumed as evidence")
+    func boundedCarrierGrowth() throws {
+        var requestedBytes = 0
+        var consumed = 0
+        #expect(throws: MCPAutomationReadError.photoChanged) {
+            try MCPBoundedCarrierReader.read(byteCount: 3, readChunk: { requested in
+                requestedBytes += requested
+                // Models a writer that always supplies more bytes, never EOF.
+                return Data(repeating: 42, count: requested)
+            }, consume: { consumed += $0.count })
+        }
+        #expect(requestedBytes == 4)
+        #expect(consumed == 3)
+    }
+
+    @Test("Carrier truncation and invalid sizes refuse evidence")
+    func boundedCarrierTruncation() throws {
+        #expect(throws: MCPAutomationReadError.photoChanged) {
+            try MCPBoundedCarrierReader.read(byteCount: 1, readChunk: { _ in nil }, consume: { _ in
+                Issue.record("A truncated carrier must not publish bytes")
+            })
+        }
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            try MCPBoundedCarrierReader.read(byteCount: -1, readChunk: { _ in
+                Issue.record("An invalid captured size must not read")
+                return nil
+            }, consume: { _ in })
+        }
+        try MCPBoundedCarrierReader.read(byteCount: 0, readChunk: { requested in
+            #expect(requested == 1)
+            return nil
+        }, consume: { _ in Issue.record("An empty carrier must not publish bytes") })
+    }
+
     @Test("Nested photo and carriers are read from the granted root; linked private storage is refused")
     func anchoredNestedRevisionInspection() throws {
         let root = try temporaryFolder()

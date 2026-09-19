@@ -1631,6 +1631,14 @@ refused; the focused 21-test and complete 3,780-execution serial suites pass. Ef
 reconciliation, production operations and external-writer revision admission remain open;
 this prerequisite does not close a Phase 5A checkbox.
 
+**Progress — cycle 48:** [Bounded MCP carrier reads](release/cycle-48-mcp-bounded-carrier-reads-2026-09-19.md)
+use nonblocking descriptor opens to reject FIFO sidecars without waiting for a writer.
+JSON capture and streaming revision hashing consume only the captured length and a one-byte
+growth probe, rejecting truncation or growth before publishing evidence. Existing carrier
+and ancestor generation checks remain. The focused 25-test suite, complete 2,956-test serial
+suite and repository validation pass. Effective IPTC and production operations remain open;
+this correction does not close a Phase 5A checkbox.
+
 ## Phase 6 — migration and release hardening
 
 **Exit gate:** existing users upgrade without losing metadata/templates/settings, published support

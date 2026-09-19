@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-15
+**Last reviewed:** 2026-09-19
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 47: MCP ancestor identity at publication](release/cycle-47-mcp-ancestor-publication-2026-09-15.md) retains and rechecks the authorized-root and nested-directory path chain before returning combined photo evidence; 21 focused and 3,780 expanded serial executions plus repository validation pass. Effective typed IPTC reads, production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
+**Latest implementation continuation:** [Cycle 48: bounded MCP carrier reads](release/cycle-48-mcp-bounded-carrier-reads-2026-09-19.md) prevents FIFO sidecars from blocking inspection and bounds JSON capture and revision hashing to the captured file length plus one growth probe. Effective typed IPTC reads, production MCP tools, broader operation admission, FFmpeg Whisper and release gates remain open.
 
 ## Portfolio
 

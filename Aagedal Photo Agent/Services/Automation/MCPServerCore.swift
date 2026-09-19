@@ -733,6 +733,27 @@ nonisolated private enum MCPAppDraftFieldCatalog {
     }
 }
 
+/// Consume only the captured regular-file length, then probe one byte for growth. Reading to
+/// EOF would let a concurrent writer extend a JSON allocation or keep a source hash busy forever.
+nonisolated enum MCPBoundedCarrierReader {
+    static func read(
+        byteCount: Int64,
+        readChunk: (Int) throws -> Data?,
+        consume: (Data) -> Void
+    ) throws {
+        guard byteCount >= 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        var remaining = byteCount
+        while remaining > 0 {
+            let requested = Int(min(remaining, 1_048_576))
+            guard let chunk = try readChunk(requested), !chunk.isEmpty,
+                  chunk.count <= requested else { throw MCPAutomationReadError.photoChanged }
+            consume(chunk)
+            remaining -= Int64(chunk.count)
+        }
+        guard try readChunk(1)?.isEmpty != false else { throw MCPAutomationReadError.photoChanged }
+    }
+}
+
 nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let source: String
     let appSidecar: String
@@ -897,7 +918,9 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     }
 
     private static func withSafeHandleIfPresent<T>(name: String, in parent: Int32, consume: (FileHandle, stat) throws -> T) throws -> T? {
-        let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        // A carrier can be a FIFO, including after a pathname race. Do not block in openat
+        // waiting for a writer before fstat can reject it. O_NONBLOCK has no effect on regular files.
+        let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
             throw MCPAutomationReadError.unsafeCarrier
@@ -937,7 +960,13 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             guard identity.st_size <= 8_388_608 else {
                 throw MCPAutomationReadError.unsafeCarrier
             }
-            return try consume(handle.readToEnd() ?? Data(), identity)
+            var bytes = Data()
+            try MCPBoundedCarrierReader.read(
+                byteCount: identity.st_size,
+                readChunk: { try handle.read(upToCount: $0) },
+                consume: { bytes.append($0) }
+            )
+            return try consume(bytes, identity)
         }
     }
 
@@ -945,9 +974,11 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         guard let digest = try withSafeHandleIfPresent(name: name, in: parent, consume: { handle, identity in
             var hasher = SHA256()
             hasher.update(data: prefix(domain: domain, identity: identity))
-            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
-                hasher.update(data: chunk)
-            }
+            try MCPBoundedCarrierReader.read(
+                byteCount: identity.st_size,
+                readChunk: { try handle.read(upToCount: $0) },
+                consume: { hasher.update(data: $0) }
+            )
             return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), identity)
         }) else {
             if required { throw MCPAutomationReadError.photoChanged }
