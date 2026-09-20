@@ -3702,3 +3702,38 @@ struct XMPMetadataReaderTests {
         #expect(requests == (angle == 0 ? 0 : 1))
     }
 }
+
+@Suite("FFmpeg local image boundary")
+struct FFmpegLocalImageBoundaryTests {
+    @Test("input and output protocols are restricted independently")
+    func localInvocation() throws {
+        let invocation = try FFmpegService.localImageInvocation(arguments: [
+            "-hide_banner", "-y", "-i", "/tmp/Blå image '1'.png",
+            "-frames:v", "1", "/tmp/output:still.png",
+        ])
+        #expect(invocation == [
+            "-nostdin", "-hide_banner", "-y", "-protocol_whitelist", "file",
+            "-i", "/tmp/Blå image '1'.png", "-frames:v", "1",
+            "-protocol_whitelist", "file", "/tmp/output:still.png",
+        ])
+    }
+
+    @Test("URLs, relative paths, additional inputs and protocol overrides are refused")
+    func invalidInvocation() {
+        for arguments in [
+            ["-i", "https://example.invalid/image.png", "/tmp/output.png"],
+            ["-i", "/tmp/input.png", "https://example.invalid/output.png"],
+            ["-i", "input.png", "/tmp/output.png"],
+            ["-i", "/tmp/input.png", "output.png"],
+            ["-i", "/tmp/input.png", "-i", "/tmp/second.png", "/tmp/output.png"],
+            ["-protocol_whitelist", "ALL", "-i", "/tmp/input.png", "/tmp/output.png"],
+            ["-i", "/tmp/input.png", "-protocol_whitelist=ALL", "/tmp/output.png"],
+            ["-i", "/tmp/input.png"],
+            ["-i", "/tmp/input\0.png", "/tmp/output.png"],
+        ] {
+            #expect(throws: FFmpegError.self) {
+                try FFmpegService.localImageInvocation(arguments: arguments)
+            }
+        }
+    }
+}

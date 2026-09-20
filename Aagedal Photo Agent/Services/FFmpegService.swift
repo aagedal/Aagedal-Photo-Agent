@@ -7,6 +7,7 @@ enum FFmpegError: Error, LocalizedError {
     case ffmpegMissing
     case processFailed(String)
     case outputMissing
+    case invalidLocalInvocation
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum FFmpegError: Error, LocalizedError {
             return "ffmpeg binary not found in app bundle"
         case .processFailed(let message):
             return "ffmpeg failed: \(message)"
+        case .invalidLocalInvocation:
+            return "Image conversion requires one absolute local input and output path."
         case .outputMissing:
             return "ffmpeg produced no output file"
         }
@@ -27,7 +30,8 @@ nonisolated enum FFmpegService {
     }
 
     /// Run ffmpeg asynchronously with the given arguments. Throws on failure.
-    static func run(arguments: [String]) async throws {
+    private static func run(arguments: [String]) async throws {
+        let arguments = try localImageInvocation(arguments: arguments)
         guard let path = ffmpegPath else {
             throw FFmpegError.ffmpegMissing
         }
@@ -44,6 +48,30 @@ nonisolated enum FFmpegService {
             ffmpegLogger.error("ffmpeg failed: \(message, privacy: .private)")
             throw FFmpegError.processFailed(message)
         }
+    }
+
+    /// All current image operations have one input and one final output. Keep the
+    /// protocol policy at the process boundary so a future, network-capable FFmpeg
+    /// artifact cannot silently turn an image decode into a network request.
+    /// This is a protocol restriction, not a sandbox for references to other local files.
+    static func localImageInvocation(arguments: [String]) throws -> [String] {
+        let inputs = arguments.indices.filter { arguments[$0] == "-i" }
+        guard inputs.count == 1, let inputIndex = inputs.first,
+              inputIndex + 1 < arguments.count - 1,
+              let output = arguments.last,
+              arguments[inputIndex + 1].hasPrefix("/"), output.hasPrefix("/"),
+              !arguments[inputIndex + 1].contains("\0"), !output.contains("\0"),
+              !arguments.contains(where: {
+                  $0 == "-protocol_whitelist" || $0.hasPrefix("-protocol_whitelist=")
+                      || $0 == "-protocol_blacklist" || $0.hasPrefix("-protocol_blacklist=")
+              }) else {
+            throw FFmpegError.invalidLocalInvocation
+        }
+        var result = arguments
+        result.insert(contentsOf: ["-protocol_whitelist", "file"], at: result.count - 1)
+        result.insert(contentsOf: ["-protocol_whitelist", "file"], at: inputIndex)
+        result.insert("-nostdin", at: 0)
+        return result
     }
 
     // MARK: - Image Encoding
