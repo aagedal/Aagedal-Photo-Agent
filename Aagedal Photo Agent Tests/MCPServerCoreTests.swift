@@ -27,6 +27,198 @@ struct MCPServerCoreTests {
         return url
     }
 
+    private func temporaryTeamFolder() throws -> URL {
+        // Foundation's temporaryDirectory can retain /var, a system symlink. Exercise the
+        // helper's deliberate no-follow walk using the physical /private/tmp directory.
+        let root = URL(fileURLWithPath: "/private/tmp/apa-mcp-teams-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        return root
+    }
+
+    private func teamArguments(id: UUID = UUID()) -> [String: MCPJSONValue] {
+        ["teamID": .string(id.uuidString), "name": .string(" Example FC "), "sport": .string("football"),
+         "primaryColor": .object(["r": .integer(1), "g": .integer(0), "b": .number(0.5)]),
+         "roster": .array([.object(["number": .integer(10), "playerName": .string("Ada Player")]),
+                           .object(["number": .integer(1), "playerName": .string("Sam Keeper")])])]
+    }
+
+    @Test("Team creation persists a compatible complete roster and retries without duplicating")
+    func createsTeamAndRetries() throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = store()
+        var configuration = MCPAuthorizationConfiguration()
+        configuration.isEnabled = true
+        configuration.allowsTeamCreation = true
+        try store.save(configuration)
+        let library = MCPTeamLibrary(authorizationStore: store, resolveDirectory: { root })
+        let tools = MCPFoundationTools(authorizationStore: store, teamLibrary: library)
+        let arguments = teamArguments()
+        let result = tools.callTool(name: "create_team", arguments: arguments)
+        #expect(result.objectValue?["isError"] == .bool(false))
+        #expect(result.objectValue?["structuredContent"]?.objectValue?["created"] == .bool(true))
+        let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        #expect(files.count == 1)
+        let bytes = try Data(contentsOf: #require(files.first))
+        let saved = try JSONDecoder().decode(Team.self, from: bytes)
+        #expect(saved.name == "Example FC")
+        #expect(saved.roster.map(\.number) == [1, 10])
+        #expect(saved.roster.allSatisfy { $0.knownPersonID == nil })
+        #expect(try library.create(arguments: arguments)["created"] == .bool(false))
+        #expect(try Data(contentsOf: files[0]) == bytes)
+        var changed = arguments
+        changed["name"] = .string("Different FC")
+        #expect(throws: MCPTeamLibrary.Failure.teamAlreadyExists) { try library.create(arguments: changed) }
+        #expect(try Data(contentsOf: files[0]) == bytes)
+    }
+
+    @Test("Team writes require a separate grant, reject bad rosters, and never follow links")
+    func validatesTeamCreation() throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = store()
+        let library = MCPTeamLibrary(authorizationStore: store, resolveDirectory: { root })
+        #expect(throws: MCPTeamLibrary.Failure.teamCreationDisabled) { try library.create(arguments: teamArguments()) }
+        try store.setEnabled(true)
+        #expect(throws: MCPTeamLibrary.Failure.teamCreationDisabled) { try library.create(arguments: teamArguments()) }
+        var config = try store.load()
+        config.allowsTeamCreation = true
+        try store.save(config)
+        var invalid = teamArguments()
+        invalid["roster"] = .array([.object(["number": .integer(1), "playerName": .string("One")]),
+                                    .object(["number": .integer(1), "playerName": .string("Two")])])
+        #expect(throws: MCPTeamLibrary.Failure.invalidArguments) { try library.create(arguments: invalid) }
+        for (key, value) in [("name", MCPJSONValue.string("  ")), ("sport", .string("invalid")),
+                             ("primaryColor", .object(["r": .integer(2), "g": .integer(0), "b": .integer(0)])),
+                             ("roster", .array([.object(["number": .integer(-1), "playerName": .string("No")])]))] {
+            var args = teamArguments(); args[key] = value
+            #expect(throws: MCPTeamLibrary.Failure.invalidArguments) { try library.create(arguments: args) }
+        }
+        let id = UUID()
+        try Data().write(to: root.appendingPathComponent(id.uuidString + ".deleted"))
+        #expect(throws: MCPTeamLibrary.Failure.teamAlreadyExists) { try library.create(arguments: teamArguments(id: id)) }
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        let linked = MCPTeamLibrary(authorizationStore: store, resolveDirectory: { link })
+        #expect(throws: MCPTeamLibrary.Failure.storageUnavailable) { try linked.create(arguments: teamArguments()) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 2)
+    }
+
+    @Test("Team creation queues cloud imports and honors revocation before publication")
+    func teamCreationRoutingAndRevocation() throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = store()
+        var config = MCPAuthorizationConfiguration()
+        config.isEnabled = true
+        config.allowsTeamCreation = true
+        try store.save(config)
+        let reviewRoot = root.appendingPathComponent("reviews", isDirectory: true)
+        let cloud = MCPTeamLibrary(authorizationStore: store, resolveDirectory: {
+            throw MCPTeamLibrary.Failure.cloudLibraryUnavailable
+        }, resolveReviewDirectory: { reviewRoot })
+        let arguments = teamArguments()
+        #expect(try cloud.create(arguments: arguments)["status"] == .string("awaiting_confirmation"))
+        #expect(try cloud.create(arguments: arguments)["created"] == .bool(false))
+        let queue = MCPTeamReviewQueue(directory: reviewRoot)
+        let pending = try queue.pending()
+        #expect(pending.count == 1)
+        try queue.finish(#require(pending.first), accepted: false)
+        #expect(try cloud.create(arguments: arguments)["status"] == .string("rejected"))
+        #expect(try queue.pending().isEmpty)
+        let switchedToLocal = MCPTeamLibrary(authorizationStore: store, resolveDirectory: { root },
+                                            resolveReviewDirectory: { reviewRoot })
+        #expect(try switchedToLocal.create(arguments: arguments)["status"] == .string("rejected"))
+        let revoked = MCPTeamLibrary(authorizationStore: store, resolveDirectory: {
+            try store.setEnabled(false)
+            return root
+        })
+        #expect(throws: MCPTeamLibrary.Failure.teamCreationDisabled) { try revoked.create(arguments: teamArguments()) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["reviews"])
+    }
+
+    @Test("MCP-created teams load through the app's Teams library")
+    @MainActor
+    func createdTeamLoadsInApp() async throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let authorization = store()
+        var config = MCPAuthorizationConfiguration()
+        config.isEnabled = true
+        config.allowsTeamCreation = true
+        try authorization.save(config)
+        let library = MCPTeamLibrary(authorizationStore: authorization, resolveDirectory: {
+            root.appendingPathComponent("teams", isDirectory: true)
+        })
+        let args = teamArguments()
+        _ = try library.create(arguments: args)
+        let rosterStore = RosterStore(storageRoot: root)
+        await rosterStore.loadIfNeeded()
+        let team = try #require(rosterStore.allTeams().first)
+        #expect(team.id.uuidString == args["teamID"]?.stringValue)
+        #expect(team.roster.map(\.playerName) == ["Sam Keeper", "Ada Player"])
+    }
+
+    @Test("Reviewed imports use the app store, preserve existing teams and retain durable decisions")
+    @MainActor
+    func reviewedTeamImport() async throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let authorization = store()
+        var config = MCPAuthorizationConfiguration()
+        config.isEnabled = true
+        config.allowsTeamCreation = true
+        try authorization.save(config)
+        let queue = MCPTeamReviewQueue(directory: root.appendingPathComponent("requests"))
+        let args = teamArguments()
+        _ = try queue.submit(arguments: args, authorizationStore: authorization)
+        let team = try #require(queue.pending().first)
+        let destination = root.appendingPathComponent("cloud-test-library")
+        let appStore = RosterStore(storageRoot: destination)
+        let coordinator = TeamImportReviewCoordinator()
+        try await coordinator.decide(team, accepted: true, destination: destination, cloudEnabled: true,
+                                     queue: queue, store: appStore, authorizationStore: authorization)
+        #expect(appStore.team(byID: team.id)?.roster == team.roster)
+        #expect(try queue.submit(arguments: args, authorizationStore: authorization)["status"] == .string("accepted"))
+        #expect(try queue.pending().isEmpty)
+        // A stale second window cannot change the completed decision.
+        await #expect(throws: MCPTeamLibrary.Failure.teamAlreadyExists) {
+            try await coordinator.decide(team, accepted: false, destination: destination, cloudEnabled: true,
+                                         queue: queue, store: appStore, authorizationStore: authorization)
+        }
+        var changed = team
+        changed.name = "Should not replace"
+        await #expect(throws: MCPTeamLibrary.Failure.teamAlreadyExists) {
+            try await appStore.importReviewedTeam(changed, destination: destination, cloudEnabled: true,
+                                                  authorizationStore: authorization)
+        }
+        #expect(appStore.team(byID: team.id)?.name == team.name)
+    }
+
+    @Test("Reviewed creation rechecks authority inside the coordinated write")
+    func reviewedCreationCommitGate() async throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let team = try MCPTeamLibrary.parse(teamArguments())
+        let persistence = RosterLibraryPersistenceService()
+        await #expect(throws: MCPTeamLibrary.Failure.teamCreationDisabled) {
+            try await persistence.createReviewedTeam(team, in: root, requestID: UUID()) {
+                throw MCPTeamLibrary.Failure.teamCreationDisabled
+            }
+        }
+        let record = root.appendingPathComponent("teams/\(team.id.uuidString).json")
+        #expect(!FileManager.default.fileExists(atPath: record.path))
+        let placeholder = record.deletingLastPathComponent().appendingPathComponent(".\(record.lastPathComponent).icloud")
+        try Data("undownloaded".utf8).write(to: placeholder)
+        do {
+            _ = try await persistence.createReviewedTeam(team, in: root, requestID: UUID(), validate: {})
+            Issue.record("An undownloaded team must not be replaced")
+        } catch {
+            #expect(!FileManager.default.fileExists(atPath: record.path))
+            #expect(try String(contentsOf: placeholder, encoding: .utf8) == "undownloaded")
+        }
+    }
+
     @Test("Automation is disabled until the user explicitly opts in")
     func disabledByDefault() throws {
         let store = store()
@@ -181,7 +373,7 @@ struct MCPServerCoreTests {
         released.release()
     }
 
-    @Test("Initialize negotiation and tool discovery use bounded read-only contracts")
+    @Test("Initialize negotiation and tool discovery identify read and create-only contracts")
     func initializeAndListTools() throws {
         let store = store()
         let session = MCPServerSession(authorizationStore: store)
@@ -199,12 +391,12 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
-            #expect(annotations["readOnlyHint"] as? Bool == true)
+            #expect(annotations["readOnlyHint"] as? Bool == (tool["name"] as? String != "create_team"))
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }

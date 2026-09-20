@@ -41,6 +41,7 @@ struct TeamsLibraryContent: View {
     @State private var store = RosterStore.shared
     @State private var selection: UUID?
     @State private var showDeleteAlert = false
+    @State private var showImportReview = false
     @State private var searchText = ""
     @State private var sportFilter: TeamSport?
     @State private var deletionErrorMessage: String?
@@ -71,10 +72,14 @@ struct TeamsLibraryContent: View {
         .task {
             await store.loadIfNeeded()
         }
+        .sheet(isPresented: $showImportReview) { TeamImportReviewView() }
     }
 
     private var teamList: some View {
         VStack(spacing: 0) {
+            Button("Review Imports", systemImage: "tray.and.arrow.down") { showImportReview = true }
+                .padding(.top, 8)
+
             // Search + sport filter — a professional library can hold many teams.
             VStack(spacing: 6) {
                 HStack(spacing: 6) {

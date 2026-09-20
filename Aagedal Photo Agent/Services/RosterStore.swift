@@ -276,6 +276,39 @@ actor RosterLibraryPersistenceService {
         ))
     }
 
+    /// New imports never overwrite an existing team or resurrect a tombstone. The coordinated
+    /// missing-only write also treats undownloaded iCloud placeholders as existing records.
+    func createReviewedTeam(_ team: Team, in rootDirectory: URL, requestID: UUID,
+                            validate: @Sendable () throws -> Void) throws -> RosterLibraryUpsertCommit {
+        try Task.checkCancellation()
+        let directory = teamsDirectory(in: rootDirectory)
+        try CloudCoordinatedIO.ensureDirectory(directory)
+        guard !CloudCoordinatedIO.itemExists(at: tombstoneURL(for: team.id, in: directory)) else {
+            throw MCPTeamLibrary.Failure.teamAlreadyExists
+        }
+        let record = teamFileURL(for: team.id, in: directory)
+        let data = try JSONEncoder().encode(team)
+        let text = String(decoding: data, as: UTF8.self)
+        let written = try CloudCoordinatedIO.writeTextIfMissing(text, to: record) {
+            try Task.checkCancellation()
+            try validate()
+            guard !CloudCoordinatedIO.itemExists(at: self.tombstoneURL(for: team.id, in: directory)) else {
+                throw MCPTeamLibrary.Failure.teamAlreadyExists
+            }
+        }
+        if !written {
+            let saved = try JSONDecoder().decode(Team.self, from: CloudCoordinatedIO.readData(at: record))
+            // A retry after a committed write may finish its receipt, but never replace a record.
+            guard saved.id == team.id, saved.name == team.name, saved.sport == team.sport,
+                  saved.primaryColor == team.primaryColor, saved.secondaryColor == team.secondaryColor,
+                  saved.goalkeeperColor == team.goalkeeperColor, saved.roster == team.roster else {
+                throw MCPTeamLibrary.Failure.teamAlreadyExists
+            }
+        }
+        return RosterLibraryUpsertCommit(requestID: requestID, team: team, recordURL: record,
+                                        cancellationRequestedAfterCommit: Task.isCancelled)
+    }
+
     func delete(
         teamID: UUID,
         in rootDirectory: URL,
@@ -411,6 +444,17 @@ actor RosterLibraryPersistenceService {
     }
 }
 
+/// Distributed notifications carry no roster content or paths; reload through the normal store.
+nonisolated private final class TeamCreationObserver: @unchecked Sendable {
+    let token: NSObjectProtocol
+    init(onChange: @escaping @Sendable () -> Void) {
+        token = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(MCPTeamLibrary.didCreateNotification), object: nil, queue: .main
+        ) { _ in onChange() }
+    }
+    deinit { DistributedNotificationCenter.default().removeObserver(token) }
+}
+
 /// Global, optionally iCloud-synced library of teams (name, kit colour, roster).
 ///
 /// The observable object owns only UI-facing state and request identity. Directory scans,
@@ -423,10 +467,13 @@ final class RosterStore {
     static let shared = RosterStore()
 
     private(set) var teams: [Team] = []
+    private var reviewedImportCount = 0
+    var isImportingReviewedTeam: Bool { reviewedImportCount > 0 }
 
     @ObservationIgnored static var storageOverrideURL: URL?
     @ObservationIgnored static var deletionIO = DurableDeletionIO.live
 
+    @ObservationIgnored private var automationObserver: TeamCreationObserver?
     @ObservationIgnored private var didLoad = false
     @ObservationIgnored private var cachedDirectory: URL?
     @ObservationIgnored private var recentLocalWrites: [String: Date] = [:]
@@ -448,6 +495,14 @@ final class RosterStore {
         self.persistence = persistence
         injectedStorageRoot = storageRoot
         injectedDeletionIO = deletionIO
+        if storageRoot == nil {
+            automationObserver = TeamCreationObserver { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, !UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) else { return }
+                    await self.reloadAfterStorageChange()
+                }
+            }
+        }
     }
 
     nonisolated static var localTeamsDirectory: URL {
@@ -587,6 +642,39 @@ final class RosterStore {
             teams.append(commit.team)
         }
         sortAndNotify()
+    }
+
+    /// The UI captures the selected destination before displaying confirmation. Refuse a route
+    /// change instead of quietly putting the reviewed roster into a different library.
+    func importReviewedTeam(_ team: Team, destination: URL, cloudEnabled: Bool,
+                            authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore()) async throws {
+        reviewedImportCount += 1
+        defer { reviewedImportCount -= 1 }
+        let generation = storageGeneration
+        let configuration = try authorizationStore.load()
+        guard configuration.isEnabled, configuration.allowsTeamCreation == true else {
+            throw MCPTeamLibrary.Failure.teamCreationDisabled
+        }
+        await loadIfNeeded()
+        guard storageGeneration == generation,
+              injectedStorageRoot != nil || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled
+                  && !ICloudSyncCoordinator.shared.isTeamsRouting),
+              teamsRootDirectory.standardizedFileURL == destination.standardizedFileURL,
+              try authorizationStore.load() == configuration else {
+            throw MCPTeamLibrary.Failure.storageUnavailable
+        }
+        let usesInjectedStorage = injectedStorageRoot != nil
+        let commit = try await persistence.createReviewedTeam(team, in: destination, requestID: UUID()) {
+            guard try authorizationStore.load() == configuration else { throw MCPTeamLibrary.Failure.teamCreationDisabled }
+            guard usesInjectedStorage || UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled else {
+                throw MCPTeamLibrary.Failure.storageUnavailable
+            }
+        }
+        stampLocalWrite(commit.recordURL)
+        if storageGeneration == generation {
+            if !teams.contains(where: { $0.id == team.id }) { teams.append(commit.team) }
+            sortAndNotify()
+        }
     }
 
     func delete(id: UUID) async throws {

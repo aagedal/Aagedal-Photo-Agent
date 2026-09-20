@@ -116,7 +116,18 @@ the support table and validation records.
   for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`
   revalidates the retained preview. These expiring read-only plans survive helper restart in a bounded
   private local archive but cannot be committed. Template application, face,
-  transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
+  transcription, status/cancellation, and photo mutation tools remain under implementation for 3.0.
+- `create_team` adds a team with a complete numbered roster to the Teams library. Enable
+  **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
+  sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
+  choose **Add Team** or **Reject**. Approved imports use the app’s coordinated iCloud storage;
+  unavailable iCloud leaves the request pending. Retry the same MCP call to check its
+  `awaiting_confirmation`, `accepted`, or `rejected` status. A connected AI client can research this week's team sheets using its own web tools,
+  then submit the team name, sport, kit colours and players. The helper itself does not browse.
+  Supply a client-generated `teamID` UUID and reuse it with the same content on retries. Creation
+  never replaces existing teams, assigns teams to a match, or links players to Known People.
+  Player numbers must be unique integers from 0 through 9999. Unknown names, numbers and colours
+  should be verified from a reliable source before submission.
 - Caption offers explicit **Apple Speech** or **Custom FFmpeg Whisper** transcription. Custom setup
   requires selected compatible executable/model files and execution consent; generated text remains
   an editable draft. Provider choice and security-scoped file bookmarks persist; each Caption session

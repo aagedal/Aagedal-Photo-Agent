@@ -60,6 +60,16 @@ authorized folder separately in Settings, can remove a grant at any time, and ca
 without deleting the folder list. The helper reloads enablement and grants for every tool call and refuses
 changed roots, paths outside those roots, links/aliases, special files, and hidden Photo Agent stores.
 
+Team creation has a separate, default-off **Allow team creation** setting. When enabled together
+with local automation, `create_team` can add team names, kit colours and numbered player rosters
+to the local Teams library without photo-folder grants. With Teams iCloud sync on, the helper stores
+proposals and review decisions locally under `Automation/TeamImports` in Photo Agent’s Application
+Support folder. They remain there for retry tracking. Only clicking Add Team in the app’s Teams →
+Review Imports screen writes the reviewed roster to the selected library, which may sync via iCloud.
+Rejecting does not change the Teams library. The tool cannot replace existing teams or link
+players to face records. Any online roster research happens
+in the connected client's web tools; the helper does not fetch team data or transmit rosters online.
+
 An authorized local AI client can receive filenames, paths, and metadata returned by tools and may apply
 its own retention or network policy to that content. Review the client's privacy settings before connecting
 it. Current tools provide read-only capability/authorization inspection, bounded effective photo metadata,

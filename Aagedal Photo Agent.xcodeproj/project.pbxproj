@@ -180,6 +180,8 @@
 		D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */; };
 		D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */; };
 		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
+		D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */; };
+		D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */; };
 		DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */; };
 		DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */; };
 		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
@@ -418,6 +420,8 @@
 		D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPrimaryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
 		D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrimaryDevelopWriteServiceTests.swift; sourceTree = "<group>"; };
 		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
+		D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/TeamRecord.swift"; sourceTree = SOURCE_ROOT; };
+		D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift"; sourceTree = SOURCE_ROOT; };
 		D9E0E29069BB020EC6997748 /* Aagedal Photo Agent/Models/MetadataSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataSidecar.swift"; sourceTree = SOURCE_ROOT; };
 		DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateDeletionConflictTests.swift; sourceTree = "<group>"; };
 		DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateSchemaTests.swift; sourceTree = "<group>"; };
@@ -706,6 +710,8 @@
 			children = (
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
+				D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */,
+				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
 				C80000000000000000000101 /* MetadataPreservationSnapshot.swift */,
 				C80000000000000000000201 /* MetadataWritePolicy.swift */,
@@ -1104,6 +1110,8 @@
 			files = (
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
+				D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */,
+				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
 				C80000000000000000000102 /* MetadataPreservationSnapshot.swift in Sources */,
 				C80000000000000000000202 /* MetadataWritePolicy.swift in Sources */,

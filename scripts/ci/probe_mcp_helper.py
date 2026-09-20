@@ -98,8 +98,10 @@ def probe(executable):
         names = [tool["name"] for tool in tools]
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
-            require(tool["annotations"]["readOnlyHint"] is True, "Unexpected mutating tool")
+            require(tool["annotations"]["readOnlyHint"] is (tool["name"] != "create_team"),
+                    "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
+        require("create_team" in names, "Missing team creation")
         require("get_iptc_patch_plan" in names, "Missing plan retrieval")
         require("commit_iptc_patch" not in names, "Update probe when verified mutation ships")
         connection.send(b"{invalid-json", request(4, "unsupported-probe-method"), request(5, "ping"))

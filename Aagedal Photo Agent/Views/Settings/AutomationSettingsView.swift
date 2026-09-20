@@ -32,6 +32,17 @@ private final class AutomationSettingsModel {
         }
     }
 
+    func setTeamCreation(_ enabled: Bool) {
+        do {
+            var current = try store.load()
+            current.allowsTeamCreation = enabled
+            try store.save(current)
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
     func addFolder() {
         let panel = NSOpenPanel()
         panel.title = "Authorize Folder for Local Automation"
@@ -116,6 +127,14 @@ struct AutomationSettingsView: View {
                     )
                 )
                 Text("Off by default. When enabled, a local AI client can launch Photo Agent's bundled STDIO server. It does not listen on the network.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Allow team creation", isOn: Binding(
+                    get: { model.configuration.allowsTeamCreation == true },
+                    set: { model.setTeamCreation($0) }
+                ))
+                .disabled(!model.configuration.isEnabled)
+                Text("Allows AI clients to add teams and player rosters. With Teams iCloud sync enabled, review each import in Teams → Review Imports before it is added and synced. Existing teams are never replaced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Proofreading previews store existing and proposed text locally so they can survive a client restart. Plans expire after five minutes and are removed from the archive on the next successful preparation. Removing access immediately invalidates existing plans.")

@@ -1102,6 +1102,11 @@ final class ICloudSyncCoordinator {
 
     // MARK: - Teams library
 
+    var isTeamsRouting: Bool {
+        _ = version
+        return teamsRoutingRequestID != nil
+    }
+
     var teamsEnabled: Bool {
         _ = version
         return pendingTeamsEnabled
@@ -1109,6 +1114,10 @@ final class ICloudSyncCoordinator {
     }
 
     func setTeamsEnabled(_ on: Bool) {
+        guard !RosterStore.shared.isImportingReviewedTeam else {
+            lastError = "Wait for the reviewed team import to finish before changing Teams storage."
+            return
+        }
         teamsRoutingTask?.cancel()
         let requestID = UUID()
         teamsRoutingRequestID = requestID
