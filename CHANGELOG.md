@@ -10,9 +10,16 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Custom Whisper now saves language, English translation and GPU request settings, and retains
+  the exact request in transcript evidence. Translated drafts use a new provenance schema.
+- MCP exposes durable operation status and cooperative cancellation requests. Production workflow
+  executors remain unconnected; cancellation is not reported as completion.
+- Proofreading consent now handles expiry and delayed approval completion safely after clearing,
+  changing plans or leaving the review.
+
 - Settings → Automation now displays exact proofreading plans with before/proposed values,
   validation warnings and expiry. Inspection rechecks current authority and carrier revisions;
-  approval and metadata commits remain unavailable.
+  exact-plan local approval and revocation are available; metadata commits remain unavailable.
 
 - Custom Whisper selections now survive Caption closure and app relaunch through security-scoped
   bookmarks. Every session still requires execution consent and fresh file identity checks;

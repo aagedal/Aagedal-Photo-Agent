@@ -116,7 +116,9 @@ the support table and validation records.
   for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`
   revalidates the retained preview. These expiring read-only plans survive helper restart in a bounded
   private local archive but cannot be committed. Template application, face,
-  transcription, status/cancellation, and photo mutation tools remain under implementation for 3.0.
+  transcription, and photo mutation tools remain under implementation for 3.0.
+  `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
+  cancellation requests; production executors are not connected, and a request is not completion.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
@@ -131,7 +133,8 @@ the support table and validation records.
 - Caption offers explicit **Apple Speech** or **Custom FFmpeg Whisper** transcription. Custom setup
   requires selected compatible executable/model files and execution consent; generated text remains
   an editable draft. Provider choice and security-scoped file bookmarks persist; each Caption session
-  requires fresh execution consent and file identity validation.
+  requires fresh execution consent and file identity validation. Language, translation into English,
+  and GPU request settings persist; each draft retains the exact settings used to generate it.
   Curated model delivery and the bundled Whisper artifact remain under implementation.
 
 ### Face Recognition

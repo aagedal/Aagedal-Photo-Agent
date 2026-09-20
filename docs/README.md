@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-20
+**Last reviewed:** 2026-09-21
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 83: native consent and stopped-owner recovery](release/cycle-83-native-consent-recovery-2026-09-20.md) connects exact-plan local approval and revocation to Settings, with fresh source/authority checks. Operation records can explicitly reconcile a known stopped owner as recovery required. Guarded verified commits, production operation endpoints and executor recovery, curated model delivery and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 84: operation tools, Whisper options and consent expiry](release/cycle-84-operation-tools-whisper-options-2026-09-21.md) adds durable operation status/cancellation-request endpoints, persisted custom Whisper language/translation/GPU options with exact draft evidence, and deterministic consent-expiry handling. Production executors, guarded commits, curated model delivery and broader release gates remain open.
 
 ## Portfolio
 

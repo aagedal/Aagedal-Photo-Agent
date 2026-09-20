@@ -15,7 +15,8 @@ network service are listed below.
 - Voice-memo review records store generated and edited text, approval state, audio identity and
   provider information in the photo's app sidecar. The selectable custom FFmpeg Whisper provider additionally
   retains model/build hashes and byte counts, requested language, translation/GPU settings and
-  segment text and normalized timing. Provider choice and security-scoped executable/model bookmarks
+  segment text and normalized timing. Provider choice, language/translation/GPU request preferences,
+  and security-scoped executable/model bookmarks
   are retained in local preferences. Clear Custom Files removes the saved bookmarks. Execution consent
   and admitted identities last only while the Caption panel remains open; reopening requires fresh
   consent and identity validation. No model downloads occur. Custom executables run only after explicit Transcribe and are
@@ -83,8 +84,15 @@ Plans survive helper restart but expire after five minutes; every retrieval rech
 and photo/sidecar revisions. Expired records are physically removed on the next successful preparation,
 not by a background timer. Interrupted writes can leave private temporary files. Stop connected helpers
 and remove this PatchPlans directory to erase the local previews. Previews do not alter photos or appear
-in Activity. Mutation tools will remain unavailable until they use Photo
+in Activity. Photo-metadata mutation tools will remain unavailable until they use Photo
 Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.
+
+Operation status and cancellation tools require local automation to be enabled. They return only
+opaque operation IDs, fixed kind/state/outcome values and timestamps, not paths, metadata or owner IDs.
+The private registry at `~/Library/Application Support/Aagedal Photo Agent/Automation/Operations`
+retains up to 256 records within a 1 MiB archive limit. There is no automatic eviction. Cancellation
+records a request and does not erase history or prove work stopped. Production executors are not yet
+connected. Stop the app and connected helpers before removing this directory to erase local history.
 
 ## Network features
 

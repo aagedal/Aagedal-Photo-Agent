@@ -1624,6 +1624,13 @@ uncertain/recovery outcomes. These foundations do not yet connect production exe
 approval, commit, operation-status or cancellation tools; those criteria remain open. See
 [cycle 82 evidence](release/cycle-82-local-review-operation-records-2026-09-20.md).
 
+Cycle 84 adds helper `get_operation_status`/`cancel_operation` over durable records, with fresh
+authority, privacy-safe responses and explicit unknown executor liveness. Cancellation only requests
+cooperation; production executors remain unconnected, so the full criterion below stays open.
+Custom Whisper language/English translation/GPU requests now persist and bind exact draft evidence.
+Expiry and late local approval completions are covered deterministically. See the
+[cycle 84 report](release/cycle-84-operation-tools-whisper-options-2026-09-21.md).
+
 ### Tool and operation contract
 
 **Cycle 83 continuation (2026-09-20):** Native plan review now supports explicit exact-plan

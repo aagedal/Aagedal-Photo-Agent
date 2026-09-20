@@ -1,14 +1,20 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and curated Aagedal Media Converter FFmpeg/Whisper delivery remain. Caption now retains custom-provider executable/model bookmarks and provider choice; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-09-20
-**Latest implementation state:** Cycle 83 adds native exact-plan approval/revocation and stopped-owner operation reconciliation. Approval remains session-only and writes no metadata; production commit/status/cancellation and recovery integration remain open. Implementation is committed as `6f9fd01`. Full regression passes 3,195 tests / 336 suites, zero failures; 37 focused tests, three native workflows, helper/repository checks and independent review also pass. See the [cycle 83 report](cycle-83-native-consent-recovery-2026-09-20.md).
-**Latest native evidence:** Cycle 83 passes explicit consent/revocation, Clear/navigation cleanup, unchanged-photo bytes/no sidecars, consent-time changed-photo refusal, exact Unicode/set/clear inspection and invalid-ID handling. Fixtures use isolated in-memory authorization; no user automation preferences or plan archive are changed.
-**Cycle baseline:** `55c9eb7`, initially clean. No broad release-readiness gate is newly closed.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade and executor admission/cancellation integration, guarded IPTC mutation tools and curated Aagedal Media Converter FFmpeg/Whisper delivery remain. Caption now retains custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
+**Updated:** 2026-09-21
+**Latest implementation state:** Implementation committed as `d0376b8`; full regression passes 3,209 tests / 336 suites, zero failures. Focused validation passes 111 tests / six suites; three native workflows, helper and repository checks also pass. Cycle 84 adds durable operation status/cancellation-request endpoints, custom Whisper options with exact draft evidence, and deterministic local approval expiry/late-completion handling. Production executors remain unconnected; physical metadata commits, recovery integration and curated model delivery remain open. See the [cycle 84 report](cycle-84-operation-tools-whisper-options-2026-09-21.md) for validation and remaining work.
+**Latest native evidence:** Cycle 84 passes three native workflows: local approval/revocation/source-drift refusal, Whisper bookmark/consent restoration and clearing, and language/translation/GPU persistence with unchanged photo/audio/review bytes. Fixtures use isolated preferences and generated disposable photos.
+**Cycle baseline:** `a258aa2`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
-**Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
+**Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 84 operation tools, Whisper options and consent expiry](cycle-84-operation-tools-whisper-options-2026-09-21.md)
+adds privacy-safe durable operation inspection and cancellation requests, explicitly without production
+executors or confirmed liveness. Custom Whisper snapshots persisted language/translation/GPU requests
+into exact draft evidence. Expiry and stale asynchronous consent completions revoke returned receipts.
+
 
 [Cycle 83 native consent and stopped-owner recovery](cycle-83-native-consent-recovery-2026-09-20.md)
 adds explicit local consent after full plan review, safe lifecycle revocation, source-drift refusal
@@ -588,11 +594,13 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Next implementation slice after cycle 83:** Connect local exact-plan consent to a retained
+**Next implementation slice after cycle 84:** Connect local exact-plan consent to a retained
 production IPTC writer that rechecks authority under mutation admission, verifies all unedited and
 edited semantic/physical evidence, and retains recoverable uncertain outcomes. Integrate the new
-operation registry with that executor before exposing status/cancellation/commit endpoints. Add
-expiry/racing-consent, cancellation, interruption and recovery evidence; foundation tests do not close
+operation registry with that executor before exposing commit or claiming execution cancellation.
+Status/cancellation-request endpoints now expose coordination records only. Deterministic expiry/
+racing-consent tests pass through the new model boundary; add production cancellation, interruption
+and recovery evidence. Foundation tests do not close
 those full workflow criteria.
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
@@ -739,6 +747,15 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 84 starts from clean `a258aa2`; implementation is committed as `d0376b8`. Full regression
+passes 3,209 tests / 336 suites (128.636 seconds), zero failures. Operation-record endpoints, persisted custom Whisper options,
+translated draft provenance and consent-expiry protection are integrated. Focused tests pass 111 / six
+suites; three native workflows, actual helper and repository checks pass. Validation is recorded in
+the [cycle 84 report](cycle-84-operation-tools-whisper-options-2026-09-21.md). Next connect the retained
+production IPTC executor to exact local consent and the registry, with semantic/physical verification,
+per-photo outcomes and recovery. Status tools alone do not complete production workflow automation.
+
 
 Cycle 79 supersedes older session-only preview and unresolved timing notes below. Local preview
 archives retain original expiry and exact authorization/revision revalidation; previews still

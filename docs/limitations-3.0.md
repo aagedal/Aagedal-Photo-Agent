@@ -119,9 +119,11 @@ This is separate from the unapproved AI-origin analyzer described above.
   exact-plan approval and revocation within the review session; this cannot authorize an MCP
   commit in the current build. The internal operation registry can mark a known stopped owner's
   unresolved work as recovery required, but executor-liveness detection and actual recovery
-  integration remain unfinished.
+  integration remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
+  records with fresh automation authorization. Cancellation only records a request; no production
+  executor is connected, and liveness is unknown.
   Develop, face, template, transcription,
-  status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
+  execution coordination, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.
 - Folder authorization limits Photo Agent, not the connected client's own filesystem or network access.
   Tool results can contain sensitive paths and editorial values. The
@@ -151,7 +153,7 @@ not an archival backup of unknown extensions. Races with noncooperating external
 MCP template discovery supports explicitly authorized default local or custom Templates folders
 with template iCloud sync disabled. It returns headers and content revisions, not complete
 validated application plans. iCloud template stores, template application,
-operation status/cancellation and guarded IPTC commits remain separate implementation work.
+production executor integration and guarded IPTC commits remain separate implementation work.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
 The current FFmpeg artifact still lacks Whisper. Local-file protocol restrictions are implemented,
@@ -169,7 +171,9 @@ persisted build/model identity, language settings and segment evidence. It requi
 authorization through Caption's explicit file selection and execution consent. Provider choice persists;
 security-scoped file bookmarks persist, while execution consent and identity admission must be renewed
 after closing the panel. Missing files require reconnecting the volume or selecting them again.
-Curated delivery, configurable language/GPU and the complete model lifecycle remain
+Language, English translation and GPU request settings now persist and are captured in each draft;
+compatibility and actual GPU execution depend on the custom build/model. Translated evidence uses
+provenance schema 2 and is refused by older readers. Curated delivery and the complete model lifecycle remain
 open. Complete blank-audio-marker segments are excluded from
 drafts while original segment evidence is retained; real-model silence still needs validation. See the
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

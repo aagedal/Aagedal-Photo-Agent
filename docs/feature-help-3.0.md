@@ -69,7 +69,10 @@ and explicit WAV delivery policy are implemented with the boundaries described b
 Limitations. Caption also offers **Custom FFmpeg Whisper** in the transcription-provider picker.
 Choose a compatible patched FFmpeg executable and model, grant explicit execution consent,
 then select **Enable Custom Files** to record their identities. This step does not execute them;
-**Transcribe** starts local CPU inference with automatic language detection. Results use the same
+**Transcribe** starts local inference. Language defaults to `auto`; you can enter a two-letter code,
+request translation into English, and request GPU acceleration. Compatibility depends on the chosen
+build and model; GPU use is requested rather than verified. These settings persist across relaunch.
+Each draft records the settings used for that run. Results use the same
 editable review and explicit approval flow as Apple Speech. Provider choice and security-scoped
 file bookmarks are saved. Reopening restores available files, but requires fresh execution consent
 and **Enable Custom Files** to validate their current identities. **Clear Custom Files** forgets
@@ -98,6 +101,12 @@ Photo Agent private folders, and targets outside the selected roots. Unreadable 
 metadata records fail as a whole. Face scan, template application, transcription, and IPTC mutation tools are not yet
 exposed. Returned paths and metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
+
+`get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
+They inspect durable coordination records and request cooperative cancellation. A request does not
+mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.
+Production face/template/transcription/IPTC executors are not connected yet, and executor liveness
+is reported as unknown. These endpoints do not start work or authorize photo writes.
 
 Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
 absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,
