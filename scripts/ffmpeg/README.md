@@ -11,7 +11,7 @@ attributed Media Converter source archive described in
 
 - Archive member: `sources/ffmpeg-9.0.1/libavfilter/af_whisper.c`.
 - Original member SHA-256: `322a8d54baa69b74f91552ad809a43ad0e3934632b256adf2123e4325a3b85d6`.
-- Patched member SHA-256: `611490390f75fe07ab463046856c93a860758f898442ff808783a3d1131d7b13`.
+- Patched member SHA-256: `eba0b4645581f5fd14f841f25b83550522d67d064aaa9fd752c828fa9ba38b71`.
 - Copyright (c) 2025 Vittorio Palmisano; FFmpeg, GNU LGPL 2.1 or later. The original
   copyright/license header is retained. See the included [`COPYING.LGPLv2.1`](COPYING.LGPLv2.1).
 - The license text was copied from the neighboring Media Converter checkout's attributed
@@ -56,13 +56,25 @@ support is required; absent tooling is a failure, not a silently skipped check.
 - Queue, VAD, and final-frame callers propagate the failure and release owned frames/segments.
   VAD failure is an error. `activate` propagates final-frame, destination flush/close and
   upstream input errors before reporting successful EOF.
+- Segment times are constrained to the audio samples actually supplied to each inference
+  call. Negative ticks become zero; padded/oversized ticks stop at the chunk's end; reversed
+  ends become the bounded start. Bounds are applied before multiplying model ticks, avoiding
+  integer overflow. Text and zero-duration segments remain preserved. These are normalized
+  emitter timestamps, not unchanged raw model timestamps or evidence of recognition accuracy.
+- Buffer origins are tracked in integer samples using the incoming frame time base. Partial
+  queue/VAD consumption advances by the exact consumed samples, avoiding accumulated float
+  millisecond truncation. Absolute start/end milliseconds round down to stay within the
+  supplied interval. Existing frame PTS origins are retained; discontinuity handling is not
+  established by these unit regressions.
 - Buffered sample compaction uses `memmove` because source and destination can overlap.
 
 ## Executed regression evidence and boundaries
 
 The local runner passed 63 exact text roundtrips (including all representable non-NUL control
 bytes, Unicode, literal escape sequences, blank markers, empty text, whitespace and 50 seeded
-mixed strings), 13 runtime/fault scenarios, allocation failure injection at 12 successive
+mixed strings), 14 runtime/fault scenarios, 11 sample-bound timing regressions (including
+five-second padded silence ticks, fractional chunk origins, submillisecond audio, successive
+partial consumes and extreme/negative/reversed ticks), allocation failure injection at 12 successive
 allocation positions, source-hash refusal and existing-output refusal under ASan/UBSan.
 
 The harness compiles **the extracted patched functions**, not a reimplementation of their
@@ -77,9 +89,11 @@ Before release, build the complete attributed FFmpeg candidate with this patch, 
 source/build/binary hashes and legal provenance, verify successful process exit and canonical
 output with live audio/models, and run disk-full/closed-pipe/cancellation/inference/VAD failures
 through the real application process boundary. This correction does not address every upstream
-edge case (for example invalid backend segment counts, overflowing backend timestamp arithmetic,
+edge case (for example invalid backend segment counts, missing/discontinuous input timestamps,
 or oversized incoming audio frames). Source admission, runtime bounds and real-backend testing
-remain required. No upstream submission, binary rebuild or provider release gate is claimed here.
+remain required. The cycle-78 binary predates the sample-timing correction and its runtime evidence does not
+validate these new timing bounds. No upstream submission, updated binary rebuild or provider
+release gate is claimed here.
 
 ## Prepare the full attributed build
 

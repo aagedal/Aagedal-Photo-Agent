@@ -60,8 +60,27 @@ def main():
             assert result == {"start": 120, "end": 170, "text": text}, repr(result)
         for fault in ["inference", "missing-context", "null-segment", "write", "metadata", "metadata-duration",
                       "overlap", "eof-last-frame", "eof-close", "eof-flush", "upstream-error",
-                      "eof-success", "no-speech"]:
+                      "eof-success", "no-speech", "time-overflow"]:
             check([str(binary), fault])
+        timing_cases = [
+            # Five seconds of supplied samples, despite padded model end ticks.
+            (0, 80000, 0, 1294, 0, 5000),
+            (480000, 80000, 0, 1294, 30000, 35000),
+            # Preserve millisecond floor at a fractional-sample chunk origin.
+            (17, 31, 0, 1, 1, 3),
+            (0, 1, 0, 1, 0, 0),
+            (0, 80001, 0, 1294, 0, 5000),
+            (0, 80000, -2, 7, 0, 70),
+            (0, 80000, 2, -7, 20, 20),
+            (0, 80000, 7, 2, 70, 70),
+            (0, 80000, 2**63-1, 2**63-1, 5000, 5000),
+            (0, 80000, -(2**63), -(2**63), 0, 0),
+        ]
+        for origin, samples, t0, t1, start, end in timing_cases:
+            result = json.loads(check([str(binary), "timing", str(origin), str(samples), str(t0), str(t1)]))
+            assert result == {"start": start, "end": end, "text": " [BLANK_AUDIO]"}, result
+        partial = [json.loads(line) for line in check([str(binary), "partial-timing"]).splitlines()]
+        assert [(row["start"], row["end"]) for row in partial] == [(0, 1), (1, 2), (2, 3)], partial
         # Two segments exercise append ownership as well as first-segment allocation.
         for index in range(1, 13):
             check([str(binary), "allocation", str(index)])
@@ -78,7 +97,7 @@ def main():
         refused = subprocess.run(["python3", str(PREPARE), str(args.source), "--output", str(existing)],
                                  capture_output=True, text=True)
         assert refused.returncode != 0 and existing.read_text() == "preserve"
-    print(f"PASS: {len(cases)} exact JSON text roundtrips, 13 runtime/fault cases, "
+    print(f"PASS: {len(cases)} exact JSON text roundtrips, 14 runtime/fault cases, 11 sample-bound timing cases, "
           "12 allocation points, pinned source and overwrite refusal (ASan/UBSan).")
 
 

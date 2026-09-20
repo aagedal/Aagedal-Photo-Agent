@@ -18,6 +18,12 @@
 #define AV_LOG_DEBUG 2
 #define AV_DICT_DONT_STRDUP_VAL 1
 #define WHISPER_SAMPLE_RATE 16000
+#define AV_ROUND_DOWN 2
+static int64_t av_rescale_rnd(int64_t a, int64_t b, int64_t c, int rounding) {
+    assert(rounding == AV_ROUND_DOWN);
+    __int128 value = (__int128)a * b;
+    return (int64_t)(value / c - (value < 0 && value % c != 0));
+}
 #define WHISPER_SAMPLING_GREEDY 0
 #define FFMAX(a,b) ((a) > (b) ? (a) : (b))
 #define FFMIN(a,b) ((a) < (b) ? (a) : (b))
@@ -36,7 +42,7 @@ typedef struct AVIOContext { int error; } AVIOContext;
 typedef struct WhisperContext {
     void *ctx_wsp;
     int audio_buffer_fill_size, audio_buffer_vad_size, max_len, index, eof;
-    int64_t audio_buffer_start_ms, next_pts;
+    int64_t audio_buffer_start_samples, next_pts;
     float *audio_buffer;
     const char *language, *format;
     bool translate;
@@ -57,6 +63,7 @@ static int allocation_count, fail_allocation, infer_error, write_error, close_er
 static int metadata_error, metadata_call, fail_metadata_call = 1;
 static int last_frame_error, status_sent, input_status, input_ack;
 static int segment_count = 1;
+static int64_t segment_t0 = 2, segment_t1 = 7;
 static const char *segment_text = "";
 static char output[65536];
 static size_t output_length;
@@ -104,8 +111,8 @@ static int whisper_full(void *ctx, struct whisper_full_params p, float *a, int n
 static int whisper_full_n_segments(void *ctx) { (void)ctx; return segment_count; }
 static const char *whisper_full_get_segment_text(void *ctx, int i) { (void)ctx; (void)i; return segment_text; }
 static bool whisper_full_get_segment_speaker_turn_next(void *ctx,int i) { (void)ctx; (void)i; return false; }
-static int64_t whisper_full_get_segment_t0(void *ctx,int i) { (void)ctx; (void)i; return 2; }
-static int64_t whisper_full_get_segment_t1(void *ctx,int i) { (void)ctx; (void)i; return 7; }
+static int64_t whisper_full_get_segment_t0(void *ctx,int i) { (void)ctx; (void)i; return segment_t0; }
+static int64_t whisper_full_get_segment_t1(void *ctx,int i) { (void)ctx; (void)i; return segment_t1; }
 static void avio_write(AVIOContext *ctx, const char *buf, size_t n) {
     (void)ctx; assert(output_length+n<sizeof(output));
     memcpy(output+output_length,buf,n); output_length+=n; output[output_length]=0;
@@ -122,19 +129,42 @@ static void ff_outlink_set_status(AVFilterLink *link,int status,int64_t pts) { (
 static int push_last_frame(AVFilterLink *link) { (void)link; return last_frame_error; }
 /* PATCHED_FUNCTIONS */
 int main(int argc, char **argv) {
-    float audio[8]={0};
+    float audio[80001]={0};
     AVIOContext io={0};
     WhisperContext w={.ctx_wsp=&io,.audio_buffer_fill_size=4,.audio_buffer=audio,
-        .audio_buffer_start_ms=100,.format="json",.max_len=10,.avio_context=&io};
+        .audio_buffer_start_samples=1600,.format="json",.max_len=10,.avio_context=&io};
     AVFilterLink link={0}, *links[]={&link};
     AVFilterContext ctx={.priv=&w,.inputs=links,.outputs=links};
     AVFrame frame={0};
     assert(argc>=2);
     if (!strcmp(argv[1],"escape")) {
         assert(argc==3); segment_text=argv[2];
-        assert(run_transcription(&ctx,&frame,4)==0);
+        w.audio_buffer_fill_size=1600;
+        assert(run_transcription(&ctx,&frame,1600)==0);
         assert(w.audio_buffer_fill_size==0);
         fputs(output,stdout);
+    } else if (!strcmp(argv[1],"timing")) {
+        assert(argc==6);
+        w.audio_buffer_start_samples=strtoll(argv[2],NULL,10);
+        w.audio_buffer_fill_size=atoi(argv[3]);
+        assert(w.audio_buffer_fill_size>0 && w.audio_buffer_fill_size<=80001);
+        segment_t0=strtoll(argv[4],NULL,10); segment_t1=strtoll(argv[5],NULL,10);
+        segment_text=" [BLANK_AUDIO]";
+        assert(run_transcription(&ctx,&frame,w.audio_buffer_fill_size)==0);
+        fputs(output,stdout);
+    } else if (!strcmp(argv[1],"partial-timing")) {
+        w.audio_buffer_start_samples=0; w.audio_buffer_fill_size=49;
+        segment_t0=0; segment_t1=INT64_MAX;
+        for (int i=0;i<3;i++) {
+            assert(run_transcription(&ctx,&frame,17)==0);
+            assert(w.audio_buffer_start_samples==(i<2 ? (i+1)*17 : 34));
+        }
+        assert(w.audio_buffer_fill_size==0);
+        fputs(output,stdout);
+    } else if (!strcmp(argv[1],"time-overflow")) {
+        w.audio_buffer_start_samples=INT64_MAX;
+        assert(run_transcription(&ctx,&frame,4)==AVERROR(EINVAL));
+        assert(output_length==0 && w.audio_buffer_fill_size==4);
     } else if (!strcmp(argv[1],"allocation")) {
         segment_text="quotes \\\" and \\n and control\001";
         segment_count=2;
