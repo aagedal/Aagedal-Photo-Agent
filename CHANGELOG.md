@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Caption now offers explicit Custom FFmpeg Whisper setup, execution consent and transcription into
+  the existing editable review flow. Provider choice persists; custom files and consent are session-only.
+  Apple Speech remains available, with no automatic provider fallback or model download.
+- IPTC previews now bind exact carrier hashes, production preservation baselines and RAW-safe write-policy
+  alternatives. They remain read-only; approval, physical write verification and commit recovery are pending.
+
 - Read-only IPTC proofreading plans now survive helper restart in a private, bounded local archive.
   Retrieval still rejects expiry, changed authorization, altered photos and corrupt stored plans.
 - Added internal custom Whisper artifact identity admission with explicit unverified provenance,

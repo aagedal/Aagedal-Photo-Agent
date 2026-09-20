@@ -1425,6 +1425,15 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 80 continuation (2026-09-20):** Caption now exposes explicit custom FFmpeg Whisper
+selection, session-scoped file access and execution consent, with persisted provider choice and
+unapproved drafts through the existing review flow. Failures retain the current review without
+Apple fallback. MCP schema-3 previews bind exact carrier hashes, production preservation baselines
+and RAW-safe target alternatives; commits remain unavailable. Shared preservation/write-policy
+values are isolated from preference and physical-writing services for helper reuse. Retained
+bookmarks, curated delivery, complete provider acceptance and guarded commits remain open.
+See [cycle 80](release/cycle-80-whisper-setup-preservation-2026-09-20.md).
+
 **Cycle 59 continuation (2026-09-19):** The bundled helper now links the production typed
 reader and exposes guarded `get_photo_metadata` for one explicit photo. Values, field carriers,
 pending/conflict state and captured revisions are bounded and verified before publication.
@@ -1663,7 +1672,7 @@ open; no complete Phase 5A criterion closes. See [cycle 77](release/cycle-77-pla
   FFmpeg build (initially WAV, MP3, M4A/AAC, FLAC, and Ogg/Opus). Preserve the existing exact-byte
   relationship, copy/move/archive/recovery/delivery, collision, and approval-revocation guarantees for
   every admitted format; a matching basename alone remains non-authoritative.
-- [ ] Keep Apple on-device speech available. Provider choice is explicit and persisted; an unavailable
+- [x] Keep Apple on-device speech available. Provider choice is explicit and persisted; an unavailable
   provider reports actionable readiness without silently switching providers or downloading assets.
 
 ### Verification

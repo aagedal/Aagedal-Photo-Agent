@@ -113,9 +113,14 @@ the support table and validation records.
   captures opaque source, XMP and owned app-sidecar tokens. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
   `prepare_iptc_patch` returns read-only, revision-bound normalized before/after values, exact inputs and compatibility warnings
-  for supported descriptive fields; `get_iptc_patch_plan` revalidates the retained session preview.
-  These expiring plans cannot be committed or survive helper restart. Template application, face,
+  for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`
+  revalidates the retained preview. These expiring read-only plans survive helper restart in a bounded
+  private local archive but cannot be committed. Template application, face,
   transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
+- Caption offers explicit **Apple Speech** or **Custom FFmpeg Whisper** transcription. Custom setup
+  requires selected compatible executable/model files and execution consent; generated text remains
+  an editable draft. Provider choice persists, while file access and consent are session-only.
+  Curated model delivery and the bundled Whisper artifact remain under implementation.
 
 ### Face Recognition
 

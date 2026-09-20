@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 79: durable previews and Whisper timing](release/cycle-79-durable-previews-whisper-timing-2026-09-20.md) adds local read-only IPTC plan persistence across helper restart, strict archive/schema protection, custom artifact identity admission and post-inference authorization checks. The candidate Whisper emitter now uses sample-bound timestamps, confirmed with CPU and actual-runner probes. Guarded commits, trusted model delivery/provider UI and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 80: custom Whisper setup and preservation preflight](release/cycle-80-whisper-setup-preservation-2026-09-20.md) adds Caption provider selection, explicit custom-file execution consent and draft-review integration, plus exact carrier and semantic preservation baselines in read-only MCP patch plans. Provider choice persists; file grants are session-only. Guarded commits, retained bookmarks, curated model delivery and broader release gates remain open.
 
 ## Portfolio
 

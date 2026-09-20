@@ -13,10 +13,13 @@ network service are listed below.
 
 - Photo Agent sidecars and XMP sidecars store edits and metadata near the photographs where supported.
 - Voice-memo review records store generated and edited text, approval state, audio identity and
-  provider information in the photo's app sidecar. The internal FFmpeg Whisper adapter additionally
+  provider information in the photo's app sidecar. The selectable custom FFmpeg Whisper provider additionally
   retains model/build hashes and byte counts, requested language, translation/GPU settings and
-  original segment text/timing. This adapter is not yet exposed as a selectable provider. Review
-  approval does not itself write transcript text into photo metadata.
+  segment text and normalized timing. Provider choice is retained in local preferences. Selected custom
+  executable/model access and explicit execution consent last only while the Caption panel remains
+  open; no model downloads occur. Custom executables run only after explicit Transcribe and are
+  unverified software with the user's local process permissions. Review approval does not itself
+  write transcript text into photo metadata.
 - Analysis cases, working-folder map state, and named Develop versions prefer hidden app-private JSON in
   the photo folder. Read-only folders use indexed Application Support fallback storage; that fallback
   stays on the current Mac and does not automatically travel with the folder.

@@ -156,11 +156,14 @@ lifecycle remain open. The restriction is not a sandbox for other local files re
 The original candidate Whisper filter wrote transcript text into JSON without escaping it.
 An isolated full candidate with the pinned correction now builds and passes nine image comparisons
 and initial CPU process/runner probes. It has not replaced the shipped artifact. The custom model
-probe also exposed speech misrecognition and silence timestamps beyond input duration; accuracy,
-timing, trusted models and final packaging remain open. A bounded process runner now uses exact private input snapshots,
-WAV-only local decoding, cancellation/deadlines and canonical JSON validation. An explicit internal
+probe also exposed speech misrecognition; sample-bound timestamps were corrected and verified in
+cycle 79. Model accuracy, trusted models and final packaging remain open. A bounded process runner now uses exact private input snapshots,
+WAV-only local decoding, cancellation/deadlines and canonical JSON validation. The custom
 provider adapter revalidates the WAV relationship and produces unapproved editable drafts with
 persisted build/model identity, language settings and segment evidence. It requires artifact
-authorization and is not yet connected to the transcription UI or model lifecycle. Complete blank-audio-marker segments are excluded from
+authorization through Caption's explicit file selection and execution consent. Provider choice persists;
+custom file access and consent are session-only and must be renewed after closing the panel.
+Retained bookmarks, curated delivery, configurable language/GPU and the complete model lifecycle remain
+open. Complete blank-audio-marker segments are excluded from
 drafts while original segment evidence is retained; real-model silence still needs validation. See the
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).
