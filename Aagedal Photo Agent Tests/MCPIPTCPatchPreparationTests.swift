@@ -3,6 +3,7 @@ import CoreGraphics
 import ImageIO
 import Testing
 import CryptoKit
+import Darwin
 @testable import Aagedal_Photo_Agent
 
 @Suite("Revision-bound MCP proofreading preview")
@@ -41,6 +42,54 @@ struct MCPIPTCPatchPreparationTests {
             "before": .string("Old headline"), "after": .string("New headline"), "changed": .bool(true),
             "comparisonRule": .string("scalarWhitespace")])]))
     }
+    @Test("Semantic expectations cover every verifier field and preserve independent localized Titles")
+    func completeSemanticExpectations() throws {
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([operation()]))
+        var metadata = IPTCMetadata()
+        metadata.title = "Before"
+        metadata.localizedTitles = [.init(languageTag: "nb-NO", value: "Private localized title")]
+        metadata.keywords = ["news", "sport"]
+        metadata.rating = 4
+        let evidence = try MCPIPTCPatchPreparation.semanticExpectations(request: request, metadata: metadata)
+        let fields = try #require(evidence.objectValue?["fields"]?.patchArrayValue)
+        #expect(fields.count == IPTCMetadataVerificationField.allCases.count)
+        #expect(Set(fields.compactMap { $0.objectValue?["field"]?.stringValue }) ==
+                Set(IPTCMetadataVerificationField.allCases.map(\.rawValue)))
+        for value in fields {
+            let field = try #require(value.objectValue)
+            let edited = field["field"] == .string("headline")
+            #expect(field["edited"] == .bool(edited))
+            #expect((field["beforeSHA256"] == field["expectedAfterSHA256"]) == !edited)
+            #expect(field["beforeSHA256"]?.stringValue?.count == 64)
+        }
+        #expect(evidence.objectValue?["verified"] == .bool(false))
+        let encoded = try JSONEncoder().encode(evidence)
+        #expect(!String(decoding: encoded, as: UTF8.self).contains("Private localized title"))
+        // Bag order and scalar whitespace use the actual production normalization.
+        metadata.keywords.reverse()
+        metadata.title = "  Before\r\n"
+        #expect(try MCPIPTCPatchPreparation.semanticExpectations(request: request, metadata: metadata) == evidence)
+        metadata.localizedTitles = [.init(languageTag: "nn", value: "Private localized title")]
+        #expect(try MCPIPTCPatchPreparation.semanticExpectations(request: request, metadata: metadata) != evidence)
+    }
+
+    @Test("Explicit clear and normalized no-op still retain edited intent")
+    func semanticClearAndNoOp() throws {
+        var metadata = IPTCMetadata()
+        metadata.title = "New headline"
+        metadata.keywords = ["news"]
+        let clear = MCPJSONValue.object(["field": .string("keywords"), "operation": .string("clear")])
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([operation(), clear]))
+        let evidence = try MCPIPTCPatchPreparation.semanticExpectations(request: request, metadata: metadata)
+        let fields = try #require(evidence.objectValue?["fields"]?.patchArrayValue)
+        let headline = try #require(fields.first { $0.objectValue?["field"] == .string("headline") }?.objectValue)
+        let keywords = try #require(fields.first { $0.objectValue?["field"] == .string("keywords") }?.objectValue)
+        #expect(headline["edited"] == .bool(true))
+        #expect(headline["beforeSHA256"] == headline["expectedAfterSHA256"])
+        #expect(keywords["edited"] == .bool(true))
+        #expect(keywords["beforeSHA256"] != keywords["expectedAfterSHA256"])
+    }
+
     @Test("Each carrier token must match and conflicts refuse preparation")
     func rejectsStaleAndConflict() throws {
         let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([operation()]))
@@ -251,6 +300,9 @@ struct MCPIPTCPatchPreparationTests {
             #expect(content["commitAvailable"] == .bool(false))
             #expect(content["schemaVersion"] == .integer(3))
             let preflight = try #require(content["preservationPreflight"]?.objectValue)
+            #expect(preflight["schemaVersion"] == .integer(2))
+            #expect(preflight["effectiveSemanticExpectations"]?.objectValue?["fields"]?.patchArrayValue?.count ==
+                    IPTCMetadataVerificationField.allCases.count)
             #expect(preflight["preservationVerified"] == .bool(false))
             #expect(preflight["writeSupportVerified"] == .bool(false))
             #expect(preflight["selectedWriteMode"] == .null)
@@ -271,6 +323,35 @@ struct MCPIPTCPatchPreparationTests {
             #expect(try plans.inspect(arguments: ["planID": planID], facade: facade) == retained)
             #expect(try Data(contentsOf: photo) == bytes as Data)
             #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["frame.jpg"])
+            // Old durable previews remain readable archives but cannot silently acquire the
+            // new semantic evidence or native consent: full reconstruction refuses them.
+            let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+            defer { free(canonical) }
+            let oldDirectory = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+                .appendingPathComponent("old-plan-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: oldDirectory) }
+            var oldPreview = try #require(MCPIPTCPatchPreparation.prepare(arguments: args, facade: facade).objectValue)
+            var oldPreflight = try #require(oldPreview["preservationPreflight"]?.objectValue)
+            oldPreflight.removeValue(forKey: "effectiveSemanticExpectations")
+            oldPreflight["schemaVersion"] = .integer(1)
+            oldPreview["preservationPreflight"] = .object(oldPreflight)
+            oldPreview.removeValue(forKey: "previewID")
+            let oldEncoder = JSONEncoder()
+            oldEncoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let oldDigest = SHA256.hash(data: try oldEncoder.encode(MCPJSONValue.object(oldPreview)))
+                .map { String(format: "%02x", $0) }.joined()
+            oldPreview["previewID"] = .string(oldDigest)
+            let oldStore = MCPIPTCPatchPlanStore(storageDirectory: oldDirectory)
+            let old = try oldStore.retain(request: .init(arguments: args), preview: .object(oldPreview),
+                configuration: store.load(), createdAt: Date())
+            let restoredOld = MCPIPTCPatchPlanStore(storageDirectory: oldDirectory)
+            let oldID = try #require(old.objectValue?["planID"]?.stringValue)
+            #expect(throws: MCPIPTCPatchPlanStore.Failure.stalePlan) {
+                try restoredOld.inspect(arguments: ["planID": .string(oldID)], facade: facade)
+            }
+            #expect(throws: MCPIPTCPatchPlanStore.Failure.stalePlan) {
+                try MCPIPTCPatchApprovalStore(plans: restoredOld).review(planID: oldID, facade: facade)
+            }
             try Data("changed after read".utf8).write(to: photo)
             #expect(throws: MCPIPTCPatchPreparation.Failure.staleRevision) {
                 try MCPIPTCPatchPreparation.prepare(arguments: args, facade: facade)

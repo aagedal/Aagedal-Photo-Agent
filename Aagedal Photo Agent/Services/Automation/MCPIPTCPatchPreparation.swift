@@ -135,8 +135,14 @@ nonisolated enum MCPIPTCPatchPreparation {
     /// entire value so no baseline from an older carrier generation can survive revalidation.
     static func preview(request: Request, snapshot: MCPPhotoCarrierSnapshot, now: Date) throws -> MCPJSONValue {
         let read = try MCPMetadataSnapshotReader.read(snapshot, includePreservation: true)
-        let preflight = try preservationPreflight(snapshot: snapshot, baseline: read.preservationSnapshot)
-        return try preview(request: request, metadata: read.protocolValue(), now: now, preflight: preflight)
+        let metadata = try read.protocolValue()
+        var preflight = try preservationPreflight(snapshot: snapshot, baseline: read.preservationSnapshot)
+        if var evidence = preflight.objectValue {
+            evidence["schemaVersion"] = .integer(2)
+            evidence["effectiveSemanticExpectations"] = try semanticExpectations(request: request, metadata: read.resolution.metadata)
+            preflight = .object(evidence)
+        }
+        return try preview(request: request, metadata: metadata, now: now, preflight: preflight)
     }
 
     static func preview(request: Request, metadata: MCPJSONValue, now: Date,
@@ -207,6 +213,50 @@ nonisolated enum MCPIPTCPatchPreparation {
         let output = MCPJSONValue.object(result)
         guard try encoder.encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output
+    }
+
+    /// Complete effective-field expectations complement the physical source baseline, which
+    /// deliberately excludes descriptive fields. These hashes are evidence, never verification:
+    /// a writer still needs independent physical-carrier read-back and recovery admission.
+    static func semanticExpectations(request: Request, metadata: IPTCMetadata) throws -> MCPJSONValue {
+        var expected = metadata
+        for operation in request.operations { try operation.apply(to: &expected) }
+        let edited = Set(request.operations.map(\.verificationField))
+        let fields = try IPTCMetadataVerificationField.allCases.map { field -> MCPJSONValue in
+            func fingerprint(_ value: IPTCMetadataCanonicalValue) throws -> MCPJSONValue {
+                // Tag every canonical value so absent, text, decimal and integer cannot alias.
+                func tagged(_ value: IPTCMetadataCanonicalValue) -> MCPJSONValue {
+                    switch value {
+                    case .absent: return .array([.string("absent")])
+                    case .text(let text): return .array([.string("text"), .string(text)])
+                    case .integer(let number): return .array([.string("integer"), .integer(Int64(number))])
+                    case .decimal(let number): return .array([.string("decimal"), .string(number)])
+                    case .array(let values): return .array([.string("array"), .array(values.map(tagged))])
+                    case .object(let values): return .array([.string("object"), .object(values.mapValues(tagged))])
+                    }
+                }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                let domain = MCPJSONValue.array([.string("iptc-effective-semantic-v1"),
+                    .string(field.rawValue), .string(IPTCMetadataVerifier.rule(for: field).rawValue), tagged(value)])
+                let digest = SHA256.hash(data: try encoder.encode(domain)).map { String(format: "%02x", $0) }.joined()
+                return .string(digest)
+            }
+            return .object([
+                "field": .string(field.rawValue),
+                "comparisonRule": .string(IPTCMetadataVerifier.rule(for: field).rawValue),
+                "edited": .bool(edited.contains(field)),
+                "beforeSHA256": try fingerprint(IPTCMetadataVerifier.canonicalValue(for: field, in: metadata)),
+                "expectedAfterSHA256": try fingerprint(IPTCMetadataVerifier.canonicalValue(for: field, in: expected)),
+            ])
+        }
+        return .object([
+            "schemaVersion": .integer(1),
+            "scope": .string("all-production-verification-fields; effective-values-including-pending-drafts; not-physical-carrier-verification"),
+            "fingerprintEncoding": .string("sha256-domain-field-rule-tagged-canonical-json-v1"),
+            "fields": .array(fields),
+            "verified": .bool(false),
+        ])
     }
 
     /// The production preservation builder excludes all writer-controlled descriptive fields,
