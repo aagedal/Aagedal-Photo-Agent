@@ -31,7 +31,8 @@ nonisolated enum FFmpegWhisperJSONError: Error, Equatable, Sendable {
 
 /// Parses the exact newline-delimited JSON shape of the attributed FFmpeg whisper emitter.
 /// Call only after successful subprocess completion; even a complete last line cannot prove that
-/// the producer finished. The future output reader must enforce the same byte cap while reading.
+/// the producer finished. FFmpegWhisperOutputReader enforces bounded file admission and reads;
+/// the future provider must still establish the process completion and cancellation preconditions.
 nonisolated enum FFmpegWhisperJSONParser {
     static let maximumOutputBytes = 8 * 1024 * 1024
     static let maximumSegmentBytes = 64 * 1024

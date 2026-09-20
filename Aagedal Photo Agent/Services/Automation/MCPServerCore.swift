@@ -1368,6 +1368,34 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: ["path"]
             ),
             definition(
+                name: "prepare_iptc_patch",
+                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID. This preview cannot be committed; no write authority or publication approval is granted. Text is preserved exactly; clear produces an empty string or array.",
+                properties: [
+                    "path": .object(["type": .string("string")]),
+                    "sourceRevision": .object(["type": .string("string")]),
+                    "xmpSidecarRevision": .object(["type": .string("string")]),
+                    "appSidecarRevision": .object(["type": .string("string")]),
+                    "operations": .object([
+                        "type": .string("array"), "minItems": .integer(1),
+                        "maxItems": .integer(Int64(MCPIPTCPatchPreparation.supportedFields.count)),
+                        "items": .object([
+                            "type": .string("object"),
+                            "properties": .object([
+                                "field": .object(["type": .string("string"), "enum": .array(MCPIPTCPatchPreparation.supportedFields.sorted().map(MCPJSONValue.string))]),
+                                "operation": .object(["type": .string("string"), "enum": .array([.string("set"), .string("clear")])]),
+                                "value": .object(["oneOf": .array([
+                                    .object(["type": .string("string"), "maxLength": .integer(32_768)]),
+                                    .object(["type": .string("array"), "maxItems": .integer(128), "items": .object(["type": .string("string"), "maxLength": .integer(1_024)])]),
+                                ])]),
+                            ]),
+                            "required": .array([.string("field"), .string("operation")]),
+                            "additionalProperties": .bool(false),
+                        ]),
+                    ]),
+                ],
+                required: MCPIPTCPatchPreparation.argumentKeys.sorted()
+            ),
+            definition(
                 name: "inspect_app_photo_draft",
                 description: "Read bounded editorial text, classification, rating, label, GPS and structured records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
                 properties: [
@@ -1389,7 +1417,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
             let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata"].contains(name)
-                ? ["path"] : (name == "list_templates" ? ["kind"] : [])
+                ? ["path"] : (name == "prepare_iptc_patch" ? MCPIPTCPatchPreparation.argumentKeys : (name == "list_templates" ? ["kind"] : []))
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
             }
@@ -1405,7 +1433,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
-                        .string("local-template-header-discovery"),
+                        .string("local-template-header-discovery"), .string("revision-bound-iptc-proofreading-preview"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1461,6 +1489,11 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "internal_error", message: "Photo Agent could not read the metadata")
                 }
                 return success(value)
+            case "prepare_iptc_patch":
+                guard case .object(let value) = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: automationFacade) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not prepare the preview")
+                }
+                return success(value)
             case "inspect_app_photo_draft":
                 guard let path = arguments["path"]?.stringValue else {
                     return failure(code: "invalid_arguments", message: "path must be an absolute string")
@@ -1472,6 +1505,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPIPTCPatchPreparation.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPTemplateDiscoveryError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch let error as MCPAuthorizationError {
@@ -1481,7 +1516,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         } catch let error as MCPAutomationReadError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch {
-            if name == "get_photo_metadata" {
+            if name == "get_photo_metadata" || name == "prepare_iptc_patch" {
                 return failure(code: "metadata_read_failed", message: "Photo Agent could not read a complete, supported metadata record within its output limits")
             }
             return failure(code: "internal_error", message: "Photo Agent could not validate the request")

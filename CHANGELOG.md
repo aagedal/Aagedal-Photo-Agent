@@ -10,6 +10,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added read-only MCP `prepare_iptc_patch` previews for supported descriptive text, Keywords and
+  Person Shown fields. Exact source/sidecar revisions reject stale proposals; before/proposed
+  values and legacy IPTC byte-limit warnings are returned without changing files. Commit remains
+  unavailable.
+
 - FFmpeg AVIF export now retains the selected color primaries and transfer when encoding
   ICC-tagged rendered TIFFs, preventing unspecified color signaling in exported files.
 

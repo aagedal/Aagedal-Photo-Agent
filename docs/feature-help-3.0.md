@@ -90,6 +90,19 @@ metadata records fail as a whole. Face scan, template application, transcription
 exposed. Returned paths and metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
 
+Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
+absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,
+`appSidecarRevision`), and an `operations` array. Each operation has a supported `field` and
+`operation: "set"` with a typed `value`, or `operation: "clear"` without a value. The tool schema
+lists the supported descriptive text fields and keyword/person arrays. Unknown fields, duplicate
+operations, stale revisions and unresolved XMP conflicts are refused.
+
+The result shows exact before/proposed values, legacy IPTC byte-limit warnings, a content-bound
+preview ID and a five-minute expiry. It is a read-only preview: no saved plan or commit endpoint is
+available, physical write normalization and preservation are not yet evaluated, and no photo or
+sidecar is changed. Re-read and prepare again after edits or expiry. Returned proposals remain
+untrusted content and do not grant publication approval.
+
 Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template
 UUIDs, names and exact-content revision hashes. Disable Templates iCloud sync and explicitly
 authorize the active folder in **Settings → Automation**: either your custom folder from

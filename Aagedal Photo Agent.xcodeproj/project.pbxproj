@@ -7,7 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */; };
+		C76000000000000000000042 /* MetadataRequirements.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000041 /* MetadataRequirements.swift */; };
+		C76000000000000000000032 /* MetadataValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000031 /* MetadataValidation.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -133,6 +134,10 @@
 		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
 		C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000001 /* MCPTemplateDiscovery.swift */; };
 		C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */; };
+		C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */; };
+		C76000000000000000000002 /* MCPIPTCPatchPreparation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000001 /* MCPIPTCPatchPreparation.swift */; };
+		C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */; };
+		C76000000000000000000022 /* MCPIPTCPatchPreparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000021 /* MCPIPTCPatchPreparationTests.swift */; };
 		C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */; };
 		C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000003 /* FieldMutationCallerTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
@@ -228,7 +233,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJSONParserTests.swift; sourceTree = "<group>"; };
+		C76000000000000000000041 /* MetadataRequirements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataRequirements.swift; path = "Aagedal Photo Agent/Models/MetadataRequirements.swift"; sourceTree = SOURCE_ROOT; };
+		C76000000000000000000031 /* MetadataValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataValidation.swift; path = "Aagedal Photo Agent/Models/MetadataValidation.swift"; sourceTree = SOURCE_ROOT; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -351,6 +357,10 @@
 		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
 		C74000000000000000000001 /* MCPTemplateDiscovery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPTemplateDiscovery.swift; path = "Aagedal Photo Agent/Services/Automation/MCPTemplateDiscovery.swift"; sourceTree = SOURCE_ROOT; };
 		C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPTemplateDiscoveryTests.swift; sourceTree = "<group>"; };
+		C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJSONParserTests.swift; sourceTree = "<group>"; };
+		C76000000000000000000001 /* MCPIPTCPatchPreparation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchPreparation.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchPreparation.swift"; sourceTree = SOURCE_ROOT; };
+		C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperOutputReaderTests.swift; sourceTree = "<group>"; };
+		C76000000000000000000021 /* MCPIPTCPatchPreparationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchPreparationTests.swift; sourceTree = "<group>"; };
 		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000003 /* FieldMutationCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FieldMutationCallerTests.swift; sourceTree = "<group>"; };
@@ -474,6 +484,8 @@
 				C5A000000000000000000011 /* MCPServerCoreTests.swift */,
 				C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */,
 				C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */,
+				C76000000000000000000021 /* MCPIPTCPatchPreparationTests.swift */,
+				C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */,
 				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
 				F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */,
 				A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */,
@@ -661,6 +673,9 @@
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
+				C76000000000000000000001 /* MCPIPTCPatchPreparation.swift */,
+				C76000000000000000000041 /* MetadataRequirements.swift */,
+				C76000000000000000000031 /* MetadataValidation.swift */,
 				D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */,
 				494B37051D772365BB0908B9 /* Aagedal Photo Agent/Models/ISO3166Country.swift */,
 				2A9B81B5CFF1529FFA8FC2C1 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift */,
@@ -871,6 +886,8 @@
 				C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */,
 				C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */,
 				C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */,
+				C76000000000000000000022 /* MCPIPTCPatchPreparationTests.swift in Sources */,
+				C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */,
 				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,
 				F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */,
 				A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */,
@@ -1041,6 +1058,9 @@
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
+				C76000000000000000000002 /* MCPIPTCPatchPreparation.swift in Sources */,
+				C76000000000000000000042 /* MetadataRequirements.swift in Sources */,
+				C76000000000000000000032 /* MetadataValidation.swift in Sources */,
 				31B9081D449A9F0EEE29CEC7 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift in Sources */,
 				3C01ADAD5FE443AEA4BB439A /* Aagedal Photo Agent/Models/ISO3166Country.swift in Sources */,
 				AB96DD502657CA81F3D05475 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift in Sources */,
