@@ -71,6 +71,40 @@ struct FFmpegWhisperJSONParserTests {
         }
     }
 
+    @Test("Complete blank-audio markers have no usable speech", arguments: [
+        "[BLANK_AUDIO]", " [blank_audio] ", "\t[Blank_Audio]\n"
+    ])
+    func blankAudioOnly(text: String) throws {
+        // The emitter fixes start/end/text order; encode only the string using Foundation.
+        let encoded = try #require(String(data: JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]), encoding: .utf8))
+        let input = "{\"start\":0,\"end\":1,\"text\":" + encoded + "}\n"
+        #expect(throws: FFmpegWhisperJSONError.noSpeech) {
+            try FFmpegWhisperJSONParser.parse(Data((input + input).utf8))
+        }
+    }
+
+    @Test("Blank markers retain timing and original text without entering the editable draft")
+    func mixedBlankAudio() throws {
+        let input = #"{"start":0,"end":100,"text":" [BLANK_AUDIO] "}"# + "\n" +
+            #"{"start":100,"end":200,"text":"Hei!"}"#
+        let result = try FFmpegWhisperJSONParser.parse(Data(input.utf8))
+        #expect(result.editableText == "Hei!")
+        #expect(result.segments.count == 2)
+        #expect(result.segments[0].text == " [BLANK_AUDIO] ")
+        #expect(result.segments[0].endMilliseconds == 100)
+    }
+
+    @Test("Embedded marker mentions and incomplete fragments remain literal evidence", arguments: [
+        "The token [BLANK_AUDIO] appears here.", "[BLANK_AUDIO] speech", "[", "BLANK", "_", "AUDIO", "]"
+    ])
+    func literalBlankAudio(text: String) throws {
+        let encoded = try #require(String(data: JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]), encoding: .utf8))
+        let input = "{\"start\":0,\"end\":1,\"text\":" + encoded + "}"
+        let result = try FFmpegWhisperJSONParser.parse(Data(input.utf8))
+        #expect(result.editableText == text)
+        #expect(result.segments[0].text == text)
+    }
+
     @Test("Invalid UTF-8 does not become replacement characters")
     func invalidUTF8() {
         #expect(throws: FFmpegWhisperJSONError.malformedSegment(line: 1)) {

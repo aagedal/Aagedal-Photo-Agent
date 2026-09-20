@@ -78,7 +78,11 @@ nonisolated enum FFmpegWhisperJSONParser {
             previousStart = segment.start
             segments.append(segment)
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
+            // The attributed filter recognizes this marker case-insensitively. Its corrected
+            // JSON emitter deliberately retains it as evidence. Only omit a complete marker
+            // from the editable draft: embedded mentions and split words remain literal text.
+            // Real-model silence (including hallucinated words) still needs backend validation.
+            if !text.isEmpty && text.lowercased() != "[blank_audio]" {
                 textBytes += text.utf8.count + (textParts.isEmpty ? 0 : 1)
                 guard textBytes <= maximumTextBytes else { throw FFmpegWhisperJSONError.textTooLarge }
                 textParts.append(text)

@@ -48,7 +48,9 @@ support is required; absent tooling is a failure, not a silently skipped check.
   it does not strip a leading whitespace byte or remove case-insensitive blank-audio markers.
   This is intentional lossless canonical data; semantic no-speech classification of such
   model tokens still requires live-model validation. Text/SRT retain their existing cleaning;
-  JSON frame metadata also receives the preserved text.
+  JSON frame metadata also receives the preserved text. The Swift parser now omits complete
+  marker-only segments from editable text while retaining exact evidence; embedded mentions and
+  split fragments remain unchanged.
 - Inference, missing-context, null-segment, allocation, metadata and destination write/flush
   errors propagate through `run_transcription`. Failed batches retain their buffered samples.
 - Queue, VAD, and final-frame callers propagate the failure and release owned frames/segments.

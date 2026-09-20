@@ -113,7 +113,8 @@ the support table and validation records.
   captures opaque source, XMP and owned app-sidecar tokens. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
   `prepare_iptc_patch` returns read-only, revision-bound before/proposed values and compatibility warnings
-  for supported descriptive fields; its expiring preview cannot be committed. Template application, face,
+  for supported descriptive fields; `get_iptc_patch_plan` revalidates the retained session preview.
+  These expiring plans cannot be committed or survive helper restart. Template application, face,
   transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 
 ### Face Recognition

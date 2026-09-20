@@ -85,6 +85,11 @@ struct MCPIPTCPatchPreparationTests {
         let store = MCPAuthorizationStore(readConfigurationData: { nil }, writeConfigurationData: { _ in })
         let tools = MCPFoundationTools(authorizationStore: store)
         #expect(tools.supportsTool(named: "prepare_iptc_patch"))
+        let definition = tools.toolDefinitions(configuration: MCPAuthorizationConfiguration()).first {
+            $0.objectValue?["name"] == .string("prepare_iptc_patch")
+        }
+        #expect(definition?.objectValue?["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(definition?.objectValue?["annotations"]?.objectValue?["idempotentHint"] == .bool(false))
         let result = tools.callTool(name: "prepare_iptc_patch", arguments: arguments([operation()]))
         #expect(result.objectValue?["isError"] == .bool(true))
         #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
@@ -121,15 +126,37 @@ struct MCPIPTCPatchPreparationTests {
                 try MCPIPTCPatchPreparation.prepare(arguments: args, facade: racing)
             }
         } else {
-            let response = MCPFoundationTools(authorizationStore: store).callTool(name: "prepare_iptc_patch", arguments: args)
+            let tools = MCPFoundationTools(authorizationStore: store)
+            let response = tools.callTool(name: "prepare_iptc_patch", arguments: args)
             #expect(response.objectValue?["isError"] == .bool(false))
             let content = try #require(response.objectValue?["structuredContent"]?.objectValue)
             #expect(content["commitAvailable"] == .bool(false))
+            let endpointID = try #require(content["planID"])
+            let retrieved = tools.callTool(name: "get_iptc_patch_plan", arguments: ["planID": endpointID])
+            #expect(retrieved == response)
+            let plans = MCPIPTCPatchPlanStore()
+            let retained = try MCPIPTCPatchPreparation.prepare(arguments: args, facade: facade, plans: plans)
+            let planID = try #require(retained.objectValue?["planID"])
+            #expect(try plans.inspect(arguments: ["planID": planID], facade: facade) == retained)
             #expect(try Data(contentsOf: photo) == bytes as Data)
             #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["frame.jpg"])
             try Data("changed after read".utf8).write(to: photo)
             #expect(throws: MCPIPTCPatchPreparation.Failure.staleRevision) {
                 try MCPIPTCPatchPreparation.prepare(arguments: args, facade: facade)
+            }
+            #expect(throws: MCPIPTCPatchPlanStore.Failure.stalePlan) {
+                try plans.inspect(arguments: ["planID": planID], facade: facade)
+            }
+            // Restoring the same enabled/root values must not restore old plan authority.
+            try (bytes as Data).write(to: photo)
+            let restored = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue)
+            for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { args[key] = restored[key] }
+            let beforeRevocation = try MCPIPTCPatchPreparation.prepare(arguments: args, facade: facade, plans: plans)
+            let revokedID = try #require(beforeRevocation.objectValue?["planID"])
+            try store.setEnabled(false)
+            try store.setEnabled(true)
+            #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+                try plans.inspect(arguments: ["planID": revokedID], facade: facade)
             }
         }
     }

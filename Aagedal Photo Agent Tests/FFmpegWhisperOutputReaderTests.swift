@@ -200,6 +200,10 @@ struct FFmpegWhisperOutputReaderTests {
             #expect(throws: FFmpegWhisperJSONError.noSpeech) {
                 try FFmpegWhisperOutputReader.read(from: file, completion: .exited(status: 0))
             }
+            try Data(#"{"start":0,"end":10,"text":" [BLANK_AUDIO] "}"#.utf8).write(to: file)
+            #expect(throws: FFmpegWhisperJSONError.noSpeech) {
+                try FFmpegWhisperOutputReader.read(from: file, completion: .exited(status: 0))
+            }
             try Data("console text".utf8).write(to: file)
             #expect(throws: FFmpegWhisperJSONError.malformedSegment(line: 1)) {
                 try FFmpegWhisperOutputReader.read(from: file, completion: .exited(status: 0))

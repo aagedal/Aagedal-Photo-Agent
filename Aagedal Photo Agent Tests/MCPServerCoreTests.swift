@@ -43,6 +43,31 @@ struct MCPServerCoreTests {
         }
     }
 
+    @Test("Legacy authorization loads and every save invalidates retained authority")
+    func authorizationRevisionSurvivesReloadAndRotates() throws {
+        let box = DataBox()
+        box.write(Data(#"{"schemaVersion":1,"isEnabled":true,"roots":[]}"#.utf8))
+        let original = store(box: box)
+        let legacy = try original.load()
+        #expect(legacy.authorizationRevision == nil)
+        #expect(legacy.isEnabled)
+        try original.save(legacy)
+        let granted = try original.load()
+        #expect(granted.authorizationRevision != nil)
+        #expect(try store(box: box).load() == granted)
+        try original.setEnabled(false)
+        let revoked = try original.load()
+        try original.setEnabled(true)
+        let regranted = try original.load()
+        #expect(regranted.isEnabled == granted.isEnabled)
+        #expect(regranted.roots == granted.roots)
+        #expect(regranted.authorizationRevision != granted.authorizationRevision)
+        #expect(regranted.authorizationRevision != revoked.authorizationRevision)
+        // Saving a retained configuration cannot restore its older generation.
+        try original.save(granted)
+        #expect(try original.load().authorizationRevision != granted.authorizationRevision)
+    }
+
     @Test("A canonical regular file under an unchanged authorized folder is admitted")
     func admitsAuthorizedRegularFile() throws {
         let root = try temporaryFolder()
@@ -175,7 +200,7 @@ struct MCPServerCoreTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
             "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_authorized_roots", "inspect_path_authorization",
-            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "inspect_app_photo_draft",
+            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
@@ -738,7 +763,7 @@ struct MCPServerCoreTests {
         lease.release()
     }
 
-    @Test("Parser snapshots refuse a changed carrier or revoked authorization before publication", arguments: ["source", "xmp", "app", "authorization"])
+    @Test("Parser snapshots refuse a changed carrier or revoked authorization before publication", arguments: ["source", "xmp", "app", "authorization", "regranted"])
     func refusesChangedParserSnapshot(carrier: String) throws {
         let root = try temporaryFolder()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -756,11 +781,14 @@ struct MCPServerCoreTests {
         let facade = MCPAutomationFacade(authorizationStore: store, onCaptureCheckpoint: {
             do {
                 if carrier == "authorization" { try store.setEnabled(false) }
+                else if carrier == "regranted" { try store.setEnabled(false); try store.setEnabled(true) }
                 else { try Data("changed".utf8).write(to: carrier == "source" ? photo : carrier == "xmp" ? xmp : app) }
             } catch { Issue.record("Could not inject snapshot change: \(error)") }
         })
         if carrier == "authorization" {
             #expect(throws: MCPAuthorizationError.disabled) { _ = try facade.capturePhotoSnapshot(path: photo.path) }
+        } else if carrier == "regranted" {
+            #expect(throws: MCPAuthorizationError.rootChanged) { _ = try facade.capturePhotoSnapshot(path: photo.path) }
         } else {
             #expect(throws: MCPAutomationReadError.photoChanged) { _ = try facade.capturePhotoSnapshot(path: photo.path) }
         }

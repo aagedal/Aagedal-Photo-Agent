@@ -1577,6 +1577,17 @@ reader and a pinned, sanitizer-tested FFmpeg source correction address output ad
 escaping and error propagation; neither is a rebuilt or integrated provider.
 See [cycle 76](release/cycle-76-iptc-preview-whisper-output-2026-09-20.md).
 
+**Cycle 77 continuation (2026-09-20):** Preparation now retains bounded, immutable helper-session
+plans, and `get_iptc_patch_plan` revalidates exact authorization generation, carrier revisions,
+effective before/proposed values and expiry before retrieval. Every saved authorization change
+rotates the generation, including revoke/regrant of identical roots. These remain read-only
+session plans, without durable persistence, physical normalization or commit authority.
+The internal Whisper job runner snapshots exact executable/audio/model bytes into private storage,
+uses local WAV-only fail-fast decoding, enforces process deadlines/cancellation, and accepts only
+successful canonical output. Complete blank-audio-marker segments no longer become draft text.
+Rebuilt artifact/model/provider integration and all corresponding real-environment gates remain
+open; no complete Phase 5A criterion closes. See [cycle 77](release/cycle-77-plan-revalidation-whisper-runner-2026-09-20.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

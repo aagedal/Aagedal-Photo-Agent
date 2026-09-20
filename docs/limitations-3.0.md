@@ -113,7 +113,8 @@ This is separate from the unapproved AI-origin analyzer described above.
   metadata tools. Effective reads accept one explicit photo per call and refuse malformed or oversized
   records without truncation. `prepare_iptc_patch` previews a bounded descriptive-field subset
   against exact read revisions, with before/proposed values and IIM compatibility warnings. It
-  does not persist a committable plan or evaluate physical write normalization/preservation.
+  retains an immutable session-memory plan for `get_iptc_patch_plan` to revalidate. It does not
+  persist a committable plan or evaluate physical write normalization/preservation.
   Develop, face, template, transcription,
   status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.
@@ -153,6 +154,9 @@ but binary replacement, full image regression, provenance/notices and the transc
 lifecycle remain open. The restriction is not a sandbox for other local files referenced by a container.
 
 The candidate Whisper filter currently writes transcript text into JSON without escaping it.
-A bounded parser and synthetic image parity checks are implemented, but the emitter must be
-fixed and reproducibly rebuilt before canonical Whisper inference can ship. See the
+The pinned source patch corrects this, but a complete artifact must be reproducibly rebuilt before
+canonical Whisper inference can ship. A bounded process runner now uses exact private input snapshots,
+WAV-only local decoding, cancellation/deadlines and canonical JSON validation. It is not yet connected
+to the transcription UI or model lifecycle. Complete blank-audio-marker segments are excluded from
+drafts while original segment evidence is retained; real-model silence still needs validation. See the
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

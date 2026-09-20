@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added read-only `get_iptc_patch_plan` retrieval with immutable session previews, expiry and fresh
+  authorization/source checks. Revoking and re-enabling identical folder access invalidates old plans.
+- Added the internal FFmpeg Whisper process runner with exact input snapshots, bounded output,
+  deadlines and cancellation. Marker-only silence yields no speech; the rebuilt binary, model
+  lifecycle and user-facing provider integration remain pending.
+
 - Added read-only MCP `prepare_iptc_patch` previews for supported descriptive text, Keywords and
   Person Shown fields. Exact source/sidecar revisions reject stale proposals; before/proposed
   values and legacy IPTC byte-limit warnings are returned without changing files. Commit remains

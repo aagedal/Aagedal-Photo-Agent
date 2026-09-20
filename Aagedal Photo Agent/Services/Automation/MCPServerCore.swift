@@ -161,6 +161,9 @@ nonisolated struct MCPAuthorizationConfiguration: Codable, Equatable, Sendable {
     static let schemaVersion = 1
 
     var schemaVersion: Int = Self.schemaVersion
+    /// Rotated on every saved authorization change, including revoke/regrant of identical roots.
+    /// Older configuration records decode with nil until their next explicit save.
+    var authorizationRevision: UUID? = nil
     var isEnabled = false
     var roots: [MCPAuthorizedRoot] = []
 }
@@ -357,7 +360,9 @@ nonisolated struct MCPAuthorizationStore: Sendable {
         guard configuration.schemaVersion == MCPAuthorizationConfiguration.schemaVersion else {
             throw MCPAuthorizationError.invalidConfiguration
         }
-        writeConfigurationData(try JSONEncoder().encode(configuration))
+        var updated = configuration
+        updated.authorizationRevision = UUID()
+        writeConfigurationData(try JSONEncoder().encode(updated))
     }
 
     func setEnabled(_ enabled: Bool) throws {
@@ -648,6 +653,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         try directory.requireSameAncestors()
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
+        guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
         return (target, evidence)
     }
 }
@@ -1295,6 +1301,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let authorizationStore: MCPAuthorizationStore
     let automationFacade: MCPAutomationFacade
     let templateDiscovery: MCPTemplateDiscovery
+    let patchPlans = MCPIPTCPatchPlanStore()
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil) {
         self.authorizationStore = authorizationStore
@@ -1369,7 +1376,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "prepare_iptc_patch",
-                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID. This preview cannot be committed; no write authority or publication approval is granted. Text is preserved exactly; clear produces an empty string or array.",
+                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID and a helper-session planID for revalidated retrieval. Restart discards plans. This preview cannot be committed; no write authority or publication approval is granted. Text is preserved exactly; clear produces an empty string or array.",
                 properties: [
                     "path": .object(["type": .string("string")]),
                     "sourceRevision": .object(["type": .string("string")]),
@@ -1393,7 +1400,14 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         ]),
                     ]),
                 ],
-                required: MCPIPTCPatchPreparation.argumentKeys.sorted()
+                required: MCPIPTCPatchPreparation.argumentKeys.sorted(),
+                idempotent: false
+            ),
+            definition(
+                name: "get_iptc_patch_plan",
+                description: "Retrieve an immutable proofreading preview from this helper session after rechecking authorization, photo/carrier revisions and expiry. Restart discards plans. This read-only plan cannot be committed and grants no approval authority.",
+                properties: ["planID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["planID"]
             ),
             definition(
                 name: "inspect_app_photo_draft",
@@ -1417,7 +1431,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
             let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata"].contains(name)
-                ? ["path"] : (name == "prepare_iptc_patch" ? MCPIPTCPatchPreparation.argumentKeys : (name == "list_templates" ? ["kind"] : []))
+                ? ["path"] : (name == "prepare_iptc_patch" ? MCPIPTCPatchPreparation.argumentKeys : (name == "get_iptc_patch_plan" ? ["planID"] : (name == "list_templates" ? ["kind"] : [])))
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
             }
@@ -1433,7 +1447,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
-                        .string("local-template-header-discovery"), .string("revision-bound-iptc-proofreading-preview"),
+                        .string("local-template-header-discovery"), .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1490,8 +1504,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 }
                 return success(value)
             case "prepare_iptc_patch":
-                guard case .object(let value) = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: automationFacade) else {
+                guard case .object(let value) = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: automationFacade, plans: patchPlans) else {
                     return failure(code: "internal_error", message: "Photo Agent could not prepare the preview")
+                }
+                return success(value)
+            case "get_iptc_patch_plan":
+                guard case .object(let value) = try patchPlans.inspect(arguments: arguments, facade: automationFacade) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not inspect the patch plan")
                 }
                 return success(value)
             case "inspect_app_photo_draft":
@@ -1505,6 +1524,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPIPTCPatchPlanStore.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPIPTCPatchPreparation.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPTemplateDiscoveryError {
@@ -1516,7 +1537,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         } catch let error as MCPAutomationReadError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch {
-            if name == "get_photo_metadata" || name == "prepare_iptc_patch" {
+            if ["get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan"].contains(name) {
                 return failure(code: "metadata_read_failed", message: "Photo Agent could not read a complete, supported metadata record within its output limits")
             }
             return failure(code: "internal_error", message: "Photo Agent could not validate the request")
@@ -1527,7 +1548,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         name: String,
         description: String,
         properties: [String: MCPJSONValue],
-        required: [String]
+        required: [String],
+        idempotent: Bool = true
     ) -> MCPJSONValue {
         .object([
             "name": .string(name),
@@ -1541,7 +1563,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             "annotations": .object([
                 "readOnlyHint": .bool(true),
                 "destructiveHint": .bool(false),
-                "idempotentHint": .bool(true),
+                "idempotentHint": .bool(idempotent),
                 "openWorldHint": .bool(false),
             ]),
         ])
@@ -1556,7 +1578,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     }
 
     private func toolResult(structured: MCPJSONValue, isError: Bool) -> MCPJSONValue {
-        guard let data = try? JSONEncoder().encode(structured),
+        let encoder = JSONEncoder()
+        // Keep the text fallback identical when an immutable structured plan is retrieved again.
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(structured),
               data.count <= MCPServerConstants.maximumToolResultBytes,
               let text = String(data: data, encoding: .utf8) else {
             let bounded = "{\"code\":\"result_too_large\",\"message\":\"Result exceeded the Photo Agent output limit\"}"

@@ -56,8 +56,11 @@ its own retention or network policy to that content. Review the client's privacy
 it. Current tools provide read-only capability/authorization inspection, bounded effective photo metadata,
 and template header discovery from explicitly authorized default local or custom folders. Template names and content
 revision hashes can also reach the connected client; template field values are not returned by discovery.
-Read-only IPTC patch previews also return existing and proposed descriptive values; they are not saved
-as plans or written to photos. These reads and previews are not retained in Activity. Mutation tools will remain unavailable until they use Photo
+Read-only IPTC patch previews also return existing and proposed descriptive values. Up to 64 plans
+(with an 8 MiB serialized-result budget) are held in helper memory for revalidated retrieval; plans
+expire after five minutes and cannot survive helper restart. Expired entries are removed on later
+preparation or access. No plans are saved to disk or written to photos, and previews are not retained
+in Activity. Mutation tools will remain unavailable until they use Photo
 Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.
 
 ## Network features

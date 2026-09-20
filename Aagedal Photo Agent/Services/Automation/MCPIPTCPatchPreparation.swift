@@ -89,15 +89,24 @@ nonisolated enum MCPIPTCPatchPreparation {
         let after: MCPJSONValue
     }
 
-    static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade) throws -> MCPJSONValue {
+    static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade,
+                        plans: MCPIPTCPatchPlanStore? = nil) throws -> MCPJSONValue {
         let request = try Request(arguments: arguments)
-        return try facade.withPhotoSnapshot(path: request.path) { snapshot in
+        let configuration = try facade.authorizationStore.load()
+        let createdAt = Date()
+        let result = try facade.withPhotoSnapshot(path: request.path) { snapshot in
             // Compare before parsing expensive carrier content, while descriptors and lease remain held.
             try checkRevisions(request, source: snapshot.sourceRevision,
                 xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
             let read = try MCPMetadataSnapshotReader.read(snapshot).protocolValue()
-            return try preview(request: request, metadata: read, now: Date())
+            return try preview(request: request, metadata: read, now: createdAt)
         }
+        guard let plans else { return result }
+        // Publish only after the retained snapshot's final carrier and authorization checks.
+        guard try facade.authorizationStore.load() == configuration else {
+            throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+        }
+        return try plans.retain(request: request, preview: result, configuration: configuration, createdAt: createdAt)
     }
 
     static func checkRevisions(_ request: Request, source: String, xmp: String, app: String) throws {
@@ -143,7 +152,7 @@ nonisolated enum MCPIPTCPatchPreparation {
         result["canonicalPath"] = .string(canonicalPath)
         result["rootID"] = .string(rootID)
         result["changes"] = .array(changes)
-        result["expiresAt"] = .string(ISO8601DateFormatter().string(from: now.addingTimeInterval(300)))
+        result["expiresAt"] = .string(ISO8601DateFormatter().string(from: now.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime)))
         result["valueSemantics"] = .string("exact-proposed-values; physical-write-normalization-not-evaluated")
         result["previewOnly"] = .bool(true)
         result["commitAvailable"] = .bool(false)

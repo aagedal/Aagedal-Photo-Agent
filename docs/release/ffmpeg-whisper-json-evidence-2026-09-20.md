@@ -81,7 +81,9 @@ The patch escapes canonical JSON, preserves original segment text and propagates
 allocation, write/flush/close and final-frame failures. This also exposes existing error-exit
 requirements beyond the escaping defect. Original JSON cleaning changes intentionally: leading
 spaces and literal `[BLANK_AUDIO]` tokens are retained. No-speech semantics require live-model
-validation; the current parser considers a literal marker nonempty text.
+validation. Cycle 77 now excludes complete case-insensitive marker-only segments from editable
+drafts and returns noSpeech for all-marker output, preserving exact segment evidence. Embedded
+mentions and split fragments remain literal text.
 
 This prepares the fix but does not close the binary blocker: no FFmpeg candidate has been rebuilt
 or installed with it. Full ABI, AVIO transport, real audio/model, process failure, provenance and
