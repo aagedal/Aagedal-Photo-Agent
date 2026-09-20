@@ -52,6 +52,16 @@ nonisolated final class AutomationOperationRegistry: Sendable {
             maximumBytes: min(max(0, maximumBytes), 1_048_576))
     }
 
+    /// Shared by the unsandboxed app and helper. Resolving the location creates no files.
+    static func defaultStorageDirectory() throws -> URL {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw Failure.storageUnavailable
+        }
+        return base.appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("Operations", isDirectory: true)
+    }
+
     /// No implicit eviction: retained records remain inspectable until explicitly removed.
     func enqueue(kind: Kind, ownerID: UUID, now: Date = Date()) throws -> Record {
         guard now.timeIntervalSinceReferenceDate.isFinite else { throw Failure.invalidArguments }

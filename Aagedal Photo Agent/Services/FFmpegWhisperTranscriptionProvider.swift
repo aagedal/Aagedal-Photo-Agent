@@ -12,6 +12,20 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
         let language: String
         let useGPU: Bool
         let timeoutSeconds: Double
+        let translate: Bool
+
+        init(executable: FFmpegWhisperJobInput, buildIdentifier: String,
+             model: FFmpegWhisperJobInput, modelIdentifier: String,
+             language: String, useGPU: Bool, timeoutSeconds: Double, translate: Bool = false) {
+            self.executable = executable
+            self.buildIdentifier = buildIdentifier
+            self.model = model
+            self.modelIdentifier = modelIdentifier
+            self.language = language
+            self.useGPU = useGPU
+            self.timeoutSeconds = timeoutSeconds
+            self.translate = translate
+        }
     }
 
     struct Result: Sendable {
@@ -44,7 +58,7 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
         let request = FFmpegWhisperJobRequest(
             executable: configuration.executable, audio: audio, model: configuration.model,
             language: configuration.language, useGPU: configuration.useGPU,
-            timeoutSeconds: configuration.timeoutSeconds
+            timeoutSeconds: configuration.timeoutSeconds, translate: configuration.translate
         )
         let result = try await run(request)
         try Task.checkCancellation()
@@ -76,7 +90,7 @@ nonisolated extension FFmpegWhisperTranscriptProvenance {
                   modelIdentifier: configuration.modelIdentifier,
                   modelSHA256: configuration.model.sha256,
                   modelByteCount: configuration.model.byteCount,
-                  requestedLanguage: configuration.language, useGPU: configuration.useGPU,
+                  requestedLanguage: configuration.language, useGPU: configuration.useGPU, translate: configuration.translate,
                   segments: segments.map { .init(start: $0.start, end: $0.end, text: $0.text) })
     }
 }

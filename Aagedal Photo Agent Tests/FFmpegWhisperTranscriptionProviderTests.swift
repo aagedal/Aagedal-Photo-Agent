@@ -23,11 +23,16 @@ struct FFmpegWhisperTranscriptionProviderTests {
               hashCompletedAt: .distantPast)
     }
 
-    @Test("authorized runner evidence reaches an unapproved draft and survives record roundtrip")
-    func draftAndPersistence() async throws {
+    @Test("authorized runner evidence reaches an unapproved draft and survives record roundtrip", arguments: [false, true])
+    func draftAndPersistence(translates: Bool) async throws {
         let association = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
         let stable = revision()
-        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+        let configured = FFmpegWhisperTranscriptionProvider.Configuration(
+            executable: configuration.executable, buildIdentifier: configuration.buildIdentifier,
+            model: configuration.model, modelIdentifier: configuration.modelIdentifier,
+            language: configuration.language, useGPU: configuration.useGPU,
+            timeoutSeconds: configuration.timeoutSeconds, translate: translates)
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configured,
             authorizeArtifacts: { _ in }, run: { request in
                 .init(request: request, transcript: try FFmpegWhisperJSONParser.parse(Data(
                     "{\"start\":0,\"end\":25,\"text\":\" hello \"}\n".utf8)))
@@ -50,6 +55,8 @@ struct FFmpegWhisperTranscriptionProviderTests {
         #expect(evidence.segments.first?.endMilliseconds == 25)
         #expect(evidence.requestedLanguage == "auto")
         #expect(evidence.detectedLanguage == nil)
+        #expect(evidence.translate == translates)
+        #expect(evidence.schemaVersion == (translates ? 2 : 1))
         let record = VoiceMemoTranscriptRecord(sourceImageFilename: "a.jpg", sourceMemoFilename: "a.wav",
             memoByteCount: 42, memoSHA256: stable.sha256, associationProfileIdentifier: "test",
             localeIdentifier: draft.localeIdentifier, provider: draft.provider,
@@ -71,11 +78,11 @@ struct FFmpegWhisperTranscriptionProviderTests {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(VoiceMemoTranscriptRecord.self, from: conflictingEvidence) }
         json = validJSON
         var invalid = try #require(json["whisperProvenance"] as? [String: Any])
-        invalid["schemaVersion"] = 2
+        invalid["schemaVersion"] = 3
         json["whisperProvenance"] = invalid
         let invalidData = try JSONSerialization.data(withJSONObject: json)
         #expect(throws: (any Error).self) { try JSONDecoder().decode(VoiceMemoTranscriptRecord.self, from: invalidData) }
-        invalid["schemaVersion"] = 1
+        invalid["schemaVersion"] = evidence.schemaVersion
         invalid["segments"] = [["start": -1, "end": 25, "text": "hello"]]
         json["whisperProvenance"] = invalid
         let badTiming = try JSONSerialization.data(withJSONObject: json)

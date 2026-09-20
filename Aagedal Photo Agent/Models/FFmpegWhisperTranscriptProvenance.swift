@@ -47,10 +47,12 @@ nonisolated struct FFmpegWhisperTranscriptProvenance: Codable, Equatable, Sendab
 
     enum ValidationError: Error, Equatable, Sendable { case invalidProvenance }
 
-    init(schemaVersion: Int = 1, buildIdentifier: String, executableSHA256: String,
+    init(schemaVersion: Int? = nil, buildIdentifier: String, executableSHA256: String,
          executableByteCount: Int64, modelIdentifier: String, modelSHA256: String,
-         modelByteCount: Int64, requestedLanguage: String, useGPU: Bool, segments: [Segment]) {
-        self.schemaVersion = schemaVersion
+         modelByteCount: Int64, requestedLanguage: String, useGPU: Bool, translate: Bool = false, segments: [Segment]) {
+        // Schema 1 guarantees untranslated output. Older versions must fail closed when
+        // opening translated evidence, rather than treating English text as the input language.
+        self.schemaVersion = schemaVersion ?? (translate ? 2 : 1)
         self.buildIdentifier = buildIdentifier
         self.executableSHA256 = executableSHA256
         self.executableByteCount = executableByteCount
@@ -59,7 +61,7 @@ nonisolated struct FFmpegWhisperTranscriptProvenance: Codable, Equatable, Sendab
         self.modelByteCount = modelByteCount
         self.requestedLanguage = requestedLanguage
         self.useGPU = useGPU
-        self.translate = false
+        self.translate = translate
         self.segments = segments
     }
 
@@ -96,7 +98,7 @@ nonisolated struct FFmpegWhisperTranscriptProvenance: Codable, Equatable, Sendab
 
     func validate() throws {
         let hashes = [executableSHA256, modelSHA256]
-        guard schemaVersion == 1, !translate,
+        guard (schemaVersion == 1 && !translate) || (schemaVersion == 2 && translate),
               !buildIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !modelIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               buildIdentifier.utf8.count <= 1024, modelIdentifier.utf8.count <= 1024,

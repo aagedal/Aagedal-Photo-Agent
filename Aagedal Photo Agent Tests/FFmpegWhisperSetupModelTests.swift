@@ -51,6 +51,84 @@ struct FFmpegWhisperSetupModelTests {
         #expect(reopened.modelURL == nil)
     }
 
+    @Test("inference settings persist while malformed language never becomes a process option")
+    func inferenceSettingsPersistence() {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("en:destination=/tmp/unsafe", forKey: FFmpegWhisperSetupModel.languageKey)
+        let setup = FFmpegWhisperSetupModel(defaults: defaults)
+        #expect(setup.language == "auto")
+        #expect(!setup.translate)
+        #expect(!setup.useGPU)
+        setup.language = " NO "
+        setup.translate = true
+        setup.useGPU = true
+        #expect(setup.language == "no")
+        setup.language = String(repeating: "x", count: 1000)
+        #expect(setup.language.count == 16)
+        #expect(!setup.isLanguageValid)
+        let reopened = FFmpegWhisperSetupModel(defaults: defaults)
+        #expect(reopened.language == "no")
+        #expect(reopened.translate)
+        #expect(reopened.useGPU)
+        #expect(!reopened.executionConsent)
+        #expect(reopened.provider() == nil)
+    }
+
+    @Test("enabled custom provider snapshots settings and preserves exact translated provenance")
+    func configuredProvider() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
+        setup.language = "no"
+        setup.translate = true
+        setup.useGPU = true
+        #expect(setup.provider() == nil)
+        setup.executionConsent = true
+        await setup.prepare()
+        let candidate = setup.provider(run: { request in
+            #expect(request.language == "no")
+            #expect(request.translate)
+            #expect(request.useGPU)
+            #expect(FFmpegWhisperJobRunner.arguments(request).contains(
+                "whisper=model=model.bin:language=no:use_gpu=true:translate=true:max_len=0:destination=output.json:format=json"))
+            return .init(request: request, transcript: .init(
+                segments: [.init(start: 0, end: 50, text: "English translation")],
+                editableText: "English translation"))
+        })
+        let provider = try #require(candidate)
+        setup.language = "en"
+        setup.translate = false
+        setup.useGPU = false
+        let result = try await provider.transcribe(audio: .init(
+            url: folder.appendingPathComponent("memo.wav"), byteCount: 1,
+            sha256: String(repeating: "a", count: 64)))
+        #expect(result.provenance.requestedLanguage == "no")
+        #expect(result.provenance.translate)
+        #expect(result.provenance.useGPU)
+        #expect(result.provenance.schemaVersion == 2)
+        let decoded = try JSONDecoder().decode(FFmpegWhisperTranscriptProvenance.self,
+                                               from: JSONEncoder().encode(result.provenance))
+        #expect(decoded == result.provenance)
+        var oldSchema = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(result.provenance)) as? [String: Any])
+        oldSchema["schemaVersion"] = 1
+        let unsafeUpgrade = try JSONSerialization.data(withJSONObject: oldSchema)
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(FFmpegWhisperTranscriptProvenance.self, from: unsafeUpgrade)
+        }
+        setup.language = "no:translate=true"
+        #expect(setup.provider() == nil)
+        setup.language = "auto"
+        #expect(setup.provider() != nil)
+        setup.executionConsent = false
+        #expect(setup.provider() == nil)
+    }
+
     @Test("selection never admits or executes files and explicit consent gates readiness")
     func consent() async throws {
         let (defaults, suite) = defaults()

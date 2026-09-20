@@ -98,7 +98,7 @@ def probe(executable):
         names = [tool["name"] for tool in tools]
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
-            require(tool["annotations"]["readOnlyHint"] is (tool["name"] != "create_team"),
+            require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {"create_team", "cancel_operation"}),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
         require("create_team" in names, "Missing team creation")
@@ -126,11 +126,26 @@ def probe(executable):
         refused = connection.receive(7)["result"]
         require(refused["isError"] is True and refused["structuredContent"]["code"] == "invalid_arguments",
                 "Provider discovery accepted unexpected arguments")
+        require({"get_operation_status", "cancel_operation"}.issubset(names),
+                "Missing operation coordination tools")
+        # Invalid calls never create operation records, even with automation enabled.
+        for identifier, tool in [(8, "get_operation_status"), (9, "cancel_operation")]:
+            connection.send(request(identifier, "tools/call", {
+                "name": tool, "arguments": {"operationID": "not-a-uuid", "execute": True},
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Operation tool accepted unexpected arguments")
+        connection.send(request(10, "tools/call", {"name": "get_server_capabilities", "arguments": {}}))
+        capabilities = connection.receive(10)["result"]["structuredContent"]
+        require(capabilities["operationExecutorsConnected"] is False,
+                "Update probe when production executors are integrated")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
                 "pipelinedRequests": True, "malformedInputRecovery": True,
                 "providerDiscovery": True, "providerArgumentRefusal": True,
+                "operationArgumentRefusal": True, "honestExecutorBoundary": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()

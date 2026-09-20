@@ -344,6 +344,44 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCustomWhisperOptionsPersistWithoutApprovingOrChangingTranscript() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]
+        let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        let language = app.textFields["caption.voiceMemo.whisper.language"]
+        XCTAssertTrue(language.waitForExistence(timeout: 15))
+        XCTAssertEqual(language.value as? String, "auto")
+        language.click()
+        language.typeKey("a", modifierFlags: .command)
+        language.typeText("no")
+        let translation = app.checkBoxes["caption.voiceMemo.whisper.translateToEnglish"]
+        let gpu = app.checkBoxes["caption.voiceMemo.whisper.useGPU"]
+        XCTAssertEqual(checkboxState(translation), false)
+        translation.click()
+        let originalGPU = try XCTUnwrap(checkboxState(gpu))
+        gpu.click()
+        XCTAssertEqual(checkboxState(gpu), !originalGPU)
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
+        app.terminate()
+
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        let restoredLanguage = app.textFields["caption.voiceMemo.whisper.language"]
+        XCTAssertTrue(restoredLanguage.waitForExistence(timeout: 15))
+        XCTAssertEqual(restoredLanguage.value as? String, "no")
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.translateToEnglish"]), true)
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.useGPU"]), !originalGPU)
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
+        XCTAssertTrue((app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].value as? String)?
+            .contains("Approved UI smoke review") == true)
+        for (index, file) in protectedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+        }
+    }
+
+    @MainActor
     private func chooseCustomWhisperFile(_ url: URL, button identifier: String) {
         app.buttons[identifier].click()
         XCTAssertTrue(app.buttons["Cancel"].firstMatch.waitForExistence(timeout: 10))

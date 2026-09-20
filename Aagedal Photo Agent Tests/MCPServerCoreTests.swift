@@ -42,6 +42,93 @@ struct MCPServerCoreTests {
                            .object(["number": .integer(1), "playerName": .string("Sam Keeper")])])]
     }
 
+    @Test("Operation tools require fresh enablement and exact opaque identifiers")
+    func operationAuthorizationAndArguments() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-operations-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let record = try registry.enqueue(kind: .faceScan, ownerID: UUID())
+        let store = store()
+        let tools = MCPFoundationTools(authorizationStore: store, operationRegistry: registry)
+        let arguments: [String: MCPJSONValue] = ["operationID": .string(record.id.uuidString)]
+        for name in ["get_operation_status", "cancel_operation"] {
+            #expect(tools.callTool(name: name, arguments: arguments).objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
+        }
+        try store.setEnabled(true)
+        for name in ["get_operation_status", "cancel_operation"] {
+            let invalidArguments: [[String: MCPJSONValue]] = [[:], ["operationID": .integer(1)], ["operationID": .null],
+                ["operationID": .string(" /private/photo.jpg ")],
+                ["operationID": .string(record.id.uuidString), "ownerID": .string(UUID().uuidString)]]
+            for invalid in invalidArguments {
+                #expect(tools.callTool(name: name, arguments: invalid).objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+            }
+            #expect(tools.callTool(name: name, arguments: ["operationID": .string(UUID().uuidString)]).objectValue?["structuredContent"]?.objectValue?["code"] == .string("unknown_operation"))
+        }
+        #expect(try registry.inspect(record.id) == record)
+        try store.setEnabled(false)
+        #expect(tools.callTool(name: "cancel_operation", arguments: arguments).objectValue?["isError"] == .bool(true))
+        #expect(try registry.inspect(record.id) == record)
+    }
+
+    @Test("Operation cancellation persists only a request and status omits owner identity")
+    func operationCancellationAndPrivacy() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-operations-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        let record = try registry.enqueue(kind: .voiceTranscription, ownerID: owner)
+        _ = try registry.start(record.id, ownerID: owner)
+        let store = store()
+        try store.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: store, operationRegistry: registry)
+        let arguments: [String: MCPJSONValue] = ["operationID": .string(record.id.uuidString)]
+        let result = tools.callTool(name: "cancel_operation", arguments: arguments)
+        let value = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        #expect(value["state"] == .string("running"))
+        #expect(value["terminal"] == .bool(false))
+        #expect(value["cancellationRequested"] == .bool(true))
+        #expect(value["outcome"] == .null)
+        #expect(value["executorLiveness"] == .string("unknown"))
+        #expect(Set(value.keys) == ["operationID", "kind", "state", "terminal", "outcome", "cancellationRequested", "createdAt", "updatedAt", "scope", "executorLiveness", "cancellationRequestedAt"])
+        let restarted = MCPFoundationTools(authorizationStore: store,
+            operationRegistry: AutomationOperationRegistry(storageDirectory: root))
+        #expect(restarted.callTool(name: "get_operation_status", arguments: arguments) == result)
+        #expect(restarted.callTool(name: "cancel_operation", arguments: arguments) == result)
+        _ = try registry.acknowledgeCancellation(record.id, ownerID: owner, outcome: .partialUncertain)
+        let terminal = restarted.callTool(name: "get_operation_status", arguments: arguments)
+        #expect(terminal.objectValue?["structuredContent"]?.objectValue?["state"] == .string("cancelled"))
+        #expect(terminal.objectValue?["structuredContent"]?.objectValue?["outcome"] == .string("partialUncertain"))
+        #expect(restarted.callTool(name: "cancel_operation", arguments: arguments) == terminal)
+    }
+
+    @Test("Operation discovery distinguishes coordination from execution and storage errors are private")
+    func operationDiscoveryAndStorageFailure() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-operations-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let record = try registry.enqueue(kind: .iptcPatch, ownerID: UUID())
+        let store = store()
+        try store.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: store, operationRegistry: registry)
+        let definitions = tools.toolDefinitions(configuration: try store.load())
+        let status = try #require(definitions.first { $0.objectValue?["name"] == .string("get_operation_status") }?.objectValue)
+        let cancel = try #require(definitions.first { $0.objectValue?["name"] == .string("cancel_operation") }?.objectValue)
+        #expect(status["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(cancel["annotations"]?.objectValue?["readOnlyHint"] == .bool(false))
+        #expect(cancel["annotations"]?.objectValue?["idempotentHint"] == .bool(true))
+        #expect(cancel["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+        #expect(tools.callTool(name: "get_server_capabilities", arguments: [:]).objectValue?["structuredContent"]?.objectValue?["operationExecutorsConnected"] == .bool(false))
+        try Data("sensitive filename and transcript".utf8).write(to: root.appendingPathComponent("operations.json"))
+        for name in ["get_operation_status", "cancel_operation"] {
+            let result = tools.callTool(name: name, arguments: ["operationID": .string(record.id.uuidString)])
+            #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("operation_storage_invalid"))
+            let text = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+            #expect(!text.contains("sensitive"))
+            #expect(!text.contains(root.path))
+            #expect(!text.contains(record.ownerID.uuidString))
+        }
+    }
+
     @Test("Team creation persists a compatible complete roster and retries without duplicating")
     func createsTeamAndRetries() throws {
         let root = try temporaryTeamFolder()
@@ -391,12 +478,12 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
-            #expect(annotations["readOnlyHint"] as? Bool == (tool["name"] as? String != "create_team"))
+            #expect(annotations["readOnlyHint"] as? Bool == (!["create_team", "cancel_operation"].contains(tool["name"] as? String ?? "")))
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }

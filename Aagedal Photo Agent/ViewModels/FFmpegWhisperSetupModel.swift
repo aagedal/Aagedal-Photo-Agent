@@ -16,6 +16,28 @@ final class FFmpegWhisperSetupModel {
     static let preferenceKey = "voiceMemo.transcriptionProvider"
     static let executableBookmarkKey = "voiceMemo.whisper.executableBookmark"
     static let modelBookmarkKey = "voiceMemo.whisper.modelBookmark"
+    static let languageKey = "voiceMemo.whisper.language"
+    static let translateKey = "voiceMemo.whisper.translate"
+    static let useGPUKey = "voiceMemo.whisper.useGPU"
+    var language: String {
+        didSet {
+            let normalized = String(language.prefix(16)).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized != language { language = normalized }
+            if isLanguageValid { defaults.set(language, forKey: Self.languageKey) }
+        }
+    }
+    var translate: Bool {
+        didSet { defaults.set(translate, forKey: Self.translateKey) }
+    }
+    var useGPU: Bool {
+        didSet { defaults.set(useGPU, forKey: Self.useGPUKey) }
+    }
+    var isLanguageValid: Bool { Self.isValidLanguage(language) }
+
+    private static func isValidLanguage(_ language: String) -> Bool {
+        language == "auto" || (language.utf8.count == 2 && language.utf8.allSatisfy { (97...122).contains($0) })
+    }
+
     var choice: VoiceMemoTranscriptionProviderChoice {
         didSet { defaults.set(choice.rawValue, forKey: Self.preferenceKey) }
     }
@@ -52,6 +74,10 @@ final class FFmpegWhisperSetupModel {
         self.defaults = defaults
         self.admission = admission
         self.bookmarks = bookmarks
+        let savedLanguage = defaults.string(forKey: Self.languageKey) ?? "auto"
+        language = Self.isValidLanguage(savedLanguage) ? savedLanguage : "auto"
+        translate = defaults.bool(forKey: Self.translateKey)
+        useGPU = defaults.bool(forKey: Self.useGPUKey)
         choice = defaults.string(forKey: Self.preferenceKey)
             .flatMap(VoiceMemoTranscriptionProviderChoice.init(rawValue:)) ?? .appleSpeech
     }
@@ -145,16 +171,18 @@ final class FFmpegWhisperSetupModel {
         await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
     }
 
-    func provider() -> FFmpegWhisperTranscriptionProvider? {
-        guard executionConsent, isReady, let receipt, let executableAccess, let modelAccess else { return nil }
+    func provider(run: @escaping FFmpegWhisperTranscriptionProvider.Run = {
+        try await FFmpegWhisperJobRunner().run($0)
+    }) -> FFmpegWhisperTranscriptionProvider? {
+        guard executionConsent, isReady, isLanguageValid, let receipt, let executableAccess, let modelAccess else { return nil }
         let authorize = admission.authorizer(for: receipt)
-        return FFmpegWhisperTranscriptionProvider(configuration: receipt.configuration(),
+        return FFmpegWhisperTranscriptionProvider(configuration: receipt.configuration(language: language, useGPU: useGPU, translate: translate),
             authorizeArtifacts: { configuration in
                 // Strong captures keep sandbox grants alive until the provider's run completes.
                 _ = executableAccess.url
                 _ = modelAccess.url
                 try await authorize(configuration)
-            })
+            }, run: run)
     }
 
     func reportPickerError(_ error: Error) {

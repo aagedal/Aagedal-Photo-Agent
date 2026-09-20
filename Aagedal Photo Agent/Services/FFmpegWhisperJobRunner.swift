@@ -47,6 +47,19 @@ nonisolated struct FFmpegWhisperJobRequest: Equatable, Sendable {
     let language: String
     let useGPU: Bool
     let timeoutSeconds: Double
+    let translate: Bool
+
+    init(executable: FFmpegWhisperJobInput, audio: FFmpegWhisperJobInput,
+         model: FFmpegWhisperJobInput, language: String, useGPU: Bool,
+         timeoutSeconds: Double, translate: Bool = false) {
+        self.executable = executable
+        self.audio = audio
+        self.model = model
+        self.language = language
+        self.useGPU = useGPU
+        self.timeoutSeconds = timeoutSeconds
+        self.translate = translate
+    }
 }
 
 /// An inference result, never a reviewed/approved transcript. The provider must still revalidate
@@ -135,7 +148,7 @@ actor FFmpegWhisperJobRunner {
         ["-hide_banner", "-nostdin", "-xerror", "-loglevel", "error", "-protocol_whitelist", "file",
          "-format_whitelist", "wav", "-f", "wav", "-i", "input.wav", "-map", "0:a:0",
          "-vn", "-sn", "-dn", "-af",
-         "whisper=model=model.bin:language=\(request.language):use_gpu=\(request.useGPU ? "true" : "false"):translate=false:max_len=0:destination=output.json:format=json",
+         "whisper=model=model.bin:language=\(request.language):use_gpu=\(request.useGPU ? "true" : "false"):translate=\(request.translate ? "true" : "false"):max_len=0:destination=output.json:format=json",
          "-f", "null", "-"]
     }
 

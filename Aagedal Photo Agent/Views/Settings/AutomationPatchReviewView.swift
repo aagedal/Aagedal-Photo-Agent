@@ -22,12 +22,12 @@ struct AutomationPatchReviewView: View {
             }
             if let review = model.review {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    if context.date < review.expiresAt {
+                    if !model.isExpired && context.date < review.expiresAt {
                         content(review)
                     } else {
                         Text("This plan has expired. Prepare a new patch in your client.")
                             .foregroundStyle(.secondary)
-                            .onAppear { model.revokeApproval() }
+                            .onAppear { model.expireReview(at: context.date) }
                     }
                 }
                 Button("Clear Review") { model.clear() }

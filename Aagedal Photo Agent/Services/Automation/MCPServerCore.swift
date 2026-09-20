@@ -1345,18 +1345,34 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let templateDiscovery: MCPTemplateDiscovery
     let patchPlans: MCPIPTCPatchPlanStore
     let teamLibrary: MCPTeamLibrary
+    let operationRegistry: AutomationOperationRegistry?
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
-         patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(), teamLibrary: MCPTeamLibrary? = nil) {
+         patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(), teamLibrary: MCPTeamLibrary? = nil,
+         operationRegistry: AutomationOperationRegistry? = nil) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
         self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
+        self.operationRegistry = operationRegistry
         self.patchPlans = patchPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
+            definition(
+                name: "get_operation_status",
+                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state and outcome; it does not prove that an executor is alive. Production automation executors are not connected yet.",
+                properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["operationID"]
+            ),
+            definition(
+                name: "cancel_operation",
+                description: "Persist a cooperative cancellation request for one operation. Requires Enable local automation. A request is not cancellation completion: only the executing owner can acknowledge cancellation or report partial effects and recovery. Repeated requests are harmless. Production automation executors are not connected yet.",
+                properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["operationID"],
+                readOnly: false
+            ),
             definition(
                 name: "create_team",
                 description: "Create a team and its complete numbered roster. Requires Enable local automation and Allow team creation in Settings. With Teams iCloud sync enabled, queues a local proposal for manual review in Photo Agent Teams > Review Imports; awaiting_confirmation means no team has been added yet. Retry the same call to check accepted or rejected status. Research the current team sheet using the client's web tools first; do not invent names, numbers or kit colours. Supply a new UUID as teamID and reuse it for retries. Existing teams are never replaced. No photo or match assignments are changed.",
@@ -1489,13 +1505,40 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
 
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
-            let acceptedArguments: Set<String> = name == "create_team" ? Set(MCPTeamLibrary.properties.keys) : ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata"].contains(name)
+            let acceptedArguments: Set<String> = ["get_operation_status", "cancel_operation"].contains(name) ? ["operationID"] : name == "create_team" ? Set(MCPTeamLibrary.properties.keys) : ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata"].contains(name)
                 ? ["path"] : (name == "prepare_iptc_patch" ? MCPIPTCPatchPreparation.argumentKeys : (name == "get_iptc_patch_plan" ? ["planID"] : (name == "list_templates" ? ["kind"] : [])))
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
             }
             let configuration = try authorizationStore.load()
             switch name {
+            case "get_operation_status", "cancel_operation":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                guard Set(arguments.keys) == ["operationID"],
+                      let rawID = arguments["operationID"]?.stringValue,
+                      rawID.utf8.count == 36, let id = UUID(uuidString: rawID) else {
+                    return failure(code: "invalid_arguments", message: "operationID must be a UUID string")
+                }
+                let registry = try operationRegistry ?? AutomationOperationRegistry(
+                    storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
+                // Recheck after resolution, immediately before accessing durable coordination state.
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                let record = try name == "cancel_operation" ? registry.requestCancellation(id) : registry.inspect(id)
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                var value: [String: MCPJSONValue] = [
+                    "operationID": .string(record.id.uuidString.lowercased()),
+                    "kind": .string(record.kind.rawValue),
+                    "state": .string(record.state.rawValue),
+                    "terminal": .bool(record.isTerminal),
+                    "outcome": record.outcome.map { .string($0.rawValue) } ?? .null,
+                    "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
+                    "createdAt": .string(record.createdAt.ISO8601Format()),
+                    "updatedAt": .string(record.updatedAt.ISO8601Format()),
+                    "scope": .string("durable-coordination-record"),
+                    "executorLiveness": .string("unknown"),
+                ]
+                value["cancellationRequestedAt"] = record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null
+                return success(value)
             case "create_team":
                 return success(try teamLibrary.create(arguments: arguments))
             case "get_server_capabilities":
@@ -1510,8 +1553,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
                         .string("local-template-header-discovery"), .string("transcription-provider-discovery"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
+                        .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
                     ]),
                     "mutationToolsAvailable": .bool(true),
+                    "operationExecutorsConnected": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])
             case "list_supported_photo_formats":
@@ -1589,6 +1634,16 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as AutomationOperationRegistry.Failure {
+            let code: String
+            switch error {
+            case .unknownOperation: code = "unknown_operation"
+            case .invalidArguments: code = "invalid_arguments"
+            case .invalidStorage: code = "operation_storage_invalid"
+            case .capacity: code = "operation_capacity"
+            default: code = "operation_unavailable"
+            }
+            return failure(code: code, message: "Photo Agent could not access the requested operation coordination record")
         } catch let error as MCPTeamLibrary.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPIPTCPatchPlanStore.Failure {

@@ -70,7 +70,13 @@ nonisolated struct AutomationPatchReview: Sendable {
     }
 }
 
-actor AutomationPatchReviewService {
+nonisolated protocol AutomationPatchReviewServing: Sendable {
+    func inspect(planID: String) async throws -> AutomationPatchReview
+    func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval
+    func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async
+}
+
+actor AutomationPatchReviewService: AutomationPatchReviewServing {
     nonisolated let filesystemQueue = DispatchSerialQueue(
         label: "com.aagedal.photo-agent.automation-patch-review", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
@@ -122,15 +128,19 @@ final class AutomationPatchReviewModel {
     private(set) var message: String?
     private(set) var isLoading = false
     private(set) var isApproved = false
+    private(set) var isExpired = false
     private var approval: MCPIPTCPatchApprovalStore.Approval?
     private var generation = UUID()
     private var task: Task<Void, Never>?
-    private let service: AutomationPatchReviewService
+    private let service: any AutomationPatchReviewServing
+    private let now: @MainActor () -> Date
 
-    init(service: AutomationPatchReviewService? = nil) {
+    init(service: (any AutomationPatchReviewServing)? = nil,
+         now: @escaping @MainActor () -> Date = { Date() }) {
+        self.now = now
         if let service { self.service = service; return }
         do {
-            self.service = try UITestPatchReviewFixture.currentServiceForModel() ?? .init()
+            self.service = try UITestPatchReviewFixture.currentServiceForModel() ?? AutomationPatchReviewService()
         } catch {
             // A requested test fixture must never fall back to the user's plan archive.
             preconditionFailure("Could not prepare the isolated patch review UI fixture.")
@@ -148,6 +158,7 @@ final class AutomationPatchReviewModel {
     func clear() {
         revokeApproval()
         review = nil
+        isExpired = false
         message = nil
         isLoading = false
     }
@@ -164,8 +175,17 @@ final class AutomationPatchReviewModel {
         }
     }
 
+    /// Called by the presentation clock; explicit time also makes deadline behavior deterministic.
+    func expireReview(at now: Date) {
+        guard let review, !isExpired, now >= review.expiresAt else { return }
+        revokeApproval()
+        isExpired = true
+        message = "This plan has expired. Prepare a new patch in your client."
+    }
+
     func approveReviewedPlan() {
-        guard let review, !isLoading, !isApproved else { return }
+        guard let review, !isLoading, !isApproved, !isExpired else { return }
+        guard now() < review.expiresAt else { expireReview(at: now()); return }
         message = nil
         isLoading = true
         let expected = generation
@@ -175,6 +195,12 @@ final class AutomationPatchReviewModel {
                 guard let self, self.generation == expected, !Task.isCancelled else {
                     // Consent may finish while the user clears, navigates away or changes IDs.
                     await service.revoke(receipt)
+                    return
+                }
+                guard self.now() < receipt.expiresAt else {
+                    await service.revoke(receipt)
+                    guard self.generation == expected, !Task.isCancelled else { return }
+                    self.expireReview(at: self.now())
                     return
                 }
                 self.approval = receipt

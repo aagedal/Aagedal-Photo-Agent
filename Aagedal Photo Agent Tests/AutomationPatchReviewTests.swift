@@ -47,6 +47,48 @@ struct AutomationPatchReviewTests {
         deinit { try? FileManager.default.removeItem(at: root) }
     }
 
+    /// Holds a real receipt after the store grants it, deliberately ignoring task cancellation.
+    /// This reproduces a service completion already in flight when native consent is cleared.
+    private actor HeldApprovalService: AutomationPatchReviewServing {
+        let underlying: AutomationPatchReviewService
+        private var pending: CheckedContinuation<MCPIPTCPatchApprovalStore.Approval, Never>?
+        private var receipt: MCPIPTCPatchApprovalStore.Approval?
+        private(set) var revocations = 0
+        var hasPendingApproval: Bool { pending != nil }
+
+        init(_ underlying: AutomationPatchReviewService) { self.underlying = underlying }
+
+        func inspect(planID: String) async throws -> AutomationPatchReview {
+            try await underlying.inspect(planID: planID)
+        }
+
+        func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval {
+            receipt = try await underlying.approve(review)
+            return await withCheckedContinuation { pending = $0 }
+        }
+
+        func finishApproval() {
+            guard let pending, let receipt else { return }
+            self.pending = nil
+            self.receipt = nil
+            pending.resume(returning: receipt)
+        }
+
+        func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async {
+            await underlying.revoke(receipt)
+            revocations += 1
+        }
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while !(await condition()), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await condition(), "Timed out waiting for a controlled review transition")
+    }
+
     private func preview() -> [String: MCPJSONValue] {
         ["planID": .string(UUID().uuidString.lowercased()), "previewOnly": .bool(true),
          "commitAvailable": .bool(false), "canonicalPath": .string("/photos/å.jpg"),
@@ -159,6 +201,94 @@ struct AutomationPatchReviewTests {
         #expect(model.review == nil)
         #expect(!model.isLoading)
         #expect(!model.isApproved)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("A receipt completing after clear, ID edit or expiry is revoked", arguments: ["clear", "edit", "expire"])
+    @MainActor
+    func lateApprovalIsRevoked(action: String) async throws {
+        let fixture = try Fixture()
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        let review = try #require(model.review)
+        model.approveReviewedPlan()
+        try await waitUntil { await service.hasPendingApproval }
+        switch action {
+        case "clear": model.clear()
+        case "edit": model.planID = UUID().uuidString.lowercased()
+        default: model.expireReview(at: review.expiresAt)
+        }
+        await service.finishApproval()
+        try await waitUntil { await service.revocations == 1 }
+        #expect(!model.isApproved)
+        #expect(!model.isLoading)
+        if action == "expire" {
+            #expect(model.review?.planID == fixture.planID)
+            #expect(model.isExpired)
+            #expect(model.message == "This plan has expired. Prepare a new patch in your client.")
+        } else {
+            #expect(model.review == nil)
+            #expect(model.message == nil)
+        }
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Expiry revokes existing consent exactly at the immutable deadline") @MainActor
+    func modelExpiry() async throws {
+        let fixture = try Fixture()
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        let review = try #require(model.review)
+        model.approveReviewedPlan()
+        try await waitUntil { await service.hasPendingApproval }
+        await service.finishApproval()
+        try await waitUntil { model.isApproved }
+        model.expireReview(at: review.expiresAt.addingTimeInterval(-0.001))
+        #expect(model.isApproved)
+        #expect(model.message == nil)
+        #expect(await service.revocations == 0)
+        model.expireReview(at: review.expiresAt)
+        #expect(!model.isApproved)
+        #expect(!model.isLoading)
+        #expect(model.review?.planID == fixture.planID)
+        try await waitUntil { await service.revocations == 1 }
+        model.expireReview(at: review.expiresAt.addingTimeInterval(1))
+        #expect(model.isExpired)
+        model.approveReviewedPlan()
+        #expect(!model.isLoading)
+        #expect(await service.revocations == 1)
+        model.clear()
+        #expect(!model.isExpired)
+        #expect(model.review == nil)
+        #expect(model.message == nil)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Receipt expiry while returning to the main actor cannot display approved consent") @MainActor
+    func receiptExpiresBeforePresentation() async throws {
+        let fixture = try Fixture()
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        var now = Date()
+        let model = AutomationPatchReviewModel(service: service, now: { now })
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        let review = try #require(model.review)
+        model.approveReviewedPlan()
+        try await waitUntil { await service.hasPendingApproval }
+        now = review.expiresAt
+        await service.finishApproval()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isExpired)
+        #expect(!model.isApproved)
+        #expect(await service.revocations == 1)
+        #expect(model.message == "This plan has expired. Prepare a new patch in your client.")
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
     }
 

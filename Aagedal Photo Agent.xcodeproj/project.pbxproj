@@ -207,6 +207,8 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
+		C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000011 /* AutomationOperationRegistry.swift */; };
+		C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000021 /* AutomationOperationPersistence.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -450,6 +452,8 @@
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
 		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
+		C84000000000000000000011 /* AutomationOperationRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationRegistry.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationRegistry.swift"; sourceTree = SOURCE_ROOT; };
+		C84000000000000000000021 /* AutomationOperationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationPersistence.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationPersistence.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -718,6 +722,8 @@
 				C76000000000000000000001 /* MCPIPTCPatchPreparation.swift */,
 				C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */,
 				C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */,
+				C84000000000000000000011 /* AutomationOperationRegistry.swift */,
+				C84000000000000000000021 /* AutomationOperationPersistence.swift */,
 				C7900000000000000000011 /* MCPIPTCPatchPlanPersistence.swift */,
 				C76000000000000000000041 /* MetadataRequirements.swift */,
 				C76000000000000000000031 /* MetadataValidation.swift */,
@@ -1118,6 +1124,8 @@
 				C76000000000000000000002 /* MCPIPTCPatchPreparation.swift in Sources */,
 				C78000000000000000000202 /* FFmpegWhisperTranscriptProvenance.swift in Sources */,
 				C77000000000000000000002 /* MCPIPTCPatchPlanStore.swift in Sources */,
+				C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */,
+				C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */,
 				C7900000000000000000012 /* MCPIPTCPatchPlanPersistence.swift in Sources */,
 				C76000000000000000000042 /* MetadataRequirements.swift in Sources */,
 				C76000000000000000000032 /* MetadataValidation.swift in Sources */,

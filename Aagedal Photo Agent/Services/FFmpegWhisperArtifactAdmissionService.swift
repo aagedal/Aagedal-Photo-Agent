@@ -39,10 +39,10 @@ actor FFmpegWhisperArtifactAdmissionService {
         var modelIdentifier: String { "custom-unverified-sha256:" + model.sha256 }
 
         func configuration(language: String = "auto", useGPU: Bool = false,
-                           timeoutSeconds: Double = 300) -> FFmpegWhisperTranscriptionProvider.Configuration {
+                           timeoutSeconds: Double = 300, translate: Bool = false) -> FFmpegWhisperTranscriptionProvider.Configuration {
             .init(executable: executable, buildIdentifier: buildIdentifier, model: model,
                   modelIdentifier: modelIdentifier, language: language, useGPU: useGPU,
-                  timeoutSeconds: timeoutSeconds)
+                  timeoutSeconds: timeoutSeconds, translate: translate)
         }
     }
 

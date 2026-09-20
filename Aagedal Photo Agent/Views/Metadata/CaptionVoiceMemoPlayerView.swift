@@ -324,6 +324,11 @@ struct CaptionVoiceMemoPlayerView: View {
                 Text("Custom, unverified FFmpeg Whisper transcript. Artifact hashes record identity, not trust or compatibility.")
                     .foregroundStyle(.secondary).textSelection(.enabled)
             }
+            if let evidence = draft.whisperProvenance {
+                Text("Requested language: \(evidence.requestedLanguage). \(evidence.translate ? "Translation into English requested." : "Original-language transcription requested.") \(evidence.useGPU ? "GPU acceleration requested." : "CPU inference requested.")")
+                    .foregroundStyle(.secondary).textSelection(.enabled)
+                    .accessibilityIdentifier("caption.voiceMemo.whisper.requestEvidence")
+            }
             Text("Transcript draft")
                 .font(.caption.weight(.semibold))
             TextEditor(text: Binding(
@@ -342,7 +347,9 @@ struct CaptionVoiceMemoPlayerView: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(draft.isApproved
                      ? "Reviewed and approved for this exact WAV. Editing revokes approval."
-                     : "Generated locally in \(draft.localeIdentifier). Review the text, then approve it explicitly.")
+                     : draft.whisperProvenance != nil
+                        ? "Generated locally. Review the text, then approve it explicitly."
+                        : "Generated locally in \(draft.localeIdentifier). Review the text, then approve it explicitly.")
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 Spacer(minLength: 0)
@@ -367,7 +374,7 @@ struct CaptionVoiceMemoPlayerView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Custom files are unverified. Choose a compatible FFmpeg build with the patched Whisper JSON filter and a compatible model. No downloads occur.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("Provider choice and file access are saved. Each Caption session requires fresh execution consent and file identity checks. Clear Custom Files forgets the saved files.")
+            Text("Provider choice, transcription settings, and file access are saved. Each Caption session requires fresh execution consent and file identity checks. Clear Custom Files forgets the saved files.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             HStack {
                 Button("Choose FFmpeg…") { isSelectingWhisperExecutable = true }
@@ -381,10 +388,25 @@ struct CaptionVoiceMemoPlayerView: View {
                 Text(whisperSetup.modelURL?.lastPathComponent ?? "No model selected")
                     .lineLimit(1).help(whisperSetup.modelURL?.path ?? "")
             }
+            HStack {
+                TextField("Language", text: $whisperSetup.language)
+                    .frame(maxWidth: 180)
+                    .accessibilityIdentifier("caption.voiceMemo.whisper.language")
+                Text("auto or a two-letter code (en, no, fr)").foregroundStyle(.secondary)
+            }
+            if !whisperSetup.isLanguageValid {
+                Text("Enter auto or a lowercase two-letter language code.").foregroundStyle(.red)
+            }
+            Toggle("Translate speech into English", isOn: $whisperSetup.translate)
+                .accessibilityIdentifier("caption.voiceMemo.whisper.translateToEnglish")
+            Toggle("Request GPU acceleration", isOn: $whisperSetup.useGPU)
+                .accessibilityIdentifier("caption.voiceMemo.whisper.useGPU")
+            Text("Language, translation, and GPU support depend on your custom build and model. GPU use is requested, not verified; turn it off if your build cannot run it.")
+                .foregroundStyle(.secondary).textSelection(.enabled)
             Toggle("I allow this unverified executable to run locally on my voice memo when I press Transcribe.",
                    isOn: $whisperSetup.executionConsent)
                 .accessibilityIdentifier("caption.voiceMemo.whisper.executionConsent")
-            Text("Identity checks do not verify signing, licensing, safety, or compatibility. Language is detected automatically; inference uses CPU.")
+            Text("Identity checks do not verify signing, licensing, safety, or compatibility.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             HStack {
                 if whisperSetup.isPreparing {
@@ -396,7 +418,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         guard let provider = whisperSetup.provider() else { return }
                         Task { await transcriptModel.transcribe(provider: provider) }
                     }
-                    .disabled(transcriptModel.isChecking || transcriptModel.isSavingReview)
+                    .disabled(transcriptModel.isChecking || transcriptModel.isSavingReview || !whisperSetup.isLanguageValid)
                     .accessibilityIdentifier("caption.voiceMemo.transcribe")
                 } else {
                     Button("Enable Custom Files") { Task { await whisperSetup.prepare() } }
