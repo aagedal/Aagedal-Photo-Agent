@@ -675,7 +675,10 @@ struct CaptionWorkspaceView: View {
             }
 
             Divider()
-            CaptionVoiceMemoPlayerView(imageURL: session.currentURL)
+            CaptionVoiceMemoPlayerView(imageURL: session.currentURL) {
+                settingsViewModel.requestedDestination = .transcription
+                openSettings()
+            }
             Divider()
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 8) {

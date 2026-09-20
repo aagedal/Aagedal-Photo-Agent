@@ -118,6 +118,8 @@ def probe(executable):
         require({provider["id"] for provider in providers} == {"appleSpeech", "customWhisper"},
                 "Unexpected provider identities")
         for provider in providers:
+            require("Settings → Transcription" in provider["nextAction"],
+                    "Provider setup guidance does not point to Transcription Settings")
             require(provider["runtimeAvailability"] == "unknown" and
                     provider["transcriptionCallable"] is False, "Catalog overclaims runtime readiness")
         connection.send(request(7, "tools/call", {

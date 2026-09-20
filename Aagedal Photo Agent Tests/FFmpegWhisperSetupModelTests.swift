@@ -19,6 +19,30 @@ struct FFmpegWhisperSetupModelTests {
         semaphore.wait(timeout: .now()) == .success
     }
 
+    @Test("An outstanding settings file picker cannot replace files during a transcription")
+    func fileSelectionRefusesWhileTranscribing() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = FFmpegWhisperSetupModel(defaults: preferences)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
+        setup.executionConsent = true
+        await setup.prepare()
+        #expect(setup.isReady)
+        let bookmark = preferences.data(forKey: FFmpegWhisperSetupModel.executableBookmarkKey)
+        #expect(setup.beginTranscription())
+        #expect(!setup.beginTranscription())
+        await setup.select(folder.appendingPathComponent("replacement"), executable: true)
+        #expect(setup.isReady && setup.executionConsent)
+        #expect(setup.executableURL?.lastPathComponent == "ffmpeg")
+        #expect(preferences.data(forKey: FFmpegWhisperSetupModel.executableBookmarkKey) == bookmark)
+        #expect(setup.errorMessage != nil)
+        setup.finishTranscription()
+        #expect(!setup.isTranscribing)
+    }
+
     private func defaults() -> (UserDefaults, String) {
         let suite = "WhisperSetupTests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

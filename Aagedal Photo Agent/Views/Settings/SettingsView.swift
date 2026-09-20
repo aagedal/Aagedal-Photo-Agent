@@ -114,6 +114,7 @@ struct SettingsView: View {
     enum SettingsSection: String, CaseIterable, Identifiable {
         case general
         case rawDecoding
+        case transcription
         case developControls
         case metadata
         case keywordLists
@@ -138,6 +139,7 @@ struct SettingsView: View {
         var title: String {
             switch self {
             case .general: return "General"
+            case .transcription: return "Transcription"
             case .rawDecoding: return "RAW Decoding"
             case .developControls: return "Develop Sliders"
             case .metadata: return "Metadata"
@@ -163,6 +165,7 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .general: return "gear"
+            case .transcription: return "waveform"
             case .rawDecoding: return "camera.aperture"
             case .developControls: return "slider.horizontal.3"
             case .metadata: return "tag"
@@ -194,6 +197,7 @@ struct SettingsView: View {
                 Section("General") {
                     row(.general)
                     row(.rawDecoding)
+                    row(.transcription)
                     row(.developControls)
                 }
                 Section("Library & Metadata") {
@@ -269,6 +273,7 @@ struct SettingsView: View {
         guard let destination = settingsViewModel.requestedDestination else { return }
         switch destination {
         case .metadata: selection = .metadata
+        case .transcription: selection = .transcription
         }
         settingsViewModel.requestedDestination = nil
     }
@@ -298,6 +303,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
+        case .transcription: TranscriptionSettingsView()
         case .general: generalTab
         case .rawDecoding: rawDecodingTab
         case .developControls: developControlsTab

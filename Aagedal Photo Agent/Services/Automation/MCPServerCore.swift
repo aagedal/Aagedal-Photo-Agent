@@ -1313,12 +1313,12 @@ nonisolated enum MCPTranscriptionProviderDiscovery {
                 provider(
                     id: "appleSpeech", name: "Apple Speech",
                     reason: "apple-speech-app-runtime-required",
-                    nextAction: "Open a photo's voice memo in Photo Agent and select Apple Speech to check on-device availability and installed language assets. Language downloads require an explicit action in the app."
+                    nextAction: "Select Apple Speech in Photo Agent Settings → Transcription, then open a photo's voice memo to check on-device availability and installed language assets. Language downloads require an explicit action in the app."
                 ),
                 provider(
                     id: "customWhisper", name: "Custom FFmpeg Whisper",
                     reason: "custom-admission-and-consent-are-app-session-only",
-                    nextAction: "In Photo Agent's voice memo controls, select Custom FFmpeg Whisper, choose a compatible custom FFmpeg executable and Whisper model, grant execution consent, and prepare them for the current app session. This helper cannot observe or reuse that session's grants."
+                    nextAction: "In Photo Agent Settings → Transcription, select Custom FFmpeg Whisper, choose a compatible custom FFmpeg executable and Whisper model, grant execution consent, and prepare them for the current app session. This helper cannot observe or reuse that session's grants."
                 ),
             ]),
         ]

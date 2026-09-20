@@ -4,13 +4,12 @@ import UniformTypeIdentifiers
 /// Playback is explicit and separate from Caption's metadata editing/flush path.
 struct CaptionVoiceMemoPlayerView: View {
     let imageURL: URL?
+    let openTranscriptionSettings: () -> Void
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
     @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
     @State private var transcriptModel = CaptionVoiceMemoTranscriptModel()
-    @State private var whisperSetup = FFmpegWhisperSetupModel()
-    @State private var isSelectingWhisperExecutable = false
-    @State private var isSelectingWhisperModel = false
+    @State private var whisperSetup = FFmpegWhisperSetupModel.shared
     @State private var refreshID = UUID()
     @State private var isSelectingRecoveryMemo = false
     @State private var isSelectingRelationshipFolder = false
@@ -167,22 +166,6 @@ struct CaptionVoiceMemoPlayerView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $isSelectingWhisperExecutable,
-                      allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first { Task { await whisperSetup.select(url, executable: true) } }
-            case .failure(let error): whisperSetup.reportPickerError(error)
-            }
-        }
-        .fileImporter(isPresented: $isSelectingWhisperModel,
-                      allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first { Task { await whisperSetup.select(url, executable: false) } }
-            case .failure(let error): whisperSetup.reportPickerError(error)
-            }
-        }
         .alert(
             "Use replacement voice memo?",
             isPresented: Binding(
@@ -215,7 +198,6 @@ struct CaptionVoiceMemoPlayerView: View {
             reassociationImageURL = nil
         }
         .onDisappear {
-            whisperSetup.endSession()
             model.stop()
             recoveryModel.cancel()
             reassociationModel.cancel()
@@ -228,13 +210,12 @@ struct CaptionVoiceMemoPlayerView: View {
     @ViewBuilder
     private var transcriptionPanel: some View {
         Divider()
-        Picker("Transcription provider", selection: $whisperSetup.choice) {
-            ForEach(VoiceMemoTranscriptionProviderChoice.allCases, id: \.rawValue) { choice in
-                Text(choice.title).tag(choice)
-            }
+        HStack {
+            Text(whisperSetup.choice.title).foregroundStyle(.secondary)
+            Spacer()
+            Button("Transcription Settings…", action: openTranscriptionSettings)
+                .accessibilityIdentifier("caption.voiceMemo.transcriptionSettings")
         }
-        .accessibilityIdentifier("caption.voiceMemo.transcriptionProvider")
-        .disabled(transcriptModel.isTranscribing || transcriptModel.isDownloading || whisperSetup.isPreparing)
         if whisperSetup.choice == .customWhisper {
             customWhisperPanel
         } else if transcriptModel.isChecking {
@@ -264,15 +245,23 @@ struct CaptionVoiceMemoPlayerView: View {
                 switch availability.status {
                 case .installed:
                     Button("Transcribe", systemImage: "text.bubble") {
-                        Task { await transcriptModel.transcribe() }
+                        guard whisperSetup.beginTranscription() else { return }
+                        Task {
+                            defer { whisperSetup.finishTranscription() }
+                            await transcriptModel.transcribe()
+                        }
                     }
-                    .disabled(transcriptModel.isTranscribing || transcriptModel.isSavingReview)
+                    .disabled(whisperSetup.isTranscribing || transcriptModel.isTranscribing || transcriptModel.isSavingReview)
                     .accessibilityIdentifier("caption.voiceMemo.transcribe")
                 case .needsDownload:
                     Button("Download Language", systemImage: "arrow.down.circle") {
-                        Task { await transcriptModel.downloadLanguage() }
+                        guard whisperSetup.beginTranscription() else { return }
+                        Task {
+                            defer { whisperSetup.finishTranscription() }
+                            await transcriptModel.downloadLanguage()
+                        }
                     }
-                    .disabled(transcriptModel.isDownloading)
+                    .disabled(whisperSetup.isTranscribing || transcriptModel.isDownloading)
                     .accessibilityIdentifier("caption.voiceMemo.downloadLanguage")
                 case .reservationLimitReached:
                     Menu("Release Speech Language", systemImage: "externaldrive.badge.minus") {
@@ -320,14 +309,15 @@ struct CaptionVoiceMemoPlayerView: View {
         }
 
         if let draft = transcriptModel.draft {
-            if draft.whisperProvenance?.buildIdentifier.hasPrefix("custom-unverified-sha256:") == true {
-                Text("Custom, unverified FFmpeg Whisper transcript. Artifact hashes record identity, not trust or compatibility.")
-                    .foregroundStyle(.secondary).textSelection(.enabled)
-            }
             if let evidence = draft.whisperProvenance {
-                Text("Requested language: \(evidence.requestedLanguage). \(evidence.translate ? "Translation into English requested." : "Original-language transcription requested.") \(evidence.useGPU ? "GPU acceleration requested." : "CPU inference requested.")")
-                    .foregroundStyle(.secondary).textSelection(.enabled)
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.requestEvidence")
+                DisclosureGroup("Transcription details") {
+                    if evidence.buildIdentifier.hasPrefix("custom-unverified-sha256:") {
+                        Text("Custom, unverified FFmpeg Whisper transcript. Artifact hashes record identity, not trust or compatibility.")
+                    }
+                    Text("Requested language: \(evidence.requestedLanguage). \(evidence.translate ? "Translation into English requested." : "Original-language transcription requested.") \(evidence.useGPU ? "GPU acceleration requested." : "CPU inference requested.")")
+                        .accessibilityIdentifier("caption.voiceMemo.whisper.requestEvidence")
+                }
+                .foregroundStyle(.secondary).textSelection(.enabled)
             }
             Text("Transcript draft")
                 .font(.caption.weight(.semibold))
@@ -371,69 +361,21 @@ struct CaptionVoiceMemoPlayerView: View {
     }
 
     private var customWhisperPanel: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("Custom files are unverified. Choose a compatible FFmpeg build with the patched Whisper JSON filter and a compatible model. No downloads occur.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("Provider choice, transcription settings, and file access are saved. Each Caption session requires fresh execution consent and file identity checks. Clear Custom Files forgets the saved files.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            HStack {
-                Button("Choose FFmpeg…") { isSelectingWhisperExecutable = true }
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.selectExecutable")
-                Text(whisperSetup.executableURL?.lastPathComponent ?? "No executable selected")
-                    .lineLimit(1).help(whisperSetup.executableURL?.path ?? "")
-            }
-            HStack {
-                Button("Choose Model…") { isSelectingWhisperModel = true }
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.selectModel")
-                Text(whisperSetup.modelURL?.lastPathComponent ?? "No model selected")
-                    .lineLimit(1).help(whisperSetup.modelURL?.path ?? "")
-            }
-            HStack {
-                TextField("Language", text: $whisperSetup.language)
-                    .frame(maxWidth: 180)
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.language")
-                Text("auto or a two-letter code (en, no, fr)").foregroundStyle(.secondary)
-            }
-            if !whisperSetup.isLanguageValid {
-                Text("Enter auto or a lowercase two-letter language code.").foregroundStyle(.red)
-            }
-            Toggle("Translate speech into English", isOn: $whisperSetup.translate)
-                .accessibilityIdentifier("caption.voiceMemo.whisper.translateToEnglish")
-            Toggle("Request GPU acceleration", isOn: $whisperSetup.useGPU)
-                .accessibilityIdentifier("caption.voiceMemo.whisper.useGPU")
-            Text("Language, translation, and GPU support depend on your custom build and model. GPU use is requested, not verified; turn it off if your build cannot run it.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            Toggle("I allow this unverified executable to run locally on my voice memo when I press Transcribe.",
-                   isOn: $whisperSetup.executionConsent)
-                .accessibilityIdentifier("caption.voiceMemo.whisper.executionConsent")
-            Text("Identity checks do not verify signing, licensing, safety, or compatibility.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            HStack {
-                if whisperSetup.isPreparing {
-                    ProgressView().controlSize(.small)
-                    Text("Recording custom artifact identities…")
-                    Button("Cancel Setup") { whisperSetup.cancelPreparation() }
-                } else if whisperSetup.isReady {
-                    Button("Transcribe", systemImage: "text.bubble") {
-                        guard let provider = whisperSetup.provider() else { return }
-                        Task { await transcriptModel.transcribe(provider: provider) }
-                    }
-                    .disabled(transcriptModel.isChecking || transcriptModel.isSavingReview || !whisperSetup.isLanguageValid)
-                    .accessibilityIdentifier("caption.voiceMemo.transcribe")
-                } else {
-                    Button("Enable Custom Files") { Task { await whisperSetup.prepare() } }
-                        .disabled(!whisperSetup.executionConsent || whisperSetup.executableURL == nil
-                                  || whisperSetup.modelURL == nil)
-                        .accessibilityIdentifier("caption.voiceMemo.whisper.enable")
+        HStack {
+            Button("Transcribe", systemImage: "text.bubble") {
+                guard let provider = whisperSetup.provider(), whisperSetup.beginTranscription() else { return }
+                Task {
+                    defer { whisperSetup.finishTranscription() }
+                    await transcriptModel.transcribe(provider: provider)
                 }
-                Button("Clear Custom Files") { whisperSetup.clear() }
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.clear")
             }
-            if let error = whisperSetup.errorMessage {
-                Text(error).foregroundStyle(.red).textSelection(.enabled)
+            .disabled(whisperSetup.isTranscribing || !whisperSetup.isReady || !whisperSetup.executionConsent || !whisperSetup.isLanguageValid
+                      || transcriptModel.isTranscribing || transcriptModel.isChecking || transcriptModel.isSavingReview)
+            .accessibilityIdentifier("caption.voiceMemo.transcribe")
+            if !whisperSetup.isReady {
+                Text("Set up Whisper in Settings.").foregroundStyle(.secondary)
             }
         }
-        .disabled(transcriptModel.isTranscribing)
     }
 
     private func time(_ seconds: TimeInterval) -> String {

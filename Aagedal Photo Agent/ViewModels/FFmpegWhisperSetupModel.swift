@@ -13,6 +13,18 @@ nonisolated enum VoiceMemoTranscriptionProviderChoice: String, CaseIterable, Sen
 
 @MainActor @Observable
 final class FFmpegWhisperSetupModel {
+    /// Consent and admitted identities are shared by Settings and Caption until app quit or revocation.
+    static let shared = FFmpegWhisperSetupModel()
+    private(set) var isTranscribing = false
+
+    func beginTranscription() -> Bool {
+        guard !isTranscribing else { return false }
+        isTranscribing = true
+        return true
+    }
+
+    func finishTranscription() { isTranscribing = false }
+
     static let preferenceKey = "voiceMemo.transcriptionProvider"
     static let executableBookmarkKey = "voiceMemo.whisper.executableBookmark"
     static let modelBookmarkKey = "voiceMemo.whisper.modelBookmark"
@@ -106,6 +118,11 @@ final class FFmpegWhisperSetupModel {
     }
 
     func select(_ url: URL, executable: Bool) async {
+        // A file panel can outlive the enabled Settings form while Caption starts work.
+        guard !isTranscribing else {
+            errorMessage = "Stop transcription in Caption before changing custom files."
+            return
+        }
         invalidate()
         executionConsent = false
         let request = UUID()

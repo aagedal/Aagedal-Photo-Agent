@@ -251,6 +251,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
         let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
         XCTAssertTrue(draft.waitForExistence(timeout: 15))
+        openTranscriptionSettings()
         let enable = app.buttons["caption.voiceMemo.whisper.enable"]
         XCTAssertTrue(enable.waitForExistence(timeout: 10))
         XCTAssertFalse(enable.isEnabled)
@@ -271,10 +272,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertTrue(enable.waitForExistence(timeout: 5))
             XCTAssertFalse(enable.isEnabled)
         }
+        closeTranscriptionSettings()
         XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
         XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         XCTAssertTrue(app.buttons["caption.voiceMemo.whisper.enable"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
         XCTAssertEqual(try Data(contentsOf: fixture.sidecarURL), originalSidecar)
@@ -297,6 +300,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
 
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         let enable = app.buttons["caption.voiceMemo.whisper.enable"]
         XCTAssertTrue(enable.waitForExistence(timeout: 15))
         XCTAssertFalse(enable.isEnabled)
@@ -309,17 +313,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         consent.click()
         XCTAssertTrue(waitForEnabled(enable, expected: true))
         enable.click()
-        XCTAssertTrue(app.buttons["caption.voiceMemo.transcribe"].waitForExistence(timeout: 10))
+        closeTranscriptionSettings()
+        let transcribe = app.buttons["caption.voiceMemo.transcribe"]
+        XCTAssertTrue(transcribe.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForEnabled(transcribe, expected: true))
 
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         let restoredEnable = app.buttons["caption.voiceMemo.whisper.enable"]
         XCTAssertTrue(restoredEnable.waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts[executable.lastPathComponent].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts[model.lastPathComponent].waitForExistence(timeout: 10))
         XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
         XCTAssertFalse(restoredEnable.isEnabled)
-        XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].exists)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].exists
+            && app.buttons["caption.voiceMemo.transcribe"].isEnabled)
         app.checkBoxes["caption.voiceMemo.whisper.executionConsent"].click()
         XCTAssertTrue(waitForEnabled(restoredEnable, expected: true))
 
@@ -330,11 +339,13 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         XCTAssertTrue(app.buttons["caption.voiceMemo.whisper.enable"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["No executable selected"].exists)
         XCTAssertTrue(app.staticTexts["No model selected"].exists)
         XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
         XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        closeTranscriptionSettings()
         XCTAssertTrue((app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].value as? String)?
             .contains("Approved UI smoke review") == true)
         XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
@@ -349,6 +360,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]
         let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         let language = app.textFields["caption.voiceMemo.whisper.language"]
         XCTAssertTrue(language.waitForExistence(timeout: 15))
         XCTAssertEqual(language.value as? String, "auto")
@@ -367,6 +379,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         app.terminate()
 
         launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        openTranscriptionSettings()
         let restoredLanguage = app.textFields["caption.voiceMemo.whisper.language"]
         XCTAssertTrue(restoredLanguage.waitForExistence(timeout: 15))
         XCTAssertEqual(restoredLanguage.value as? String, "no")
@@ -374,11 +387,48 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.useGPU"]), !originalGPU)
         XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
         XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
+        closeTranscriptionSettings()
         XCTAssertTrue((app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].value as? String)?
             .contains("Approved UI smoke review") == true)
         for (index, file) in protectedFiles.enumerated() {
             XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
         }
+    }
+
+    @MainActor
+    private func assertCaptionHasNoTranscriptionSetup() {
+        for identifier in [
+            "caption.voiceMemo.whisper.selectExecutable", "caption.voiceMemo.whisper.selectModel",
+            "caption.voiceMemo.whisper.language", "caption.voiceMemo.whisper.translateToEnglish",
+            "caption.voiceMemo.whisper.useGPU", "caption.voiceMemo.whisper.executionConsent",
+            "caption.voiceMemo.whisper.enable", "caption.voiceMemo.whisper.clear"
+        ] {
+            XCTAssertFalse(app.descendants(matching: .any)[identifier].exists, identifier)
+        }
+        XCTAssertTrue(app.buttons["caption.voiceMemo.transcriptionSettings"].exists)
+    }
+
+    @MainActor
+    private func openTranscriptionSettings() {
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+            .waitForExistence(timeout: 15))
+        assertCaptionHasNoTranscriptionSetup()
+        app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+        XCTAssertTrue(app.staticTexts["Transcription"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["caption.voiceMemo.whisper.enable"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    private func closeTranscriptionSettings() {
+        app.typeKey("w", modifierFlags: .command)
+        let settingsClosed = NSPredicate { [self] _, _ in
+            !app.buttons["caption.voiceMemo.whisper.enable"].exists
+        }
+        expectation(for: settingsClosed, evaluatedWith: app)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+            .waitForExistence(timeout: 10))
+        assertCaptionHasNoTranscriptionSetup()
     }
 
     @MainActor

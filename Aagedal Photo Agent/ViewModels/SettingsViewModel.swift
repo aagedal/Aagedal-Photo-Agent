@@ -343,6 +343,7 @@ nonisolated enum DevelopSlider: String, CaseIterable, Identifiable, Sendable {
 
 nonisolated enum SettingsDestination: Equatable, Sendable {
     case metadata
+    case transcription
 }
 
 nonisolated struct TemplatesFolderBookmarkResolution: Sendable, Equatable {

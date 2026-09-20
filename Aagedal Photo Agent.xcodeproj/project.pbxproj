@@ -153,6 +153,8 @@
 		C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */; };
 		C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000101 /* AutomationOperationRegistryTests.swift */; };
 		C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000201 /* AutomationPatchReviewTests.swift */; };
+		C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000011 /* AutomationOperationRegistry.swift */; };
+		C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000021 /* AutomationOperationPersistence.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -207,8 +209,6 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
-		C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000011 /* AutomationOperationRegistry.swift */; };
-		C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000021 /* AutomationOperationPersistence.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -394,6 +394,8 @@
 		C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchApprovalStoreTests.swift; sourceTree = "<group>"; };
 		C82000000000000000000101 /* AutomationOperationRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationRegistryTests.swift; sourceTree = "<group>"; };
 		C82000000000000000000201 /* AutomationPatchReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationPatchReviewTests.swift; sourceTree = "<group>"; };
+		C84000000000000000000011 /* AutomationOperationRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationRegistry.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationRegistry.swift"; sourceTree = SOURCE_ROOT; };
+		C84000000000000000000021 /* AutomationOperationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationPersistence.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationPersistence.swift"; sourceTree = SOURCE_ROOT; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
@@ -452,8 +454,6 @@
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
 		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
-		C84000000000000000000011 /* AutomationOperationRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationRegistry.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationRegistry.swift"; sourceTree = SOURCE_ROOT; };
-		C84000000000000000000021 /* AutomationOperationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationPersistence.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationPersistence.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
