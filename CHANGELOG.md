@@ -10,6 +10,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Template import confirmation now binds the exact previewed folder and JSON inventory,
+  refusing stale bytes, newly occupied targets and ambiguous IDs before overwriting.
+- Added read-only MCP `list_templates` discovery by stable UUID for explicitly authorized
+  custom metadata/Develop template folders. It returns names and revision hashes without
+  exposing field values or granting template-application authority.
+- Image conversion now restricts FFmpeg input and output protocols to local files and
+  refuses nonlocal paths, preparing for the separate Whisper-capable artifact integration.
+
 - Template saves and deletion now check the exact loaded file bytes and storage-folder
   identity. Reloading a list cannot authorize an older open draft, and ambiguous filenames,
   duplicate IDs and conflicting shortcut records refuse mutation.

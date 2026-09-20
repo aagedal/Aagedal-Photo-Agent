@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 73: template byte authority and accessible editor actions](release/cycle-73-template-byte-authority-2026-09-20.md) binds saves/deletion to exact decoded files and directory identity, protects shortcut reassignment and import provenance, and preserves supported extensions or refuses unsafe overwrites. Template rows expose separate actions and editors support keyboard cancellation. See the evidence record for current validation. Production MCP workflows, import-preview authority, FFmpeg Whisper and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 74: template import authority and MCP discovery](release/cycle-74-template-import-discovery-2026-09-20.md) binds import confirmation to the exact previewed inventory, adds stable-UUID read-only discovery for authorized custom template folders, and restricts image FFmpeg invocations to local-file protocols. Production template application, operation coordination, default/iCloud discovery, Whisper integration and broader release gates remain open. See the evidence record for validation.
 
 ## Portfolio
 

@@ -86,14 +86,30 @@ editorial values selected by Photo Agent, including per-field carrier, pending/c
 revision tokens. These tokens describe that read and do not authorize a later write. It rejects
 relative/traversal paths, symlinks, Finder aliases, hard links, special files, changed folder identities,
 Photo Agent private folders, and targets outside the selected roots. Unreadable carriers and oversized
-metadata records fail as a whole. Face scan, template, transcription, and IPTC mutation tools are not yet
+metadata records fail as a whole. Face scan, template application, transcription, and IPTC mutation tools are not yet
 exposed. Returned paths and metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
+
+Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template
+UUIDs, names and exact-content revision hashes. Set a custom folder in **Settings → Templates**,
+disable Templates iCloud sync, and explicitly authorize that folder in **Settings → Automation**.
+Default/private and iCloud template libraries are currently unavailable through this tool. Discovery
+reads headers only, exposes no template field values, and does not grant application authority.
+Changed, ambiguous, unsupported or oversized inventories refuse as a whole. Template names are
+untrusted user-authored content and may be sensitive.
 
 Client setup references: [Codex MCP](https://developers.openai.com/codex/mcp),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),
 [OpenCode 1.x MCP](https://opencode.ai/docs/mcp-servers/), and
 [OpenCode v2 MCP](https://opencode.ai/v2/docs/mcp-servers).
+
+## Import templates
+
+In **Settings → Templates → Metadata**, choose **Import…**, select a JSON bundle and review
+its new/overwrite counts. Confirmation is bound to the previewed folder and exact existing JSON
+bytes. If another process changes the inventory or the storage folder changes, import refuses;
+open the bundle again to review a fresh preview. A failure after some templates were saved reports
+those completed writes rather than claiming that the whole batch succeeded.
 
 ## Recover a deleted template
 

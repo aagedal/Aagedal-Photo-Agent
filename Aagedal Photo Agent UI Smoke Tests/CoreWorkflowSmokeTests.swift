@@ -481,6 +481,72 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTemplateImportRefusesChangedPreviewAndAllowsFreshConfirmation() throws {
+        let root = fixtureRoot.appendingPathComponent("ImportTemplates", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let id = UUID().uuidString
+        let destination = root.appendingPathComponent("\(id).json")
+        var template: [String: Any] = [
+            "schemaVersion": 1, "id": id, "name": "Original Import Template",
+            "templateType": "Full", "fields": [], "processInstantly": false,
+        ]
+        let original = try JSONSerialization.data(withJSONObject: template)
+        try original.write(to: destination)
+        template["name"] = "Imported Replacement"
+        let bundle = fixtureRoot.appendingPathComponent("ImportBundle.json")
+        try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1, "exportedAt": "2026-09-20T12:00:00Z", "templates": [template],
+        ]).write(to: bundle)
+        launch(workflow: "open-folder", folder: try makePhotoFolder(count: 1), templateRoot: root)
+        app.typeKey(",", modifierFlags: .command)
+        let templates = app.staticTexts["Templates"].firstMatch
+        XCTAssertTrue(templates.waitForExistence(timeout: 10))
+        templates.click()
+
+        func openPreview() {
+            let importButton = app.buttons["Import…"]
+            XCTAssertTrue(importButton.waitForExistence(timeout: 10))
+            importButton.click()
+            app.typeKey("g", modifierFlags: [.command, .shift])
+            // Go to Folder focuses its path editor, whose accessibility type
+            // differs across supported macOS releases. Use its native keyboard flow.
+            app.typeKey("a", modifierFlags: .command)
+            app.typeText(bundle.path)
+            app.typeKey(.return, modifierFlags: [])
+            let previewTitle = app.staticTexts["Import Templates"]
+            // Revisiting the already-selected file may accept the picker immediately.
+            // Only activate Open if we have not reached the confirmation yet, so an
+            // extra Return cannot accidentally confirm an already-present preview.
+            if !previewTitle.waitForExistence(timeout: 2) {
+                app.typeKey(.return, modifierFlags: [])
+            }
+            XCTAssertTrue(previewTitle.waitForExistence(timeout: 10), app.debugDescription)
+            XCTAssertTrue(app.staticTexts["1 will overwrite existing templates"].exists)
+        }
+
+        openPreview()
+        var peerBytes = original
+        peerBytes.append(10)
+        try peerBytes.write(to: destination)
+        app.buttons["Import"].click()
+        let conflict = app.staticTexts[
+            "The template folder changed or contains an ambiguous import target. Preview the bundle again before importing."
+        ]
+        XCTAssertTrue(conflict.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertEqual(try Data(contentsOf: destination), peerBytes)
+        XCTAssertFalse(app.buttons["metadata-template-edit-\(id)"].label.contains("Imported Replacement"))
+
+        openPreview()
+        app.buttons["Import"].click()
+        let imported = app.buttons["metadata-template-edit-\(id)"]
+        let replacementAppears = NSPredicate { _, _ in imported.label == "Edit Imported Replacement" }
+        expectation(for: replacementAppears, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: destination)) as? [String: Any])
+        XCTAssertEqual(saved["name"] as? String, "Imported Replacement")
+    }
+
+    @MainActor
     private func launch(
         workflow: String,
         folder: URL? = nil,

@@ -2,13 +2,18 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-20
-**Latest implementation state:** Cycle 73 binds existing template saves/deletion to exact decoded bytes and directory identity, preflights ambiguous and occupied targets before shortcut mutations, propagates import inventory authority, preserves supported JSON extensions and refuses unsafe overwrites. Template row actions and editor keyboard controls are independently accessible. Final integrated verification passes 3,055 tests / 323 suites, zero failures/skips; repository validation passes. Native template action/cancellation and byte-conflict Save as New recovery pass for both template kinds. Production MCP workflows and FFmpeg Whisper remain open.
-**Latest native evidence:** Cycle 73's disposable-root UI smoke test passes for metadata and Develop: independent Edit/Trash accessibility actions, initial name focus, Escape cancellation, byte-only peer-change refusal with retained draft, and Save as New with exact peer-byte preservation. Test fixtures were removed and all Photo Agent entries are stopped. This does not close spoken VoiceOver, full Tab traversal, relaunch, real-client or broader native acceptance. Earlier narrow cycle evidence remains historical.
-**Cycle baseline:** `37c8418` for cycle 73; checkout initially clean. Changes comprise template byte authority, extension preservation, accessibility, regressions and planning records. Unrelated project-file normalization is preserved separately. No broad release-readiness gate is claimed complete.
+**Latest implementation state:** Cycle 74 binds template imports to the exact previewed inventory/root, advances mutation evidence using exact emitted bytes, and exposes bounded MCP `list_templates` headers for explicitly authorized custom folders. Image FFmpeg invocations require absolute local paths and file-only protocols. The complete integrated suite passes 3,072 tests / 325 suites, zero failures/skips; 14 native checks pass across the full run and corrected import rerun; one opt-in speech case is skipped. No release-readiness gate is newly closed.
+**Latest native evidence:** Cycle 74 executes the complete UI target: 13 cases pass, one opt-in speech case skips, and the new import drill initially fails on test-only picker/accessibility assumptions. Its corrected focused rerun passes exact-byte stale-preview refusal and fresh-confirmation recovery, yielding 14 distinct passing UI cases across both runs. All Photo Agent entries and the test runner are stopped. Spoken VoiceOver, full Tab traversal, installed-language/offline speech, real-client and broader native acceptance remain open.
+**Cycle baseline:** `44189fb`, initially clean. Cycle 74 comprises template import authority, MCP discovery, FFmpeg protocol restrictions, regressions and planning records.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 74 template import authority and MCP discovery](cycle-74-template-import-discovery-2026-09-20.md)
+adds exact preview/commit inventory checks, stable template header discovery for authorized custom
+folders, and a local-file FFmpeg invocation boundary. Focused checks pass 67 tests; the complete integrated suite passes 3,072 tests / 325 suites, zero failures/skips. Fourteen distinct native checks pass across the complete run and corrected import rerun; one opt-in speech drill is skipped.
+Default/iCloud discovery, full template application, operations and Whisper remain open.
 
 [Cycle 73 template byte authority and accessible actions](cycle-73-template-byte-authority-2026-09-20.md)
 adds exact-file/directory evidence, protected shortcut preflight, fresh import authority and
@@ -580,8 +585,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 | --- | --- | --- |
 | Required features | Open | Remaining production MCP tools/coordination and FFmpeg Whisper implementation/verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 73 final-source complete serial suite passes 3,055 tests / 323 suites, zero failures/skips; repository validation passes. Cycle 31 retains the latest complete 10-test UI run | Complete UI target, packaging and exact-candidate release checks |
-| Computer-use workflows | Native template independent actions, keyboard cancellation, byte-conflict recovery and earlier stale deletion; native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
+| Automated regression and package | Cycle 74 final-source complete serial suite passes 3,072 tests / 325 suites, zero failures/skips; repository validation passes. 14 distinct native checks pass across full/focused runs; one speech case skips | Complete UI target, packaging and exact-candidate release checks |
+| Computer-use workflows | Native template import stale-preview refusal/fresh-preview recovery, independent actions, keyboard cancellation, byte-conflict recovery and earlier stale deletion; native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |
 | External interoperability/transport | Open | Actual Bridge/Photo Mechanic and disposable FTP/FTPS/SFTP evidence |
@@ -651,6 +656,15 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 74 on baseline `44189fb` implements import-preview authority and bounded read-only
+metadata/Develop template discovery for explicitly authorized custom folders with template iCloud
+sync disabled. FFmpeg image calls now require local absolute paths and file-only protocols.
+Source is committed as `e93ab1d` (FFmpeg) and `b08d678` (template/MCP). Focused checks pass 67 tests and full regression passes 3,072 tests / 325 suites, zero failures/skips. Native coverage passes 14 distinct checks across the full run and corrected import rerun; the opt-in speech case is skipped. Repository validation passes. Next complete full/default/iCloud template discovery scope,
+shared template application and production operation status/cancellation/IPTC tools, then
+Whisper artifact/provider/model integration. The exact local candidate binary and preliminary
+image conversion evidence are recorded in the cycle report; the bundled binary is unchanged.
+The cycle 73 and earlier handoffs below are historical.
 
 Cycle 73 on baseline `37c8418` implements exact template byte/directory authority,
 protected shortcut/occupied-target admission, import-result evidence, bounded extension

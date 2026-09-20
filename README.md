@@ -107,10 +107,12 @@ the support table and validation records.
   copyable setup for Codex CLI, Claude Code, OpenCode 1.x, and OpenCode v2.
 - The current foundation exposes read-only server, photo-input-format, root, path-admission and photo-revision tools with strict canonical-path,
   identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
-  with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. Photo-revision inspection
+  with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. The helper
+  discovers stable metadata/Develop template UUIDs, names and revision hashes with `list_templates`
+  from explicitly authorized custom template folders (template iCloud sync must be off). Photo-revision inspection
   captures opaque source, XMP and owned app-sidecar tokens. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
-  Template, face, transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
+  Template application, face, transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 
 ### Face Recognition
 

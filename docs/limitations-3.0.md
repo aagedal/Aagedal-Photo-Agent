@@ -135,5 +135,16 @@ preserved in metadata templates and at the root of Develop templates. Unknown nu
 extensions and unsupported nested Develop settings refuse in-place saves rather than being
 silently discarded. Save as New keeps supported fields in an independent template; the original
 file remains unchanged. Template bundle exports still use the typed supported schema and are
-not an archival backup of unknown extensions. Import-preview conflict authority and races with
-noncooperating external writers remain separate limitations.
+not an archival backup of unknown extensions. Races with noncooperating external writers remain a separate limitation.
+
+### Template automation and import authority
+
+MCP template discovery currently supports only explicitly authorized custom Templates folders
+with template iCloud sync disabled. It returns headers and content revisions, not complete
+validated application plans. Default/private and iCloud template stores, template application,
+operation status/cancellation and guarded IPTC commits remain separate implementation work.
+Template import preview authority detects changed inventory before writes and between entries;
+it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
+The current FFmpeg artifact still lacks Whisper. Local-file protocol restrictions are implemented,
+but binary replacement, full image regression, provenance/notices and the transcription/model
+lifecycle remain open. The restriction is not a sandbox for other local files referenced by a container.

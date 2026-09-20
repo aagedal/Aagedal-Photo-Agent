@@ -1548,6 +1548,15 @@ row controls and keyboard editor actions are implemented. Import-preview authori
 races and MCP template tools remain open; no Phase 5A checkbox is closed by this prerequisite.
 See [cycle 73](release/cycle-73-template-byte-authority-2026-09-20.md) for verification status.
 
+**2026-09-20 import preview and template discovery:** Import confirmation now binds the exact
+JSON inventory and captured directory, preflights ambiguous/occupied targets and revalidates
+between entries using exact emitted bytes. MCP `list_templates` returns stable UUID/name/revision
+headers from explicitly authorized custom folders with iCloud template sync disabled. It exposes
+no template values and grants no application authority. Default/iCloud discovery, full template
+application, provider readiness and broader operation tools remain open. FFmpeg image invocations
+now enforce absolute local input/output paths and file-only protocols; the Whisper binary/model
+integration is still separate. See [cycle 74](release/cycle-74-template-import-discovery-2026-09-20.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
