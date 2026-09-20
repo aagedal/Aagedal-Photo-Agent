@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 80: custom Whisper setup and preservation preflight](release/cycle-80-whisper-setup-preservation-2026-09-20.md) adds Caption provider selection, explicit custom-file execution consent and draft-review integration, plus exact carrier and semantic preservation baselines in read-only MCP patch plans. Provider choice persists; file grants are session-only. Guarded commits, retained bookmarks, curated model delivery and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 81: retained Whisper selections and provider discovery](release/cycle-81-whisper-bookmarks-provider-discovery-2026-09-20.md) persists custom executable/model security-scoped bookmarks, restores selections without execution consent, and adds read-only MCP provider IDs with explicit unknown app-session readiness. Every Caption session requires fresh consent and identity admission; Clear forgets saved selections. Guarded commits, curated delivery and broader release gates remain open.
 
 ## Portfolio
 

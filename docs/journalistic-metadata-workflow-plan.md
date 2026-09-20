@@ -1665,7 +1665,7 @@ open; no complete Phase 5A criterion closes. See [cycle 77](release/cycle-77-pla
 - [ ] Harden curated model delivery to Photo Agent's component standard: versioned signed descriptor,
   exact byte count and SHA-256, bounded download, regular-file/path containment checks, atomic install,
   verified receipt, cancellation cleanup, update/rollback/removal, and explicit user initiation.
-- [ ] Support explicitly imported custom compatible models through a retained security-scoped
+- [x] Support explicitly imported custom compatible models through a retained security-scoped
   bookmark and clear unverifiable/custom provenance; never represent a custom model as a curated or
   signed Photo Agent component.
 - [ ] Generalize associated-audio admission through an explicit allowlist backed by the bundled
@@ -1674,6 +1674,14 @@ open; no complete Phase 5A criterion closes. See [cycle 77](release/cycle-77-pla
   every admitted format; a matching basename alone remains non-authoritative.
 - [x] Keep Apple on-device speech available. Provider choice is explicit and persisted; an unavailable
   provider reports actionable readiness without silently switching providers or downloading assets.
+
+**Cycle 81 continuation (2026-09-20):** Custom executable/model selections now use retained
+security-scoped bookmarks, asynchronous no-prompt restoration and stale refresh. Missing grants
+remain recoverable; Clear forgets them. Session closure revokes execution consent/admission, and
+restored selections require fresh identity validation. MCP provider discovery returns stable IDs,
+setup guidance and explicitly unknown app runtime readiness; live readiness and transcription tools
+remain open. See [cycle 81](release/cycle-81-whisper-bookmarks-provider-discovery-2026-09-20.md)
+for focused, native and integrated validation evidence.
 
 ### Verification
 
