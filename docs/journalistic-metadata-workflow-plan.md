@@ -1468,6 +1468,13 @@ build now succeeds and passes nine image comparisons plus CPU process/actual-run
 accuracy and silence-duration findings remain open, and the shipped artifact is unchanged. See
 [cycle 78](release/cycle-78-live-mcp-whisper-drafts-2026-09-20.md).
 
+Cycle 79 adds durable read-only preview archives with unchanged expiry and exact authority/revision
+revalidation, and custom/unverified session artifact receipts with post-inference authorization.
+The incrementally rebuilt candidate emits sample-bound timestamps, confirmed by CPU and actual-runner
+speech/silence probes; nine image comparisons still pass. This does not complete committable plans,
+trusted artifact/model lifecycle or provider UI. See
+[cycle 79](release/cycle-79-durable-previews-whisper-timing-2026-09-20.md).
+
 ### MCP transport and authority
 
 - [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex CLI,
