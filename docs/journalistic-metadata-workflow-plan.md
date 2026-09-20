@@ -1626,6 +1626,14 @@ approval, commit, operation-status or cancellation tools; those criteria remain 
 
 ### Tool and operation contract
 
+**Cycle 83 continuation (2026-09-20):** Native plan review now supports explicit exact-plan
+approval and revocation, with consent-time source/authority revalidation and cancellation of
+superseded requests. Consent remains internal to the review session and writes no metadata.
+The operation registry adds explicit stopped-owner reconciliation that preserves unresolved
+work as recovery required. Production executor integration, verified commits, liveness detection,
+recovery execution and operation endpoints remain open; no Phase 5A criterion is newly complete.
+See [cycle 83 evidence](release/cycle-83-native-consent-recovery-2026-09-20.md).
+
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.

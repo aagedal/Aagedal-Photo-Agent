@@ -114,7 +114,12 @@ This is separate from the unapproved AI-origin analyzer described above.
   records without truncation. `prepare_iptc_patch` previews a bounded descriptive-field subset
   against exact read revisions, with before/proposed values and IIM compatibility warnings. It
   retains an immutable local plan across helper restart for `get_iptc_patch_plan` to revalidate until its five-minute expiry. It does not
-  persist a committable plan or evaluate physical write normalization/preservation.
+  persist a committable plan. It captures production normalization and preservation preflight
+  evidence but does not execute or verify physical writes. Settings supports explicit local
+  exact-plan approval and revocation within the review session; this cannot authorize an MCP
+  commit in the current build. The internal operation registry can mark a known stopped owner's
+  unresolved work as recovery required, but executor-liveness detection and actual recovery
+  integration remain unfinished.
   Develop, face, template, transcription,
   status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.

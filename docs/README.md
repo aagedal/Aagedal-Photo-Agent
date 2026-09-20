@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 82: local plan review and operation records](release/cycle-82-local-review-operation-records-2026-09-20.md) adds Settings inspection of exact proofreading plans plus internal exact-plan consent and durable cancellation/outcome foundations. Inspection remains read-only. Native consent, guarded verified commits, production operation endpoints, curated model delivery and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 83: native consent and stopped-owner recovery](release/cycle-83-native-consent-recovery-2026-09-20.md) connects exact-plan local approval and revocation to Settings, with fresh source/authority checks. Operation records can explicitly reconcile a known stopped owner as recovery required. Guarded verified commits, production operation endpoints and executor recovery, curated model delivery and broader release gates remain open.
 
 ## Portfolio
 

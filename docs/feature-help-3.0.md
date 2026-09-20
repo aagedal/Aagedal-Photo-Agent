@@ -126,7 +126,10 @@ paste its exact `planID`, and choose **Inspect Plan**. The app rechecks the curr
 and photo/sidecar revisions on a background worker before displaying normalized before/proposed
 values and warnings. Repeatable values use quoted lists to preserve item boundaries. Changing the
 ID or leaving the view clears the displayed review; expired plans require fresh preparation.
-This is a checked snapshot, not live monitoring, approval, or a metadata write.
+After reviewing all changes and warnings, **Approve Reviewed Plan** rechecks the exact files and
+authorization and records consent for this review session. **Revoke Approval**, **Clear Review**,
+changing the ID or leaving the review removes that consent. Approval writes no photo metadata;
+commit remains unavailable. The displayed values are a checked snapshot, not live monitoring.
 
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
