@@ -1457,6 +1457,17 @@ source-revision, preservation, conflict, verification, cancellation, and recover
 interactive app. Apple Speech and FFmpeg's embedded whisper.cpp both feed the existing editable,
 reviewable transcript workflow without implicitly approving or applying text to IPTC fields.
 
+Cycle 78 replaces buffered STDIN reads with immediate pipe reads after a real Claude Code
+health check exposed initialization timeouts. The rebuilt helper connects successfully. IPTC
+preview schema 2 now uses production typed mutations, canonical comparison and edited-field
+IIM validation, retaining exact source/request values. An internal explicit Whisper provider
+feeds source-revalidated unapproved drafts and persists strict build/model/language/segment
+provenance through the existing review lifecycle. Trusted artifact/model installation, provider
+UI, physical patch preservation/approval and commit remain open. The isolated full patched FFmpeg
+build now succeeds and passes nine image comparisons plus CPU process/actual-runner probes; custom-model
+accuracy and silence-duration findings remain open, and the shipped artifact is unchanged. See
+[cycle 78](release/cycle-78-live-mcp-whisper-drafts-2026-09-20.md).
+
 ### MCP transport and authority
 
 - [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex CLI,

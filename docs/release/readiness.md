@@ -2,13 +2,22 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and Aagedal Media Converter FFmpeg/Whisper provider remain. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-20
-**Latest implementation state:** Cycle 77 adds immutable helper-session IPTC plan retrieval with exact authorization-generation/carrier/effective-value checks, a source-bound Whisper process runner with cancellation/deadline/output admission, and conservative blank-audio handling. Full regression passes 3,128 tests / 330 suites, zero failures/skips; final focused selection passes 86 tests, repository and embedded-helper protocol checks pass. Source is committed as `1443faa`. Durable normalized/committable plans, rebuilt Whisper artifacts/model/provider integration and broader release evidence remain open. An isolated FFmpeg build found mismatched/incomplete compiled dependencies and produced no candidate. No release-readiness gate is newly closed.
-**Latest native evidence:** Cycle 74 executes the complete UI target: 13 cases pass, one opt-in speech case skips, and the new import drill initially fails on test-only picker/accessibility assumptions. Its corrected focused rerun passes exact-byte stale-preview refusal and fresh-confirmation recovery, yielding 14 distinct passing UI cases across both runs. All Photo Agent entries and the test runner are stopped. Spoken VoiceOver, full Tab traversal, installed-language/offline speech, real-client and broader native acceptance remain open.
-**Cycle baseline:** `4e85465`, initially clean. Cycle 77 source/tests are committed as `1443faa`; dated evidence records verification and the remaining rebuild/provider boundary.
+**Latest implementation state:** Cycle 78 fixes an actual persistent-client MCP initialization timeout, uses production normalization/validation in schema-2 IPTC previews, and connects the internal Whisper runner to source-revalidated unapproved drafts with strict persisted provenance. Source is committed as `b9054ea`. Final focused tests pass 84 tests / five suites; full regression passes 3,140 tests / 331 suites, zero failures/skips, and repository validation passes. Durable committable patch plans, trusted Whisper artifact/model lifecycle and provider UI remain open. An isolated patched FFmpeg rebuild succeeds with nine image comparisons and CPU process/actual-runner probes. The custom model exposes accuracy/timing gaps; the shipped artifact is unchanged. Tooling is committed as `7c815f3`.
+**Latest native evidence:** Cycle 78 passes two actual native review cases: Apple and synthetic persisted Whisper records preserve complete edits, approval revocation, relaunch and explicit reapproval; Whisper segment/model/build evidence and WAV/relationship bytes survive. This is review/persistence evidence, not real Whisper inference. Actual Claude Code 2.1.236 health check connects after the STDIO fix. Codex config parsing alone passes; OpenCode 1.18.30 exits 137 and has an invalid code signature. Full per-client workflow, VoiceOver/offline and broader native acceptance remain open.
+**Cycle baseline:** `f4b4850`, initially clean. Cycle 78 source/tests are committed as `b9054ea`; no full release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 78 live MCP transport and Whisper drafts](cycle-78-live-mcp-whisper-drafts-2026-09-20.md)
+fixes the persistent-pipe response defect exposed by Claude Code, shares production IPTC semantic
+normalization, and persists exact Whisper evidence through source-bound draft review. Full tests
+pass 3,140 / 331 suites, focused tests pass 84 / five suites, repository checks and two native
+review/relaunch cases pass. Reproducible FFmpeg preparation repairs attributed source/replay defects;
+the full candidate builds, nine image comparisons pass and actual CPU runner speech/no-speech probes pass.
+Custom-model accuracy/timing gaps remain. Trusted artifacts/models, provider UI, committable
+IPTC plans and production operation tools remain mandatory work.
 
 [Cycle 77 revalidated plans and Whisper process jobs](cycle-77-plan-revalidation-whisper-runner-2026-09-20.md)
 adds bounded immutable session plans and exact authority/revision revalidation, plus private exact-input
@@ -593,6 +602,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
    native offline/Sony drills plus VoiceOver evidence and native and real-server image-plus-WAV
    delivery.
 6. Continue the mandatory [Phase 5A MCP/Whisper scope](../journalistic-metadata-workflow-plan.md#phase-5a--local-mcp-automation-and-ffmpeg-whisper-transcription). Cycles 34–39 establish the bundled default-off STDIO helper, root admission, client setup and shared reservations for several retained GUI writes and Batch Rename execution. Cycles 40–47 add input-format discovery, strict tool-call shapes, root-anchored photo/carrier revisions, bounded owned-sidecar draft fields, mixed-generation refusal and final ancestor-path revalidation. Cycles 54–55 add the app-side typed snapshot reader and bounded effective output. Cycle 56 provides field-level selection provenance for inherited values and clears. Cycle 57 keeps parsing and bounded output inside the photo lease and revalidates carrier entries, ancestors and authorization before returning. Cycle 58 separates captured XMP decoding from the filesystem/write service and removes the dictionary adapter's writer dependency. Cycle 59 completes those dependencies and exposes guarded get_photo_metadata. Next verify effective reads and revocation in each supported real client using checklist A21. Connect remaining GUI operations to shared admission; add operation status/cancellation, face scan, metadata/Develop template and batch transcription tools, two-phase IPTC patch commits, and the Aagedal Media Converter FFmpeg build with embedded whisper.cpp plus hardened model delivery. Cycle 76 provides a pinned, sanitizer-tested source correction for JSON escaping and inference/output error propagation; rebuild and validate the attributed candidate with it before provider integration. Cycle 77 adds bounded immutable session-memory plans with get_iptc_patch_plan retrieval and authorization-generation checks; persisted normalized plans, verified commits and approval/preservation remain open. The owned Whisper runner now passes subprocess failure/cancellation tests, but the full rebuild needs matching dependencies from the attributed companion sources. Verify launch/discovery from each targeted client using disposable configuration. Preserve Apple Speech and the existing review/approval boundary. llama.cpp and general GGUF inference remain 3.1.
+   Cycle 78 completes an isolated patched full FFmpeg candidate and initial CPU/image/actual-runner
+   verification. Next resolve the observed custom-model accuracy and segment-duration gaps, prepare
+   trusted model delivery and full legal/component packaging before installing that candidate; no
+   shipped binary changed. The internal source-bound provider/review bridge is implemented, while
+   provider selection UI and full inference acceptance remain open. IPTC previews now normalize and
+   validate through production field rules; physical preservation/approval and commit are next.
 7. Continue actual UI checks across required workspaces and failure/recovery cases, plus remaining
    storage/executor auditing. Cycle 3 observed native Trash, shared survivor playback, missing-memo
    Details, Finder Put Back, exact bundle recovery and restored Caption persistence. Broaden to
@@ -682,6 +697,25 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 78 starts from clean `f4b4850`. Application changes are committed as `b9054ea`, full FFmpeg
+preparation as `7c815f3`. Final full regression passes 3,140 tests / 331 suites (118.555 seconds),
+focused tests pass 84 / five suites, two native Apple/Whisper-evidence review cases pass, and final
+repository validation passes. Independent review findings are resolved. Claude Code connects after
+the real open-pipe MCP defect was fixed; Codex configuration parsing passes only, and OpenCode's
+installed executable has an invalid signature. Production semantic IPTC previews and explicit
+source-bound Whisper draft/persistence integration are implemented without mutation authority or
+provider-selection UI.
+
+The full isolated patched FFmpeg candidate builds with all 22 requested feature flags, passes nine
+image comparisons, direct CPU failure/speech probes and actual Photo Agent runner speech/noSpeech
+probes. Candidate hash is `15a27e05462f52979374f6f6fa45c3f3177345b67270b20d320927c978bf4aaf`;
+shipped binary unchanged. The custom/unverified local model shows misrecognition and silence timing
+beyond source duration, so quality/timing acceptance remains open. Next complete trusted artifacts,
+model lifecycle/provider UI and full inference acceptance; durable patch commits/preservation/
+approval and production operations; then broader native/external/legal/CI/candidate release gates.
+See [cycle 78 evidence](cycle-78-live-mcp-whisper-drafts-2026-09-20.md). The existing automation was
+not changed. Every handoff below is historical; state remains IMPLEMENTING.
 
 Cycle 77 continues from clean `4e85465` and commits implementation as `1443faa`. Final full regression
 passes 3,128 tests / 330 suites in 126.577 seconds; focused verification passes 86 tests / six suites

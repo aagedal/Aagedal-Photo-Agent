@@ -153,9 +153,11 @@ The current FFmpeg artifact still lacks Whisper. Local-file protocol restriction
 but binary replacement, full image regression, provenance/notices and the transcription/model
 lifecycle remain open. The restriction is not a sandbox for other local files referenced by a container.
 
-The candidate Whisper filter currently writes transcript text into JSON without escaping it.
-The pinned source patch corrects this, but a complete artifact must be reproducibly rebuilt before
-canonical Whisper inference can ship. A bounded process runner now uses exact private input snapshots,
+The original candidate Whisper filter wrote transcript text into JSON without escaping it.
+An isolated full candidate with the pinned correction now builds and passes nine image comparisons
+and initial CPU process/runner probes. It has not replaced the shipped artifact. The custom model
+probe also exposed speech misrecognition and silence timestamps beyond input duration; accuracy,
+timing, trusted models and final packaging remain open. A bounded process runner now uses exact private input snapshots,
 WAV-only local decoding, cancellation/deadlines and canonical JSON validation. An explicit internal
 provider adapter revalidates the WAV relationship and produces unapproved editable drafts with
 persisted build/model identity, language settings and segment evidence. It requires artifact
