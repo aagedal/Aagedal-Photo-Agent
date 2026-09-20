@@ -1567,6 +1567,16 @@ encoding now declares already-rendered input color values so ICC TIFFs retain th
 See [cycle 75](release/cycle-75-local-discovery-avif-2026-09-20.md); these changes do not close the
 production operation, provider/model, real-client or broader release gates.
 
+**Cycle 76 continuation (2026-09-20):** The helper now exposes `prepare_iptc_patch` as a
+read-only preview for 17 descriptive text fields plus Keywords and Person Shown. All three exact
+read revisions are required; the retained snapshot boundary refuses stale or concurrently changed
+carriers. It returns exact before/proposed values, shared IIM byte-limit warnings and a five-minute
+content-bound preview ID, explicitly without persisted plans, physical normalization, commit or
+publication authority. The two-phase criterion remains open. A bounded no-follow Whisper output
+reader and a pinned, sanitizer-tested FFmpeg source correction address output admission, JSON
+escaping and error propagation; neither is a rebuilt or integrated provider.
+See [cycle 76](release/cycle-76-iptc-preview-whisper-output-2026-09-20.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

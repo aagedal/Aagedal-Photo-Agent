@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 75: local discovery, protocol hardening and AVIF signaling](release/cycle-75-local-discovery-avif-2026-09-20.md) adds authorized default-local template discovery, strict MCP request/response handling, bounded Whisper JSON parsing and a real AVIF color-signaling fix. A reproducible nine-case binary comparison checks sample parity and AVIF tags. The candidate Whisper emitter requires a source fix/rebuild; production operations, Whisper integration and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 76: IPTC previews and Whisper output](release/cycle-76-iptc-preview-whisper-output-2026-09-20.md) adds revision-bound, read-only descriptive IPTC change previews, bounded no-follow canonical transcript-file ingestion, and a reproducible FFmpeg source patch for lossless JSON and failure propagation. Persisted/committable patch plans, rebuilt Whisper artifacts, provider integration and broader release gates remain open.
 
 ## Portfolio
 
