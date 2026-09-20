@@ -1,5 +1,10 @@
 # FFmpeg Whisper canonical JSON source correction
 
+**Current integration:** the revised cycle-79 executable is now bundled for development.
+See [artifact identity, source delivery and validation](../../docs/provenance/ffmpeg-whisper-bundled.md).
+The investigation and build history below describe the earlier source-preparation stage;
+remaining release qualification is tracked in the current provenance document.
+
 This is a reproducible source correction and isolated C regression harness, **not a built,
 installed or approved transcription provider**. No neighboring checkout or binary is modified.
 

@@ -19,6 +19,18 @@ def generated_block(document: dict) -> str:
     ffmpeg = next(item for item in document["components"] if item["id"] == "ffmpeg-photo")
     upstream = ffmpeg["upstream"]
     recipe = ffmpeg["buildRecipe"]
+    if "repositoryPath" in recipe:
+        return "\n".join([
+            START,
+            f"- **FFmpeg {ffmpeg['version']}**, built with `--enable-gpl --enable-version3 --enable-whisper`.",
+            "  This full build supports image export and local voice memo transcription. Network and",
+            "  device support is compiled in; transcription restricts input protocols to local files.",
+            "- [Exact source inputs, local patches and build evidence](docs/provenance/ffmpeg-whisper-bundled.md)",
+            f"  are pinned in the component manifest. Preparation: `{recipe['repositoryPath']}`.",
+            "  The complete corresponding source companion must accompany a release; an upstream",
+            "  FFmpeg tarball alone does not reproduce this modified build and its dependencies.",
+            END,
+        ])
     return "\n".join([
         START,
         f"- **FFmpeg {ffmpeg['version']}**, built with `--enable-gpl --enable-version3` (image-only, network",

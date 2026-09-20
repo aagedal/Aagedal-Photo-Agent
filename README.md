@@ -130,12 +130,12 @@ the support table and validation records.
   never replaces existing teams, assigns teams to a match, or links players to Known People.
   Player numbers must be unique integers from 0 through 9999. Unknown names, numbers and colours
   should be verified from a reliable source before submission.
-- **Settings → Transcription** selects **Apple Speech** or **Custom FFmpeg Whisper**. Custom setup
-  requires selected compatible executable/model files and execution consent; generated text remains
-  an editable draft. Provider choice and security-scoped file bookmarks persist; each app session
-  requires fresh execution consent and file identity validation. Language, translation into English,
-  and GPU request settings persist; each draft retains the exact settings used to generate it.
-  Curated model delivery and the bundled Whisper artifact remain under implementation.
+- **Settings → Transcription** selects **Apple Speech**, **Whisper** with embedded FFmpeg,
+  or advanced **Custom FFmpeg Whisper**. Download Tiny, Base or Small explicitly in the app;
+  installed models are checked against pinned size/SHA-256 before use. Inference stays local,
+  and Caption retains compact playback, Transcribe and review controls. Language, English translation
+  and GPU request settings persist and are recorded in each editable draft. Custom files still require
+  explicit session execution consent. Provider discovery does not expose transcription execution to MCP.
 
 ### Face Recognition
 
@@ -366,7 +366,7 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 
 | Component | Purpose | License |
 |---|---|---|
-| [FFmpeg](https://ffmpeg.org) | AVIF / JPEG XL encoding | GPL-3.0 |
+| [FFmpeg](https://ffmpeg.org) | Image encoding and local Whisper transcription | GPL-3.0 |
 | [c2patool](https://github.com/contentauth/c2pa-rs) | C2PA content credentials | MIT |
 | [Sparkle](https://sparkle-project.org) | Software updates | MIT |
 | [SwiftMediaMetadata](https://github.com/aagedal/SwiftMediaMetadata) | Image, audio, and video metadata | GPL-3.0 |
@@ -377,11 +377,13 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 The app bundles a GPL-licensed **FFmpeg** binary. In accordance with the GPL, the corresponding source is available:
 
 <!-- BEGIN GENERATED BUNDLED GPL SOURCE -->
-- **FFmpeg 9.0.1**, built with `--enable-gpl --enable-version3` (image-only, network
-  and device features disabled). The exact `configure` flags are embedded in the binary
-  (`ffmpeg -version`). [Upstream source archive](https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz).
-- The pinned build recipe is `scripts/12a-ffmpeg-photo.sh` at revision `00023f51d635ac7ab5b83f5419e57f004254318e` in
-  [https://github.com/aagedal/ffmpeg-apple-silicon](https://github.com/aagedal/ffmpeg-apple-silicon).
+- **FFmpeg 9.0.1**, built with `--enable-gpl --enable-version3 --enable-whisper`.
+  This full build supports image export and local voice memo transcription. Network and
+  device support is compiled in; transcription restricts input protocols to local files.
+- [Exact source inputs, local patches and build evidence](docs/provenance/ffmpeg-whisper-bundled.md)
+  are pinned in the component manifest. Preparation: `scripts/ffmpeg/prepare_full_candidate.py`.
+  The complete corresponding source companion must accompany a release; an upstream
+  FFmpeg tarball alone does not reproduce this modified build and its dependencies.
 <!-- END GENERATED BUNDLED GPL SOURCE -->
 
 Versions, immutable upstream and build-recipe revisions, artifact SHA-256 values, licenses, target

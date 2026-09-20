@@ -241,6 +241,55 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testManagedWhisperUsesSettingsAndWaitsForExplicitModelDownload() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]
+        let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
+        let modelRoot = fixtureRoot.appendingPathComponent("WhisperModels", isDirectory: true)
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+
+        let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 15))
+        assertCaptionHasNoTranscriptionSetup()
+        XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.model"].exists)
+        XCTAssertFalse(app.buttons["settings.transcription.whisper.download"].exists)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].isEnabled)
+
+        // Opening settings and revisiting the selected model never starts a network download.
+        for _ in 0..<2 {
+            app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+            let picker = app.descendants(matching: .any)["settings.transcription.whisper.model"].firstMatch
+            XCTAssertTrue(picker.waitForExistence(timeout: 10))
+            let download = app.buttons["settings.transcription.whisper.download"]
+            XCTAssertTrue(download.waitForExistence(timeout: 10))
+            XCTAssertTrue(download.isEnabled)
+            XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.selectExecutable"].exists)
+            XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.selectModel"].exists)
+            XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].exists)
+            XCTAssertFalse(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"].exists)
+            XCTAssertTrue(app.textFields["caption.voiceMemo.whisper.language"].exists)
+            XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
+            XCTAssertFalse(app.buttons["settings.transcription.whisper.cancelDownload"].exists)
+            XCTAssertFalse(app.buttons["settings.transcription.whisper.removeModel"].exists)
+            XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.ready"].exists)
+            if FileManager.default.fileExists(atPath: modelRoot.path) {
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: modelRoot.path), [])
+            }
+            app.typeKey("w", modifierFlags: .command)
+            let settingsClosed = NSPredicate { _, _ in !picker.exists }
+            expectation(for: settingsClosed, evaluatedWith: app)
+            waitForExpectations(timeout: 5)
+            XCTAssertTrue(draft.waitForExistence(timeout: 10))
+            assertCaptionHasNoTranscriptionSetup()
+        }
+        XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
+        XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
+        for (index, file) in protectedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+        }
+    }
+
+    @MainActor
     func testCustomWhisperSetupRequiresFilesAndConsentWithoutChangingReview() throws {
         let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
         let originalSidecar = try Data(contentsOf: fixture.sidecarURL)
@@ -916,6 +965,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-testing",
             "--ui-test-workflow", workflow,
             "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
+            "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {

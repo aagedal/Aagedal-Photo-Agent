@@ -67,18 +67,23 @@ If an operation reports an issue, open **Details** for all affected paths and re
 Archive, source reassociation, reviewed Apple on-device transcription, transcript-template application,
 and explicit WAV delivery policy are implemented with the boundaries described below and in Known
 Limitations. Configure the provider in **Settings → Transcription**. Caption contains playback, Transcribe, and transcript review; custom file selection, language, translation, GPU and consent controls live in Settings.
-Choose a compatible patched FFmpeg executable and model, grant explicit execution consent,
-then select **Enable Custom Files** to record their identities. This step does not execute them;
-**Transcribe** starts local inference. Language defaults to `auto`; you can enter a two-letter code,
-request translation into English, and request GPU acceleration. Compatibility depends on the chosen
-build and model; GPU use is requested rather than verified. These settings persist across relaunch.
-Each draft records the settings used for that run. Results use the same
-editable review and explicit approval flow as Apple Speech. Provider choice and security-scoped
-file bookmarks are saved. Relaunching restores available files, but requires fresh execution consent
-and **Enable Custom Files** to validate their current identities. **Clear Custom Files** forgets
-the selections across relaunch. Unavailable saved files can be reselected after reconnecting the volume. Custom files are unverified; hashes establish identity, not safety or trust.
-No assets download automatically and an unavailable custom provider never falls back to Apple Speech.
-Curated models and the bundled Whisper artifact remain in development.
+Select **Whisper** to use the embedded FFmpeg engine. Choose Tiny (about 78 MB), Base
+(about 148 MB), or Small (about 488 MB), then explicitly download the model in Settings.
+Downloads come from the pinned whisper.cpp model repository over HTTPS; the app checks the exact
+byte count and SHA-256 before installing in local Application Support. Progress and cancellation
+are available. Installed models can be removed from Settings and used offline after preparation.
+No executable selection is needed for this provider. Inference starts only when you press **Transcribe**.
+Language defaults to `auto`; you can enter a two-letter code, request translation into English,
+and request GPU acceleration. GPU use is requested rather than verified. Each draft records the
+engine/model identities and settings used, and remains editable until explicitly reviewed and approved.
+
+**Custom FFmpeg Whisper** remains available for advanced users. Choose compatible executable/model
+files, grant execution consent, and select **Enable Custom Files** to record their current identities.
+This preparation does not execute the files. Provider choice, settings and security-scoped file
+bookmarks persist; custom execution consent and identity admission must be renewed after relaunch.
+**Clear Custom Files** forgets those saved selections. Custom files are unverified; hashes establish
+identity, not software trust. No provider automatically falls back to Apple Speech. Downloads require
+an explicit action and do not send voice memos, photos or transcripts to the hosting service.
 
 ## Connect a local automation client
 

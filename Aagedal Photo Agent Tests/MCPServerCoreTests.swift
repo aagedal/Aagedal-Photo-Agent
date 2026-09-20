@@ -1684,6 +1684,11 @@ struct MCPServerCoreTests {
         }
         #expect(providers.compactMap { $0.objectValue?["id"]?.stringValue } ==
                 VoiceMemoTranscriptionProviderChoice.allCases.map(\.rawValue))
+        let managed = try #require(providers.compactMap(\.objectValue)
+            .first { $0["id"] == .string("whisper") })
+        #expect(managed["reason"] == .string("bundled-runtime-and-managed-model-require-app-session"))
+        #expect(managed["nextAction"]?.stringValue?.contains("embedded FFmpeg") == true)
+        #expect(managed["nextAction"]?.stringValue?.contains("explicitly download") == true)
         for value in providers {
             let provider = try #require(value.objectValue)
             #expect(provider["readiness"] == .string("application-session-required"))

@@ -2,10 +2,11 @@ import Foundation
 import Observation
 
 nonisolated enum VoiceMemoTranscriptionProviderChoice: String, CaseIterable, Sendable {
-    case appleSpeech, customWhisper
+    case appleSpeech, whisper, customWhisper
     var title: String {
         switch self {
         case .appleSpeech: return "Apple Speech"
+        case .whisper: return "Whisper"
         case .customWhisper: return "Custom FFmpeg Whisper"
         }
     }
@@ -72,7 +73,7 @@ final class FFmpegWhisperSetupModel {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
 
-    private static let sessionDefaults: UserDefaults = {
+    static let sessionDefaults: UserDefaults = {
         let configuration = UITestLaunchConfiguration.current
         guard configuration.isEnabled else { return AppDefaults.store }
         let identifier = configuration.whisperDefaultsSuite ?? UUID().uuidString

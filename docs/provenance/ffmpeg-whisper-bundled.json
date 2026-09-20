@@ -1,0 +1,558 @@
+{
+  "artifactSHA256": "54f5d1c12e9d2a735059fed43f8f134ff24a527c295ec819cad77185db667c33",
+  "artifactBytes": 55361912,
+  "patchedFilterSHA256": "eba0b4645581f5fd14f841f25b83550522d67d064aaa9fd752c828fa9ba38b71",
+  "build": "Incremental cycle-79 rebuild of the cycle-78 attributed full dependency build; not a second independent clean reproduction.",
+  "signing": "Source artifact has ad-hoc linker signature; distribution signing changes file digest.",
+  "imageComparison": {
+    "artifacts": {
+      "baseline": {
+        "sha256": "111a6b7926d3677f4c39786e06b299ab7c23aa663f961d2f5ee21ef7f2f40abb",
+        "bytes": 19298560
+      },
+      "candidate": {
+        "sha256": "54f5d1c12e9d2a735059fed43f8f134ff24a527c295ec819cad77185db667c33",
+        "bytes": 55361912
+      }
+    },
+    "sources": {
+      "synthetic-gradient.tiff": "dc6f93ee87d0c1346d0509cc1b3264f9499009642838e54ece8c512ebfe45998",
+      "gradient16.ppm": "71a2da4c0f3beccbcac41afd3da0a40f4f648dce8bbffb6d1f060d0304973151"
+    },
+    "scope": "Synthetic encoding and unconverted PNG sample parity; no visual HDR/color acceptance.",
+    "cases": [
+      {
+        "name": "avif-srgb",
+        "encodings": {
+          "baseline": {
+            "sha256": "9abc66c79d2bbe4c3ed594455a612ec86d6b4438b3da4001a66bf8dec85cb1bb",
+            "bytes": 420,
+            "nclx": [
+              1,
+              13,
+              1,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "9abc66c79d2bbe4c3ed594455a612ec86d6b4438b3da4001a66bf8dec85cb1bb",
+            "bytes": 420,
+            "nclx": [
+              1,
+              13,
+              1,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "avif-p3",
+        "encodings": {
+          "baseline": {
+            "sha256": "31270dfd89ffc3c8b59de79d51e61d3722af254c40d31adbbd7d1488a8618e3d",
+            "bytes": 420,
+            "nclx": [
+              12,
+              13,
+              1,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "31270dfd89ffc3c8b59de79d51e61d3722af254c40d31adbbd7d1488a8618e3d",
+            "bytes": 420,
+            "nclx": [
+              12,
+              13,
+              1,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "avif-rec2020",
+        "encodings": {
+          "baseline": {
+            "sha256": "486f0c3fec42e7cf7a3b84dddbb849eb1d0762ddbbf7b4ea652c1436b5a387a6",
+            "bytes": 429,
+            "nclx": [
+              9,
+              14,
+              9,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "486f0c3fec42e7cf7a3b84dddbb849eb1d0762ddbbf7b4ea652c1436b5a387a6",
+            "bytes": 429,
+            "nclx": [
+              9,
+              14,
+              9,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "84b62d2dcf64949e80c0c5a75fe2ac92c1f95f237136326b762e66526433cf56"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "84b62d2dcf64949e80c0c5a75fe2ac92c1f95f237136326b762e66526433cf56"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "84b62d2dcf64949e80c0c5a75fe2ac92c1f95f237136326b762e66526433cf56"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "84b62d2dcf64949e80c0c5a75fe2ac92c1f95f237136326b762e66526433cf56"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "avif-adobe-fallback",
+        "encodings": {
+          "baseline": {
+            "sha256": "f4491d8159061daae64feab3cb5a05e94dee0934983436e82f8a3266d4253fa6",
+            "bytes": 420,
+            "nclx": [
+              12,
+              4,
+              1,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "f4491d8159061daae64feab3cb5a05e94dee0934983436e82f8a3266d4253fa6",
+            "bytes": 420,
+            "nclx": [
+              12,
+              4,
+              1,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 3,
+            "sampleSHA256": "43f889c1e664cc4637af8400b204e540586240f1092884102ec1307d3b157cd4"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "avif-hlg-p3",
+        "encodings": {
+          "baseline": {
+            "sha256": "1fb7202e673ee64bc809313634c9a34c47097df1a61358ba5f4eb3679224cc5a",
+            "bytes": 351,
+            "nclx": [
+              12,
+              18,
+              9,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "1fb7202e673ee64bc809313634c9a34c47097df1a61358ba5f4eb3679224cc5a",
+            "bytes": 351,
+            "nclx": [
+              12,
+              18,
+              9,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "avif-hlg-rec2020",
+        "encodings": {
+          "baseline": {
+            "sha256": "af4d5132fdb9416df7e17d48d0d2a3341b7389995aa932c6e8f561f1effefe22",
+            "bytes": 351,
+            "nclx": [
+              9,
+              18,
+              9,
+              128
+            ]
+          },
+          "candidate": {
+            "sha256": "af4d5132fdb9416df7e17d48d0d2a3341b7389995aa932c6e8f561f1effefe22",
+            "bytes": 351,
+            "nclx": [
+              9,
+              18,
+              9,
+              128
+            ]
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "c68da4376ebbbf53c419fd5d0e4484023090f327fa0c3e44adbb5266971b4fef"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "jxl-sdr",
+        "encodings": {
+          "baseline": {
+            "sha256": "c9596adba6c1720cccddd1b522822a60cb91a0d84dcbb3ab9cd1ffa13fed435d",
+            "bytes": 2907
+          },
+          "candidate": {
+            "sha256": "c9596adba6c1720cccddd1b522822a60cb91a0d84dcbb3ab9cd1ffa13fed435d",
+            "bytes": 2907
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 4,
+            "sampleSHA256": "b37d52501a2903e464485f51d4053b395f0a9d1da8782bafaad9f86bb86833c1"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 4,
+            "sampleSHA256": "b37d52501a2903e464485f51d4053b395f0a9d1da8782bafaad9f86bb86833c1"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 4,
+            "sampleSHA256": "b37d52501a2903e464485f51d4053b395f0a9d1da8782bafaad9f86bb86833c1"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 18,
+            "bitDepth": 8,
+            "channels": 4,
+            "sampleSHA256": "b37d52501a2903e464485f51d4053b395f0a9d1da8782bafaad9f86bb86833c1"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "jxl-sdr16",
+        "encodings": {
+          "baseline": {
+            "sha256": "83eff1012378a9de21bc6be51298f06aadddfb9d395bdc0ed68897ffa51ef758",
+            "bytes": 130
+          },
+          "candidate": {
+            "sha256": "83eff1012378a9de21bc6be51298f06aadddfb9d395bdc0ed68897ffa51ef758",
+            "bytes": 130
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "8fbd7894700dc7d4016a6a636e9e11b535ef10bbba4ba1d8130284a6f6c8b9a5"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "8fbd7894700dc7d4016a6a636e9e11b535ef10bbba4ba1d8130284a6f6c8b9a5"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "8fbd7894700dc7d4016a6a636e9e11b535ef10bbba4ba1d8130284a6f6c8b9a5"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "8fbd7894700dc7d4016a6a636e9e11b535ef10bbba4ba1d8130284a6f6c8b9a5"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      },
+      {
+        "name": "jxl-lossless16",
+        "encodings": {
+          "baseline": {
+            "sha256": "ebb38b20687480f3eadf47e43738c61617a6ac0835afaf5e15af27d4c6dab428",
+            "bytes": 163
+          },
+          "candidate": {
+            "sha256": "ebb38b20687480f3eadf47e43738c61617a6ac0835afaf5e15af27d4c6dab428",
+            "bytes": 163
+          }
+        },
+        "decodings": {
+          "baseline/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "6eb75478e9cc2671cc50d648e722972dee5e4b94a0299720f83b43607382eb0a"
+          },
+          "baseline/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "6eb75478e9cc2671cc50d648e722972dee5e4b94a0299720f83b43607382eb0a"
+          },
+          "candidate/baseline": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "6eb75478e9cc2671cc50d648e722972dee5e4b94a0299720f83b43607382eb0a"
+          },
+          "candidate/candidate": {
+            "width": 24,
+            "height": 24,
+            "bitDepth": 16,
+            "channels": 3,
+            "sampleSHA256": "6eb75478e9cc2671cc50d648e722972dee5e4b94a0299720f83b43607382eb0a"
+          }
+        },
+        "allDecodedSamplesEqual": true
+      }
+    ],
+    "allDecodedSamplesEqual": true
+  },
+  "version": "ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers\nbuilt with Apple clang version 21.0.0 (clang-2100.3.34.2)\nconfiguration: --prefix=/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/build/qa-v3-cycle78-ffmpeg/compiled --metalcc='/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.ITwXcd/Metal.xctoolchain/usr/bin/metal -fmodules-cache-path=/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/build/qa-v3-cycle78-ffmpeg/build/clang-module-cache' --metallib=/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v27.1.266.1.ITwXcd/Metal.xctoolchain/usr/bin/metallib --enable-metal --arch=arm64 --target-os=darwin --pkg-config-flags=--static --extra-cflags='-arch arm64 -I/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/build/qa-v3-cycle78-ffmpeg/compiled/include -O3 -fPIC -mcpu=apple-m1' --extra-cxxflags='-arch arm64 -I/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/build/qa-v3-cycle78-ffmpeg/compiled/include -O3 -fPIC -mcpu=apple-m1' --extra-ldflags='-arch arm64 -L/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/build/qa-v3-cycle78-ffmpeg/compiled/lib' --extra-libs='-lpthread -lm -lz' --enable-static --disable-shared --enable-gpl --enable-version3 --disable-debug --disable-doc --enable-pthreads --enable-runtime-cpudetect --enable-neon --enable-pic --disable-libxcb --disable-libxcb-shm --disable-libxcb-xfixes --disable-libxcb-shape --disable-sdl2 --disable-xlib --disable-libfontconfig --enable-libass --enable-libharfbuzz --enable-libfreetype --enable-libfribidi --enable-libx264 --enable-libx265 --enable-libvpx --enable-libaom --enable-libsvtav1 --enable-libvvenc --enable-libjxl --enable-libwebp --enable-libopus --enable-libvorbis --enable-libmp3lame --enable-libtheora --enable-libopenjpeg --enable-libvmaf --enable-whisper --enable-videotoolbox --enable-audiotoolbox --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=libaom_av1 --enable-encoder=libsvtav1 --enable-encoder=libvvenc --enable-encoder=libjxl --enable-encoder=libwebp --enable-encoder=libwebp_anim --enable-encoder=libopus --enable-encoder=libvorbis --enable-encoder=libmp3lame --enable-encoder=aac --enable-encoder=aac_at --enable-encoder=flac --enable-encoder=libtheora --enable-encoder=libopenjpeg --enable-encoder=h264_videotoolbox --enable-encoder=hevc_videotoolbox --enable-encoder=prores_videotoolbox --enable-decoder=libjxl --enable-decoder=aac --enable-decoder=aac_at --enable-decoder=flac --enable-decoder=vvc --enable-decoder=theora --enable-filter=scale --enable-filter=overlay --enable-filter=whisper --enable-filter=ssim --enable-filter=psnr --enable-filter=xpsnr --enable-filter=msad\nlibavutil      61.  1.101 / 61.  1.101\nlibavcodec     63.  1.101 / 63.  1.101\nlibavformat    63.  1.101 / 63.  1.101\nlibavdevice    63.  1.101 / 63.  1.101\nlibavfilter    12.  1.101 / 12.  1.101\nlibswscale     10.  1.101 / 10.  1.101\nlibswresample   7.  1.101 /  7.  1.101\n\nExiting with exit code 0\n",
+  "whisperFilter": "Filter whisper\n  Transcribe audio using whisper.cpp.\n    Inputs:\n       #0: default (audio)\n    Outputs:\n       #0: default (audio)\nwhisper AVOptions:\n   model             <string>     ..F.A...... Path to the whisper.cpp model file\n   language          <string>     ..F.A...... Language for transcription ('auto' for auto-detect) (default \"auto\")\n   translate         <boolean>    ..F.A...... Translate from source language to English (default false)\n   queue             <duration>   ..F.A...... Audio queue size (default 3)\n   use_gpu           <boolean>    ..F.A...... Use GPU for processing (default true)\n   gpu_device        <int>        ..F.A...... GPU device to use (from 0 to INT_MAX) (default 0)\n   destination       <string>     ..F.A...... Output destination (default \"\")\n   format            <string>     ..F.A...... Output format (text|srt|json) (default \"text\")\n   max_len           <int>        ..F.A...... Max segment length in characters (from 0 to INT_MAX) (default 0)\n   vad_model         <string>     ..F.A...... Path to the VAD model file\n   vad_threshold     <float>      ..F.A...... VAD threshold (from 0 to 1) (default 0.5)\n   vad_min_speech_duration <duration>   ..F.A...... Minimum speech duration for VAD (default 0.1)\n   vad_min_silence_duration <duration>   ..F.A...... Minimum silence duration for VAD (default 0.5)\n\n\nExiting with exit code 0\n",
+  "license": "ffmpeg is free software; you can redistribute it and/or modify\nit under the terms of the GNU General Public License as published by\nthe Free Software Foundation; either version 3 of the License, or\n(at your option) any later version.\n\nffmpeg is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU General Public License for more details.\n\nYou should have received a copy of the GNU General Public License\nalong with ffmpeg.  If not, see <http://www.gnu.org/licenses/>.\n",
+  "linkage": "build/qa-v3-cycle78-ffmpeg/sources/ffmpeg-9.0.1/ffmpeg:\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 5027.0.69)\n\t/System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox (compatibility version 1.0.0, current version 1000.0.0)\n\t/System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio (compatibility version 1.0.0, current version 1.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)\n\t/System/Library/Frameworks/AVFoundation.framework/Versions/A/AVFoundation (compatibility version 1.0.0, current version 2.0.0)\n\t/System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo (compatibility version 1.2.0, current version 758.27.0)\n\t/System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia (compatibility version 1.0.0, current version 3350.77.5)\n\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 2050.0.0)\n\t/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL (compatibility version 1.0.0, current version 1.0.0)\n\t/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)\n\t/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 382.5.3)\n\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 2200.27.0)\n\t/usr/lib/libbz2.1.0.dylib (compatibility version 1.0.0, current version 1.0.8)\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n\t/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices (compatibility version 1.0.0, current version 66.0.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 5027.0.69)\n\t/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox (compatibility version 1.0.0, current version 3350.77.5)\n\t/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage (compatibility version 1.0.1, current version 7.0.0)\n\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2775.10.103)\n\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)\n\t/System/Library/Frameworks/Security.framework/Versions/A/Security (compatibility version 1.0.0, current version 62460.1.2)\n\t/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText (compatibility version 1.0.0, current version 904.0.0)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)\n",
+  "cpuRuntimeProbes": {
+    "binarySHA256": "54f5d1c12e9d2a735059fed43f8f134ff24a527c295ec819cad77185db667c33",
+    "scope": "Direct process probes; local custom/unverified model; not application-runner or trusted-provider acceptance",
+    "results": [
+      {
+        "name": "missing-model",
+        "exitCode": 251,
+        "seconds": 0.02120066701900214
+      },
+      {
+        "name": "malformed-model",
+        "exitCode": 251,
+        "seconds": 0.04062833299394697
+      },
+      {
+        "name": "invalid-destination",
+        "exitCode": 235,
+        "seconds": 0.07602804197813384
+      },
+      {
+        "name": "synthetic-speech",
+        "exitCode": 0,
+        "seconds": 0.4003892919863574,
+        "segments": [
+          {
+            "start": 0,
+            "end": 2944,
+            "text": " This is a local transcription test, the Red Vice Attorney General."
+          },
+          {
+            "start": 2944,
+            "end": 4824,
+            "text": " is beside the old stone bridge."
+          }
+        ]
+      },
+      {
+        "name": "silence",
+        "exitCode": 0,
+        "segments": [
+          {
+            "start": 0,
+            "end": 2944,
+            "text": " [BLANK_AUDIO]"
+          },
+          {
+            "start": 2944,
+            "end": 5000,
+            "text": " [BLANK_AUDIO]"
+          }
+        ]
+      },
+      {
+        "name": "direct-child-termination",
+        "wasRunning": true,
+        "exitCode": 255
+      }
+    ]
+  }
+}

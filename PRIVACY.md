@@ -1,7 +1,7 @@
 # Aagedal Photo Agent privacy
 
 **Status:** 3.0 release-candidate draft; external legal/privacy review pending  
-**Last reviewed:** 2026-09-20 (implementation update; external review remains pending)
+**Last reviewed:** 2026-09-21 (implementation update; external review remains pending)
 
 Aagedal Photo Agent is a native macOS application. Photo browsing, metadata editing, Develop rendering,
 analysis, face detection, face matching when its model is packaged, and solar-position calculations run on
@@ -13,13 +13,16 @@ network service are listed below.
 
 - Photo Agent sidecars and XMP sidecars store edits and metadata near the photographs where supported.
 - Voice-memo review records store generated and edited text, approval state, audio identity and
-  provider information in the photo's app sidecar. The selectable custom FFmpeg Whisper provider additionally
+  provider information in the photo's app sidecar. The managed and custom FFmpeg Whisper providers additionally
   retains model/build hashes and byte counts, requested language, translation/GPU settings and
   segment text and normalized timing. Provider choice, language/translation/GPU request preferences,
   and security-scoped executable/model bookmarks
   are retained in local preferences. Clear Custom Files removes the saved bookmarks. Execution consent
   and admitted identities last only for the current app session; relaunching requires fresh
-  consent and identity validation. No model downloads occur. Custom executables run only after explicit Transcribe and are
+  custom consent and identity validation. Managed Whisper models are explicitly downloaded into
+  `~/Library/Application Support/Aagedal Photo Agent/WhisperModels`, checked against pinned byte
+  counts and SHA-256 values, and retained for offline use until removed. The embedded FFmpeg engine
+  performs inference locally. Custom executables run only after explicit Transcribe and are
   unverified software with the user's local process permissions. Review approval does not itself
   write transcript text into photo metadata.
 - Analysis cases, working-folder map state, and named Develop versions prefer hidden app-private JSON in
@@ -102,6 +105,9 @@ Photo Agent accesses a network only for a feature that needs it, including:
 - Apple MapKit place search, reverse geocoding, map imagery, and Look Around links;
 - OpenStreetMap tiles when that map style is selected;
 - C2PA trust-list refreshes;
+- explicit Whisper model downloads from Hugging Face's whisper.cpp repository and its HTTPS
+  delivery hosts; the requested model and ordinary connection information are visible to those hosts,
+  but voice memos, photos and transcripts are not uploaded;
 - FTP, FTPS, or SFTP connection tests and uploads to a server/profile you configure; and
 - links that you explicitly open, including the project website, component sites, Adobe DNG Converter,
   Apple/Google maps, Meta Content Seal, and Google Gemini.
@@ -126,6 +132,9 @@ before distribution.
 ## Retention and deletion
 
 - Delete per-folder face scan data from the Faces view or use its configured auto-delete policy.
+- Remove downloaded Whisper models in Settings → Transcription. This does not delete saved transcript
+  drafts or approved text in photo sidecars. Clearing custom selections forgets bookmarks and does not
+  delete the user's original executable/model files.
 - Remove individual Known People entries or use Settings → Known People → Clear Database. This does not
   delete per-folder scan data or ZIP exports.
 - Delete delivery receipts and explicitly clean retained workflows/staging from Activity. The receipt

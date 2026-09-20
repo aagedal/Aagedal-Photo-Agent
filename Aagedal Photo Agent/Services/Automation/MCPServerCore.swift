@@ -1300,8 +1300,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
 }
 
 /// App provider identities are discoverable without opening an app session. Readiness is not:
-/// Apple Speech uses the app's asynchronous SpeechTranscriber asset checks, while custom
-/// Whisper admission and execution consent are held only by FFmpegWhisperSetupModel. The
+/// Apple Speech uses the app's asynchronous SpeechTranscriber asset checks, while managed and
+/// custom Whisper admission are held only by FFmpegWhisperSetupModel. The
 /// helper must not infer either state from saved provider choice, files, or its own permissions.
 nonisolated enum MCPTranscriptionProviderDiscovery {
     static var discovery: [String: MCPJSONValue] {
@@ -1314,6 +1314,11 @@ nonisolated enum MCPTranscriptionProviderDiscovery {
                     id: "appleSpeech", name: "Apple Speech",
                     reason: "apple-speech-app-runtime-required",
                     nextAction: "Select Apple Speech in Photo Agent Settings → Transcription, then open a photo's voice memo to check on-device availability and installed language assets. Language downloads require an explicit action in the app."
+                ),
+                provider(
+                    id: "whisper", name: "Whisper",
+                    reason: "bundled-runtime-and-managed-model-require-app-session",
+                    nextAction: "In Photo Agent Settings → Transcription, select Whisper and explicitly download a model. The app verifies its pinned size and SHA-256 and uses its embedded FFmpeg. This helper cannot observe installed models or app-session readiness."
                 ),
                 provider(
                     id: "customWhisper", name: "Custom FFmpeg Whisper",

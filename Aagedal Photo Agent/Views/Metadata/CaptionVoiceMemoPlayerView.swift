@@ -10,6 +10,7 @@ struct CaptionVoiceMemoPlayerView: View {
     @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
     @State private var transcriptModel = CaptionVoiceMemoTranscriptModel()
     @State private var whisperSetup = FFmpegWhisperSetupModel.shared
+    @State private var managedWhisper = ManagedWhisperSetupModel.shared
     @State private var refreshID = UUID()
     @State private var isSelectingRecoveryMemo = false
     @State private var isSelectingRelationshipFolder = false
@@ -123,6 +124,9 @@ struct CaptionVoiceMemoPlayerView: View {
             await transcriptModel.load(imageURL)
         }
         .task { await whisperSetup.restoreSelections() }
+        .task(id: whisperSetup.choice) {
+            if whisperSetup.choice == .whisper { await managedWhisper.refresh() }
+        }
         .task(id: isPlaying) { await model.pollWhilePlaying() }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,
@@ -216,8 +220,8 @@ struct CaptionVoiceMemoPlayerView: View {
             Button("Transcription Settings…", action: openTranscriptionSettings)
                 .accessibilityIdentifier("caption.voiceMemo.transcriptionSettings")
         }
-        if whisperSetup.choice == .customWhisper {
-            customWhisperPanel
+        if whisperSetup.choice != .appleSpeech {
+            whisperPanel
         } else if transcriptModel.isChecking {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -296,10 +300,10 @@ struct CaptionVoiceMemoPlayerView: View {
             }
         }
 
-        if whisperSetup.choice == .customWhisper && transcriptModel.isTranscribing {
+        if whisperSetup.choice != .appleSpeech && transcriptModel.isTranscribing {
             HStack {
                 ProgressView().controlSize(.small)
-                Text("Transcribing locally with custom FFmpeg Whisper…")
+                Text("Transcribing locally with Whisper…")
                 Button("Cancel") { transcriptModel.cancel() }
                     .accessibilityIdentifier("caption.voiceMemo.cancelTranscription")
             }
@@ -360,19 +364,27 @@ struct CaptionVoiceMemoPlayerView: View {
         }
     }
 
-    private var customWhisperPanel: some View {
+    private var isWhisperReady: Bool {
+        whisperSetup.choice == .whisper ? managedWhisper.isReady
+            : whisperSetup.isReady && whisperSetup.executionConsent
+    }
+
+    private var whisperPanel: some View {
         HStack {
             Button("Transcribe", systemImage: "text.bubble") {
-                guard let provider = whisperSetup.provider(), whisperSetup.beginTranscription() else { return }
+                let provider = whisperSetup.choice == .whisper
+                    ? managedWhisper.provider(language: whisperSetup.language, useGPU: whisperSetup.useGPU, translate: whisperSetup.translate)
+                    : whisperSetup.provider()
+                guard let provider, whisperSetup.beginTranscription() else { return }
                 Task {
                     defer { whisperSetup.finishTranscription() }
                     await transcriptModel.transcribe(provider: provider)
                 }
             }
-            .disabled(whisperSetup.isTranscribing || !whisperSetup.isReady || !whisperSetup.executionConsent || !whisperSetup.isLanguageValid
+            .disabled(whisperSetup.isTranscribing || !isWhisperReady || !whisperSetup.isLanguageValid
                       || transcriptModel.isTranscribing || transcriptModel.isChecking || transcriptModel.isSavingReview)
             .accessibilityIdentifier("caption.voiceMemo.transcribe")
-            if !whisperSetup.isReady {
+            if !isWhisperReady {
                 Text("Set up Whisper in Settings.").foregroundStyle(.secondary)
             }
         }

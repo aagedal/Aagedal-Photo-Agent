@@ -23,10 +23,17 @@ struct LicensesSettingsView: View {
         ),
         Component(
             name: "FFmpeg",
-            detail: "Bundled encoder for AVIF and JPEG XL export",
+            detail: "Bundled image encoder and local Whisper transcription engine",
             licenseName: "GPL-3.0",
             licenseResource: "License-GPL-3.0",
             url: URL(string: "https://ffmpeg.org")
+        ),
+        Component(
+            name: "FFmpeg dependencies",
+            detail: "Notices for the bundled FFmpeg, whisper.cpp and codec libraries",
+            licenseName: "Third-party notices",
+            licenseResource: "License-FFmpeg-Dependencies",
+            url: nil
         ),
         Component(
             name: "c2patool",

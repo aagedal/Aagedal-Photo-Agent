@@ -156,24 +156,29 @@ validated application plans. iCloud template stores, template application,
 production executor integration and guarded IPTC commits remain separate implementation work.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
-The current FFmpeg artifact still lacks Whisper. Local-file protocol restrictions are implemented,
-but binary replacement, full image regression, provenance/notices and the transcription/model
-lifecycle remain open. The restriction is not a sandbox for other local files referenced by a container.
+The bundled FFmpeg now includes Whisper with corrected canonical JSON escaping and sample-bound
+timestamps. It is derived from Media Converter's attributed full build and retains image codecs;
+nine synthetic image comparisons preserve exact decoded samples. Network/device features are
+compiled in, while transcription restricts protocols to local files, uses exact private WAV snapshots,
+and enforces cancellation/deadlines and canonical output validation. This protocol restriction is not
+a general process sandbox. See [artifact provenance](provenance/ffmpeg-whisper-bundled.md).
 
-The original candidate Whisper filter wrote transcript text into JSON without escaping it.
-An isolated full candidate with the pinned correction now builds and passes nine image comparisons
-and initial CPU process/runner probes. It has not replaced the shipped artifact. The custom model
-probe also exposed speech misrecognition; sample-bound timestamps were corrected and verified in
-cycle 79. Model accuracy, trusted models and final packaging remain open. A bounded process runner now uses exact private input snapshots,
-WAV-only local decoding, cancellation/deadlines and canonical JSON validation. The custom
-provider adapter revalidates the WAV relationship and produces unapproved editable drafts with
-persisted build/model identity, language settings and segment evidence. It requires artifact
-authorization through Caption's explicit file selection and execution consent. Provider choice persists;
-security-scoped file bookmarks persist, while execution consent and identity admission must be renewed
-after quitting the app. Missing files require reconnecting the volume or selecting them again.
-Language, English translation and GPU request settings now persist and are captured in each draft;
-compatibility and actual GPU execution depend on the custom build/model. Translated evidence uses
-provenance schema 2 and is refused by older readers. Curated delivery and the complete model lifecycle remain
-open. Complete blank-audio-marker segments are excluded from
-drafts while original segment evidence is retained; real-model silence still needs validation. See the
+Settings → Transcription offers explicit Tiny/Base/Small downloads from a pinned immutable model
+revision, with byte-count/SHA-256 verification, progress, cancellation, local installation and removal.
+Checksum verification establishes that the downloaded bytes match the app's catalog; it is not a
+signed update channel, independent model safety review or an accuracy guarantee. No speech, photo or
+transcript is uploaded for inference. Models occupy local Application Support storage and are not
+installed automatically. Signed catalog updates, rollback/recovery breadth and final offline/GPU
+acceptance remain release work. Complete FFmpeg corresponding-source distribution, final signing and
+notarized candidate validation also remain open.
+
+Whisper produces unapproved editable drafts with model/build identity, requested language, translation
+and GPU settings, exact segment text and normalized timing. Actual GPU execution depends on the
+backend and model. CPU probes pass speech/silence and failure paths, but misrecognition remains possible;
+review every draft. Complete blank-audio-marker segments are omitted from editable text while original
+segment evidence is retained. Translated evidence uses provenance schema 2 and is refused by older readers.
+Advanced custom executable/model selection stays in Settings → Transcription. Its file bookmarks persist,
+while execution consent and artifact admission reset after quitting. Missing custom files require
+reconnecting or reselection. Managed and custom preparation do not grant MCP execution authority;
+provider discovery reports app-session readiness as unknown. See the historical
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

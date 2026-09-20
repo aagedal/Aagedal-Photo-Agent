@@ -101,6 +101,13 @@ def validate_declaration(root: Path, component: dict) -> None:
     license_path = root / component["licensePath"]
     if not license_path.is_file():
         fail(f"{component_id}: missing declared license file: {component['licensePath']}")
+    for key in ("additionalLicensePaths", "requiredFilters"):
+        values = component.get(key, [])
+        if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+            fail(f"{component_id}: {key} must be a string array")
+    for path in component.get("additionalLicensePaths", []):
+        if not isinstance(path, str) or not (root / path).is_file():
+            fail(f"{component_id}: missing additional license file: {path}")
 
 
 def validate_artifact(root: Path, component: dict) -> str:
@@ -174,6 +181,14 @@ def validate_artifact(root: Path, component: dict) -> str:
                 f"{component_id}: architecture mismatch: "
                 f"expected {sorted(expected_architectures)}, got {sorted(actual_architectures)}"
             )
+
+    for filter_name in component.get("requiredFilters", []):
+        probe = subprocess.run(
+            [str(artifact), "-hide_banner", "-h", f"filter={filter_name}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if probe.returncode != 0 or f"Filter {filter_name}\n" not in probe.stdout:
+            fail(f"{component_id}: required filter unavailable: {filter_name}")
 
     return "artifact and provenance validated"
 

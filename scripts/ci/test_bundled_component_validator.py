@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
+from subprocess import CompletedProcess
 from pathlib import Path
 
 import validate_bundled_components as validator
@@ -70,6 +72,29 @@ class BundledComponentValidatorTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(ValueError, "expectedVersionPrefix is required"):
             validator.validate_artifact(self.root, component)
+
+    def test_missing_dependency_notices_fail_closed(self) -> None:
+        self.component["additionalLicensePaths"] = ["missing-notices.txt"]
+        with self.assertRaisesRegex(ValueError, "missing additional license file"):
+            validator.validate_declaration(self.root, self.component)
+
+    def test_filter_declaration_must_be_an_array(self) -> None:
+        self.component["requiredFilters"] = "whisper"
+        with self.assertRaisesRegex(ValueError, "requiredFilters must be a string array"):
+            validator.validate_declaration(self.root, self.component)
+
+    def test_successful_exit_without_requested_filter_fails_closed(self) -> None:
+        artifact = self.root / "artifact"
+        artifact.write_bytes(b"fixture")
+        self.component["artifactSHA256"] = validator.sha256(artifact)
+        self.component["requiredFilters"] = ["whisper"]
+        # FFmpeg can return zero for a nonexistent filter; exit status alone is insufficient.
+        with patch.object(validator.subprocess, "run", side_effect=[
+            CompletedProcess([], 0, stdout="arm64\n"),
+            CompletedProcess([], 0, stdout="Unknown filter 'whisper'.\n"),
+        ]):
+            with self.assertRaisesRegex(ValueError, "required filter unavailable"):
+                validator.validate_artifact(self.root, self.component)
 
 
 if __name__ == "__main__":

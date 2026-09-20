@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C86000000000000000000012 /* ManagedWhisperSetupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */; };
+		C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -250,6 +252,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedWhisperSetupModelTests.swift; sourceTree = "<group>"; };
+		C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDownloadServiceTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -522,6 +526,8 @@
 				C77000000000000000000201 /* FFmpegWhisperJobRunnerTests.swift */,
 				C78000000000000000000101 /* FFmpegWhisperTranscriptionProviderTests.swift */,
 				C80000000000000000000001 /* FFmpegWhisperSetupModelTests.swift */,
+				C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */,
+				C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */,
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
 				C82000000000000000000201 /* AutomationPatchReviewTests.swift */,
@@ -915,17 +921,19 @@
 			files = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/scripts/write_whisper_runtime_descriptor.py",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/c2patool",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/ffmpeg",
 			);
 			name = "Sign Bundled Binaries";
 			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/whisper-runtime.json",
 				"$(DERIVED_FILE_DIR)/c2patool.signed",
 				"$(DERIVED_FILE_DIR)/ffmpeg.signed",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ -n \"$CODE_SIGN_IDENTITY\" ] && [ \"$CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
+			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ -n \"$CODE_SIGN_IDENTITY\" ] && [ \"$CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -941,6 +949,8 @@
 				C77000000000000000000202 /* FFmpegWhisperJobRunnerTests.swift in Sources */,
 				C78000000000000000000102 /* FFmpegWhisperTranscriptionProviderTests.swift in Sources */,
 				C80000000000000000000002 /* FFmpegWhisperSetupModelTests.swift in Sources */,
+				C86000000000000000000012 /* ManagedWhisperSetupModelTests.swift in Sources */,
+				C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */,
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
 				C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */,

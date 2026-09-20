@@ -115,7 +115,7 @@ def probe(executable):
         catalog = catalog_result["structuredContent"]
         require(catalog["transcriptionToolsAvailable"] is False, "Unexpected transcription execution")
         providers = catalog["providers"]
-        require({provider["id"] for provider in providers} == {"appleSpeech", "customWhisper"},
+        require({provider["id"] for provider in providers} == {"appleSpeech", "whisper", "customWhisper"},
                 "Unexpected provider identities")
         for provider in providers:
             require("Settings → Transcription" in provider["nextAction"],
