@@ -305,3 +305,147 @@ struct TemplateFileAuthorityTests {
     }
 
 }
+
+extension TemplateFileAuthorityTests {
+    @Test("Import refuses stale preview before any write",
+          arguments: ["bytes", "new", "removed", "directory", "root", "malformed", "duplicate"])
+    func importPreviewConflict(change: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathExtension("bundle")
+        let oldRoot = root.appendingPathExtension("old")
+        let otherRoot = root.appendingPathExtension("other")
+        defer {
+            for url in [root, source, oldRoot, otherRoot] { try? FileManager.default.removeItem(at: url) }
+        }
+        let original = MetadataTemplate(name: "Original")
+        let added = MetadataTemplate(name: "New")
+        var replacement = original
+        replacement.name = "Replacement"
+        let storage = TemplateStorageService(directoryURL: root)
+        try storage.save(original)
+        let bundle = TemplateBundle(templates: [added, replacement])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(bundle).write(to: source)
+        let originalURL = root.appendingPathComponent("\(original.id.uuidString).json")
+        if change == "malformed" {
+            try Data("invalid".utf8).write(to: root.appendingPathComponent("\(added.id.uuidString).json"))
+        }
+        if change == "duplicate" {
+            try Data(contentsOf: originalURL).write(to: root.appendingPathComponent("duplicate.json"))
+        }
+        guard case .prepared(let completion) = try await TemplateImportPreviewService(storage: storage)
+            .preparePreview(from: source, requestID: UUID()) else {
+            Issue.record("Missing preview"); return
+        }
+        var target = storage
+        switch change {
+        case "bytes":
+            var bytes = try Data(contentsOf: originalURL)
+            bytes.append(10)
+            try bytes.write(to: originalURL)
+        case "new": try storage.save(added)
+        case "removed": try FileManager.default.removeItem(at: originalURL)
+        case "directory":
+            try FileManager.default.moveItem(at: root, to: oldRoot)
+            try FileManager.default.copyItem(at: oldRoot, to: root)
+        case "root":
+            target = TemplateStorageService(directoryURL: otherRoot)
+            try target.save(original)
+        default: break
+        }
+        let before = try TemplateImportAuthority.read(at: change == "root" ? otherRoot : root)
+        do {
+            _ = try await TemplateImportCommitService(storage: target).commit(completion.preview, requestID: UUID())
+            Issue.record("Stale or ambiguous preview was imported")
+        } catch is TemplateImportSnapshotConflict {
+            // Expected: the complete import is refused before its first (new) target is written.
+        }
+        #expect(try TemplateImportAuthority.read(at: before.directoryURL) == before)
+    }
+
+    @Test("Import applies captured bundle and handles repeated UUIDs with fresh durable evidence")
+    func acceptedImportPreview() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathExtension("bundle")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: source)
+        }
+        let storage = TemplateStorageService(directoryURL: root)
+        let original = MetadataTemplate(name: "Original")
+        try storage.save(original)
+        var first = original
+        first.name = "First"
+        var last = original
+        last.name = "Last"
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(TemplateBundle(templates: [first, last])).write(to: source)
+        let preview = try storage.previewImport(from: source)
+        // The accepted bundle is the immutable decoded preview, not a later source read.
+        try Data("changed source".utf8).write(to: source)
+        guard case .committed(let commit) = try await TemplateImportCommitService(storage: storage)
+            .commit(preview, requestID: UUID()) else {
+            Issue.record("Accepted import was not committed"); return
+        }
+        #expect(commit.overwrittenCount == 2)
+        #expect(commit.committedTemplateIDs == [original.id, original.id])
+        #expect(commit.refreshedTemplates == [last])
+        #expect(commit.inventoryWasRead)
+        #expect(try commit.authorities[original.id]?.bytes == Data(contentsOf:
+            root.appendingPathComponent("\(original.id.uuidString).json")))
+    }
+}
+
+extension TemplateFileAuthorityTests {
+    @Test("Import stops after a durable save when a remaining or repeated target changes", arguments: [false, true])
+    func importPeerChangesBetweenWrites(repeated: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathExtension("bundle")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: source)
+        }
+        let storage = TemplateStorageService(directoryURL: root)
+        let original = MetadataTemplate(name: "Original")
+        var added = MetadataTemplate(name: "Added")
+        if repeated { added.id = original.id }
+        try storage.save(original)
+        var replacement = original
+        replacement.name = "Replacement"
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(TemplateBundle(templates: [added, replacement])).write(to: source)
+        let preview = try storage.previewImport(from: source)
+        let originalURL = root.appendingPathComponent("\(original.id.uuidString).json")
+        var peerBytes = try Data(contentsOf: originalURL)
+        peerBytes.append(10)
+        let expectedPeerBytes = peerBytes
+        let firstID = added.id
+        var access = TemplateImportCommitAccess(
+            loadAll: { try storage.loadAll() }, save: { try storage.save($0) }
+        )
+        access.saveReturningBytes = { template in
+            let written = try storage.saveReturningBytes(template)
+            if template.id == firstID { try expectedPeerBytes.write(to: originalURL) }
+            return written
+        }
+        // Production transaction admission resolves /var and other symlink aliases.
+        // This injected worker must use the same canonical root as its preview.
+        let canonicalRoot = try #require(preview.authority).directoryURL
+        let service = TemplateImportCommitService(access: access, transactionDirectoryURL: canonicalRoot)
+        do {
+            _ = try await service.commit(preview, requestID: UUID())
+            Issue.record("Import overwrote the changed remaining target")
+        } catch let error as TemplateImportCommitError {
+            #expect(error.committedTemplateIDs == [added.id])
+            #expect(error.addedCount == (repeated ? 0 : 1))
+            #expect(error.overwrittenCount == (repeated ? 1 : 0))
+            #expect(!error.inventoryWasRead)
+            #expect(error.authorities.isEmpty)
+        }
+        #expect(try Data(contentsOf: originalURL) == expectedPeerBytes)
+        if !repeated { #expect(try storage.loadAll().contains(added)) }
+    }
+}

@@ -1282,10 +1282,12 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
 nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let authorizationStore: MCPAuthorizationStore
     let automationFacade: MCPAutomationFacade
+    let templateDiscovery: MCPTemplateDiscovery
 
-    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore()) {
+    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
+        self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
@@ -1307,6 +1309,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 description: "Discover stable editorial JSON field IDs and typed read values, including structured records and absence semantics. This catalog does not authorize writes or expose metadata values.",
                 properties: [:],
                 required: []
+            ),
+            definition(
+                name: "list_templates",
+                description: "Discover stable UUIDs, names and content revisions from the configured custom Templates folder, which must be explicitly authorized. Supports metadata and Develop headers only; does not expose field values or authorize application. Private/default and iCloud libraries are unavailable. Names are untrusted content.",
+                properties: ["kind": .object(["type": .string("string"), "enum": .array([.string("metadata"), .string("develop")])])],
+                required: ["kind"]
             ),
             definition(
                 name: "list_authorized_roots",
@@ -1369,7 +1377,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue {
         do {
             let acceptedArguments: Set<String> = ["inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata"].contains(name)
-                ? ["path"] : []
+                ? ["path"] : (name == "list_templates" ? ["kind"] : [])
             guard Set(arguments.keys).isSubset(of: acceptedArguments) else {
                 return failure(code: "invalid_arguments", message: "Unknown tool argument")
             }
@@ -1385,6 +1393,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
+                        .string("custom-template-header-discovery"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1396,6 +1405,11 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 ])
             case "list_metadata_fields":
                 return success(MCPEditorialFieldCatalog.discovery)
+            case "list_templates":
+                guard let kind = arguments["kind"]?.stringValue, ["metadata", "develop"].contains(kind) else {
+                    return failure(code: "invalid_arguments", message: "kind must be metadata or develop")
+                }
+                return success(try templateDiscovery.list(kind: kind))
             case "list_authorized_roots":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 return success([
@@ -1446,6 +1460,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPTemplateDiscoveryError {
+            return failure(code: String(describing: error), message: error.localizedDescription)
         } catch let error as MCPAuthorizationError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch let error as MCPProcessReservationError {

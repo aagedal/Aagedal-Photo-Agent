@@ -52,6 +52,16 @@ nonisolated struct TemplateImportPreview: Sendable, Identifiable {
     let bundle: TemplateBundle
     let newCount: Int
     let overwriteCount: Int
+    let authority: TemplateImportAuthority?
+
+    init(source: URL, bundle: TemplateBundle, newCount: Int, overwriteCount: Int,
+         authority: TemplateImportAuthority? = nil) {
+        self.source = source
+        self.bundle = bundle
+        self.newCount = newCount
+        self.overwriteCount = overwriteCount
+        self.authority = authority
+    }
 }
 
 nonisolated struct TemplateImportResult: Sendable {

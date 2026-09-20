@@ -3,6 +3,53 @@ import os
 
 nonisolated private let templateStorageLog = Logger(subsystem: "com.aagedal.photo-agent", category: "TemplateStorageService")
 
+/// The accepted preview owns every JSON filename and byte, including malformed documents.
+/// Absence is evidence too: a newly occupied UUID must not silently become an overwrite.
+nonisolated struct TemplateImportAuthority: Equatable, Sendable {
+    let directoryURL: URL
+    let directoryIdentity: TemplateDirectoryIdentity
+    var files: [String: Data]
+
+    static func read(at directory: URL) throws -> Self {
+        let directory = SafePathComponent.resolvingExistingSymlinks(in: directory)
+        let identity = try TemplateDirectoryIdentity.read(at: directory)
+        var files: [String: Data] = [:]
+        for file in try CloudCoordinatedIO.contentsOfDirectory(at: directory)
+            where file.pathExtension.lowercased() == "json" {
+            files[file.lastPathComponent] = try CloudCoordinatedIO.readData(at: file)
+        }
+        guard try TemplateDirectoryIdentity.read(at: directory) == identity else {
+            throw TemplateImportSnapshotConflict()
+        }
+        return Self(directoryURL: directory, directoryIdentity: identity, files: files)
+    }
+
+    var templates: [MetadataTemplate] {
+        files.values.compactMap { try? JSONDecoder().decode(MetadataTemplate.self, from: $0) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    func validateTargets(_ bundle: TemplateBundle) throws {
+        for template in bundle.templates {
+            let canonicalName = "\(template.id.uuidString).json"
+            let matchingFiles = files.filter { name, bytes in
+                UUID(uuidString: URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent) == template.id
+                    || (try? JSONDecoder().decode(MetadataTemplate.self, from: bytes).id) == template.id
+            }
+            guard matchingFiles.isEmpty || (matchingFiles.count == 1
+                && matchingFiles[canonicalName].flatMap {
+                    try? JSONDecoder().decode(MetadataTemplate.self, from: $0).id
+                } == template.id) else { throw TemplateImportSnapshotConflict() }
+        }
+    }
+}
+
+nonisolated struct TemplateImportSnapshotConflict: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "The template folder changed or contains an ambiguous import target. Preview the bundle again before importing."
+    }
+}
+
 /// Deletion keeps the original file recoverable in Finder's Trash, including fields that
 /// a newer app may have written. Never fall back to permanent deletion if Trash fails.
 nonisolated struct TemplateTrashAccess: Sendable {
@@ -74,6 +121,10 @@ nonisolated struct TemplateStorageService: Sendable {
     }
 
     func save(_ template: MetadataTemplate) throws {
+        _ = try saveReturningBytes(template)
+    }
+
+    func saveReturningBytes(_ template: MetadataTemplate) throws -> Data {
         let (directory, release) = resolvedDirectory()
         defer { release() }
         let url = directory.appendingPathComponent("\(template.id.uuidString).json")
@@ -93,6 +144,7 @@ nonisolated struct TemplateStorageService: Sendable {
             data = try TemplateJSONPreservation.metadata(replacement: data, existing: existingData)
         }
         try CloudCoordinatedIO.writeData(data, to: url)
+        return data
     }
 
     func delete(_ template: MetadataTemplate) throws {
@@ -132,7 +184,10 @@ nonisolated struct TemplateStorageService: Sendable {
 
     func previewImport(from source: URL) throws -> TemplateImportPreview {
         let bundle = try loadBundle(from: source)
-        var existingIDs = Set(try loadAll().map(\.id))
+        let (directory, release) = resolvedDirectory()
+        defer { release() }
+        let authority = try TemplateImportAuthority.read(at: directory)
+        var existingIDs = Set(authority.templates.map(\.id))
         var newCount = 0
         var overwriteCount = 0
         for t in bundle.templates {
@@ -143,7 +198,8 @@ nonisolated struct TemplateStorageService: Sendable {
             source: source,
             bundle: bundle,
             newCount: newCount,
-            overwriteCount: overwriteCount
+            overwriteCount: overwriteCount,
+            authority: authority
         )
     }
 
@@ -340,6 +396,7 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
     let loadAll: @Sendable () throws -> [MetadataTemplate]
     let save: @Sendable (MetadataTemplate) throws -> Void
 
+    var saveReturningBytes: (@Sendable (MetadataTemplate) throws -> Data)? = nil
     var readInventory: (@Sendable () throws -> TemplateFileInventory<MetadataTemplate>)? = nil
     var prepareTransaction: (@Sendable () -> TemplateStorageScope<Self>)? = nil
 
@@ -348,6 +405,7 @@ nonisolated struct TemplateImportCommitAccess: Sendable {
             loadAll: { try storage.loadAll() },
             save: { try storage.save($0) }
         )
+        access.saveReturningBytes = { try storage.saveReturningBytes($0) }
         if prepareTransaction {
             access.prepareTransaction = {
                 let scope = storage.resolvedForTransaction()
@@ -398,12 +456,22 @@ actor TemplateImportCommitService {
         self.filesystemQueue = filesystemQueue
     }
 
-    func commit(_ bundle: TemplateBundle, sourceURL: URL, requestID: UUID) async throws -> TemplateImportCommitOperationResult {
+    func commit(_ preview: TemplateImportPreview, requestID: UUID) async throws -> TemplateImportCommitOperationResult {
+        // Injected in-memory access has no filesystem root. Production previews must carry evidence.
+        guard preview.authority != nil || access.prepareTransaction == nil else {
+            throw TemplateImportSnapshotConflict()
+        }
+        return try await commit(preview.bundle, sourceURL: preview.source, requestID: requestID,
+                                expectedAuthority: preview.authority)
+    }
+
+    func commit(_ bundle: TemplateBundle, sourceURL: URL, requestID: UUID,
+                expectedAuthority: TemplateImportAuthority? = nil) async throws -> TemplateImportCommitOperationResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID, sourceURL: sourceURL)
         }
         guard let prepare = access.prepareTransaction else {
-            return try commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
+            return try commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID, expectedAuthority: expectedAuthority)
         }
         let scope = prepare()
         defer { scope.release() }
@@ -411,19 +479,29 @@ actor TemplateImportCommitService {
         return try await StorageTransactionAdmission.shared.withAccess(to: [scope.directoryURL]) {
             let reservation = Task.isCancelled ? nil : try MCPProcessReservation.acquireFolder(scope.directoryURL)
             defer { reservation?.release() }
-            return try await worker.commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID)
+            return try await worker.commitInTransaction(bundle, sourceURL: sourceURL, requestID: requestID, expectedAuthority: expectedAuthority)
         }
     }
 
     private func commitInTransaction(
         _ bundle: TemplateBundle,
         sourceURL: URL,
-        requestID: UUID
+        requestID: UUID,
+        expectedAuthority: TemplateImportAuthority?
     ) throws -> TemplateImportCommitOperationResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(requestID: requestID, sourceURL: sourceURL)
         }
 
+        var expectedAuthority = expectedAuthority
+        if let expected = expectedAuthority {
+            guard access.saveReturningBytes != nil,
+                  transactionDirectoryURL == expected.directoryURL,
+                  try TemplateImportAuthority.read(at: expected.directoryURL) == expected else {
+                throw TemplateImportSnapshotConflict()
+            }
+            try expected.validateTargets(bundle)
+        }
         var refreshedTemplates = try access.loadAll()
         var existingIDs = Set(refreshedTemplates.map(\.id))
         var addedCount = 0
@@ -443,8 +521,19 @@ actor TemplateImportCommitService {
             }
 
             let isOverwrite = existingIDs.contains(template.id)
+            let writtenBytes: Data?
             do {
-                try access.save(template)
+                if let expected = expectedAuthority {
+                    guard try TemplateImportAuthority.read(at: expected.directoryURL) == expected else {
+                        throw TemplateImportSnapshotConflict()
+                    }
+                }
+                if let save = access.saveReturningBytes {
+                    writtenBytes = try save(template)
+                } else {
+                    try access.save(template)
+                    writtenBytes = nil
+                }
             } catch {
                 throw TemplateImportCommitError(
                     requestID: requestID,
@@ -471,6 +560,18 @@ actor TemplateImportCommitService {
                 overwrittenCount += 1
             } else {
                 addedCount += 1
+            }
+            guard !Task.isCancelled else {
+                return cancellationResult(
+                    requestID: requestID, sourceURL: sourceURL,
+                    addedCount: addedCount, overwrittenCount: overwrittenCount,
+                    committedTemplateIDs: committedTemplateIDs, refreshedTemplates: refreshedTemplates
+                )
+            }
+            if expectedAuthority != nil, let writtenBytes {
+                // Advance only to bytes emitted by our save. A later read must never
+                // bless a peer's replacement as authority for a repeated UUID.
+                expectedAuthority?.files["\(template.id.uuidString).json"] = writtenBytes
             }
         }
 

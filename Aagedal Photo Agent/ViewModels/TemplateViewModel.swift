@@ -432,8 +432,7 @@ final class TemplateViewModel {
         importCommitTask = Task { [weak self, importCommitService] in
             do {
                 let result = try await importCommitService.commit(
-                    preview.bundle,
-                    sourceURL: preview.source,
+                    preview,
                     requestID: requestID
                 )
                 guard let self, self.importCommitRequestID == requestID else { return }

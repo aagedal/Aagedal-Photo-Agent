@@ -174,7 +174,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_authorized_roots", "inspect_path_authorization",
+            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "inspect_app_photo_draft",
         ])
         for tool in tools {
