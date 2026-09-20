@@ -45,6 +45,9 @@ python3 -B scripts/ci/test_verify_auraface_reproduction.py
 python3 -B scripts/build_auraface_coreml.py contract
 python3 -B scripts/ci/validate_bundled_components.py
 
+say "Checking pinned FFmpeg Whisper source correction"
+python3 -B scripts/ci/test_ffmpeg_whisper_patch.py
+
 say "Checking unified-log privacy classifications"
 python3 scripts/ci/test_logger_privacy_validator.py
 python3 scripts/ci/validate_logger_privacy.py
