@@ -6,6 +6,19 @@ import Testing
 @Suite("Custom Whisper provider setup")
 @MainActor
 struct FFmpegWhisperSetupModelTests {
+    private nonisolated static func waitForSignal(_ semaphore: DispatchSemaphore,
+                                                   seconds: Double = 5) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + seconds) == .success)
+            }
+        }
+    }
+
+    private nonisolated static func hasSignal(_ semaphore: DispatchSemaphore) -> Bool {
+        semaphore.wait(timeout: .now()) == .success
+    }
+
     private func defaults() -> (UserDefaults, String) {
         let suite = "WhisperSetupTests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)
@@ -22,7 +35,7 @@ struct FFmpegWhisperSetupModelTests {
         return folder
     }
 
-    @Test("provider choice persists but artifacts and execution consent never do")
+    @Test("provider choice persists without granting execution consent")
     func persistence() async throws {
         let (defaults, suite) = defaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -45,8 +58,8 @@ struct FFmpegWhisperSetupModelTests {
         let folder = try fixture()
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = FFmpegWhisperSetupModel(defaults: defaults)
-        setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
-        setup.select(folder.appendingPathComponent("model"), executable: false)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
         await setup.prepare()
         #expect(!setup.isReady)
         #expect(setup.provider() == nil)
@@ -68,12 +81,12 @@ struct FFmpegWhisperSetupModelTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = FFmpegWhisperSetupModel(defaults: defaults)
         setup.choice = .customWhisper
-        setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
-        setup.select(folder.appendingPathComponent("model"), executable: false)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
         setup.executionConsent = true
         await setup.prepare()
         #expect(setup.isReady)
-        setup.select(folder.appendingPathComponent("model"), executable: false)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
         #expect(!setup.executionConsent)
         #expect(setup.provider() == nil)
         setup.clear()
@@ -90,8 +103,8 @@ struct FFmpegWhisperSetupModelTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = FFmpegWhisperSetupModel(defaults: defaults)
         setup.choice = .customWhisper
-        setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
-        setup.select(folder.appendingPathComponent("missing"), executable: false)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("missing"), executable: false)
         setup.executionConsent = true
         await setup.prepare()
         #expect(setup.errorMessage != nil)
@@ -107,8 +120,8 @@ struct FFmpegWhisperSetupModelTests {
         let folder = try fixture()
         defer { try? FileManager.default.removeItem(at: folder) }
         let setup = FFmpegWhisperSetupModel(defaults: defaults)
-        setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
-        setup.select(folder.appendingPathComponent("model"), executable: false)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
         setup.executionConsent = true
         let work = Task { await setup.prepare() }
         work.cancel()
@@ -116,4 +129,182 @@ struct FFmpegWhisperSetupModelTests {
         #expect(!setup.isReady)
         #expect(setup.provider() == nil)
     }
+
+    @Test("retained selections restore without consent and require fresh identity admission")
+    func restoreAndReadmit() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
+        setup.executionConsent = true
+        await setup.prepare()
+        #expect(setup.isReady)
+        setup.endSession()
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) != nil)
+        let reopened = FFmpegWhisperSetupModel(defaults: defaults)
+        await reopened.restoreSelections()
+        #expect(reopened.executableURL == folder.appendingPathComponent("ffmpeg"))
+        #expect(reopened.modelURL == folder.appendingPathComponent("model"))
+        #expect(!reopened.executionConsent)
+        await reopened.prepare()
+        #expect(reopened.provider() == nil)
+        // Restored access is not an admission receipt: a now-empty model is rejected.
+        try Data().write(to: folder.appendingPathComponent("model"))
+        reopened.executionConsent = true
+        await reopened.prepare()
+        #expect(!reopened.isReady)
+        #expect(reopened.errorMessage != nil)
+    }
+
+    @Test("stale bookmarks refresh while missing files remain recoverable and Clear forgets them")
+    func staleMissingAndClear() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let executable = folder.appendingPathComponent("ffmpeg")
+        let old = Data("old".utf8)
+        let refreshed = Data("refreshed".utf8)
+        let missing = Data("missing".utf8)
+        defaults.set(old, forKey: FFmpegWhisperSetupModel.executableBookmarkKey)
+        defaults.set(missing, forKey: FFmpegWhisperSetupModel.modelBookmarkKey)
+        var dependencies = FFmpegWhisperBookmarkService.Dependencies()
+        dependencies.resolve = { data in
+            (data == old ? executable : folder.appendingPathComponent("absent"), true)
+        }
+        dependencies.create = { _ in refreshed }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults,
+            bookmarks: FFmpegWhisperBookmarkService(dependencies: dependencies))
+        await setup.restoreSelections()
+        #expect(setup.executableURL == executable)
+        #expect(setup.modelURL == nil)
+        #expect(setup.errorMessage != nil)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.executableBookmarkKey) == refreshed)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) == missing)
+        #expect(!setup.executionConsent)
+        setup.clear()
+        await setup.restoreSelections()
+        #expect(setup.executableURL == nil)
+        #expect(setup.modelURL == nil)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.executableBookmarkKey) == nil)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) == nil)
+    }
+
+    @Test("failed stale refresh retains original bookmark without publishing access")
+    func failedRefresh() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let old = Data("old".utf8)
+        defaults.set(old, forKey: FFmpegWhisperSetupModel.modelBookmarkKey)
+        var dependencies = FFmpegWhisperBookmarkService.Dependencies()
+        dependencies.resolve = { _ in (folder.appendingPathComponent("model"), true) }
+        dependencies.create = { _ in throw CocoaError(.fileReadNoPermission) }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults,
+            bookmarks: FFmpegWhisperBookmarkService(dependencies: dependencies))
+        await setup.restoreSelections()
+        #expect(setup.modelURL == nil)
+        #expect(setup.errorMessage != nil)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) == old)
+    }
+
+
+    @Test("Clear during bookmark creation rejects late publication and balances access")
+    func clearDuringSelection() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let released = DispatchSemaphore(value: 0)
+        var dependencies = FFmpegWhisperBookmarkService.Dependencies()
+        dependencies.access = { url in
+            WhisperArtifactAccess(url, start: { _ in true }, stop: { _ in released.signal() })
+        }
+        dependencies.create = { _ in
+            entered.signal()
+            _ = resume.wait(timeout: .now() + 10)
+            return Data("retained".utf8)
+        }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults,
+            bookmarks: FFmpegWhisperBookmarkService(dependencies: dependencies))
+        let selection = Task { await setup.select(URL(fileURLWithPath: "/custom/model"), executable: false) }
+        let started = await Self.waitForSignal(entered)
+        #expect(started)
+        setup.clear()
+        resume.signal()
+        await selection.value
+        #expect(setup.modelURL == nil)
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) == nil)
+        #expect(await Self.waitForSignal(released, seconds: 1))
+    }
+
+
+    @Test("ending a session during restore cannot publish either saved file")
+    func endSessionDuringRestore() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let released = DispatchSemaphore(value: 0)
+        defaults.set(Data("executable".utf8), forKey: FFmpegWhisperSetupModel.executableBookmarkKey)
+        defaults.set(Data("model".utf8), forKey: FFmpegWhisperSetupModel.modelBookmarkKey)
+        var dependencies = FFmpegWhisperBookmarkService.Dependencies()
+        dependencies.resolve = { data in
+            entered.signal()
+            _ = resume.wait(timeout: .now() + 10)
+            return (URL(fileURLWithPath: "/custom/" + String(decoding: data, as: UTF8.self)), false)
+        }
+        dependencies.exists = { _ in true }
+        dependencies.access = { url in
+            WhisperArtifactAccess(url, start: { _ in true }, stop: { _ in released.signal() })
+        }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults,
+            bookmarks: FFmpegWhisperBookmarkService(dependencies: dependencies))
+        let restoration = Task { await setup.restoreSelections() }
+        let started = await Self.waitForSignal(entered)
+        #expect(started)
+        setup.endSession()
+        resume.signal()
+        await restoration.value
+        #expect(setup.executableURL == nil)
+        #expect(setup.modelURL == nil)
+        #expect(!setup.executionConsent)
+        #expect(await Self.waitForSignal(released, seconds: 1))
+        #expect(!Self.hasSignal(entered))
+        #expect(defaults.data(forKey: FFmpegWhisperSetupModel.modelBookmarkKey) != nil)
+    }
+
+    @Test("a provider retains both security scopes after setup is cleared")
+    func providerScopeLifetime() async throws {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let released = DispatchSemaphore(value: 0)
+        var dependencies = FFmpegWhisperBookmarkService.Dependencies()
+        dependencies.create = { _ in Data("retained".utf8) }
+        dependencies.access = { url in
+            WhisperArtifactAccess(url, start: { _ in true }, stop: { _ in released.signal() })
+        }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults,
+            bookmarks: FFmpegWhisperBookmarkService(dependencies: dependencies))
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
+        setup.executionConsent = true
+        await setup.prepare()
+        var provider = setup.provider()
+        #expect(provider != nil)
+        setup.clear()
+        withExtendedLifetime(provider) {
+            #expect(!Self.hasSignal(released))
+        }
+        provider = nil
+        #expect(await Self.waitForSignal(released, seconds: 1))
+        #expect(await Self.waitForSignal(released, seconds: 1))
+    }
+
 }

@@ -199,7 +199,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_authorized_roots", "inspect_path_authorization",
+            "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -1388,6 +1388,67 @@ struct MCPServerCoreTests {
         #expect(signature.terminationStatus == 0)
         #expect(signatureText.contains("flags=0x10000(runtime)"))
         #expect(signatureText.contains("TeamIdentifier=3R5QGG9DW6"))
+    }
+
+    @Test("Provider discovery reports app-session requirements without inventing readiness")
+    func providerDiscoveryBoundaries() throws {
+        let tools = MCPFoundationTools(authorizationStore: store())
+        let result = try #require(tools.callTool(name: "list_transcription_providers", arguments: [:]).objectValue)
+        #expect(result["isError"] == .bool(false))
+        let catalog = try #require(result["structuredContent"]?.objectValue)
+        #expect(catalog["scope"] == .string("provider-catalog-only"))
+        #expect(catalog["transcriptionToolsAvailable"] == .bool(false))
+        #expect(catalog["automaticFallback"] == .bool(false))
+        guard case .array(let providers) = catalog["providers"] else {
+            Issue.record("Expected provider array")
+            return
+        }
+        #expect(providers.compactMap { $0.objectValue?["id"]?.stringValue } ==
+                VoiceMemoTranscriptionProviderChoice.allCases.map(\.rawValue))
+        for value in providers {
+            let provider = try #require(value.objectValue)
+            #expect(provider["readiness"] == .string("application-session-required"))
+            #expect(provider["runtimeAvailability"] == .string("unknown"))
+            #expect(provider["languageAvailability"] == .string("unknown"))
+            #expect(provider["modelAvailability"] == .string("unknown"))
+            #expect(provider["transcriptionCallable"] == .bool(false))
+            #expect(provider["reason"]?.stringValue?.isEmpty == false)
+            #expect(provider["nextAction"]?.stringValue?.isEmpty == false)
+            #expect(Set(provider.keys) == ["id", "name", "readiness", "runtimeAvailability",
+                "languageAvailability", "modelAvailability", "transcriptionCallable", "reason", "nextAction"])
+        }
+        guard case .array(let content) = result["content"],
+              let fallback = content.first?.objectValue?["text"]?.stringValue else {
+            Issue.record("Missing text fallback")
+            return
+        }
+        #expect(try JSONDecoder().decode(MCPJSONValue.self, from: Data(fallback.utf8)) == result["structuredContent"])
+        #expect(fallback.utf8.count < 4096)
+        #expect(!fallback.contains(NSHomeDirectory()))
+    }
+
+    @Test("Provider discovery has a closed read-only schema and rejects every argument")
+    func providerDiscoveryRejectsArguments() throws {
+        let tools = MCPFoundationTools(authorizationStore: store())
+        let definition = try #require(tools.toolDefinitions(configuration: MCPAuthorizationConfiguration())
+            .first { $0.objectValue?["name"] == .string("list_transcription_providers") }?.objectValue)
+        #expect(definition["inputSchema"]?.objectValue?["properties"] == .object([:]))
+        #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+        #expect(definition["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(definition["annotations"]?.objectValue?["openWorldHint"] == .bool(false))
+        for key in ["path", "language", "provider", "download", "execute", "modelPath"] {
+            let result = try #require(tools.callTool(name: "list_transcription_providers",
+                                                    arguments: [key: .string("untrusted")]).objectValue)
+            #expect(result["isError"] == .bool(true))
+            #expect(result["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        let capabilities = tools.callTool(name: "get_server_capabilities", arguments: [:])
+            .objectValue?["structuredContent"]?.objectValue
+        guard case .array(let implemented) = capabilities?["implementedCapabilities"] else {
+            Issue.record("Missing capability array")
+            return
+        }
+        #expect(implemented.contains(.string("transcription-provider-discovery")))
     }
 
     private func json(_ data: Data) throws -> [String: Any] {

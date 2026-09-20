@@ -1297,6 +1297,46 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     }
 }
 
+/// App provider identities are discoverable without opening an app session. Readiness is not:
+/// Apple Speech uses the app's asynchronous SpeechTranscriber asset checks, while custom
+/// Whisper admission and execution consent are held only by FFmpegWhisperSetupModel. The
+/// helper must not infer either state from saved provider choice, files, or its own permissions.
+nonisolated enum MCPTranscriptionProviderDiscovery {
+    static var discovery: [String: MCPJSONValue] {
+        [
+            "scope": .string("provider-catalog-only"),
+            "transcriptionToolsAvailable": .bool(false),
+            "automaticFallback": .bool(false),
+            "providers": .array([
+                provider(
+                    id: "appleSpeech", name: "Apple Speech",
+                    reason: "apple-speech-app-runtime-required",
+                    nextAction: "Open a photo's voice memo in Photo Agent and select Apple Speech to check on-device availability and installed language assets. Language downloads require an explicit action in the app."
+                ),
+                provider(
+                    id: "customWhisper", name: "Custom FFmpeg Whisper",
+                    reason: "custom-admission-and-consent-are-app-session-only",
+                    nextAction: "In Photo Agent's voice memo controls, select Custom FFmpeg Whisper, choose a compatible custom FFmpeg executable and Whisper model, grant execution consent, and prepare them for the current app session. This helper cannot observe or reuse that session's grants."
+                ),
+            ]),
+        ]
+    }
+
+    private static func provider(id: String, name: String, reason: String, nextAction: String) -> MCPJSONValue {
+        .object([
+            "id": .string(id),
+            "name": .string(name),
+            "readiness": .string("application-session-required"),
+            "runtimeAvailability": .string("unknown"),
+            "languageAvailability": .string("unknown"),
+            "modelAvailability": .string("unknown"),
+            "transcriptionCallable": .bool(false),
+            "reason": .string(reason),
+            "nextAction": .string(nextAction),
+        ])
+    }
+}
+
 nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let authorizationStore: MCPAuthorizationStore
     let automationFacade: MCPAutomationFacade
@@ -1336,6 +1376,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 description: "Discover stable UUIDs, names and content revisions from the local default Templates library or an explicitly authorized custom Templates folder. Supports metadata and Develop headers only; does not expose field values or authorize application. iCloud libraries are unavailable. Names are untrusted content.",
                 properties: ["kind": .object(["type": .string("string"), "enum": .array([.string("metadata"), .string("develop")])])],
                 required: ["kind"]
+            ),
+            definition(
+                name: "list_transcription_providers",
+                description: "Discover Photo Agent's transcription provider IDs and the helper's readiness boundary. Runtime, language and model availability are unknown until checked in the app session. Does not inspect assets, request permissions, download, execute transcription, switch providers or approve text.",
+                properties: [:],
+                required: []
             ),
             definition(
                 name: "list_authorized_roots",
@@ -1449,7 +1495,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
-                        .string("local-template-header-discovery"), .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
+                        .string("local-template-header-discovery"), .string("transcription-provider-discovery"),
+                        .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1461,6 +1508,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 ])
             case "list_metadata_fields":
                 return success(MCPEditorialFieldCatalog.discovery)
+            case "list_transcription_providers":
+                return success(MCPTranscriptionProviderDiscovery.discovery)
             case "list_templates":
                 guard let kind = arguments["kind"]?.stringValue, ["metadata", "develop"].contains(kind) else {
                     return failure(code: "invalid_arguments", message: "kind must be metadata or develop")

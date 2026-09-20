@@ -119,7 +119,8 @@ the support table and validation records.
   transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.
 - Caption offers explicit **Apple Speech** or **Custom FFmpeg Whisper** transcription. Custom setup
   requires selected compatible executable/model files and execution consent; generated text remains
-  an editable draft. Provider choice persists, while file access and consent are session-only.
+  an editable draft. Provider choice and security-scoped file bookmarks persist; each Caption session
+  requires fresh execution consent and file identity validation.
   Curated model delivery and the bundled Whisper artifact remain under implementation.
 
 ### Face Recognition

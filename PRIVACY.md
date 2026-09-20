@@ -15,9 +15,10 @@ network service are listed below.
 - Voice-memo review records store generated and edited text, approval state, audio identity and
   provider information in the photo's app sidecar. The selectable custom FFmpeg Whisper provider additionally
   retains model/build hashes and byte counts, requested language, translation/GPU settings and
-  segment text and normalized timing. Provider choice is retained in local preferences. Selected custom
-  executable/model access and explicit execution consent last only while the Caption panel remains
-  open; no model downloads occur. Custom executables run only after explicit Transcribe and are
+  segment text and normalized timing. Provider choice and security-scoped executable/model bookmarks
+  are retained in local preferences. Clear Custom Files removes the saved bookmarks. Execution consent
+  and admitted identities last only while the Caption panel remains open; reopening requires fresh
+  consent and identity validation. No model downloads occur. Custom executables run only after explicit Transcribe and are
   unverified software with the user's local process permissions. Review approval does not itself
   write transcript text into photo metadata.
 - Analysis cases, working-folder map state, and named Develop versions prefer hidden app-private JSON in

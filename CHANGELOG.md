@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Custom Whisper selections now survive Caption closure and app relaunch through security-scoped
+  bookmarks. Every session still requires execution consent and fresh file identity checks;
+  Clear Custom Files forgets the retained selections.
+- Local MCP now discovers transcription provider IDs and setup guidance, with explicit unknown
+  app-session readiness and no helper transcription execution.
+
 - Caption now offers explicit Custom FFmpeg Whisper setup, execution consent and transcription into
   the existing editable review flow. Provider choice persists; custom files and consent are session-only.
   Apple Speech remains available, with no automatic provider fallback or model download.

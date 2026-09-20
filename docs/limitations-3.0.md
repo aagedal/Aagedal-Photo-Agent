@@ -162,8 +162,9 @@ WAV-only local decoding, cancellation/deadlines and canonical JSON validation. T
 provider adapter revalidates the WAV relationship and produces unapproved editable drafts with
 persisted build/model identity, language settings and segment evidence. It requires artifact
 authorization through Caption's explicit file selection and execution consent. Provider choice persists;
-custom file access and consent are session-only and must be renewed after closing the panel.
-Retained bookmarks, curated delivery, configurable language/GPU and the complete model lifecycle remain
+security-scoped file bookmarks persist, while execution consent and identity admission must be renewed
+after closing the panel. Missing files require reconnecting the volume or selecting them again.
+Curated delivery, configurable language/GPU and the complete model lifecycle remain
 open. Complete blank-audio-marker segments are excluded from
 drafts while original segment evidence is retained; real-model silence still needs validation. See the
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

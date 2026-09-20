@@ -19,6 +19,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     override func tearDownWithError() throws {
         app?.terminate()
         if let fixtureRoot {
+            let suiteName = "com.aagedal.photo-agent.ui-tests.whisper.\(fixtureRoot.lastPathComponent)"
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
             try? FileManager.default.removeItem(at: fixtureRoot)
         }
     }
@@ -157,6 +159,85 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.imageURL), originalImage)
         XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
         XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
+    }
+
+    @MainActor
+    func testCustomWhisperFileBookmarksSurviveRelaunchWithoutConsentAndClearPermanently() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let executable = fixtureRoot.appendingPathComponent("smoke-custom-ffmpeg")
+        let model = fixtureRoot.appendingPathComponent("smoke-custom-model.bin")
+        // Setup records identities only. These disposable files are never used for inference.
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        try Data("Disposable native picker model fixture".utf8).write(to: model)
+        let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL,
+                              fixture.sidecarURL, executable, model]
+        let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
+
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        let enable = app.buttons["caption.voiceMemo.whisper.enable"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 15))
+        XCTAssertFalse(enable.isEnabled)
+        chooseCustomWhisperFile(executable, button: "caption.voiceMemo.whisper.selectExecutable")
+        chooseCustomWhisperFile(model, button: "caption.voiceMemo.whisper.selectModel")
+        let consent = app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 5))
+        XCTAssertEqual(checkboxState(consent), false)
+        XCTAssertFalse(enable.isEnabled)
+        consent.click()
+        XCTAssertTrue(waitForEnabled(enable, expected: true))
+        enable.click()
+        XCTAssertTrue(app.buttons["caption.voiceMemo.transcribe"].waitForExistence(timeout: 10))
+
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        let restoredEnable = app.buttons["caption.voiceMemo.whisper.enable"]
+        XCTAssertTrue(restoredEnable.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts[executable.lastPathComponent].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts[model.lastPathComponent].waitForExistence(timeout: 10))
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        XCTAssertFalse(restoredEnable.isEnabled)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].exists)
+        app.checkBoxes["caption.voiceMemo.whisper.executionConsent"].click()
+        XCTAssertTrue(waitForEnabled(restoredEnable, expected: true))
+
+        app.buttons["caption.voiceMemo.whisper.clear"].click()
+        XCTAssertTrue(app.staticTexts["No executable selected"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No model selected"].exists)
+        XCTAssertFalse(restoredEnable.isEnabled)
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        XCTAssertTrue(app.buttons["caption.voiceMemo.whisper.enable"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["No executable selected"].exists)
+        XCTAssertTrue(app.staticTexts["No model selected"].exists)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
+        XCTAssertEqual(checkboxState(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"]), false)
+        XCTAssertTrue((app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].value as? String)?
+            .contains("Approved UI smoke review") == true)
+        XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
+        for (index, file) in protectedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+        }
+    }
+
+    @MainActor
+    private func chooseCustomWhisperFile(_ url: URL, button identifier: String) {
+        app.buttons[identifier].click()
+        XCTAssertTrue(app.buttons["Cancel"].firstMatch.waitForExistence(timeout: 10))
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeKey("a", modifierFlags: .command)
+        app.typeText(url.path)
+        app.typeKey(.return, modifierFlags: [])
+        let selectedName = app.staticTexts[url.lastPathComponent]
+        // The panel itself also shows the filename. Wait for the chooser to close
+        // before deciding whether Go to Folder already accepted the selection.
+        if !app.buttons[identifier].waitForExistence(timeout: 2)
+            || app.buttons["Open"].firstMatch.exists {
+            app.typeKey(.return, modifierFlags: [])
+        }
+        XCTAssertTrue(selectedName.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -623,6 +704,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",
             "--ui-test-workflow", workflow,
+            "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {
@@ -1010,6 +1092,25 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         expectation(for: predicate, evaluatedWith: NSObject())
         waitForExpectations(timeout: 10)
         return predicate.evaluate(with: NSObject())
+    }
+
+    @MainActor
+    private func checkboxState(_ element: XCUIElement) -> Bool? {
+        // AppKit exposes AXValue as NSNumber on some macOS releases and as text
+        // on others. Unknown/mixed/missing values remain nil so an off check fails.
+        let value = element.value
+        if let number = value as? NSNumber {
+            if number == NSNumber(value: 0) { return false }
+            if number == NSNumber(value: 1) { return true }
+        }
+        if let text = value as? String {
+            switch text.lowercased() {
+            case "0", "false": return false
+            case "1", "true": return true
+            default: break
+            }
+        }
+        return nil
     }
 
     @MainActor

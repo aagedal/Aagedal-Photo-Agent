@@ -70,11 +70,12 @@ Limitations. Caption also offers **Custom FFmpeg Whisper** in the transcription-
 Choose a compatible patched FFmpeg executable and model, grant explicit execution consent,
 then select **Enable Custom Files** to record their identities. This step does not execute them;
 **Transcribe** starts local CPU inference with automatic language detection. Results use the same
-editable review and explicit approval flow as Apple Speech. The provider choice is saved, while
-selected files and execution consent last only while the Caption panel remains open. Reopening
-requires setup again. Custom files are unverified; hashes establish identity, not safety or trust.
+editable review and explicit approval flow as Apple Speech. Provider choice and security-scoped
+file bookmarks are saved. Reopening restores available files, but requires fresh execution consent
+and **Enable Custom Files** to validate their current identities. **Clear Custom Files** forgets
+the selections across relaunch. Unavailable saved files can be reselected after reconnecting the volume. Custom files are unverified; hashes establish identity, not safety or trust.
 No assets download automatically and an unavailable custom provider never falls back to Apple Speech.
-Curated models, retained file bookmarks and the bundled Whisper artifact remain in development.
+Curated models and the bundled Whisper artifact remain in development.
 
 ## Connect a local automation client
 
@@ -119,6 +120,10 @@ semantic baseline and possible write destinations, including RAW protection. It 
 These are read-only plans: no commit endpoint is available, actual write support, preservation and
 publication approval are not yet verified, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
+
+Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
+The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
+it reports unknown availability and requires an app session. This catalog does not enable transcription.
 
 Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template
 UUIDs, names and exact-content revision hashes. Disable Templates iCloud sync and explicitly

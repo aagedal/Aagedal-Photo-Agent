@@ -11,20 +11,11 @@ nonisolated enum VoiceMemoTranscriptionProviderChoice: String, CaseIterable, Sen
     }
 }
 
-/// File grants survive both setup and an in-flight inference, including cancellation teardown.
-private nonisolated final class WhisperArtifactAccess: @unchecked Sendable {
-    let url: URL
-    private let accessed: Bool
-    init(_ url: URL) {
-        self.url = url
-        accessed = url.startAccessingSecurityScopedResource()
-    }
-    deinit { if accessed { url.stopAccessingSecurityScopedResource() } }
-}
-
 @MainActor @Observable
 final class FFmpegWhisperSetupModel {
     static let preferenceKey = "voiceMemo.transcriptionProvider"
+    static let executableBookmarkKey = "voiceMemo.whisper.executableBookmark"
+    static let modelBookmarkKey = "voiceMemo.whisper.modelBookmark"
     var choice: VoiceMemoTranscriptionProviderChoice {
         didSet { defaults.set(choice.rawValue, forKey: Self.preferenceKey) }
     }
@@ -37,6 +28,9 @@ final class FFmpegWhisperSetupModel {
         didSet { if !executionConsent { invalidate() } }
     }
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let bookmarks: FFmpegWhisperBookmarkService
+    @ObservationIgnored private var executableRequest = UUID()
+    @ObservationIgnored private var modelRequest = UUID()
     @ObservationIgnored private let admission: FFmpegWhisperArtifactAdmissionService
     @ObservationIgnored private var executableAccess: WhisperArtifactAccess?
     @ObservationIgnored private var modelAccess: WhisperArtifactAccess?
@@ -44,25 +38,81 @@ final class FFmpegWhisperSetupModel {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
 
-    init(defaults: UserDefaults = .standard,
-         admission: FFmpegWhisperArtifactAdmissionService = FFmpegWhisperArtifactAdmissionService()) {
+    private static let sessionDefaults: UserDefaults = {
+        let configuration = UITestLaunchConfiguration.current
+        guard configuration.isEnabled else { return AppDefaults.store }
+        let identifier = configuration.whisperDefaultsSuite ?? UUID().uuidString
+        return UserDefaults(suiteName: "com.aagedal.photo-agent.ui-tests.whisper.\(identifier)")!
+    }()
+
+    init(defaults: UserDefaults? = nil,
+         admission: FFmpegWhisperArtifactAdmissionService = FFmpegWhisperArtifactAdmissionService(),
+         bookmarks: FFmpegWhisperBookmarkService = FFmpegWhisperBookmarkService()) {
+        let defaults = defaults ?? Self.sessionDefaults
         self.defaults = defaults
         self.admission = admission
+        self.bookmarks = bookmarks
         choice = defaults.string(forKey: Self.preferenceKey)
             .flatMap(VoiceMemoTranscriptionProviderChoice.init(rawValue:)) ?? .appleSpeech
     }
 
-    func select(_ url: URL, executable: Bool) {
+    func restoreSelections() async {
+        let executableRequest = executableRequest
+        let modelRequest = modelRequest
+        await restore(executable: true, request: executableRequest)
+        await restore(executable: false, request: modelRequest)
+    }
+
+    private func restore(executable: Bool, request: UUID) async {
+        let key = executable ? Self.executableBookmarkKey : Self.modelBookmarkKey
+        guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest),
+              (executable ? executableURL : modelURL) == nil,
+              let data = defaults.data(forKey: key) else { return }
+        do {
+            let selection = try await bookmarks.restore(data)
+            guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
+            publish(selection, executable: executable)
+        } catch {
+            guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
+            // Keep recovery evidence until the user reselects or explicitly clears the files.
+            errorMessage = "A saved custom file is unavailable. Reconnect its volume or choose the file again. No file was executed."
+        }
+    }
+
+    func select(_ url: URL, executable: Bool) async {
         invalidate()
         executionConsent = false
+        let request = UUID()
         if executable {
-            executableAccess = WhisperArtifactAccess(url)
-            executableURL = url
+            executableRequest = request
+            executableAccess = nil
+            executableURL = nil
         } else {
-            modelAccess = WhisperArtifactAccess(url)
-            modelURL = url
+            modelRequest = request
+            modelAccess = nil
+            modelURL = nil
         }
+        defaults.removeObject(forKey: executable ? Self.executableBookmarkKey : Self.modelBookmarkKey)
         errorMessage = nil
+        do {
+            let selection = try await bookmarks.select(url)
+            guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
+            publish(selection, executable: executable)
+        } catch {
+            guard !Task.isCancelled, request == (executable ? executableRequest : modelRequest) else { return }
+            errorMessage = "Cannot retain access to this custom file. Choose a readable local file again. No file was executed."
+        }
+    }
+
+    private func publish(_ selection: FFmpegWhisperBookmarkService.Selection, executable: Bool) {
+        if executable {
+            executableAccess = selection.access
+            executableURL = selection.access.url
+        } else {
+            modelAccess = selection.access
+            modelURL = selection.access.url
+        }
+        defaults.set(selection.bookmark, forKey: executable ? Self.executableBookmarkKey : Self.modelBookmarkKey)
     }
 
     func prepare() async {
@@ -114,6 +164,14 @@ final class FFmpegWhisperSetupModel {
     func cancelPreparation() { invalidate() }
 
     func clear() {
+        defaults.removeObject(forKey: Self.executableBookmarkKey)
+        defaults.removeObject(forKey: Self.modelBookmarkKey)
+        endSession()
+    }
+
+    func endSession() {
+        executableRequest = UUID()
+        modelRequest = UUID()
         invalidate()
         executionConsent = false
         executableAccess = nil

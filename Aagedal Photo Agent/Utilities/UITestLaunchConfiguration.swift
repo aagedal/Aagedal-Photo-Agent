@@ -25,6 +25,7 @@ struct UITestLaunchConfiguration {
     let profileStoreURL: URL?
     let knownPeopleRootURL: URL?
     let templateRootURL: URL?
+    let whisperDefaultsSuite: String?
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -46,6 +47,7 @@ struct UITestLaunchConfiguration {
         knownPeopleRootURL = isEnabled
             ? value(after: "--ui-test-known-people-root").map { URL(fileURLWithPath: $0) }
             : nil
+        whisperDefaultsSuite = isEnabled ? value(after: "--ui-test-whisper-defaults-suite") : nil
         templateRootURL = isEnabled
             ? value(after: "--ui-test-template-root").map { URL(fileURLWithPath: $0) }
             : nil

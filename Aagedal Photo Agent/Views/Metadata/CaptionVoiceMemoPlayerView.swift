@@ -123,6 +123,7 @@ struct CaptionVoiceMemoPlayerView: View {
         .task(id: Request(imageURL: imageURL, refreshID: refreshID)) {
             await transcriptModel.load(imageURL)
         }
+        .task { await whisperSetup.restoreSelections() }
         .task(id: isPlaying) { await model.pollWhilePlaying() }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,
@@ -170,7 +171,7 @@ struct CaptionVoiceMemoPlayerView: View {
                       allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first { whisperSetup.select(url, executable: true) }
+                if let url = urls.first { Task { await whisperSetup.select(url, executable: true) } }
             case .failure(let error): whisperSetup.reportPickerError(error)
             }
         }
@@ -178,7 +179,7 @@ struct CaptionVoiceMemoPlayerView: View {
                       allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first { whisperSetup.select(url, executable: false) }
+                if let url = urls.first { Task { await whisperSetup.select(url, executable: false) } }
             case .failure(let error): whisperSetup.reportPickerError(error)
             }
         }
@@ -214,7 +215,7 @@ struct CaptionVoiceMemoPlayerView: View {
             reassociationImageURL = nil
         }
         .onDisappear {
-            whisperSetup.clear()
+            whisperSetup.endSession()
             model.stop()
             recoveryModel.cancel()
             reassociationModel.cancel()
@@ -366,7 +367,7 @@ struct CaptionVoiceMemoPlayerView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Custom files are unverified. Choose a compatible FFmpeg build with the patched Whisper JSON filter and a compatible model. No downloads occur.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("Provider choice is saved. Files and execution consent last only while this panel remains open; select them again after reopening.")
+            Text("Provider choice and file access are saved. Each Caption session requires fresh execution consent and file identity checks. Clear Custom Files forgets the saved files.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             HStack {
                 Button("Choose FFmpeg…") { isSelectingWhisperExecutable = true }
