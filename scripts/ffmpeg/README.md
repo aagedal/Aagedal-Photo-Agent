@@ -80,3 +80,35 @@ through the real application process boundary. This correction does not address 
 edge case (for example invalid backend segment counts, overflowing backend timestamp arithmetic,
 or oversized incoming audio frames). Source admission, runtime bounds and real-backend testing
 remain required. No upstream submission, binary rebuild or provider release gate is claimed here.
+
+## Prepare the full attributed build
+
+`prepare_full_candidate.py` requires Python 3.12 or later and the two local archives below.
+It admits their exact recorded SHA-256 values before extracting into a new directory, applies
+the pinned Whisper patch, and records the recipe changes and hashes in
+`photo-agent-preparation.json`. It does not build, install, sign or approve a provider.
+
+```sh
+python3 scripts/ffmpeg/prepare_full_candidate.py /path/to/ffmpeg-9.0.1-source.tar.gz \
+  --libvpx-archive /path/to/v1.16.0.tar.gz \
+  --output build/ffmpeg-candidate --jobs 4
+bash build/ffmpeg-candidate/rebuild.sh
+```
+
+The source companion hash is `23587fed102cfe66910db1d4ae66b50565387a1750e039fb10fde6fbfd027e71`.
+The libvpx original archive hash is `7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c`,
+recorded in the attributed build's `evidence.json`. Its `build/` directory contains required
+source scripts, which the companion's blanket build-directory exclusion omitted. Preparation
+restores only those files. It also fixes the companion replay's HarfBuzz guard, which otherwise
+skips compilation of an already extracted source tree, and limits parallel jobs. No codecs are
+removed and no compiled dependency prefix is reused. Recipe `download_file` calls refuse;
+this is not a network sandbox for arbitrary third-party build programs. The archive and original
+dependency archive must be supplied locally. Missing inputs or later build failures remain
+explicit failures; preparation alone does not establish completeness or reproducibility.
+The retained SVT-AV1 CMake cache is removed so CMake can regenerate its old absolute workspace
+paths; source files in its uppercase `Build/` directory remain intact.
+FreeType's retained generated `freetype2.pc` is also removed so `make` regenerates the
+installation prefix before HarfBuzz resolves that dependency.
+If Xcode's `xcrun` resolver cannot locate an already installed Metal toolchain, the retained
+recipe accepts explicit `FFMPEG_METALCC` and `FFMPEG_METALLIB` environment paths. Record the
+selected compiler path/version in build evidence; do not disable Metal to bypass that failure.
