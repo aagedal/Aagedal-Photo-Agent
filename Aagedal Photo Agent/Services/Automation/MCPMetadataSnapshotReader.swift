@@ -11,6 +11,7 @@ nonisolated enum MCPMetadataSnapshotReader {
         let sourceRevision: String
         let xmpSidecarRevision: String
         let appSidecarRevision: String
+        var preservationSnapshot: MetadataPreservationSnapshot? = nil
 
         /// A bounded historical read, not publication authorization or a mutation plan.
         /// Nulls make absent scalar values explicit; ordered arrays and explicit clears
@@ -65,7 +66,7 @@ nonisolated enum MCPMetadataSnapshotReader {
         }
     }
 
-    static func read(_ snapshot: MCPPhotoCarrierSnapshot) throws -> Result {
+    static func read(_ snapshot: MCPPhotoCarrierSnapshot, includePreservation: Bool = false) throws -> Result {
         // Match the production URL reader's TIFF/RAW disambiguation without a URL read.
         let extensionHint = FormatDetector.detectFromExtension(snapshot.target.url.pathExtension)
         var format = FormatDetector.detect(snapshot.sourceBytes) ?? extensionHint
@@ -133,7 +134,9 @@ nonisolated enum MCPMetadataSnapshotReader {
             xmpMetadata: xmp, appSidecar: app, reconciliationVerdict: verdict,
             isRaw: MCPPhotoFormatCatalog.rawExtensions.contains(snapshot.target.url.pathExtension.lowercased())),
             sourceRevision: snapshot.sourceRevision, xmpSidecarRevision: snapshot.xmpSidecarRevision,
-            appSidecarRevision: snapshot.appSidecarRevision)
+            appSidecarRevision: snapshot.appSidecarRevision,
+            preservationSnapshot: includePreservation
+                ? MetadataPreservationSnapshotBuilder.makeSnapshot(from: source, policy: .exactCopy) : nil)
     }
 
     /// The production XMP tokenizer tolerates empty/truncated XML. Effective automation

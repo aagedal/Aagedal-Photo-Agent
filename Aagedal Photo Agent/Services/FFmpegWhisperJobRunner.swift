@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-nonisolated enum FFmpegWhisperJobError: Error, Equatable, Sendable {
+nonisolated enum FFmpegWhisperJobError: LocalizedError, Equatable, Sendable {
     case invalidRequest
     case unsafeInput
     case inputChanged
@@ -11,6 +11,25 @@ nonisolated enum FFmpegWhisperJobError: Error, Equatable, Sendable {
     case timedOut
     case outputTooLarge
     case processFailed(FFmpegWhisperProducerCompletion)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest:
+            return "The Whisper configuration is invalid. Select compatible custom files and enable them again."
+        case .unsafeInput:
+            return "Whisper could not safely read the selected files. Choose regular files without symbolic links and enable them again."
+        case .inputChanged, .identityMismatch:
+            return "A Whisper input no longer matches its recorded identity. Refresh the voice memo and select and enable the custom files again."
+        case .launchFailed:
+            return "The selected FFmpeg could not be launched. Choose an executable build compatible with this Mac and the patched Whisper JSON filter."
+        case .timedOut:
+            return "Whisper exceeded the transcription time limit. Try a smaller compatible model or a shorter voice memo."
+        case .outputTooLarge:
+            return "Whisper output exceeded the supported size limit. Try a shorter voice memo."
+        case .processFailed:
+            return "FFmpeg could not finish Whisper transcription. Check that the executable includes the patched Whisper JSON filter and supports the selected model."
+        }
+    }
 }
 
 /// Exact bytes authorized by the caller. Hashes identify content; they do not establish curated

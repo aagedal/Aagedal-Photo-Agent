@@ -1,12 +1,23 @@
 import Darwin
 import Foundation
 
-nonisolated enum FFmpegWhisperOutputError: Error, Equatable, Sendable {
+nonisolated enum FFmpegWhisperOutputError: LocalizedError, Equatable, Sendable {
     case producerNotSuccessful
     case unsafePath
     case unsafeFile
     case fileChanged
     case readFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .producerNotSuccessful:
+            return "FFmpeg did not finish successfully. Check the selected build and model before trying again."
+        case .unsafePath, .unsafeFile, .readFailed:
+            return "Whisper did not produce a safely readable transcript. Check that the selected FFmpeg build supports the patched Whisper JSON filter."
+        case .fileChanged:
+            return "Whisper output changed during verification and was discarded. Try transcription again."
+        }
+    }
 }
 
 /// Reads canonical output only after the owner has observed process termination. This enum is a

@@ -19,7 +19,7 @@ nonisolated struct FFmpegWhisperTranscript: Equatable, Sendable {
     var detectedLanguage: String? { nil }
 }
 
-nonisolated enum FFmpegWhisperJSONError: Error, Equatable, Sendable {
+nonisolated enum FFmpegWhisperJSONError: LocalizedError, Equatable, Sendable {
     case outputTooLarge
     case segmentTooLarge
     case tooManySegments
@@ -27,6 +27,19 @@ nonisolated enum FFmpegWhisperJSONError: Error, Equatable, Sendable {
     case malformedSegment(line: Int)
     case invalidTiming(line: Int)
     case noSpeech
+
+    var errorDescription: String? {
+        switch self {
+        case .outputTooLarge, .segmentTooLarge, .tooManySegments, .textTooLarge:
+            return "Whisper transcript output exceeded the supported size limits. Try a shorter voice memo."
+        case .malformedSegment:
+            return "Whisper returned an unsupported transcript format. Select a compatible FFmpeg build with the patched Whisper JSON filter."
+        case .invalidTiming:
+            return "Whisper returned invalid segment timing. Select a compatible FFmpeg build with the patched Whisper JSON filter and try again."
+        case .noSpeech:
+            return "Whisper recognized no speech. Check the voice memo with playback before trying again."
+        }
+    }
 }
 
 /// Parses the exact newline-delimited JSON shape of the attributed FFmpeg whisper emitter.

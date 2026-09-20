@@ -170,6 +170,71 @@ struct FFmpegWhisperTranscriptionProviderTests {
         #expect(try Data(contentsOf: repository.recordURL(for: imageURL)) == relationshipBytes)
     }
 
+    @Test("Caption custom provider produces an unapproved draft or retains the exact review without Apple fallback",
+          arguments: [false, true])
+    @MainActor
+    func captionProviderBridge(fails: Bool) async throws {
+        let association = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
+        let stable = revision()
+        let locale = Locale(identifier: "en-US")
+        let existing = VoiceMemoTranscriptRecord(
+            sourceImageFilename: image.lastPathComponent, sourceMemoFilename: memo.lastPathComponent,
+            memoByteCount: stable.byteCount, memoSHA256: stable.sha256,
+            associationProfileIdentifier: association.profileIdentifier,
+            localeIdentifier: locale.identifier, provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100), generatedText: "Original draft",
+            reviewedText: "Existing approved human review", approvedAt: Date(timeIntervalSince1970: 200))
+        let runtime = VoiceMemoTranscriptionRuntime(
+            isAvailable: { true }, supportedLocales: { [locale] }, resolveLocale: { _ in locale },
+            assetStatus: { _ in .installed },
+            installAssets: { _ in Issue.record("Custom transcription must not download Apple assets") },
+            transcribe: { _, _ in
+                Issue.record("Custom transcription must not fall back to Apple Speech")
+                return "Unexpected Apple result"
+            })
+        let service = VoiceMemoTranscriptionService(runtime: runtime,
+            lookup: { _ in .available(association) }, captureRevision: { _ in stable },
+            loadTranscript: { _, _ in existing },
+            saveTranscript: { record, _, _ in
+                Issue.record("Generating a replacement draft must not persist or approve it")
+                return record
+            }, startAccess: { _ in false })
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(image)
+        let original = try #require(model.draft)
+        #expect(original.isApproved)
+        let custom = configuration
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: custom,
+            authorizeArtifacts: { _ in }, run: { request in
+                if fails { throw FFmpegWhisperJobError.timedOut }
+                return .init(request: request, transcript: .init(
+                    segments: [.init(start: 0, end: 25, text: "Custom replacement")],
+                    editableText: "Custom replacement"))
+            })
+
+        await model.transcribe(provider: provider)
+
+        #expect(!model.isTranscribing)
+        if fails {
+            #expect(model.draft == original)
+            #expect(model.errorMessage == "Whisper exceeded the transcription time limit. Try a smaller compatible model or a shorter voice memo. The existing review was kept. Apple Speech was not used.")
+        } else {
+            let draft = try #require(model.draft)
+            #expect(draft.generatedText == "Custom replacement")
+            #expect(draft.reviewedText == draft.generatedText)
+            #expect(draft.provider == "FFmpeg Whisper")
+            #expect(draft.memoSHA256 == stable.sha256)
+            #expect(!draft.isApproved)
+            #expect(draft.whisperProvenance?.buildIdentifier == custom.buildIdentifier)
+            #expect(draft.whisperProvenance?.modelSHA256 == custom.model.sha256)
+            #expect(draft.whisperProvenance?.segments.first?.endMilliseconds == 25)
+            #expect(model.errorMessage == nil)
+        }
+        let persisted = try await service.loadPersistedDraft(imageURL: image)
+        #expect(persisted == original)
+    }
+
     @Test("artifact authorization failure cannot reach the runner")
     func authorizationFailure() async {
         let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,

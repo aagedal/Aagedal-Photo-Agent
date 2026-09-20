@@ -564,7 +564,7 @@ actor VoiceMemoTranscriptionService {
         )
     }
 
-    /// Explicit opt-in only: authorization is supplied by the curated artifact installer.
+    /// Explicit opt-in only: authorization is supplied by curated or consented custom admission.
     /// No Apple fallback, persistence, approval, or metadata write happens here.
     func transcribe(
         imageURL: URL,

@@ -14,8 +14,21 @@ actor FFmpegWhisperArtifactAdmissionService {
         filesystemQueue.asUnownedSerialExecutor()
     }
 
-    nonisolated enum AdmissionError: Error, Equatable, Sendable {
+    nonisolated enum AdmissionError: LocalizedError, Equatable, Sendable {
         case invalidArtifact, unsafePath, artifactChanged, configurationMismatch, revoked, capacityExceeded
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidArtifact, .unsafePath:
+                return "The custom Whisper files cannot be safely admitted. Select readable regular files without symbolic links and an executable FFmpeg build."
+            case .artifactChanged, .configurationMismatch:
+                return "The custom Whisper files no longer match their admitted identities. Select and enable them again."
+            case .revoked:
+                return "Custom Whisper authorization was cleared. Select the files and give execution consent again."
+            case .capacityExceeded:
+                return "The custom Whisper session has reached its admission limit. Clear the custom files before trying again."
+            }
+        }
     }
 
     nonisolated struct Receipt: Sendable {

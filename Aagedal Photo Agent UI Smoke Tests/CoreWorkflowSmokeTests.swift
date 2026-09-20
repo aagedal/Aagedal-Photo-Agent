@@ -117,6 +117,49 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCustomWhisperSetupRequiresFilesAndConsentWithoutChangingReview() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let originalSidecar = try Data(contentsOf: fixture.sidecarURL)
+        let originalImage = try Data(contentsOf: fixture.imageURL)
+        let originalMemo = try Data(contentsOf: fixture.memoURL)
+        let originalRelationship = try Data(contentsOf: fixture.relationshipURL)
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+
+        let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 15))
+        let enable = app.buttons["caption.voiceMemo.whisper.enable"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 10))
+        XCTAssertFalse(enable.isEnabled)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.downloadLanguage"].exists)
+        let transcribe = app.buttons["caption.voiceMemo.transcribe"]
+        XCTAssertFalse(transcribe.exists && transcribe.isEnabled)
+
+        // Cancelling each real file panel must leave both setup and the approved draft intact.
+        for identifier in ["caption.voiceMemo.whisper.selectExecutable", "caption.voiceMemo.whisper.selectModel"] {
+            let choose = app.buttons[identifier]
+            XCTAssertTrue(choose.exists)
+            choose.click()
+            let cancel = app.buttons["Cancel"].firstMatch
+            XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+            // macOS can expose a Touch Bar Cancel before the file-panel button.
+            // Escape exercises the standard keyboard cancellation without selecting that proxy.
+            app.typeKey(.escape, modifierFlags: [])
+            XCTAssertTrue(enable.waitForExistence(timeout: 5))
+            XCTAssertFalse(enable.isEnabled)
+        }
+        XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
+        XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "customWhisper")
+        XCTAssertTrue(app.buttons["caption.voiceMemo.whisper.enable"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].isEnabled)
+        XCTAssertEqual(try Data(contentsOf: fixture.sidecarURL), originalSidecar)
+        XCTAssertEqual(try Data(contentsOf: fixture.imageURL), originalImage)
+        XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
+        XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
+    }
+
+    @MainActor
     private func exercisePersistedTranscriptReview(whisper: Bool) throws {
         let fixture = try makeApprovedVoiceMemoFolder(whisper: whisper)
         func evidence() throws -> NSDictionary? {
@@ -572,13 +615,15 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         profileStore: URL? = nil,
         knownPeopleRoot: URL? = nil,
         templateRoot: URL? = nil,
-        localeIdentifier: String? = nil
+        localeIdentifier: String? = nil,
+        transcriptionProvider: String = "appleSpeech"
     ) {
         app = XCUIApplication()
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",
             "--ui-test-workflow", workflow,
+            "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {
             // Argument-domain defaults are process-only and keep this workflow away

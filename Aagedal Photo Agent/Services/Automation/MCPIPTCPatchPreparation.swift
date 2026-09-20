@@ -116,8 +116,7 @@ nonisolated enum MCPIPTCPatchPreparation {
             // Compare before parsing expensive carrier content, while descriptors and lease remain held.
             try checkRevisions(request, source: snapshot.sourceRevision,
                 xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
-            let read = try MCPMetadataSnapshotReader.read(snapshot).protocolValue()
-            return try preview(request: request, metadata: read, now: createdAt)
+            return try preview(request: request, snapshot: snapshot, now: createdAt)
         }
         guard let plans else { return result }
         // Publish only after the retained snapshot's final carrier and authorization checks.
@@ -132,7 +131,16 @@ nonisolated enum MCPIPTCPatchPreparation {
                                     "appSidecarRevision": .string(app)] else { throw Failure.staleRevision }
     }
 
-    static func preview(request: Request, metadata: MCPJSONValue, now: Date) throws -> MCPJSONValue {
+    /// Capture physical baselines inside the retained read lease. Retrieval reconstructs this
+    /// entire value so no baseline from an older carrier generation can survive revalidation.
+    static func preview(request: Request, snapshot: MCPPhotoCarrierSnapshot, now: Date) throws -> MCPJSONValue {
+        let read = try MCPMetadataSnapshotReader.read(snapshot, includePreservation: true)
+        let preflight = try preservationPreflight(snapshot: snapshot, baseline: read.preservationSnapshot)
+        return try preview(request: request, metadata: read.protocolValue(), now: now, preflight: preflight)
+    }
+
+    static func preview(request: Request, metadata: MCPJSONValue, now: Date,
+                        preflight: MCPJSONValue? = nil) throws -> MCPJSONValue {
         guard let record = metadata.objectValue, let fields = record["fields"]?.objectValue,
               let canonicalPath = record["canonicalPath"]?.stringValue,
               let rootID = record["rootID"]?.stringValue,
@@ -179,7 +187,7 @@ nonisolated enum MCPIPTCPatchPreparation {
                 "comparisonRule": .string(IPTCMetadataVerifier.rule(for: operation.verificationField).rawValue)])
         }
         var result = request.revisions
-        result["schemaVersion"] = .integer(2)
+        result["schemaVersion"] = .integer(preflight == nil ? 2 : 3)
         result["canonicalPath"] = .string(canonicalPath)
         result["rootID"] = .string(rootID)
         result["changes"] = .array(changes)
@@ -191,6 +199,7 @@ nonisolated enum MCPIPTCPatchPreparation {
             "publicationApprovalEvaluated": .bool(false), "publicationProfileEvaluated": .bool(false),
             "physicalCarrierSupportEvaluated": .bool(false)])
         result["preservationWarnings"] = .array(warnings)
+        if let preflight { result["preservationPreflight"] = preflight }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let digest = SHA256.hash(data: try encoder.encode(MCPJSONValue.object(result)))
@@ -198,6 +207,62 @@ nonisolated enum MCPIPTCPatchPreparation {
         let output = MCPJSONValue.object(result)
         guard try encoder.encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output
+    }
+
+    /// The production preservation builder excludes all writer-controlled descriptive fields,
+    /// not only the edited subset. Therefore this baseline is necessary but never sufficient for
+    /// approving a patch: unedited descriptive values need their own complete semantic check.
+    static func preservationPreflight(snapshot: MCPPhotoCarrierSnapshot,
+                                      baseline: MetadataPreservationSnapshot?) throws -> MCPJSONValue {
+        guard let baseline else { throw Failure.invalidArguments }
+        func carrier(_ bytes: Data?) -> MCPJSONValue {
+            guard let bytes else { return .object(["present": .bool(false), "sha256": .null, "byteCount": .integer(0)]) }
+            return .object(["present": .bool(true), "byteCount": .integer(Int64(bytes.count)),
+                "sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())])
+        }
+        let parsedRaw = baseline.capability.formatIdentifier.hasPrefix("raw.")
+        let extensionRaw = MCPPhotoFormatCatalog.rawExtensions.contains(snapshot.target.url.pathExtension.lowercased())
+        let targets: [MCPJSONValue] = MetadataWriteMode.allCases.map { mode in
+            let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: snapshot.target.url, requestedMode: mode)
+            let name: String
+            switch target {
+            case .historyOnly: name = "historyOnly"
+            case .embedded: name = "embedded"
+            case .xmpSidecar: name = "xmpSidecar"
+            case .embeddedAndXMPSidecar: name = "embeddedAndXMPSidecar"
+            }
+            return .object(["requestedMode": .string(mode.rawValue), "resolvedTarget": .string(name),
+                "writesEmbedded": .bool(target.writesEmbedded), "writesXMPSidecar": .bool(target.writesXMPSidecar),
+                "requiresSourceByteIdentity": .bool(!target.writesEmbedded)])
+        }
+        let semantic = try JSONDecoder().decode(MCPJSONValue.self, from: JSONEncoder().encode(baseline))
+        return .object([
+            "schemaVersion": .integer(1),
+            "scope": .string("captured-carrier-baselines-and-production-target-policy; not-write-verification"),
+            "sourceRevision": .string(snapshot.sourceRevision),
+            "xmpSidecarRevision": .string(snapshot.xmpSidecarRevision),
+            "appSidecarRevision": .string(snapshot.appSidecarRevision),
+            "carriers": .object(["source": carrier(snapshot.sourceBytes), "xmpSidecar": carrier(snapshot.xmpBytes),
+                                 "appSidecar": carrier(snapshot.appSidecarBytes)]),
+            "sourceSemanticBaseline": semantic,
+            "semanticBaselineScope": .string("production-exactCopy-policy; excludes-all-writer-controlled-descriptive-fields"),
+            "targetPolicyAlternatives": .array(targets),
+            "selectedWriteMode": .null,
+            "rawClassificationAgrees": .bool(parsedRaw == extensionRaw),
+            "writeSupportVerified": .bool(false),
+            "preservationVerified": .bool(false),
+            "c2paTrustEvaluated": .bool(false),
+            "requiredBeforeCommit": .array([
+                "explicit-write-mode-and-publication-approval",
+                "complete-unedited-descriptive-field-preservation",
+                "unrelated-source-and-sidecar-metadata-preservation",
+                "source-pixels-or-codestream-preservation",
+                "c2pa-consequences-and-approval",
+                "staged-physical-write-and-semantic-readback",
+                "revision-and-authority-revalidation",
+                "durable-recovery-and-verified-installation",
+            ].map(MCPJSONValue.string)),
+        ])
     }
 
     /// Match production read-back equivalence, without implying these are physical bytes.

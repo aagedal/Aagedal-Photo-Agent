@@ -124,7 +124,7 @@ final class CaptionVoiceMemoTranscriptModel {
         await work.value
     }
 
-    func transcribe() async {
+    func transcribe(provider: FFmpegWhisperTranscriptionProvider? = nil) async {
         guard let imageURL, !isDownloading, !isTranscribing, !isSavingReview else { return }
         startOperation()
         let requested = generation
@@ -133,7 +133,12 @@ final class CaptionVoiceMemoTranscriptModel {
         let locale = Locale(identifier: selectedLocaleIdentifier)
         let work = Task { [service] in
             do {
-                let result = try await service.transcribe(imageURL: imageURL, locale: locale)
+                let result: VoiceMemoTranscriptDraft
+                if let provider {
+                    result = try await service.transcribe(imageURL: imageURL, provider: provider)
+                } else {
+                    result = try await service.transcribe(imageURL: imageURL, locale: locale)
+                }
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard self.generation == requested, self.imageURL == result.imageURL else { return }
@@ -150,6 +155,9 @@ final class CaptionVoiceMemoTranscriptModel {
                 await MainActor.run {
                     guard self.generation == requested else { return }
                     self.errorMessage = error.localizedDescription
+                        + (provider == nil ? "" : (self.draft == nil
+                            ? " Apple Speech was not used."
+                            : " The existing review was kept. Apple Speech was not used."))
                     self.isTranscribing = false
                 }
             }

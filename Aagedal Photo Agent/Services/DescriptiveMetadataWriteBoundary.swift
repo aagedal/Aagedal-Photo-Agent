@@ -1,54 +1,5 @@
 import Foundation
 
-/// The physical destination selected for a descriptive-metadata write.
-nonisolated enum DescriptiveMetadataWriteTarget: Sendable, Equatable {
-    case historyOnly
-    case embedded
-    case xmpSidecar
-    case embeddedAndXMPSidecar
-
-    nonisolated var writesEmbedded: Bool {
-        switch self {
-        case .embedded, .embeddedAndXMPSidecar: return true
-        case .historyOnly, .xmpSidecar: return false
-        }
-    }
-
-    nonisolated var writesXMPSidecar: Bool {
-        switch self {
-        case .xmpSidecar, .embeddedAndXMPSidecar: return true
-        case .historyOnly, .embedded: return false
-        }
-    }
-}
-
-/// Central target policy for descriptive metadata. Proprietary RAW containers are a hard safety
-/// boundary: a request to embed (including a dual write) is reduced to one adjacent XMP write.
-nonisolated struct DescriptiveMetadataWriteTargetResolver: Sendable {
-    nonisolated init() {}
-
-    nonisolated func resolve(
-        sourceURL: URL,
-        requestedMode: MetadataWriteMode
-    ) -> DescriptiveMetadataWriteTarget {
-        if SupportedImageFormats.isRaw(url: sourceURL) {
-            switch requestedMode {
-            case .historyOnly:
-                return .historyOnly
-            case .writeToFile, .writeToXMPSidecar, .writeToFileAndXMPSidecar:
-                return .xmpSidecar
-            }
-        }
-
-        switch requestedMode {
-        case .historyOnly: return .historyOnly
-        case .writeToFile: return .embedded
-        case .writeToXMPSidecar: return .xmpSidecar
-        case .writeToFileAndXMPSidecar: return .embeddedAndXMPSidecar
-        }
-    }
-}
-
 nonisolated enum DescriptiveMetadataWriteSemantics: Sendable, Equatable {
     /// Overlay only populated values. Empty values don't clear an existing record.
     case merge

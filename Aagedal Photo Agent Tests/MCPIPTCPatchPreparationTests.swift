@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import ImageIO
 import Testing
+import CryptoKit
 @testable import Aagedal_Photo_Agent
 
 @Suite("Revision-bound MCP proofreading preview")
@@ -162,6 +163,41 @@ struct MCPIPTCPatchPreparationTests {
         #expect(value.objectValue?["validation"]?.objectValue?["physicalCarrierSupportEvaluated"] == .bool(false))
     }
 
+    @Test("Preservation preflight binds carrier bytes and RAW-safe production policy without claiming a write")
+    func preservationPolicyAndIdentity() throws {
+        let rootID = UUID()
+        func snapshot(_ ext: String, xmp: Data? = nil) -> MCPPhotoCarrierSnapshot {
+            .init(target: .init(url: URL(fileURLWithPath: "/photos/frame.\(ext)"), rootID: rootID,
+                isDirectory: false, identity: .init(device: 1, inode: 2)), sourceBytes: Data([1, 2, 3]),
+                xmpBytes: xmp, appSidecarBytes: nil, sourceModificationDate: Date(timeIntervalSince1970: 0),
+                xmpModificationDate: nil, sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app")
+        }
+        let baseline = MetadataPreservationSnapshot(capability: .init(formatIdentifier: "raw.arw",
+            domains: MetadataPreservationDomain.allCases.map { .init(domain: $0, support: .unknown) },
+            c2pa: .unknown), identities: [], c2paIdentity: nil)
+        let first = try MCPIPTCPatchPreparation.preservationPreflight(snapshot: snapshot("arw"), baseline: baseline)
+        let second = try MCPIPTCPatchPreparation.preservationPreflight(snapshot: snapshot("arw", xmp: Data()), baseline: baseline)
+        #expect(first != second) // absent and present-empty carriers are distinct.
+        let policies = try #require(first.objectValue?["targetPolicyAlternatives"]?.patchArrayValue)
+        #expect(policies.count == 4)
+        for policy in policies {
+            #expect(policy.objectValue?["writesEmbedded"] == .bool(false))
+            #expect(policy.objectValue?["requiresSourceByteIdentity"] == .bool(true))
+        }
+        #expect(first.objectValue?["rawClassificationAgrees"] == .bool(true))
+        let mismatched = try MCPIPTCPatchPreparation.preservationPreflight(snapshot: snapshot("jpg"), baseline: baseline)
+        #expect(mismatched.objectValue?["rawClassificationAgrees"] == .bool(false))
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([operation()]))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let a = try MCPIPTCPatchPreparation.preview(request: request, metadata: metadata(), now: now, preflight: first)
+        let b = try MCPIPTCPatchPreparation.preview(request: request, metadata: metadata(), now: now, preflight: second)
+        #expect(a.objectValue?["previewID"] != b.objectValue?["previewID"])
+        #expect(a.objectValue?["commitAvailable"] == .bool(false))
+        #expect(throws: MCPIPTCPatchPreparation.Failure.invalidArguments) {
+            try MCPIPTCPatchPreparation.preservationPreflight(snapshot: snapshot("arw"), baseline: nil)
+        }
+    }
+
     @Test("Exposed tool rejects disabled authority and advertises no mutation")
     func endpointRefusesDisabledAccess() {
         let store = MCPAuthorizationStore(readConfigurationData: { nil }, writeConfigurationData: { _ in })
@@ -213,6 +249,19 @@ struct MCPIPTCPatchPreparationTests {
             #expect(response.objectValue?["isError"] == .bool(false))
             let content = try #require(response.objectValue?["structuredContent"]?.objectValue)
             #expect(content["commitAvailable"] == .bool(false))
+            #expect(content["schemaVersion"] == .integer(3))
+            let preflight = try #require(content["preservationPreflight"]?.objectValue)
+            #expect(preflight["preservationVerified"] == .bool(false))
+            #expect(preflight["writeSupportVerified"] == .bool(false))
+            #expect(preflight["selectedWriteMode"] == .null)
+            let carriers = try #require(preflight["carriers"]?.objectValue)
+            let digest = SHA256.hash(data: bytes as Data).map { String(format: "%02x", $0) }.joined()
+            #expect(carriers["source"]?.objectValue?["sha256"] == .string(digest))
+            #expect(carriers["xmpSidecar"]?.objectValue?["present"] == .bool(false))
+            #expect(carriers["appSidecar"]?.objectValue?["present"] == .bool(false))
+            let semantic = try #require(preflight["sourceSemanticBaseline"]?.objectValue)
+            #expect(semantic["capability"]?.objectValue?["formatIdentifier"] == .string("jpeg"))
+            #expect(semantic["identities"]?.patchArrayValue?.count == 4)
             let endpointID = try #require(content["planID"])
             let retrieved = tools.callTool(name: "get_iptc_patch_plan", arguments: ["planID": endpointID])
             #expect(retrieved == response)

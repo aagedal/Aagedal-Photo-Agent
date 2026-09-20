@@ -116,8 +116,7 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
             do {
                 try MCPIPTCPatchPreparation.checkRevisions(plan.request, source: snapshot.sourceRevision,
                     xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
-                let metadata = try MCPMetadataSnapshotReader.read(snapshot).protocolValue()
-                return try MCPIPTCPatchPreparation.preview(request: plan.request, metadata: metadata, now: plan.createdAt)
+                return try MCPIPTCPatchPreparation.preview(request: plan.request, snapshot: snapshot, now: plan.createdAt)
             } catch is MCPIPTCPatchPreparation.Failure {
                 throw Failure.stalePlan
             }

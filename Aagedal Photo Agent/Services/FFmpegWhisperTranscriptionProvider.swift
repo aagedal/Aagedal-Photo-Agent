@@ -1,8 +1,8 @@
 import Foundation
 
 /// Bridges the process runner into the existing draft/review lifecycle. Deliberately has no
-/// default configuration or authorization: the installer must verify curated build/signature,
-/// patched output format, model compatibility and licensing before authorizing these identities.
+/// default configuration or authorization. Curated admission must verify release artifacts;
+/// custom admission pins explicitly consented, unverified identities without implying trust.
 nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
     struct Configuration: Equatable, Sendable {
         let executable: FFmpegWhisperJobInput
