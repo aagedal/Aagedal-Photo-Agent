@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Bundled Whisper model setup now recovers cleanly from cancelled downloads and failed removal.
+  Installation rejects changed storage and unsafe files, and failed transfers preserve existing models.
+- MCP proofreading previews now record expected values for every production metadata verification
+  field, including unedited localized Titles. Older previews require preparation again; metadata
+  commits remain unavailable until physical preservation and recovery are implemented.
+
 - Moved Whisper provider, files, language, translation, GPU and consent setup into Settings →
   Transcription. Caption retains a compact Transcribe action, a Settings shortcut and collapsible
   transcription details. Setup remains available for the app session; quitting resets consent.

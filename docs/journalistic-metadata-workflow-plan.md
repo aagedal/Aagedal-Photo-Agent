@@ -1707,6 +1707,8 @@ setup guidance and explicitly unknown app runtime readiness; live readiness and 
 remain open. See [cycle 81](release/cycle-81-whisper-bookmarks-provider-discovery-2026-09-20.md)
 for focused, native and integrated validation evidence.
 
+**Cycle 87 continuation (2026-09-21):** Managed model cancellation and failed-removal recovery now retain truthful state, and download publication checks admitted directory/target identities with descriptor-bound cleanup. MCP previews additionally bind canonical expected values for every production verification field; old previews require preparation again. These changes do not close signed update/rollback, physical metadata preservation, production execution or the broader lifecycle matrix. See [cycle 87](release/cycle-87-model-recovery-semantic-evidence-2026-09-21.md).
+
 ### Verification
 
 - [ ] Protocol tests cover initialize, tool discovery, structured success/error results, malformed
