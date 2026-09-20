@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -128,9 +129,9 @@
 		C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		C5A000000000000000000002 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* main.swift */; };
 		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
-		C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000001 /* MCPTemplateDiscovery.swift */; };
 		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
+		C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000001 /* MCPTemplateDiscovery.swift */; };
 		C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */; };
 		C7F170000000000000000002 /* MetadataFieldMutationWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */; };
 		C7F170000000000000000004 /* FieldMutationCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F170000000000000000003 /* FieldMutationCallerTests.swift */; };
@@ -227,6 +228,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJSONParserTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -346,8 +348,8 @@
 		C5A000000000000000000001 /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C5A000000000000000000003 /* photo-agent-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "photo-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5A000000000000000000005 /* MCPServerCore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPServerCore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPServerCore.swift"; sourceTree = SOURCE_ROOT; };
-		C74000000000000000000001 /* MCPTemplateDiscovery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPTemplateDiscovery.swift; path = "Aagedal Photo Agent/Services/Automation/MCPTemplateDiscovery.swift"; sourceTree = SOURCE_ROOT; };
 		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
+		C74000000000000000000001 /* MCPTemplateDiscovery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPTemplateDiscovery.swift; path = "Aagedal Photo Agent/Services/Automation/MCPTemplateDiscovery.swift"; sourceTree = SOURCE_ROOT; };
 		C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPTemplateDiscoveryTests.swift; sourceTree = "<group>"; };
 		C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
@@ -471,6 +473,7 @@
 			children = (
 				C5A000000000000000000011 /* MCPServerCoreTests.swift */,
 				C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */,
+				C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */,
 				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
 				F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */,
 				A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */,
@@ -867,6 +870,7 @@
 			files = (
 				C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */,
 				C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */,
+				C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */,
 				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,
 				F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */,
 				A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */,

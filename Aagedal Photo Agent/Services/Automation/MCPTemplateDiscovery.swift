@@ -4,12 +4,14 @@ import Darwin
 import Foundation
 
 nonisolated enum MCPTemplateDiscoveryError: LocalizedError {
-    case customFolderRequired, staleBookmark, invalidInventory, inventoryChanged, limitExceeded
+    case customFolderRequired, localStorageUnavailable, staleBookmark, invalidInventory, inventoryChanged, limitExceeded
 
     var errorDescription: String? {
         switch self {
         case .customFolderRequired:
-            "Template discovery requires a custom Templates folder with iCloud template sync disabled. Choose the folder in Settings and authorize it for local automation."
+            "Template discovery requires iCloud template sync to be disabled. Authorize the active local Templates folder for local automation."
+        case .localStorageUnavailable:
+            "The default local Templates location is unavailable. Configure a custom Templates folder and authorize it for local automation."
         case .staleBookmark:
             "The custom Templates folder bookmark is stale or unavailable. Choose the folder again in Settings."
         case .invalidInventory:
@@ -28,6 +30,12 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
     struct Scope: Sendable {
         let directory: URL
         let release: @Sendable () -> Void
+        var routing: Routing? = nil
+    }
+
+    enum Routing: Equatable, Sendable {
+        case localDefault
+        case custom(Data)
     }
 
     let authorizationStore: MCPAuthorizationStore
@@ -36,9 +44,35 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
 
     static func configuredScope() throws -> Scope {
         let domain = MCPServerConstants.preferencesSuiteName as CFString
-        guard (CFPreferencesCopyAppValue("templates.iCloudEnabled" as CFString, domain) as? Bool) != true,
-              let data = CFPreferencesCopyAppValue("templatesFolderBookmark" as CFString, domain) as? Data else {
+        let cloudValue = CFPreferencesCopyAppValue("templates.iCloudEnabled" as CFString, domain)
+        let bookmarkValue = CFPreferencesCopyAppValue("templatesFolderBookmark" as CFString, domain)
+        // A malformed saved setting must not silently select a different library.
+        guard cloudValue == nil || cloudValue is Bool else {
             throw MCPTemplateDiscoveryError.customFolderRequired
+        }
+        guard bookmarkValue == nil || bookmarkValue is Data else {
+            throw MCPTemplateDiscoveryError.staleBookmark
+        }
+        return try configuredScope(
+            iCloudEnabled: (cloudValue as? Bool) == true,
+            bookmark: bookmarkValue as? Data,
+            applicationSupportDirectory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        )
+    }
+
+    /// Resolves routing only: discovery never creates a missing library and never
+    /// falls back from a configured bookmark or iCloud route to another location.
+    /// The app and helper are unsandboxed and use the same user Application Support
+    /// directory. Its location is not authorization; list still requires an
+    /// explicit authorized root before opening it.
+    static func configuredScope(iCloudEnabled: Bool, bookmark: Data?, applicationSupportDirectory: URL?) throws -> Scope {
+        guard !iCloudEnabled else { throw MCPTemplateDiscoveryError.customFolderRequired }
+        guard let data = bookmark else {
+            guard let base = applicationSupportDirectory else {
+                throw MCPTemplateDiscoveryError.localStorageUnavailable
+            }
+            return Scope(directory: base.appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+                .appendingPathComponent("Templates", isDirectory: true), release: {}, routing: .localDefault)
         }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI],
@@ -46,7 +80,7 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
             throw MCPTemplateDiscoveryError.staleBookmark
         }
         let started = url.startAccessingSecurityScopedResource()
-        return Scope(directory: url, release: { if started { url.stopAccessingSecurityScopedResource() } })
+        return Scope(directory: url, release: { if started { url.stopAccessingSecurityScopedResource() } }, routing: .custom(data))
     }
 
     func list(kind: String) throws -> [String: MCPJSONValue] {
@@ -70,11 +104,16 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
         // A settings change must not publish the old library as the current library.
         let currentScope = try resolveScope()
         defer { currentScope.release() }
-        guard currentScope.directory.standardizedFileURL == scope.directory.standardizedFileURL else {
+        guard currentScope.directory.standardizedFileURL == scope.directory.standardizedFileURL,
+              currentScope.routing == scope.routing else {
             throw MCPTemplateDiscoveryError.inventoryChanged
         }
-        // Bookmark resolution can block. Recheck authorization and the anchored
-        // ancestors after it completes, immediately before publishing the snapshot.
+        // Bookmark resolution can block while a peer changes template contents.
+        // Revalidate the complete snapshot after resolving the final route, then
+        // recheck authorization and anchored ancestors immediately before publication.
+        guard try opened.inventory(kind: kind) == first else {
+            throw MCPTemplateDiscoveryError.inventoryChanged
+        }
         guard try authorizationStore.load() == configuration,
               try authorizationStore.authorizeExistingPath(directory.path) == target else {
             throw MCPTemplateDiscoveryError.inventoryChanged

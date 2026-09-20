@@ -108,10 +108,22 @@ nonisolated enum FFmpegService {
     ) -> [String] {
         let clampedQuality = min(1, max(0, quality))
         let crf = Int((1 - clampedQuality) * 63)
-        var arguments = ["-hide_banner", "-y", "-i", input]
-
-        arguments += ["-pix_fmt", isHDR ? "yuv420p10le" : "yuv420p"]
-        arguments += avifColorArguments(isHDR: isHDR, gamut: gamut)
+        let color = avifColorValues(isHDR: isHDR, gamut: gamut)
+        // The renderer has already converted these RGB pixels to the selected color space.
+        // Declare that input interpretation explicitly: TIFF ICC profiles do not populate
+        // FFmpeg's frame primaries/transfer, and encoder initialization copies frame values
+        // over output-only options. This labels rendered pixels; it does not transform them.
+        var arguments = [
+            "-hide_banner", "-y",
+            "-color_primaries", color.primaries,
+            "-color_trc", color.transfer,
+            "-i", input,
+            "-pix_fmt", isHDR ? "yuv420p10le" : "yuv420p",
+            "-color_range", "pc",
+            "-color_primaries", color.primaries,
+            "-color_trc", color.transfer,
+            "-colorspace", color.matrix
+        ]
         arguments += [
             "-c:v", "libaom-av1",
             "-crf", "\(crf)",
@@ -123,23 +135,18 @@ nonisolated enum FFmpegService {
         return arguments
     }
 
-    private static func avifColorArguments(
+    private static func avifColorValues(
         isHDR: Bool,
         gamut: TargetColorGamut
-    ) -> [String] {
+    ) -> (primaries: String, transfer: String, matrix: String) {
         if isHDR {
             // TargetColorGamut falls back to Display P3 HLG when the selected gamut
             // has no native HLG color space.
             let primaries = gamut == .rec2020 ? "bt2020" : "smpte432"
-            return [
-                "-color_range", "pc",
-                "-color_primaries", primaries,
-                "-color_trc", "arib-std-b67",
-                "-colorspace", "bt2020nc"
-            ]
+            return (primaries, "arib-std-b67", "bt2020nc")
         }
 
-        let values: (primaries: String, transfer: String, matrix: String) = switch gamut {
+        return switch gamut {
         case .sRGB:
             ("bt709", "iec61966-2-1", "bt709")
         case .displayP3:
@@ -151,12 +158,6 @@ nonisolated enum FFmpegService {
             // the closest broadly supported wide-gamut interpretation.
             ("smpte432", "gamma22", "bt709")
         }
-        return [
-            "-color_range", "pc",
-            "-color_primaries", values.primaries,
-            "-color_trc", values.transfer,
-            "-colorspace", values.matrix
-        ]
     }
 
     /// Encode an image to JPEG XL using ffmpeg.

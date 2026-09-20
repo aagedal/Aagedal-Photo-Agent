@@ -2170,6 +2170,78 @@ struct FFmpegAVIFEncodingTests {
         #expect(arguments.contains("12"))
     }
 
+    @Test("AVIF declares already-rendered input primaries and transfer before decoding")
+    func inputColorDeclaration() throws {
+        let cases: [(TargetColorGamut, Bool, String, String)] = [
+            (.sRGB, false, "bt709", "iec61966-2-1"),
+            (.displayP3, false, "smpte432", "iec61966-2-1"),
+            (.rec2020, false, "bt2020", "bt2020-10"),
+            (.adobeRGB, false, "smpte432", "gamma22"),
+            (.sRGB, true, "smpte432", "arib-std-b67"),
+            (.rec2020, true, "bt2020", "arib-std-b67")
+        ]
+        for (gamut, isHDR, primaries, transfer) in cases {
+            let arguments = FFmpegService.avifArguments(
+                input: "/tmp/rendered.tiff", output: "/tmp/output.avif",
+                quality: 0.8, isHDR: isHDR, gamut: gamut
+            )
+            let inputIndex = try #require(arguments.firstIndex(of: "-i"))
+            let beforeInput = Array(arguments[..<inputIndex])
+            let afterInput = Array(arguments[(inputIndex + 2)...])
+            for part in [beforeInput, afterInput] {
+                let primariesIndex = try #require(part.firstIndex(of: "-color_primaries"))
+                let transferIndex = try #require(part.firstIndex(of: "-color_trc"))
+                #expect(part[primariesIndex + 1] == primaries)
+                #expect(part[transferIndex + 1] == transfer)
+            }
+            // Input pixels are RGB; only the encoded output is YCbCr.
+            #expect(!beforeInput.contains("-colorspace"))
+        }
+    }
+
+    @Test("ICC-tagged TIFFs retain explicit AVIF primaries, transfer, matrix and full range")
+    func bundledEncoderSignalsTIFFColor() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-avif-tiff-signaling-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cases: [(String, TargetColorGamut, CFString, [UInt8])] = [
+            ("srgb", .sRGB, CGColorSpace.sRGB, [0, 1, 0, 13, 0, 1, 128]),
+            ("p3", .displayP3, CGColorSpace.displayP3, [0, 12, 0, 13, 0, 1, 128]),
+            ("rec2020", .rec2020, CGColorSpace.itur_2020, [0, 9, 0, 14, 0, 9, 128])
+        ]
+        for (name, gamut, spaceName, expectedNCLX) in cases {
+            let space = try #require(CGColorSpace(name: spaceName))
+            // ImageIO writes a real ICC-tagged TIFF, as the SDR production renderer does.
+            // A bitmap context keeps this regression independent of Core Image GPU access.
+            let context = try #require(CGContext(
+                data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 128,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            let fill = try #require(CGColor(colorSpace: space, components: [0.2, 0.6, 0.8, 1]))
+            context.setFillColor(fill)
+            context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+            let image = try #require(context.makeImage())
+            let input = directory.appendingPathComponent("\(name).tiff")
+            let output = directory.appendingPathComponent("\(name).avif")
+            let destination = try #require(CGImageDestinationCreateWithURL(
+                input as CFURL, "public.tiff" as CFString, 1, nil
+            ))
+            CGImageDestinationAddImage(destination, image, nil)
+            #expect(CGImageDestinationFinalize(destination))
+            try await FFmpegService.encodeAVIF(
+                input: input.path, output: output.path, quality: 0.8, isHDR: false, gamut: gamut
+            )
+            let encoded = try Data(contentsOf: output)
+            let marker = try #require(encoded.range(of: Data("colrnclx".utf8)))
+            let start = marker.upperBound
+            #expect(encoded.count >= start + expectedNCLX.count)
+            #expect(Array(encoded[start..<min(encoded.count, start + expectedNCLX.count)]) == expectedNCLX)
+            let source = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+            #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil)
+        }
+    }
+
     @Test("bundled libaom produces a decodable AVIF")
     func bundledEncoderProducesAVIF() async throws {
         let directory = FileManager.default.temporaryDirectory

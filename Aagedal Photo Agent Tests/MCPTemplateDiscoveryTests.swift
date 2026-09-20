@@ -38,6 +38,69 @@ struct MCPTemplateDiscoveryTests {
         try JSONEncoder().encode(MCPJSONValue.object(value)).write(to: root.appendingPathComponent("\(id.uuidString).json"))
     }
 
+    @Test("Default local discovery requires authorization and never creates missing storage")
+    func defaultLocalStorage() throws {
+        let support = try folder()
+        defer { try? FileManager.default.removeItem(at: support) }
+        let scope = try MCPTemplateDiscovery.configuredScope(iCloudEnabled: false, bookmark: nil,
+                                                            applicationSupportDirectory: support)
+        defer { scope.release() }
+        let expected = support.appendingPathComponent("Aagedal Photo Agent/Templates", isDirectory: true)
+        #expect(scope.directory == expected)
+        #expect(scope.routing == .localDefault)
+        #expect(!FileManager.default.fileExists(atPath: expected.path))
+        let authorization = try store(root: support)
+        let access = MCPTemplateDiscovery(authorizationStore: authorization, resolveScope: {
+            try MCPTemplateDiscovery.configuredScope(iCloudEnabled: false, bookmark: nil,
+                                                     applicationSupportDirectory: support)
+        })
+        #expect(throws: MCPAuthorizationError.unavailable) { _ = try access.list(kind: "metadata") }
+        #expect(!FileManager.default.fileExists(atPath: expected.path))
+        try FileManager.default.createDirectory(at: expected, withIntermediateDirectories: true)
+        let id = UUID()
+        try write(id, to: expected)
+        let result = try access.list(kind: "metadata")
+        guard case .array(let entries) = result["templates"] else { Issue.record("Missing templates"); return }
+        #expect(entries.first?.objectValue?["id"] == .string(id.uuidString.lowercased()))
+        let unauthorized = MCPTemplateDiscovery(authorizationStore: try store(), resolveScope: {
+            try MCPTemplateDiscovery.configuredScope(iCloudEnabled: false, bookmark: nil,
+                                                     applicationSupportDirectory: support)
+        })
+        #expect(throws: MCPAuthorizationError.outsideAuthorizedRoots) { _ = try unauthorized.list(kind: "metadata") }
+    }
+
+    @Test("Cloud routing and broken bookmarks never fall back to default local storage")
+    func noRoutingFallback() throws {
+        let support = try folder()
+        defer { try? FileManager.default.removeItem(at: support) }
+        #expect(throws: MCPTemplateDiscoveryError.customFolderRequired) {
+            _ = try MCPTemplateDiscovery.configuredScope(iCloudEnabled: true, bookmark: nil,
+                                                         applicationSupportDirectory: support)
+        }
+        #expect(throws: MCPTemplateDiscoveryError.staleBookmark) {
+            _ = try MCPTemplateDiscovery.configuredScope(iCloudEnabled: false, bookmark: Data("invalid bookmark".utf8),
+                                                         applicationSupportDirectory: support)
+        }
+        #expect(throws: MCPTemplateDiscoveryError.localStorageUnavailable) {
+            _ = try MCPTemplateDiscovery.configuredScope(iCloudEnabled: false, bookmark: nil,
+                                                         applicationSupportDirectory: nil)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: support.path).isEmpty)
+    }
+
+    @Test("Routing changes invalidate publication even when both routes name the same directory")
+    func sameDirectoryRoutingChange() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(UUID(), to: root)
+        let changed = MCPServerCoreTests.DataBox()
+        let access = MCPTemplateDiscovery(authorizationStore: try store(root: root), resolveScope: {
+            MCPTemplateDiscovery.Scope(directory: root, release: {},
+                                       routing: changed.read() == nil ? .localDefault : .custom(Data([1])))
+        }, checkpoint: { changed.write(Data([1])) })
+        #expect(throws: MCPTemplateDiscoveryError.inventoryChanged) { _ = try access.list(kind: "metadata") }
+    }
+
     @Test("Disabled automation never resolves or accesses the template library")
     func disabled() throws {
         let access = MCPTemplateDiscovery(authorizationStore: try store(enabled: false), resolveScope: {
@@ -122,6 +185,26 @@ struct MCPTemplateDiscoveryTests {
         try write(id, to: root)
         let revoked = reader(authorization, root, checkpoint: { try? authorization.setEnabled(false) })
         #expect(throws: MCPTemplateDiscoveryError.self) { _ = try revoked.list(kind: "metadata") }
+    }
+
+    @Test("Content changed during final scope resolution cannot publish an old revision")
+    func contentChangeDuringScopeResolution() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        try write(id, to: root)
+        let file = root.appendingPathComponent("\(id.uuidString).json")
+        let replacement = try JSONEncoder().encode(MCPJSONValue.object([
+            "id": .string(id.uuidString), "name": .string("Changed during resolution"),
+            "schemaVersion": .integer(1), "templateType": .string("Full"), "fields": .array([]),
+        ]))
+        let resolvingAgain = MCPServerCoreTests.DataBox()
+        let access = MCPTemplateDiscovery(authorizationStore: try store(root: root), resolveScope: {
+            if resolvingAgain.read() != nil { try replacement.write(to: file) }
+            return MCPTemplateDiscovery.Scope(directory: root, release: {}, routing: .localDefault)
+        }, checkpoint: { resolvingAgain.write(Data([1])) })
+        #expect(throws: MCPTemplateDiscoveryError.inventoryChanged) { _ = try access.list(kind: "metadata") }
+        #expect(try Data(contentsOf: file) == replacement)
     }
 
     @Test("Authorization revoked during final bookmark resolution prevents publication")

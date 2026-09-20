@@ -1093,6 +1093,130 @@ struct MCPServerCoreTests {
         #expect(session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/cancelled"}"#.utf8)) == nil)
     }
 
+    @Test("Valid JSON with invalid request shapes is distinct from malformed JSON")
+    func invalidEnvelopesAreNotParseErrors() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        for request in [
+            "[]", "null", "true", "42", #""request""#,
+            #"{"jsonrpc":"2.0","id":true,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":{},"method":"ping"}"#,
+            #"{"jsonrpc":2,"id":1,"method":"ping"}"#,
+            #"{"jsonrpc":"2.0","id":1,"method":42}"#,
+        ] {
+            let response = try #require(session.response(forLine: Data(request.utf8)))
+            #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32600)
+        }
+        for request in ["{", "[}", "{\"jsonrpc\":"] {
+            let response = try #require(session.response(forLine: Data(request.utf8)))
+            #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32700)
+        }
+        let wrongMethod = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":"correlation","method":42}"#.utf8
+        )))
+        #expect(try json(wrongMethod)["id"] as? String == "correlation")
+    }
+
+    @Test("Explicit null IDs and malformed initialized notifications cannot finish initialization")
+    func invalidNotificationsDoNotAdvanceLifecycle() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        _ = session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+        ))
+        let nullID = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":null,"method":"notifications/initialized"}"#.utf8
+        )))
+        #expect((try json(nullID)["error"] as? [String: Any])?["code"] as? Int == -32600)
+        for params in ["null", "[]", "true", "42", #""invalid""#] {
+            #expect(session.response(forLine: Data(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":\(params)}".utf8
+            )) == nil)
+        }
+        let earlyList = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#.utf8
+        )))
+        #expect((try json(earlyList)["error"] as? [String: Any])?["code"] as? Int == -32002)
+        #expect(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#.utf8
+        )) == nil)
+        let list = try #require(session.response(forLine: Data(
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#.utf8
+        )))
+        #expect(try json(list)["result"] != nil)
+        for params in ["null", "[]", "true", "42"] {
+            let response = try #require(session.response(forLine: Data(
+                "{\"jsonrpc\":\"2.0\",\"id\":\"params\",\"method\":\"ping\",\"params\":\(params)}".utf8
+            )))
+            #expect(try json(response)["id"] as? String == "params")
+            #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32602)
+        }
+    }
+
+    nonisolated private struct ResultTools: MCPToolServing {
+        let result: MCPJSONValue
+        func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] { [] }
+        func supportsTool(named name: String) -> Bool { true }
+        func callTool(name: String, arguments: [String: MCPJSONValue]) -> MCPJSONValue { result }
+    }
+
+    @Test("Oversized and unencodable tool results produce bounded correlated errors")
+    func resultEncodingFailuresRemainProtocolResponses() throws {
+        for result in [MCPJSONValue.number(.infinity), .object([
+            "text": .string(String(repeating: "x", count: MCPServerConstants.maximumMessageBytes)),
+        ])] {
+            let session = MCPServerSession(authorizationStore: store(), tools: ResultTools(result: result))
+            _ = session.response(forLine: Data(
+                #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8
+            ))
+            _ = session.response(forLine: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8))
+            let response = try #require(session.response(forLine: Data(
+                #"{"jsonrpc":"2.0","id":"output","method":"tools/call","params":{"name":"test"}}"#.utf8
+            )))
+            #expect(response.count <= MCPServerConstants.maximumMessageBytes)
+            #expect(try json(response)["id"] as? String == "output")
+            #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32603)
+            #expect(try json(response)["result"] == nil)
+        }
+    }
+
+    @Test("A near-limit request ID cannot overflow an error response")
+    func oversizedErrorEnvelopeIsBounded() throws {
+        let session = MCPServerSession(authorizationStore: store())
+        let prefix = #"{"jsonrpc":"2.0","method":"unknown","id":""#
+        let suffix = #""}"#
+        let identifier = String(repeating: "x", count:
+            MCPServerConstants.maximumMessageBytes - prefix.utf8.count - suffix.utf8.count)
+        let request = Data((prefix + identifier + suffix).utf8)
+        #expect(request.count == MCPServerConstants.maximumMessageBytes)
+        let response = try #require(session.response(forLine: request))
+        #expect(response.count <= MCPServerConstants.maximumMessageBytes)
+        #expect(try json(response)["id"] is NSNull)
+        #expect((try json(response)["error"] as? [String: Any])?["code"] as? Int == -32601)
+    }
+
+    @Test("STDIO terminates an oversized unterminated frame with one bounded response")
+    func stdioBoundsUnterminatedFrames() throws {
+        let folder = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("stdin")
+        try Data(repeating: 0x78, count: 32_768).write(to: source)
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        let output = Pipe()
+        let diagnostics = Pipe()
+        MCPStdioServer(session: MCPServerSession(authorizationStore: store()), maximumMessageBytes: 128).run(
+            input: input, output: output.fileHandleForWriting, diagnostics: diagnostics.fileHandleForWriting
+        )
+        try output.fileHandleForWriting.close()
+        try diagnostics.fileHandleForWriting.close()
+        let bytes = output.fileHandleForReading.readDataToEndOfFile()
+        let lines = try #require(String(data: bytes, encoding: .utf8)).split(separator: "\n")
+        #expect(lines.count == 1)
+        #expect(bytes.count < 128)
+        #expect((try json(Data(lines[0].utf8))["error"] as? [String: Any])?["code"] as? Int == -32600)
+        #expect(diagnostics.fileHandleForReading.readDataToEndOfFile().isEmpty)
+    }
+
     @Test("STDIO emits newline-delimited protocol bytes only and accepts EOF after a final message")
     func stdioIsProtocolClean() throws {
         let input = Pipe()

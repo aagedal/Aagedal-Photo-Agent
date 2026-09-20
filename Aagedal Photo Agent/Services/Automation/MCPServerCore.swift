@@ -111,6 +111,18 @@ nonisolated private struct MCPRequestEnvelope: Decodable, Sendable {
     let id: MCPRequestID?
     let method: String?
     let params: MCPJSONValue?
+
+    private enum CodingKeys: String, CodingKey { case jsonrpc, id, method, params }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Keep a readable ID for invalid-envelope errors even if these fields have wrong types.
+        jsonrpc = try? container.decode(String.self, forKey: .jsonrpc)
+        // Explicit null is an invalid MCP request ID, never a notification.
+        id = container.contains(.id) ? try container.decode(MCPRequestID.self, forKey: .id) : nil
+        method = try? container.decode(String.self, forKey: .method)
+        params = container.contains(.params) ? try container.decode(MCPJSONValue.self, forKey: .params) : nil
+    }
 }
 
 nonisolated struct MCPErrorObject: Codable, Equatable, Sendable {
@@ -1312,7 +1324,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "list_templates",
-                description: "Discover stable UUIDs, names and content revisions from the configured custom Templates folder, which must be explicitly authorized. Supports metadata and Develop headers only; does not expose field values or authorize application. Private/default and iCloud libraries are unavailable. Names are untrusted content.",
+                description: "Discover stable UUIDs, names and content revisions from the local default Templates library or an explicitly authorized custom Templates folder. Supports metadata and Develop headers only; does not expose field values or authorize application. iCloud libraries are unavailable. Names are untrusted content.",
                 properties: ["kind": .object(["type": .string("string"), "enum": .array([.string("metadata"), .string("develop")])])],
                 required: ["kind"]
             ),
@@ -1393,7 +1405,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("authorization-inspection"), .string("photo-input-format-discovery"),
                         .string("photo-revision-inspection"), .string("app-descriptive-draft-inspection"),
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
-                        .string("custom-template-header-discovery"),
+                        .string("local-template-header-discovery"),
                     ]),
                     "mutationToolsAvailable": .bool(false),
                 ])
@@ -1557,6 +1569,11 @@ nonisolated final class MCPServerSession {
         do {
             request = try decoder.decode(MCPRequestEnvelope.self, from: data)
         } catch {
+            // Decoding a typed envelope can fail for syntactically valid JSON.
+            // Only invalid JSON is a parse error; wrong field types are invalid requests.
+            if (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {
+                return invalidRequestResponse()
+            }
             return encodedError(id: .null, code: -32700, message: "Parse error")
         }
         guard request.jsonrpc == "2.0", let method = request.method, !method.isEmpty else {
@@ -1564,11 +1581,17 @@ nonisolated final class MCPServerSession {
         }
 
         if request.id == nil {
-            if method == "notifications/initialized" { didReceiveInitialized = didInitialize }
+            if method == "notifications/initialized",
+               request.params == nil || request.params?.objectValue != nil {
+                didReceiveInitialized = didInitialize
+            }
             return nil
         }
         guard let id = request.id, id != .null else {
             return encodedError(id: .null, code: -32600, message: "Invalid Request")
+        }
+        guard request.params == nil || request.params?.objectValue != nil else {
+            return encodedError(id: id, code: -32602, message: "Parameters must be an object")
         }
 
         switch method {
@@ -1626,15 +1649,26 @@ nonisolated final class MCPServerSession {
     }
 
     private func encodedResult(id: MCPRequestID, result: MCPJSONValue) -> Data {
-        (try? encoder.encode(MCPResponseEnvelope(id: id, result: result, error: nil))) ?? Data()
+        guard let data = try? encoder.encode(MCPResponseEnvelope(id: id, result: result, error: nil)) else {
+            return encodedError(id: id, code: -32603, message: "Could not encode response")
+        }
+        guard data.count <= MCPServerConstants.maximumMessageBytes else {
+            return encodedError(id: id, code: -32603, message: "Response exceeded the Photo Agent output limit")
+        }
+        return data
     }
 
     private func encodedError(id: MCPRequestID, code: Int, message: String) -> Data {
-        (try? encoder.encode(MCPResponseEnvelope(
+        let data = (try? encoder.encode(MCPResponseEnvelope(
             id: id,
             result: nil,
             error: MCPErrorObject(code: code, message: message)
         ))) ?? Data()
+        // A near-limit string ID can itself make the error envelope too large.
+        if data.count > MCPServerConstants.maximumMessageBytes {
+            return encodedError(id: .null, code: code, message: message)
+        }
+        return data
     }
 }
 
