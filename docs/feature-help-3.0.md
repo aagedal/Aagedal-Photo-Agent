@@ -95,15 +95,17 @@ absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSide
 `appSidecarRevision`), and an `operations` array. Each operation has a supported `field` and
 `operation: "set"` with a typed `value`, or `operation: "clear"` without a value. The tool schema
 lists the supported descriptive text fields and keyword/person arrays. Unknown fields, duplicate
-operations, stale revisions and unresolved XMP conflicts are refused.
+operations, stale revisions and unresolved XMP conflicts are refused. Empty `set` values are
+refused; use `clear` to remove a value explicitly.
 
-The result shows exact before/proposed values, legacy IPTC byte-limit warnings, a content-bound
+The schema-2 result shows production-normalized before/after values, exact `sourceValue` and
+`requestedValue`, each field's comparison rule, edited-field legacy IPTC byte-limit warnings, a content-bound
 preview ID, a `planID` and a five-minute expiry. Call `get_iptc_patch_plan` with only that `planID`
 to retrieve the same preview after authorization and photo/sidecar revisions are checked again.
 Plans live only in the current helper session; restart, expiry, edits or changed authorization require
 a fresh read and preparation. At most 64 live plans fit within an 8 MiB serialized-result budget.
-These are read-only plans: no commit endpoint is available, physical write normalization and
-preservation are not yet evaluated, and no photo or sidecar is changed. Returned proposals remain
+These are read-only plans: no commit endpoint is available, physical carrier support,
+preservation and publication approval are not yet evaluated, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
 
 Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template

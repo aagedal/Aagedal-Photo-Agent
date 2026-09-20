@@ -1,7 +1,7 @@
 # Aagedal Photo Agent privacy
 
 **Status:** 3.0 release-candidate draft; external legal/privacy review pending  
-**Last reviewed:** 2026-09-15
+**Last reviewed:** 2026-09-20 (implementation update; external review remains pending)
 
 Aagedal Photo Agent is a native macOS application. Photo browsing, metadata editing, Develop rendering,
 analysis, face detection, face matching when its model is packaged, and solar-position calculations run on
@@ -12,6 +12,11 @@ network service are listed below.
 ## Data stored on the Mac
 
 - Photo Agent sidecars and XMP sidecars store edits and metadata near the photographs where supported.
+- Voice-memo review records store generated and edited text, approval state, audio identity and
+  provider information in the photo's app sidecar. The internal FFmpeg Whisper adapter additionally
+  retains model/build hashes and byte counts, requested language, translation/GPU settings and
+  original segment text/timing. This adapter is not yet exposed as a selectable provider. Review
+  approval does not itself write transcript text into photo metadata.
 - Analysis cases, working-folder map state, and named Develop versions prefer hidden app-private JSON in
   the photo folder. Read-only folders use indexed Application Support fallback storage; that fallback
   stays on the current Mac and does not automatically travel with the folder.

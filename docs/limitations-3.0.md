@@ -156,7 +156,9 @@ lifecycle remain open. The restriction is not a sandbox for other local files re
 The candidate Whisper filter currently writes transcript text into JSON without escaping it.
 The pinned source patch corrects this, but a complete artifact must be reproducibly rebuilt before
 canonical Whisper inference can ship. A bounded process runner now uses exact private input snapshots,
-WAV-only local decoding, cancellation/deadlines and canonical JSON validation. It is not yet connected
-to the transcription UI or model lifecycle. Complete blank-audio-marker segments are excluded from
+WAV-only local decoding, cancellation/deadlines and canonical JSON validation. An explicit internal
+provider adapter revalidates the WAV relationship and produces unapproved editable drafts with
+persisted build/model identity, language settings and segment evidence. It requires artifact
+authorization and is not yet connected to the transcription UI or model lifecycle. Complete blank-audio-marker segments are excluded from
 drafts while original segment evidence is retained; real-model silence still needs validation. See the
 [output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

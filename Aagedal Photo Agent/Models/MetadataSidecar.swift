@@ -475,6 +475,7 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
     let generatedText: String
     var reviewedText: String
     var approvedAt: Date?
+    let whisperProvenance: FFmpegWhisperTranscriptProvenance?
 
     var isApproved: Bool { approvedAt != nil }
 
@@ -490,7 +491,8 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         generatedAt: Date,
         generatedText: String,
         reviewedText: String,
-        approvedAt: Date? = nil
+        approvedAt: Date? = nil,
+        whisperProvenance: FFmpegWhisperTranscriptProvenance? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.sourceImageFilename = sourceImageFilename
@@ -505,13 +507,14 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         self.generatedText = generatedText
         self.reviewedText = reviewedText
         self.approvedAt = approvedAt
+        self.whisperProvenance = whisperProvenance
     }
 
     enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion, sourceImageFilename, sourceMemoFilename
         case memoByteCount, memoSHA256, associationProfileIdentifier
         case localeIdentifier, provider, providerModel, generatedAt
-        case generatedText, reviewedText, approvedAt
+        case generatedText, reviewedText, approvedAt, whisperProvenance
     }
 
     static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue))
@@ -541,6 +544,17 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         generatedText = try container.decode(String.self, forKey: .generatedText)
         reviewedText = try container.decode(String.self, forKey: .reviewedText)
         approvedAt = try container.decodeIfPresent(Date.self, forKey: .approvedAt)
+        whisperProvenance = try container.decodeIfPresent(FFmpegWhisperTranscriptProvenance.self, forKey: .whisperProvenance)
+        if let whisperProvenance {
+            guard provider == "FFmpeg Whisper",
+                  providerModel == whisperProvenance.modelIdentifier,
+                  localeIdentifier == whisperProvenance.requestedLanguage,
+                  generatedText == whisperProvenance.editableText else {
+                throw FFmpegWhisperTranscriptProvenance.ValidationError.invalidProvenance
+            }
+        } else if provider == "FFmpeg Whisper" {
+            throw FFmpegWhisperTranscriptProvenance.ValidationError.invalidProvenance
+        }
 
         guard memoByteCount >= 0,
               memoSHA256.count == 64,

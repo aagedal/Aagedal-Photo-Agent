@@ -11,7 +11,7 @@ nonisolated enum MCPIPTCPatchPreparation {
         case outputLimit = "result_too_large"
         var errorDescription: String? {
             switch self {
-            case .invalidArguments: "Patch requires exact revision strings and unique supported fields with typed set or clear operations."
+            case .invalidArguments: "Patch requires exact revision strings and unique supported fields with typed set or clear operations. Empty set values require an explicit clear."
             case .unsupportedField: "This field is not supported by the descriptive proofreading preview."
             case .staleRevision: "Photo metadata changed since it was read. Read it again before preparing a patch."
             case .conflict: "Resolve the existing XMP conflict in Photo Agent before preparing a patch."
@@ -76,7 +76,11 @@ nonisolated enum MCPIPTCPatchPreparation {
                     }
                 } else { throw Failure.invalidArguments }
                 guard bytes <= 65_536 else { throw Failure.invalidArguments }
-                operations.append(Operation(field: field, kind: kind, after: normalized))
+                let operation = Operation(field: field, kind: kind, after: normalized)
+                // Share the editor's typed intent boundary, including explicit-empty rejection.
+                var candidate = IPTCMetadata()
+                try operation.apply(to: &candidate)
+                operations.append(operation)
             }
             self.path = path; self.revisions = revisions
             self.operations = operations.sorted { $0.field < $1.field }
@@ -87,6 +91,20 @@ nonisolated enum MCPIPTCPatchPreparation {
         let field: String
         let kind: String
         let after: MCPJSONValue
+
+        var fieldID: MetadataFieldID { MetadataFieldID(rawValue: field)! }
+        var verificationField: IPTCMetadataVerificationField {
+            field == "title" ? .headline : IPTCMetadataVerificationField(rawValue: field)!
+        }
+
+        func apply(to metadata: inout IPTCMetadata) throws {
+            let mutation: MetadataFieldMutation
+            if kind == "clear" { mutation = .clear }
+            else if case .array(let values) = after { mutation = .overwrite(.repeatable(values.compactMap(\.stringValue))) }
+            else { mutation = .overwrite(.scalar(after.stringValue!)) }
+            do { try metadata.apply(mutation, to: fieldID) }
+            catch { throw Failure.invalidArguments }
+        }
     }
 
     static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade,
@@ -129,35 +147,49 @@ nonisolated enum MCPIPTCPatchPreparation {
         if record["hasPendingChanges"] == .bool(true) {
             warnings.append(.string("Before values include the current pending Photo Agent draft."))
         }
-        // Legacy IIM byte limits are informational here; richer XMP text is never truncated.
-        let iimLimits = Dictionary(uniqueKeysWithValues: MetadataValidationProfile.iptcIIMCompatibility.rules.compactMap { rule -> (String, Int)? in
-            guard case let .maximumUTF8Bytes(field, count) = rule.requirement else { return nil }
-            return (field.rawValue, count)
-        })
-        var issues: [MCPJSONValue] = []
+        // Decode only the supported field subset. Other effective/private values do not
+        // become edit intent, and absent scalar values keep their production nil semantics.
+        let selected = fields.filter { supportedFields.contains($0.key) }
+        let beforeMetadata: IPTCMetadata
+        do {
+            beforeMetadata = try JSONDecoder().decode(IPTCMetadata.self,
+                from: JSONEncoder().encode(MCPJSONValue.object(selected)))
+        } catch { throw Failure.invalidArguments }
+        var proposed = beforeMetadata
+        for operation in request.operations { try operation.apply(to: &proposed) }
+        let editedFields = Set(request.operations.map(\.fieldID))
+        let report = MetadataValidationEngine().validate(proposed,
+            imageURL: URL(fileURLWithPath: canonicalPath), profile: .iptcIIMCompatibility)
+        // Report compatibility only for edited fields, without claiming the active user
+        // publication profile or the physical destination was evaluated.
+        let issues: [MCPJSONValue] = report.issues.filter { editedFields.contains($0.field) }.map { issue in
+            .object(["field": .string(issue.field.rawValue), "severity": .string(issue.severity.rawValue),
+                "code": .string("iptc_iim_byte_limit"), "issueID": .string(issue.id),
+                "message": .string(issue.message), "technicalDetail": issue.technicalDetail.map(MCPJSONValue.string) ?? .null])
+        }
         let changes = try request.operations.map { operation -> MCPJSONValue in
-            guard let before = fields[operation.field] else { throw Failure.invalidArguments }
-            let strings: [String]
-            if case .array(let values) = operation.after { strings = values.compactMap(\.stringValue) }
-            else { strings = [operation.after.stringValue ?? ""] }
-            if let limit = iimLimits[operation.field], strings.contains(where: { $0.utf8.count > limit }) {
-                issues.append(.object(["field": .string(operation.field), "severity": .string("warning"),
-                    "code": .string("iptc_iim_byte_limit"), "maximumUTF8BytesPerValue": .integer(Int64(limit))]))
-            }
+            guard let sourceValue = fields[operation.field] else { throw Failure.invalidArguments }
+            let before = try protocolValue(IPTCMetadataVerifier.canonicalValue(for: operation.verificationField, in: beforeMetadata),
+                isArray: arrayFields.contains(operation.field))
+            let after = try protocolValue(IPTCMetadataVerifier.canonicalValue(for: operation.verificationField, in: proposed),
+                isArray: arrayFields.contains(operation.field))
             return .object(["field": .string(operation.field), "operation": .string(operation.kind),
-                            "before": before, "after": operation.after, "changed": .bool(before != operation.after)])
+                "sourceValue": sourceValue, "requestedValue": operation.after,
+                "before": before, "after": after, "changed": .bool(before != after),
+                "comparisonRule": .string(IPTCMetadataVerifier.rule(for: operation.verificationField).rawValue)])
         }
         var result = request.revisions
-        result["schemaVersion"] = .integer(1)
+        result["schemaVersion"] = .integer(2)
         result["canonicalPath"] = .string(canonicalPath)
         result["rootID"] = .string(rootID)
         result["changes"] = .array(changes)
         result["expiresAt"] = .string(ISO8601DateFormatter().string(from: now.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime)))
-        result["valueSemantics"] = .string("exact-proposed-values; physical-write-normalization-not-evaluated")
+        result["valueSemantics"] = .string("production-semantic-normalization; sourceValue-and-requestedValue-retain-exact-inputs; physical-write-not-evaluated")
         result["previewOnly"] = .bool(true)
         result["commitAvailable"] = .bool(false)
-        result["validation"] = .object(["scope": .string("typed-input-and-legacy-IIM-byte-limits"), "issues": .array(issues),
-            "publicationApprovalEvaluated": .bool(false)])
+        result["validation"] = .object(["scope": .string("production-typed-mutations-and-edited-field-IIM-compatibility"), "issues": .array(issues),
+            "publicationApprovalEvaluated": .bool(false), "publicationProfileEvaluated": .bool(false),
+            "physicalCarrierSupportEvaluated": .bool(false)])
         result["preservationWarnings"] = .array(warnings)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -167,4 +199,16 @@ nonisolated enum MCPIPTCPatchPreparation {
         guard try encoder.encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output
     }
+
+    /// Match production read-back equivalence, without implying these are physical bytes.
+    /// Only text and text bags are admitted by this preview's field registry.
+    private static func protocolValue(_ value: IPTCMetadataCanonicalValue, isArray: Bool) throws -> MCPJSONValue {
+        switch value {
+        case .absent: return isArray ? .array([]) : .null
+        case .text(let text): return .string(text)
+        case .array(let values): return .array(try values.map { try protocolValue($0, isArray: false) })
+        default: throw Failure.invalidArguments
+        }
+    }
+
 }

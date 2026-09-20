@@ -108,7 +108,23 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
     @MainActor
     func testApprovedVoiceMemoReviewPersistsCompleteNativeEditsAcrossRelaunch() throws {
-        let fixture = try makeApprovedVoiceMemoFolder()
+        try exercisePersistedTranscriptReview(whisper: false)
+    }
+
+    @MainActor
+    func testWhisperEvidenceSurvivesNativeReviewApprovalAndRelaunch() throws {
+        try exercisePersistedTranscriptReview(whisper: true)
+    }
+
+    @MainActor
+    private func exercisePersistedTranscriptReview(whisper: Bool) throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: whisper)
+        func evidence() throws -> NSDictionary? {
+            let json = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.sidecarURL)) as? [String: Any]
+            return (json?["voiceMemoTranscript"] as? [String: Any])?["whisperProvenance"] as? NSDictionary
+        }
+        let originalEvidence = try evidence()
+        if whisper { XCTAssertNotNil(originalEvidence) }
         let originalRelationship = try Data(contentsOf: fixture.relationshipURL)
         let originalMemo = try Data(contentsOf: fixture.memoURL)
         launch(workflow: "caption", folder: fixture.folder)
@@ -150,6 +166,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(waitForEnabled(relaunchedApproval, expected: false))
         XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
         XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
+        XCTAssertEqual(try evidence(), originalEvidence)
     }
 
     @MainActor
@@ -663,7 +680,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let items: [VoiceMemoBatchItem]
     }
 
-    private func makeApprovedVoiceMemoFolder(includePendingMetadata: Bool = false) throws -> VoiceMemoFixture {
+    private func makeApprovedVoiceMemoFolder(includePendingMetadata: Bool = false, whisper: Bool = false) throws -> VoiceMemoFixture {
         let folder = fixtureRoot.appendingPathComponent(
             "ApprovedVoiceMemo-\(UUID().uuidString)",
             isDirectory: true
@@ -714,6 +731,21 @@ final class CoreWorkflowSmokeTests: XCTestCase {
                 "approvedAt": "2026-09-13T12:01:00Z",
             ],
         ]
+        if whisper {
+            var transcript = sidecar["voiceMemoTranscript"] as! [String: Any]
+            transcript["provider"] = "FFmpeg Whisper"
+            transcript["providerModel"] = "synthetic-ui-model"
+            transcript["localeIdentifier"] = "en"
+            transcript["whisperProvenance"] = [
+                "schemaVersion": 1, "buildIdentifier": "synthetic-ui-build",
+                "executableSHA256": String(repeating: "a", count: 64), "executableByteCount": 10,
+                "modelIdentifier": "synthetic-ui-model",
+                "modelSHA256": String(repeating: "b", count: 64), "modelByteCount": 20,
+                "requestedLanguage": "en", "useGPU": false, "translate": false,
+                "segments": [["start": 0, "end": 100, "text": " Generated UI smoke transcript "]],
+            ] as [String: Any]
+            sidecar["voiceMemoTranscript"] = transcript
+        }
         if includePendingMetadata {
             sidecar["pendingChanges"] = true
             sidecar["metadata"] = [

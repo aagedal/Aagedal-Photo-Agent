@@ -10,6 +10,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Fixed persistent MCP clients timing out during initialization: the helper now responds to
+  available input without waiting for the client to close STDIN.
+- IPTC proofreading previews now share production field normalization and validation, retain exact
+  requested values, and require explicit clear operations for empty values. Writes remain unavailable.
+- Added an internal FFmpeg Whisper transcription adapter with source revalidation and durable
+  model/build/language/segment evidence. It returns unapproved drafts; provider UI and trusted
+  binary/model installation remain pending.
+
 - Added read-only `get_iptc_patch_plan` retrieval with immutable session previews, expiry and fresh
   authorization/source checks. Revoking and re-enabling identical folder access invalidates old plans.
 - Added the internal FFmpeg Whisper process runner with exact input snapshots, bounded output,

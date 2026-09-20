@@ -36,7 +36,9 @@ struct MCPIPTCPatchPreparationTests {
         let other = try MCPIPTCPatchPreparation.preview(request: altered, metadata: metadata(pending: true), now: now)
         #expect(other.objectValue?["previewID"] != value["previewID"])
         #expect(value["changes"] == .array([.object(["field": .string("title"), "operation": .string("set"),
-            "before": .string("Old headline"), "after": .string("New headline"), "changed": .bool(true)])]))
+            "sourceValue": .string("Old headline"), "requestedValue": .string("New headline"),
+            "before": .string("Old headline"), "after": .string("New headline"), "changed": .bool(true),
+            "comparisonRule": .string("scalarWhitespace")])]))
     }
     @Test("Each carrier token must match and conflicts refuse preparation")
     func rejectsStaleAndConflict() throws {
@@ -58,6 +60,8 @@ struct MCPIPTCPatchPreparationTests {
             }
         }
         let invalid: [[MCPJSONValue]] = [[], [operation(), operation()], [operation("title", .null)],
+            [operation("title", .string(" \n\t"))], [operation("keywords", .array([]))],
+            [operation("keywords", .array([.string(" \n")]))],
             [operation("keywords", .string("not an array"))], [operation("keywords", .array([.integer(1)]))],
             [operation("title", .string(String(repeating: "ø", count: 16_385)))],
             [.object(["field": .string("title"), "operation": .string("clear"), "value": .null])],
@@ -76,10 +80,88 @@ struct MCPIPTCPatchPreparationTests {
         #expect(request.operations.first?.after == .array([]))
         let preview = try MCPIPTCPatchPreparation.preview(request: request, metadata: metadata(), now: Date())
         let validation = try #require(preview.objectValue?["validation"]?.objectValue)
-        #expect(validation["issues"] == .array([.object(["field": .string("title"), "severity": .string("warning"),
-            "code": .string("iptc_iim_byte_limit"), "maximumUTF8BytesPerValue": .integer(256)])]))
+        let issues = try #require(validation["issues"]?.patchArrayValue)
+        #expect(issues.count == 1)
+        #expect(issues.first?.objectValue?["field"] == .string("title"))
+        #expect(issues.first?.objectValue?["code"] == .string("iptc_iim_byte_limit"))
+        #expect(issues.first?.objectValue?["technicalDetail"] == .string("Largest UTF-8 value: 258 bytes; values over limit: 1."))
         #expect(request.operations.last?.after == .string(text))
     }
+    @Test("Every preview field resolves to the production mutation and verification registries")
+    func productionFieldCoverage() throws {
+        var record = try #require(metadata().objectValue)
+        var fields: [String: MCPJSONValue] = [:]
+        var operations: [MCPJSONValue] = []
+        for field in MCPIPTCPatchPreparation.supportedFields.sorted() {
+            let isArray = MCPIPTCPatchPreparation.arrayFields.contains(field)
+            fields[field] = isArray ? .array([]) : .null
+            operations.append(operation(field, isArray ? .array([.string(" Value ")]) : .string(" Value ")))
+        }
+        record["fields"] = .object(fields)
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments(operations))
+        let result = try MCPIPTCPatchPreparation.preview(request: request, metadata: .object(record), now: Date())
+        let changes = try #require(result.objectValue?["changes"]?.patchArrayValue)
+        #expect(changes.count == MCPIPTCPatchPreparation.supportedFields.count)
+        for change in changes {
+            let object = try #require(change.objectValue)
+            let field = try #require(object["field"]?.stringValue)
+            #expect(object["after"] == (MCPIPTCPatchPreparation.arrayFields.contains(field)
+                ? .array([.string("Value")]) : .string("Value")))
+        }
+    }
+
+    @Test("Semantic normalization preserves exact input and detects no-op text and bags")
+    func productionNormalization() throws {
+        var record = try #require(metadata().objectValue)
+        record["fields"] = .object([
+            "title": .string("  Café\r\nCaption  "),
+            "keywords": .array([.string(" Oslo "), .string("news"), .string("news")]),
+        ])
+        let requested = "Cafe\u{301}\nCaption"
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([
+            operation("title", .string(requested)),
+            operation("keywords", .array([.string("news"), .string(" Oslo "), .string(""), .string("news")]))]))
+        let value = try #require(MCPIPTCPatchPreparation.preview(request: request, metadata: .object(record), now: Date()).objectValue)
+        let changes = try #require(value["changes"]?.patchArrayValue)
+        #expect(changes.count == 2)
+        for change in changes { #expect(change.objectValue?["changed"] == .bool(false)) }
+        #expect(changes[0].objectValue?["after"] == .array([.string("Oslo"), .string("news")]))
+        #expect(changes[1].objectValue?["before"] == .string("Café\nCaption"))
+        #expect(changes[1].objectValue?["after"] == .string("Café\nCaption"))
+        #expect(changes[1].objectValue?["requestedValue"] == .string(requested))
+        #expect(changes[1].objectValue?["sourceValue"] == .string("  Café\r\nCaption  "))
+        #expect(value["schemaVersion"] == .integer(2))
+        #expect(value["commitAvailable"] == .bool(false))
+    }
+
+    @Test("Explicit scalar clear normalizes absence and preserves original null")
+    func absentClear() throws {
+        var record = try #require(metadata().objectValue)
+        record["fields"] = .object(["title": .null])
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([
+            .object(["field": .string("title"), "operation": .string("clear")])]))
+        let value = try MCPIPTCPatchPreparation.preview(request: request, metadata: .object(record), now: Date())
+        let change = try #require(value.objectValue?["changes"]?.patchArrayValue?.first?.objectValue)
+        #expect(change["before"] == .null)
+        #expect(change["after"] == .null)
+        #expect(change["changed"] == .bool(false))
+        #expect(change["operation"] == .string("clear"))
+    }
+
+    @Test("Validation uses production mutation values and leaves unedited-field warnings out")
+    func editedFieldValidation() throws {
+        var record = try #require(metadata().objectValue)
+        record["fields"] = .object(["title": .string(String(repeating: "x", count: 300)), "keywords": .array([])])
+        let request = try MCPIPTCPatchPreparation.Request(arguments: arguments([
+            operation("keywords", .array([.string("  " + String(repeating: "ø", count: 32) + "  "), .string("Berg, Lina")]))]))
+        let value = try MCPIPTCPatchPreparation.preview(request: request, metadata: .object(record), now: Date())
+        #expect(value.objectValue?["validation"]?.objectValue?["issues"] == .array([]))
+        let change = try #require(value.objectValue?["changes"]?.patchArrayValue?.first?.objectValue)
+        #expect(change["after"] == .array([.string("Berg, Lina"), .string(String(repeating: "ø", count: 32))]))
+        #expect(value.objectValue?["validation"]?.objectValue?["publicationProfileEvaluated"] == .bool(false))
+        #expect(value.objectValue?["validation"]?.objectValue?["physicalCarrierSupportEvaluated"] == .bool(false))
+    }
+
     @Test("Exposed tool rejects disabled authority and advertises no mutation")
     func endpointRefusesDisabledAccess() {
         let store = MCPAuthorizationStore(readConfigurationData: { nil }, writeConfigurationData: { _ in })
@@ -161,4 +243,11 @@ struct MCPIPTCPatchPreparationTests {
         }
     }
 
+}
+
+private extension MCPJSONValue {
+    var patchArrayValue: [MCPJSONValue]? {
+        guard case .array(let values) = self else { return nil }
+        return values
+    }
 }

@@ -1298,6 +1298,54 @@ struct MCPServerCoreTests {
         #expect(diagnostics.fileHandleForReading.readDataToEndOfFile().isEmpty)
     }
 
+    @Test("Bundled STDIO helper responds to fragmented requests before the client closes input")
+    func bundledHelperRespondsOnOpenPipe() throws {
+        let helper = try #require(Bundle.main.url(forAuxiliaryExecutable: "photo-agent-mcp"))
+        let input = Pipe()
+        let output = Pipe()
+        let diagnostics = Pipe()
+        let process = Process()
+        process.executableURL = helper
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = diagnostics
+        try process.run()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if process.isRunning { process.terminate() }
+        }
+        func response() throws -> [String: Any] {
+            // A real client waits here with STDIN still open. EOF-only fixtures miss a
+            // transport that buffers short requests until input closure or 16 KiB.
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .seconds(5))
+            var data = Data()
+            while !data.contains(0x0a) {
+                try #require(clock.now < deadline && data.count < MCPServerConstants.maximumMessageBytes)
+                var descriptor = pollfd(fd: output.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&descriptor, 1, 100)
+                if ready == 0 { continue }
+                try #require(ready == 1 && descriptor.revents & Int16(POLLIN) != 0,
+                             "Helper must respond while the client keeps STDIN open")
+                var bytes = [UInt8](repeating: 0, count: 4096)
+                let count = Darwin.read(descriptor.fd, &bytes, bytes.count)
+                try #require(count > 0)
+                data.append(contentsOf: bytes.prefix(count))
+            }
+            return try json(data)
+        }
+        let initialize = Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#.utf8)
+        try input.fileHandleForWriting.write(contentsOf: initialize.prefix(12))
+        try input.fileHandleForWriting.write(contentsOf: initialize.dropFirst(12) + Data([0x0a]))
+        #expect(try response()["id"] as? Int == 1)
+        try input.fileHandleForWriting.write(contentsOf: Data("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n".utf8))
+        #expect(try response()["id"] as? Int == 2)
+        try input.fileHandleForWriting.write(contentsOf: Data("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n".utf8))
+        let discovery = try response()
+        #expect(discovery["id"] as? Int == 3)
+        #expect((discovery["result"] as? [String: Any])?["tools"] is [Any])
+    }
+
     @Test("The app bundle contains a launchable hardened-runtime MCP helper")
     func bundledHelperLaunches() throws {
         let helper = try #require(Bundle.main.url(forAuxiliaryExecutable: "photo-agent-mcp"))

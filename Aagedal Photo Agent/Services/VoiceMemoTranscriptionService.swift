@@ -45,6 +45,7 @@ nonisolated struct VoiceMemoTranscriptDraft: Equatable, Sendable {
     let generatedText: String
     var reviewedText: String
     var approvedAt: Date?
+    var whisperProvenance: FFmpegWhisperTranscriptProvenance? = nil
 
     var isApproved: Bool { approvedAt != nil }
 }
@@ -563,6 +564,43 @@ actor VoiceMemoTranscriptionService {
         )
     }
 
+    /// Explicit opt-in only: authorization is supplied by the curated artifact installer.
+    /// No Apple fallback, persistence, approval, or metadata write happens here.
+    func transcribe(
+        imageURL: URL,
+        provider: FFmpegWhisperTranscriptionProvider
+    ) async throws -> VoiceMemoTranscriptDraft {
+        try Task.checkCancellation()
+        let image = imageURL.standardizedFileURL
+        let folder = image.deletingLastPathComponent()
+        let didAccess = startAccess(folder)
+        defer { if didAccess { stopAccess(folder) } }
+        guard case .available(let association) = try lookup(image),
+              association.memoURL.pathExtension.lowercased() == "wav" else {
+            throw VoiceMemoTranscriptionError.relationshipUnavailable
+        }
+        let before = try await captureRevision(association.memoURL)
+        let result = try await provider.transcribe(audio: .init(
+            url: association.memoURL, byteCount: before.byteCount, sha256: before.sha256
+        ))
+        try Task.checkCancellation()
+        let after = try await captureRevision(association.memoURL)
+        guard before.relationship(to: after) == .exactRevision,
+              try lookup(image) == .available(association) else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        try Task.checkCancellation()
+        return VoiceMemoTranscriptDraft(
+            imageURL: image, memoURL: association.memoURL,
+            memoByteCount: before.byteCount, memoSHA256: before.sha256,
+            associationProfileIdentifier: association.profileIdentifier,
+            localeIdentifier: result.provenance.requestedLanguage,
+            provider: "FFmpeg Whisper", providerModel: result.provenance.modelIdentifier,
+            generatedAt: now(), generatedText: result.text, reviewedText: result.text,
+            approvedAt: nil, whisperProvenance: result.provenance
+        )
+    }
+
     func loadPersistedDraft(imageURL: URL) async throws -> VoiceMemoTranscriptDraft? {
         try Task.checkCancellation()
         let image = imageURL.standardizedFileURL
@@ -586,7 +624,8 @@ actor VoiceMemoTranscriptionService {
             generatedAt: record.generatedAt,
             generatedText: record.generatedText,
             reviewedText: record.reviewedText,
-            approvedAt: record.approvedAt
+            approvedAt: record.approvedAt,
+            whisperProvenance: record.whisperProvenance
         )
     }
 
@@ -660,7 +699,8 @@ actor VoiceMemoTranscriptionService {
             generatedAt: draft.generatedAt,
             generatedText: draft.generatedText,
             reviewedText: normalizedReview,
-            approvedAt: draft.approvedAt
+            approvedAt: draft.approvedAt,
+            whisperProvenance: draft.whisperProvenance
         )
         let saved = try await saveTranscript(record, image, image.deletingLastPathComponent())
         try Task.checkCancellation()
@@ -682,7 +722,8 @@ actor VoiceMemoTranscriptionService {
             generatedAt: saved.generatedAt,
             generatedText: saved.generatedText,
             reviewedText: saved.reviewedText,
-            approvedAt: saved.approvedAt
+            approvedAt: saved.approvedAt,
+            whisperProvenance: saved.whisperProvenance
         )
     }
 

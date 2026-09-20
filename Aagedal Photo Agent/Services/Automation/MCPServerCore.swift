@@ -1376,7 +1376,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "prepare_iptc_patch",
-                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID and a helper-session planID for revalidated retrieval. Restart discards plans. This preview cannot be committed; no write authority or publication approval is granted. Text is preserved exactly; clear produces an empty string or array.",
+                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID and a helper-session planID for revalidated retrieval. Restart discards plans. This preview cannot be committed; no write authority or publication approval is granted. Before/after use production semantic normalization; sourceValue/requestedValue retain exact inputs. Empty set is refused; clear produces null for text or an empty array.",
                 properties: [
                     "path": .object(["type": .string("string")]),
                     "sourceRevision": .object(["type": .string("string")]),
@@ -1747,18 +1747,24 @@ nonisolated struct MCPStdioServer {
         diagnostics: FileHandle = .standardError
     ) {
         var buffer = Data()
+        var readBuffer = [UInt8](repeating: 0, count: 16_384)
         while true {
-            let chunk: Data
-            do { chunk = try input.read(upToCount: 16_384) ?? Data() }
-            catch {
+            // FileHandle.read(upToCount:) can wait to fill its requested count on a pipe.
+            // A persistent MCP client waits for our response without closing STDIN, so use
+            // one POSIX read, which returns the currently available bytes instead.
+            let count = readBuffer.withUnsafeMutableBytes {
+                Darwin.read(input.fileDescriptor, $0.baseAddress, $0.count)
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
                 writeDiagnostic("Photo Agent MCP could not read STDIN.\n", to: diagnostics)
                 return
             }
-            if chunk.isEmpty {
+            if count == 0 {
                 if !buffer.isEmpty { process(buffer, output: output) }
                 return
             }
-            buffer.append(chunk)
+            buffer.append(contentsOf: readBuffer.prefix(count))
             if buffer.count > maximumMessageBytes, !buffer.contains(0x0a) {
                 writeResponse(session.invalidRequestResponse(), to: output)
                 return
