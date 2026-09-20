@@ -8,14 +8,26 @@
 
 /* Begin PBXBuildFile section */
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
+		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
 		1B9FF71903054DC7BE54A5E5 /* VariableConflictRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */; };
 		1C7A6B9BA3F2E2C3F90503C1 /* IPTCMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */; };
 		2295BF0BEAFF48D09B6EB3E6 /* PendingMetadataWriteCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */; };
+		29599D40E434A32BA684F191 /* Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF8DE4266A8985E6AF5A3D6F /* Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift */; };
+		2C7398777E1B755B39AC0B58 /* Aagedal Photo Agent/Models/MetadataSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E0E29069BB020EC6997748 /* Aagedal Photo Agent/Models/MetadataSidecar.swift */; };
+		31B9081D449A9F0EEE29CEC7 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */; };
+		336FE8FEED13D97CB310C181 /* Aagedal Photo Agent/Models/UserDefaultsKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69CE82C5D54008AFB2CEAAC0 /* Aagedal Photo Agent/Models/UserDefaultsKeys.swift */; };
+		3C01ADAD5FE443AEA4BB439A /* Aagedal Photo Agent/Models/ISO3166Country.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494B37051D772365BB0908B9 /* Aagedal Photo Agent/Models/ISO3166Country.swift */; };
+		4B7D57A22AB4E768534E9893 /* Aagedal Photo Agent/Models/IPTCMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF5EB0AE90368F4D45DE3B7 /* Aagedal Photo Agent/Models/IPTCMetadata.swift */; };
+		74D5A32E223669E678301D28 /* Aagedal Photo Agent/Services/XMPMetadataReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEBFB8FFE3CACE58A7D2CE1A /* Aagedal Photo Agent/Services/XMPMetadataReader.swift */; };
+		77EC73DD3CDDF758E2863489 /* Aagedal Photo Agent/Models/MetadataFieldID.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECAE1A87A0CB4E66967B1E62 /* Aagedal Photo Agent/Models/MetadataFieldID.swift */; };
 		7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */; };
 		87EAF1DF1048410285F6CB37 /* VariableConflictRecoveryCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */; };
 		8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED36A032F8CF03000FB9A33 /* Sparkle */; };
+		8F97448B587181440275097A /* Aagedal Photo Agent/Models/EditorialImageSupplier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37108B4911300101BB5C3B67 /* Aagedal Photo Agent/Models/EditorialImageSupplier.swift */; };
+		99CE7D65C8B7FDAAD992CC54 /* Aagedal Photo Agent/Models/EditorialDateCreated.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */; };
+		9ABD0EF549177C39234F1AB4 /* Aagedal Photo Agent/Services/SidecarReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */; };
 		9E909BDC0B8A4B20BDBFB647 /* VariableMetadataCallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */; };
 		A02608260000000000000002 /* VoiceMemoCompanionRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608260000000000000001 /* VoiceMemoCompanionRepositoryTests.swift */; };
 		A02608270000000000000002 /* RAWArchiveTransactionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608270000000000000001 /* RAWArchiveTransactionServiceTests.swift */; };
@@ -26,6 +38,7 @@
 		A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */; };
 		A80400000000000000000002 /* TemplatesFolderBookmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80400000000000000000001 /* TemplatesFolderBookmarkTests.swift */; };
 		A8F5A4000000000000000002 /* DeliveryStagingProductionFactoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F5A4000000000000000001 /* DeliveryStagingProductionFactoryTests.swift */; };
+		A909807563B7ED07A0C78D51 /* Aagedal Photo Agent/Services/IPTCMetadataParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA2F2D420DFF041C26EFC59B /* Aagedal Photo Agent/Services/IPTCMetadataParsing.swift */; };
 		A95300000000000000000002 /* MetadataHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95300000000000000000001 /* MetadataHistoryTests.swift */; };
 		A9D001000000000000000002 /* KnownPeoplePackageDirectoryWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D001000000000000000001 /* KnownPeoplePackageDirectoryWriterTests.swift */; };
 		A9D002000000000000000002 /* KnownPeoplePackageArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D002000000000000000001 /* KnownPeoplePackageArchiveTests.swift */; };
@@ -88,10 +101,9 @@
 		AB4800000000000000000002 /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */; };
 		AB4900000000000000000002 /* DevelopVersionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */; };
 		AB5000000000000000000002 /* MetadataTemplatePersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */; };
-		DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */; };
-		DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */; };
 		AB5100000000000000000002 /* AnalysisSolarPositionCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */; };
 		AB5200000000000000000002 /* MetadataValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5200000000000000000001 /* MetadataValidationTests.swift */; };
+		AB96DD502657CA81F3D05475 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9B81B5CFF1529FFA8FC2C1 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift */; };
 		AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */; };
 		AF5100000000000000000002 /* FileSystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5100000000000000000001 /* FileSystemExecutorTests.swift */; };
 		AF5200000000000000000002 /* ImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5200000000000000000001 /* ImportFilesystemExecutorTests.swift */; };
@@ -113,6 +125,7 @@
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
 		C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A710000000000000000001 /* CaptionSessionTests.swift */; };
 		C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */; };
+		C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
 		C5A000000000000000000002 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* main.swift */; };
 		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
 		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
@@ -146,8 +159,11 @@
 		D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */; };
 		D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */; };
 		D4A700000000000000000002 /* MetadataReviewValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4A700000000000000000001 /* MetadataReviewValidationTests.swift */; };
+		DA7200000000000000000002 /* TemplateDeletionConflictTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */; };
+		DA7300000000000000000002 /* DevelopTemplateSchemaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */; };
 		DD0100000000000000000002 /* DurableDeletionTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */; };
 		DD0200000000000000000002 /* RosterStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0200000000000000000001 /* RosterStoreTests.swift */; };
+		DD5FDACD1A42E920D0219776 /* Aagedal Photo Agent/Models/MetadataFieldKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CC1DE18EC165558A3A53DC5 /* Aagedal Photo Agent/Models/MetadataFieldKey.swift */; };
 		DE1A01000000000000000002 /* DeliveryReceiptRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */; };
 		DE1A02000000000000000002 /* DeliveryReceiptLibraryModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A02000000000000000001 /* DeliveryReceiptLibraryModelTests.swift */; };
 		DE1A03000000000000000002 /* DeliveryReceiptAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE1A03000000000000000001 /* DeliveryReceiptAssemblerTests.swift */; };
@@ -158,6 +174,7 @@
 		EC0F10000000000000000002 /* EditorialContainerFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */; };
 		ED1700000000000000000002 /* EditorialImageSupplierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED1700000000000000000001 /* EditorialImageSupplierTests.swift */; };
 		EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */; };
+		EF969DB683347FFC3E64F2F9 /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */; };
 		F00D00000000000000000002 /* CoreWorkflowSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */; };
 		F2BA71000000000000000002 /* MetadataBatchSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */; };
 		F3A100000000000000000002 /* ImportMetadataScanServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */; };
@@ -165,23 +182,6 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
-		29599D40E434A32BA684F191 /* MCPMetadataSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */; };
-		74D5A32E223669E678301D28 /* XMPMetadataReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */; };
-		EF969DB683347FFC3E64F2F9 /* SwiftExifDictAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */; };
-		A909807563B7ED07A0C78D51 /* IPTCMetadataParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */; };
-		9ABD0EF549177C39234F1AB4 /* SidecarReconciliation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */; };
-		4B7D57A22AB4E768534E9893 /* IPTCMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */; };
-		2C7398777E1B755B39AC0B58 /* MetadataSidecar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */; };
-		77EC73DD3CDDF758E2863489 /* MetadataFieldID.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */; };
-		DD5FDACD1A42E920D0219776 /* MetadataFieldKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */; };
-		1A021A74D4587B8447E8AE88 /* ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */; };
-		C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
-		336FE8FEED13D97CB310C181 /* UserDefaultsKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */; };
-		8F97448B587181440275097A /* EditorialImageSupplier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */; };
-		99CE7D65C8B7FDAAD992CC54 /* EditorialDateCreated.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */; };
-		AB96DD502657CA81F3D05475 /* IPTCMetadataVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */; };
-		3C01ADAD5FE443AEA4BB439A /* ISO3166Country.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494B37051D772365BB0908B9 /* ISO3166Country.swift */; };
-		31B9081D449A9F0EEE29CEC7 /* EditorialJSONSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */; };
 		EE73F0000000000000000002 /* TemplateJSONPreservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE73F0000000000000000001 /* TemplateJSONPreservationTests.swift */; };
 		EE73F0000000000000000012 /* TemplateFileAuthorityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE73F0000000000000000011 /* TemplateFileAuthorityTests.swift */; };
 /* End PBXBuildFile section */
@@ -226,13 +226,20 @@
 
 /* Begin PBXFileReference section */
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
+		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageMemoryCoordinatorTests.swift; sourceTree = "<group>"; };
 		25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataWriteServiceTests.swift; sourceTree = "<group>"; };
+		2A9B81B5CFF1529FFA8FC2C1 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadataVerification.swift"; sourceTree = SOURCE_ROOT; };
+		37108B4911300101BB5C3B67 /* Aagedal Photo Agent/Models/EditorialImageSupplier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialImageSupplier.swift"; sourceTree = SOURCE_ROOT; };
 		38D2DABC30701F41BE3F6B54 /* IPTCMetadataTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataTests.swift; sourceTree = "<group>"; };
 		4061590503824EFE840DD876 /* MetadataEditorXMPBaselineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorXMPBaselineTests.swift; sourceTree = "<group>"; };
 		44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryTests.swift; sourceTree = "<group>"; };
+		494B37051D772365BB0908B9 /* Aagedal Photo Agent/Models/ISO3166Country.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ISO3166Country.swift"; sourceTree = SOURCE_ROOT; };
 		497AA160FD7F433CBFE4E452 /* VariableMetadataCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableMetadataCallerTests.swift; sourceTree = "<group>"; };
+		4DF5EB0AE90368F4D45DE3B7 /* Aagedal Photo Agent/Models/IPTCMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadata.swift"; sourceTree = SOURCE_ROOT; };
+		69CE82C5D54008AFB2CEAAC0 /* Aagedal Photo Agent/Models/UserDefaultsKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/UserDefaultsKeys.swift"; sourceTree = SOURCE_ROOT; };
+		7CC1DE18EC165558A3A53DC5 /* Aagedal Photo Agent/Models/MetadataFieldKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldKey.swift"; sourceTree = SOURCE_ROOT; };
 		7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TeamRosterExportServiceTests.swift; sourceTree = "<group>"; };
 		8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal Photo Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E0557412F29098D00BCFB49 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
@@ -310,8 +317,6 @@
 		AB4800000000000000000001 /* ComparisonCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ComparisonCoordinatorTests.swift; sourceTree = "<group>"; };
 		AB4900000000000000000001 /* DevelopVersionCatalogTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopVersionCatalogTests.swift; sourceTree = "<group>"; };
 		AB5000000000000000000001 /* MetadataTemplatePersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataTemplatePersistenceTests.swift; sourceTree = "<group>"; };
-		DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateSchemaTests.swift; sourceTree = "<group>"; };
-		DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateDeletionConflictTests.swift; sourceTree = "<group>"; };
 		AB5100000000000000000001 /* AnalysisSolarPositionCalculatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisSolarPositionCalculatorTests.swift; sourceTree = "<group>"; };
 		AB5200000000000000000001 /* MetadataValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataValidationTests.swift; sourceTree = "<group>"; };
 		AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AnalysisExportFileServiceTests.swift; sourceTree = "<group>"; };
@@ -328,6 +333,7 @@
 		BA7C03010000000000000001 /* RenamePlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenamePlanningServiceTests.swift; sourceTree = "<group>"; };
 		BA7C03020000000000000001 /* BatchRenameSheetStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameSheetStateTests.swift; sourceTree = "<group>"; };
 		BA7C03030000000000000001 /* BatchRenameRecipeRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeRepositoryTests.swift; sourceTree = "<group>"; };
+		BEBFB8FFE3CACE58A7D2CE1A /* Aagedal Photo Agent/Services/XMPMetadataReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/XMPMetadataReader.swift"; sourceTree = SOURCE_ROOT; };
 		C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataVerificationTests.swift; sourceTree = "<group>"; };
 		C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DescriptiveMetadataWriteBoundaryTests.swift; sourceTree = "<group>"; };
 		C0DE21000000000000000001 /* CodeReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodeReplacementTests.swift; sourceTree = "<group>"; };
@@ -343,6 +349,7 @@
 		C7F170000000000000000001 /* MetadataFieldMutationWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataFieldMutationWriteServiceTests.swift; sourceTree = "<group>"; };
 		C7F170000000000000000003 /* FieldMutationCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FieldMutationCallerTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
+		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
 		D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VerifiedDeliveryUploadCoordinatorTests.swift; sourceTree = "<group>"; };
 		D312F2000000000000000001 /* StagedDeliveryCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StagedDeliveryCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -369,6 +376,9 @@
 		D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopPrimaryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
 		D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PrimaryDevelopWriteServiceTests.swift; sourceTree = "<group>"; };
 		D4A700000000000000000001 /* MetadataReviewValidationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataReviewValidationTests.swift; sourceTree = "<group>"; };
+		D9E0E29069BB020EC6997748 /* Aagedal Photo Agent/Models/MetadataSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataSidecar.swift"; sourceTree = SOURCE_ROOT; };
+		DA7200000000000000000001 /* TemplateDeletionConflictTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateDeletionConflictTests.swift; sourceTree = "<group>"; };
+		DA7300000000000000000001 /* DevelopTemplateSchemaTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateSchemaTests.swift; sourceTree = "<group>"; };
 		DD0100000000000000000001 /* DurableDeletionTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DurableDeletionTransactionTests.swift; sourceTree = "<group>"; };
 		DD0200000000000000000001 /* RosterStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RosterStoreTests.swift; sourceTree = "<group>"; };
 		DE1A01000000000000000001 /* DeliveryReceiptRepositoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryReceiptRepositoryTests.swift; sourceTree = "<group>"; };
@@ -377,31 +387,21 @@
 		E7EC01000000000000000001 /* RenameExecutionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameExecutionServiceTests.swift; sourceTree = "<group>"; };
 		E7EC01010000000000000001 /* RenameOriginalFilenameMetadataCodecTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameOriginalFilenameMetadataCodecTests.swift; sourceTree = "<group>"; };
 		E7EC01020000000000000001 /* RenameOriginalFilenameTransactionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RenameOriginalFilenameTransactionTests.swift; sourceTree = "<group>"; };
+		EA2F2D420DFF041C26EFC59B /* Aagedal Photo Agent/Services/IPTCMetadataParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/IPTCMetadataParsing.swift"; sourceTree = SOURCE_ROOT; };
+		EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ColorLabel.swift"; sourceTree = SOURCE_ROOT; };
 		EC0F10000000000000000001 /* EditorialContainerFixtureTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialContainerFixtureTests.swift; sourceTree = "<group>"; };
+		ECAE1A87A0CB4E66967B1E62 /* Aagedal Photo Agent/Models/MetadataFieldID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldID.swift"; sourceTree = SOURCE_ROOT; };
 		ED1700000000000000000001 /* EditorialImageSupplierTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialImageSupplierTests.swift; sourceTree = "<group>"; };
 		EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EditorialDateCreatedTests.swift; sourceTree = "<group>"; };
+		EF8DE4266A8985E6AF5A3D6F /* Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift"; sourceTree = SOURCE_ROOT; };
 		F00D00000000000000000001 /* CoreWorkflowSmokeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoreWorkflowSmokeTests.swift; sourceTree = "<group>"; };
 		F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent UI Smoke Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F2BA71000000000000000001 /* MetadataBatchSelectionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataBatchSelectionTests.swift; sourceTree = "<group>"; };
 		F3A100000000000000000001 /* ImportMetadataScanServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImportMetadataScanServiceTests.swift; sourceTree = "<group>"; };
 		F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AdobeDNGDiscoveryTests.swift; sourceTree = "<group>"; };
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
-		EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift"; sourceTree = SOURCE_ROOT; };
-		BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/XMPMetadataReader.swift"; sourceTree = SOURCE_ROOT; };
-		0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
-		EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/IPTCMetadataParsing.swift"; sourceTree = SOURCE_ROOT; };
-		F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
-		4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadata.swift"; sourceTree = SOURCE_ROOT; };
-		D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataSidecar.swift"; sourceTree = SOURCE_ROOT; };
-		ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldID.swift"; sourceTree = SOURCE_ROOT; };
-		7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/MetadataFieldKey.swift"; sourceTree = SOURCE_ROOT; };
-		EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ColorLabel.swift"; sourceTree = SOURCE_ROOT; };
-		69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/UserDefaultsKeys.swift"; sourceTree = SOURCE_ROOT; };
-		37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialImageSupplier.swift"; sourceTree = SOURCE_ROOT; };
-		F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
-		2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/IPTCMetadataVerification.swift"; sourceTree = SOURCE_ROOT; };
-		494B37051D772365BB0908B9 /* ISO3166Country.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/ISO3166Country.swift"; sourceTree = SOURCE_ROOT; };
-		D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
+		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
+		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
 		EE73F0000000000000000001 /* TemplateJSONPreservationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateJSONPreservationTests.swift; sourceTree = "<group>"; };
 		EE73F0000000000000000011 /* TemplateFileAuthorityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TemplateFileAuthorityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -652,22 +652,22 @@
 			children = (
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
-				D242B1B673325FF76F5319C3 /* EditorialJSONSchema.swift */,
-				494B37051D772365BB0908B9 /* ISO3166Country.swift */,
-				2A9B81B5CFF1529FFA8FC2C1 /* IPTCMetadataVerification.swift */,
-				F5EF7DA0399318BA929901BE /* EditorialDateCreated.swift */,
-				37108B4911300101BB5C3B67 /* EditorialImageSupplier.swift */,
-				69CE82C5D54008AFB2CEAAC0 /* UserDefaultsKeys.swift */,
-				EB6C665C6B4E6610CF7F7E00 /* ColorLabel.swift */,
-				7CC1DE18EC165558A3A53DC5 /* MetadataFieldKey.swift */,
-				ECAE1A87A0CB4E66967B1E62 /* MetadataFieldID.swift */,
-				D9E0E29069BB020EC6997748 /* MetadataSidecar.swift */,
-				4DF5EB0AE90368F4D45DE3B7 /* IPTCMetadata.swift */,
-				F71F3E691A602BC79FD197DF /* SidecarReconciliation.swift */,
-				EA2F2D420DFF041C26EFC59B /* IPTCMetadataParsing.swift */,
-				0CF90B06B186D6E15C9E5B5E /* SwiftExifDictAdapter.swift */,
-				BEBFB8FFE3CACE58A7D2CE1A /* XMPMetadataReader.swift */,
-				EF8DE4266A8985E6AF5A3D6F /* MCPMetadataSnapshotReader.swift */,
+				D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */,
+				494B37051D772365BB0908B9 /* Aagedal Photo Agent/Models/ISO3166Country.swift */,
+				2A9B81B5CFF1529FFA8FC2C1 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift */,
+				F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */,
+				37108B4911300101BB5C3B67 /* Aagedal Photo Agent/Models/EditorialImageSupplier.swift */,
+				69CE82C5D54008AFB2CEAAC0 /* Aagedal Photo Agent/Models/UserDefaultsKeys.swift */,
+				EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */,
+				7CC1DE18EC165558A3A53DC5 /* Aagedal Photo Agent/Models/MetadataFieldKey.swift */,
+				ECAE1A87A0CB4E66967B1E62 /* Aagedal Photo Agent/Models/MetadataFieldID.swift */,
+				D9E0E29069BB020EC6997748 /* Aagedal Photo Agent/Models/MetadataSidecar.swift */,
+				4DF5EB0AE90368F4D45DE3B7 /* Aagedal Photo Agent/Models/IPTCMetadata.swift */,
+				F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */,
+				EA2F2D420DFF041C26EFC59B /* Aagedal Photo Agent/Services/IPTCMetadataParsing.swift */,
+				0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */,
+				BEBFB8FFE3CACE58A7D2CE1A /* Aagedal Photo Agent/Services/XMPMetadataReader.swift */,
+				EF8DE4266A8985E6AF5A3D6F /* Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift */,
 			);
 			path = "PhotoAgent MCP";
 			sourceTree = "<group>";
@@ -717,8 +717,10 @@
 			);
 			dependencies = (
 			);
-			packageProductDependencies = (8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */,);
 			name = "Photo Agent MCP";
+			packageProductDependencies = (
+				8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */,
+			);
 			productName = "photo-agent-mcp";
 			productReference = C5A000000000000000000003 /* photo-agent-mcp */;
 			productType = "com.apple.product-type.tool";
@@ -1027,22 +1029,22 @@
 			files = (
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
-				31B9081D449A9F0EEE29CEC7 /* EditorialJSONSchema.swift in Sources */,
-				3C01ADAD5FE443AEA4BB439A /* ISO3166Country.swift in Sources */,
-				AB96DD502657CA81F3D05475 /* IPTCMetadataVerification.swift in Sources */,
-				99CE7D65C8B7FDAAD992CC54 /* EditorialDateCreated.swift in Sources */,
-				8F97448B587181440275097A /* EditorialImageSupplier.swift in Sources */,
-				336FE8FEED13D97CB310C181 /* UserDefaultsKeys.swift in Sources */,
-				1A021A74D4587B8447E8AE88 /* ColorLabel.swift in Sources */,
-				DD5FDACD1A42E920D0219776 /* MetadataFieldKey.swift in Sources */,
-				77EC73DD3CDDF758E2863489 /* MetadataFieldID.swift in Sources */,
-				2C7398777E1B755B39AC0B58 /* MetadataSidecar.swift in Sources */,
-				4B7D57A22AB4E768534E9893 /* IPTCMetadata.swift in Sources */,
-				9ABD0EF549177C39234F1AB4 /* SidecarReconciliation.swift in Sources */,
-				A909807563B7ED07A0C78D51 /* IPTCMetadataParsing.swift in Sources */,
-				EF969DB683347FFC3E64F2F9 /* SwiftExifDictAdapter.swift in Sources */,
-				74D5A32E223669E678301D28 /* XMPMetadataReader.swift in Sources */,
-				29599D40E434A32BA684F191 /* MCPMetadataSnapshotReader.swift in Sources */,
+				31B9081D449A9F0EEE29CEC7 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift in Sources */,
+				3C01ADAD5FE443AEA4BB439A /* Aagedal Photo Agent/Models/ISO3166Country.swift in Sources */,
+				AB96DD502657CA81F3D05475 /* Aagedal Photo Agent/Models/IPTCMetadataVerification.swift in Sources */,
+				99CE7D65C8B7FDAAD992CC54 /* Aagedal Photo Agent/Models/EditorialDateCreated.swift in Sources */,
+				8F97448B587181440275097A /* Aagedal Photo Agent/Models/EditorialImageSupplier.swift in Sources */,
+				336FE8FEED13D97CB310C181 /* Aagedal Photo Agent/Models/UserDefaultsKeys.swift in Sources */,
+				1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */,
+				DD5FDACD1A42E920D0219776 /* Aagedal Photo Agent/Models/MetadataFieldKey.swift in Sources */,
+				77EC73DD3CDDF758E2863489 /* Aagedal Photo Agent/Models/MetadataFieldID.swift in Sources */,
+				2C7398777E1B755B39AC0B58 /* Aagedal Photo Agent/Models/MetadataSidecar.swift in Sources */,
+				4B7D57A22AB4E768534E9893 /* Aagedal Photo Agent/Models/IPTCMetadata.swift in Sources */,
+				9ABD0EF549177C39234F1AB4 /* Aagedal Photo Agent/Services/SidecarReconciliation.swift in Sources */,
+				A909807563B7ED07A0C78D51 /* Aagedal Photo Agent/Services/IPTCMetadataParsing.swift in Sources */,
+				EF969DB683347FFC3E64F2F9 /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift in Sources */,
+				74D5A32E223669E678301D28 /* Aagedal Photo Agent/Services/XMPMetadataReader.swift in Sources */,
+				29599D40E434A32BA684F191 /* Aagedal Photo Agent/Services/Automation/MCPMetadataSnapshotReader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
