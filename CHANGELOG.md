@@ -10,6 +10,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Read-only IPTC proofreading plans now survive helper restart in a private, bounded local archive.
+  Retrieval still rejects expiry, changed authorization, altered photos and corrupt stored plans.
+- Added internal custom Whisper artifact identity admission with explicit unverified provenance,
+  bounded revocable receipts and authorization checks before and after inference. Provider selection
+  and trusted model delivery remain in development.
+- Corrected the candidate FFmpeg Whisper emitter to bound timestamps to supplied audio and retain
+  exact sample-based chunk origins. The bundled production binary is unchanged.
+
 - Fixed persistent MCP clients timing out during initialization: the helper now responds to
   available input without waiting for the client to close STDIN.
 - IPTC proofreading previews now share production field normalization and validation, retain exact
@@ -18,7 +26,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   model/build/language/segment evidence. It returns unapproved drafts; provider UI and trusted
   binary/model installation remain pending.
 
-- Added read-only `get_iptc_patch_plan` retrieval with immutable session previews, expiry and fresh
+- Added read-only `get_iptc_patch_plan` retrieval with immutable previews, expiry and fresh
   authorization/source checks. Revoking and re-enabling identical folder access invalidates old plans.
 - Added the internal FFmpeg Whisper process runner with exact input snapshots, bounded output,
   deadlines and cancellation. Marker-only silence yields no speech; the rebuilt binary, model

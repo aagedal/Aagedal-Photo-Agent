@@ -1301,12 +1301,14 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let authorizationStore: MCPAuthorizationStore
     let automationFacade: MCPAutomationFacade
     let templateDiscovery: MCPTemplateDiscovery
-    let patchPlans = MCPIPTCPatchPlanStore()
+    let patchPlans: MCPIPTCPatchPlanStore
 
-    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil) {
+    init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
+         patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore()) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
         self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
+        self.patchPlans = patchPlans
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
@@ -1376,7 +1378,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "prepare_iptc_patch",
-                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID and a helper-session planID for revalidated retrieval. Restart discards plans. This preview cannot be committed; no write authority or publication approval is granted. Before/after use production semantic normalization; sourceValue/requestedValue retain exact inputs. Empty set is refused; clear produces null for text or an empty array.",
+                description: "Prepare a read-only descriptive proofreading preview for one authorized photo using exact tokens from get_photo_metadata. Returns bounded before/after values, limited validation, preservation warnings and an expiring content-bound preview ID and a planID for revalidated retrieval. The bundled helper retains local previews across restart until expiry; planStorage identifies the storage mode. This preview cannot be committed; no write authority or publication approval is granted. Before/after use production semantic normalization; sourceValue/requestedValue retain exact inputs. Empty set is refused; clear produces null for text or an empty array.",
                 properties: [
                     "path": .object(["type": .string("string")]),
                     "sourceRevision": .object(["type": .string("string")]),
@@ -1405,7 +1407,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_iptc_patch_plan",
-                description: "Retrieve an immutable proofreading preview from this helper session after rechecking authorization, photo/carrier revisions and expiry. Restart discards plans. This read-only plan cannot be committed and grants no approval authority.",
+                description: "Retrieve an immutable proofreading preview after rechecking authorization, photo/carrier revisions and expiry. The bundled helper can restore unexpired local plans after restart. This read-only plan cannot be committed and grants no approval authority.",
                 properties: ["planID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["planID"]
             ),

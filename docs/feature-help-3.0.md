@@ -102,8 +102,10 @@ The schema-2 result shows production-normalized before/after values, exact `sour
 `requestedValue`, each field's comparison rule, edited-field legacy IPTC byte-limit warnings, a content-bound
 preview ID, a `planID` and a five-minute expiry. Call `get_iptc_patch_plan` with only that `planID`
 to retrieve the same preview after authorization and photo/sidecar revisions are checked again.
-Plans live only in the current helper session; restart, expiry, edits or changed authorization require
-a fresh read and preparation. At most 64 live plans fit within an 8 MiB serialized-result budget.
+The bundled helper restores unexpired plans after restart from its private local PatchPlans archive.
+Expiry, edits or changed authorization require a fresh read and preparation. At most 64 live plans
+fit within an 8 MiB serialized-result budget. Expired records are removed on the next successful
+preparation; see the privacy guide for local archive removal.
 These are read-only plans: no commit endpoint is available, physical carrier support,
 preservation and publication approval are not yet evaluated, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.

@@ -61,10 +61,14 @@ its own retention or network policy to that content. Review the client's privacy
 it. Current tools provide read-only capability/authorization inspection, bounded effective photo metadata,
 and template header discovery from explicitly authorized default local or custom folders. Template names and content
 revision hashes can also reach the connected client; template field values are not returned by discovery.
-Read-only IPTC patch previews also return existing and proposed descriptive values. Up to 64 plans
-(with an 8 MiB serialized-result budget) are held in helper memory for revalidated retrieval; plans
-expire after five minutes and cannot survive helper restart. Expired entries are removed on later
-preparation or access. No plans are saved to disk or written to photos, and previews are not retained
+Read-only IPTC patch previews also return existing and proposed descriptive values. The bundled
+helper stores up to 64 plans (an 8 MiB serialized-result budget) in a private local archive under
+`~/Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans`. The archive includes
+photo paths, revision evidence, existing/proposed values and the captured authorization configuration.
+Plans survive helper restart but expire after five minutes; every retrieval rechecks current access
+and photo/sidecar revisions. Expired records are physically removed on the next successful preparation,
+not by a background timer. Interrupted writes can leave private temporary files. Stop connected helpers
+and remove this PatchPlans directory to erase the local previews. Previews do not alter photos or appear
 in Activity. Mutation tools will remain unavailable until they use Photo
 Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.
 

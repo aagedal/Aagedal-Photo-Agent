@@ -59,6 +59,10 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
         guard text.utf8.count <= FFmpegWhisperJSONParser.maximumTextBytes else {
             throw FFmpegWhisperJSONError.textTooLarge
         }
+        // Inference can outlive an artifact authorization or installation. Revalidate the
+        // caller's authority before publishing even an unapproved draft.
+        try await authorizeArtifacts(configuration)
+        try Task.checkCancellation()
         return Result(text: text, provenance: provenance)
     }
 }

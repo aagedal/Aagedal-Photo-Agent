@@ -118,6 +118,9 @@ struct AutomationSettingsView: View {
                 Text("Off by default. When enabled, a local AI client can launch Photo Agent's bundled STDIO server. It does not listen on the network.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text("Proofreading previews store existing and proposed text locally so they can survive a client restart. Plans expire after five minutes and are removed from the archive on the next successful preparation. Removing access immediately invalidates existing plans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Authorized Folders") {
@@ -172,7 +175,7 @@ struct AutomationSettingsView: View {
                 Text("Filenames and metadata are treated as untrusted data and are never instructions. Tool output can contain private metadata from authorized photos. Mutating tools will use Photo Agent's preview, conflict, preservation, verification, and recovery boundaries; this implementation stage exposes read-only discovery, authorization, revision, owned-draft and effective editorial metadata inspection.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Current read-only checks and metadata results are not retained by Photo Agent. Mutation tools will not become available until their privacy-safe operation history and recovery evidence are implemented.")
+                Text("Ordinary inspection results are not retained by Photo Agent. Proofreading previews use the local archive described above. Mutation tools will not become available until their privacy-safe operation history and recovery evidence are implemented.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

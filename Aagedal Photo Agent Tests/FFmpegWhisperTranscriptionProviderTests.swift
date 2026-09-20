@@ -180,6 +180,23 @@ struct FFmpegWhisperTranscriptionProviderTests {
         }
     }
 
+    @Test("artifact authorization revoked during inference discards the draft")
+    func authorizationRevokedDuringInference() async {
+        let state = WhisperDraftTestState()
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in
+                if state.complete { throw FFmpegWhisperJobError.identityMismatch }
+            }, run: { request in
+                state.markComplete()
+                return .init(request: request, transcript: .init(
+                    segments: [.init(start: 0, end: 1, text: "hello")], editableText: "hello"))
+            })
+        await #expect(throws: FFmpegWhisperJobError.identityMismatch) {
+            _ = try await provider.transcribe(audio: .init(url: memo, byteCount: 42, sha256: revision().sha256))
+        }
+        #expect(state.complete)
+    }
+
     @Test("changed WAV bytes or removed relationship discard completed inference")
     func sourceRevalidation() async throws {
         for changeRelationship in [false, true] {

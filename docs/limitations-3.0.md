@@ -113,7 +113,7 @@ This is separate from the unapproved AI-origin analyzer described above.
   metadata tools. Effective reads accept one explicit photo per call and refuse malformed or oversized
   records without truncation. `prepare_iptc_patch` previews a bounded descriptive-field subset
   against exact read revisions, with before/proposed values and IIM compatibility warnings. It
-  retains an immutable session-memory plan for `get_iptc_patch_plan` to revalidate. It does not
+  retains an immutable local plan across helper restart for `get_iptc_patch_plan` to revalidate until its five-minute expiry. It does not
   persist a committable plan or evaluate physical write normalization/preservation.
   Develop, face, template, transcription,
   status/cancellation, and two-phase IPTC mutation tools are still release work and are not advertised by
