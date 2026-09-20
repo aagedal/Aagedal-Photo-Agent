@@ -2,13 +2,21 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade, GUI/MCP operation admission/status/cancellation, guarded IPTC mutation tools and curated Aagedal Media Converter FFmpeg/Whisper delivery remain. Caption now retains custom-provider executable/model bookmarks and provider choice; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-20
-**Latest implementation state:** Cycle 81 adds retained custom Whisper bookmarks with asynchronous restore, stale refresh, permanent Clear and fresh per-session consent/admission, plus read-only MCP provider discovery and a reusable actual-helper transport probe. The custom bookmark implementation criterion is complete; curated delivery, live helper readiness, production mutations and broader release gates remain open. Source is committed as `e9b0007`. Full regression passes 3,169 tests / 333 suites; focused tests, two native workflows, helper probe, repository checks and independent review pass. See the cycle 81 report.
-**Latest native evidence:** Cycle 81 passes native file-picker, relaunch/consent-reset and persistent-Clear checks plus the existing picker-cancellation/review-retention workflow. A checkbox value-type mismatch in the first test run was corrected and the affected workflow passes. Prior cycle 80 review/approval evidence remains separate from real inference acceptance.
-**Cycle baseline:** `e192944`, initially clean. Cycle 81 verification is recorded in the linked report; no broad release-readiness gate is newly closed.
+**Latest implementation state:** Cycle 82 adds Settings review of exact read-only IPTC plans, an internal process-lifetime exact-plan approval primitive, and a bounded durable operation registry with truthful cancellation/outcome states. Production approval/commit and operation status/cancellation integration remain open. Implementation is committed as `7dfd0ae`. Full final-source regression passes 3,189 tests / 336 suites; focused tests, two native review workflows, helper probe, repository checks and independent review pass. See the cycle 82 report.
+**Latest native evidence:** Cycle 82 passes valid Unicode/set/clear plan review, Clear/navigation cleanup, unchanged-photo bytes, changed-photo refusal, invalid-ID feedback and error clearing. Fixtures use isolated in-memory authorization; no user automation preferences or plan archive are changed. Cycle 81 Whisper setup evidence remains separate from real inference acceptance.
+**Cycle baseline:** `cb0e5f2`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — active, every 10 minutes in this task (saved schedule rechecked).
 
 ## Current evidence
+
+[Cycle 82 local plan review and operation records](cycle-82-local-review-operation-records-2026-09-20.md)
+adds native checked-plan inspection and internal approval/operation foundations. Inspection runs on
+an isolated serialized worker; proposals remain untrusted plain text and commit remains unavailable.
+Full regression passes 3,189 tests / 336 suites; 31 focused tests and two native success/refusal
+workflows also pass. The operation registry is not yet wired to
+production executors or helper endpoints; native consent and physical write verification remain open.
+
 
 [Cycle 81 retained Whisper selections and provider discovery](cycle-81-whisper-bookmarks-provider-discovery-2026-09-20.md)
 adds security-scoped file restoration with fresh session consent/admission and no execution during
@@ -572,6 +580,13 @@ The historical unrelated project ordering diff was committed separately as `fee5
 cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
+
+**Next implementation slice after cycle 82:** Connect local exact-plan consent to a retained
+production IPTC writer that rechecks authority under mutation admission, verifies all unedited and
+edited semantic/physical evidence, and retains recoverable uncertain outcomes. Integrate the new
+operation registry with that executor before exposing status/cancellation/commit endpoints. Add
+native consent, cancellation, interruption and recovery evidence; foundation tests do not close
+those full workflow criteria.
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
    [the companion design](known-people-companion-interchange-design.md). FTP Sync has a

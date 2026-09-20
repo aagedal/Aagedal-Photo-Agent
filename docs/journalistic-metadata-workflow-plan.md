@@ -1615,6 +1615,15 @@ successful canonical output. Complete blank-audio-marker segments no longer beco
 Rebuilt artifact/model/provider integration and all corresponding real-environment gates remain
 open; no complete Phase 5A criterion closes. See [cycle 77](release/cycle-77-plan-revalidation-whisper-runner-2026-09-20.md).
 
+**Cycle 82 continuation (2026-09-20):** Settings can inspect one exact proofreading plan
+through the existing off-main-actor revision/authority checks, displaying normalized before/proposed
+values, warnings and expiry without approval or mutation. Internal process-lifetime consent binds an
+exact plan and rejects revocation, expiry or observed drift. A bounded private operation registry
+records owner-checked lifecycle transitions, cancellation requests and distinct verified/failure/
+uncertain/recovery outcomes. These foundations do not yet connect production executors or expose
+approval, commit, operation-status or cancellation tools; those criteria remain open. See
+[cycle 82 evidence](release/cycle-82-local-review-operation-records-2026-09-20.md).
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,

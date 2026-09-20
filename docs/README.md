@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 81: retained Whisper selections and provider discovery](release/cycle-81-whisper-bookmarks-provider-discovery-2026-09-20.md) persists custom executable/model security-scoped bookmarks, restores selections without execution consent, and adds read-only MCP provider IDs with explicit unknown app-session readiness. Every Caption session requires fresh consent and identity admission; Clear forgets saved selections. Guarded commits, curated delivery and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 82: local plan review and operation records](release/cycle-82-local-review-operation-records-2026-09-20.md) adds Settings inspection of exact proofreading plans plus internal exact-plan consent and durable cancellation/outcome foundations. Inspection remains read-only. Native consent, guarded verified commits, production operation endpoints, curated model delivery and broader release gates remain open.
 
 ## Portfolio
 
