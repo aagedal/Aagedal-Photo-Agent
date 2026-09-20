@@ -10,10 +10,16 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- FFmpeg AVIF export now retains the selected color primaries and transfer when encoding
+  ICC-tagged rendered TIFFs, preventing unspecified color signaling in exported files.
+
+- Local MCP now distinguishes invalid JSON from invalid requests, rejects malformed lifecycle
+  messages, and keeps oversized or unencodable responses within the protocol output bound.
+
 - Template import confirmation now binds the exact previewed folder and JSON inventory,
   refusing stale bytes, newly occupied targets and ambiguous IDs before overwriting.
 - Added read-only MCP `list_templates` discovery by stable UUID for explicitly authorized
-  custom metadata/Develop template folders. It returns names and revision hashes without
+  default local or custom metadata/Develop template folders. It returns names and revision hashes without
   exposing field values or granting template-application authority.
 - Image conversion now restricts FFmpeg input and output protocols to local files and
   refuses nonlocal paths, preparing for the separate Whisper-capable artifact integration.

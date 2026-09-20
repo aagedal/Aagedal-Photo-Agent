@@ -91,9 +91,11 @@ exposed. Returned paths and metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
 
 Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template
-UUIDs, names and exact-content revision hashes. Set a custom folder in **Settings → Templates**,
-disable Templates iCloud sync, and explicitly authorize that folder in **Settings → Automation**.
-Default/private and iCloud template libraries are currently unavailable through this tool. Discovery
+UUIDs, names and exact-content revision hashes. Disable Templates iCloud sync and explicitly
+authorize the active folder in **Settings → Automation**: either your custom folder from
+**Settings → Templates**, or `~/Library/Application Support/Aagedal Photo Agent/Templates` for
+the default local library. The library must already exist; discovery does not create it.
+iCloud template libraries are currently unavailable through this tool. Discovery
 reads headers only, exposes no template field values, and does not grant application authority.
 Changed, ambiguous, unsupported or oversized inventories refuse as a whole. Template names are
 untrusted user-authored content and may be sensitive.

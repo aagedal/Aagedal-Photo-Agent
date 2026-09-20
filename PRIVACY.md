@@ -54,7 +54,7 @@ changed roots, paths outside those roots, links/aliases, special files, and hidd
 An authorized local AI client can receive filenames, paths, and metadata returned by tools and may apply
 its own retention or network policy to that content. Review the client's privacy settings before connecting
 it. Current tools provide read-only capability/authorization inspection, bounded effective photo metadata,
-and template header discovery from explicitly authorized custom folders. Template names and content
+and template header discovery from explicitly authorized default local or custom folders. Template names and content
 revision hashes can also reach the connected client; template field values are not returned by discovery.
 These reads are not retained in Activity. Mutation tools will remain unavailable until they use Photo
 Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.

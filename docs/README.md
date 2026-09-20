@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 74: template import authority and MCP discovery](release/cycle-74-template-import-discovery-2026-09-20.md) binds import confirmation to the exact previewed inventory, adds stable-UUID read-only discovery for authorized custom template folders, and restricts image FFmpeg invocations to local-file protocols. Production template application, operation coordination, default/iCloud discovery, Whisper integration and broader release gates remain open. See the evidence record for validation.
+**Latest implementation continuation:** [Cycle 75: local discovery, protocol hardening and AVIF signaling](release/cycle-75-local-discovery-avif-2026-09-20.md) adds authorized default-local template discovery, strict MCP request/response handling, bounded Whisper JSON parsing and a real AVIF color-signaling fix. A reproducible nine-case binary comparison checks sample parity and AVIF tags. The candidate Whisper emitter requires a source fix/rebuild; production operations, Whisper integration and broader release gates remain open.
 
 ## Portfolio
 

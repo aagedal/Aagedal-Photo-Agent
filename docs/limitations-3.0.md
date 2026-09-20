@@ -139,12 +139,17 @@ not an archival backup of unknown extensions. Races with noncooperating external
 
 ### Template automation and import authority
 
-MCP template discovery currently supports only explicitly authorized custom Templates folders
+MCP template discovery supports explicitly authorized default local or custom Templates folders
 with template iCloud sync disabled. It returns headers and content revisions, not complete
-validated application plans. Default/private and iCloud template stores, template application,
+validated application plans. iCloud template stores, template application,
 operation status/cancellation and guarded IPTC commits remain separate implementation work.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
 The current FFmpeg artifact still lacks Whisper. Local-file protocol restrictions are implemented,
 but binary replacement, full image regression, provenance/notices and the transcription/model
 lifecycle remain open. The restriction is not a sandbox for other local files referenced by a container.
+
+The candidate Whisper filter currently writes transcript text into JSON without escaping it.
+A bounded parser and synthetic image parity checks are implemented, but the emitter must be
+fixed and reproducibly rebuilt before canonical Whisper inference can ship. See the
+[output investigation](release/ffmpeg-whisper-json-evidence-2026-09-20.md).

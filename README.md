@@ -109,7 +109,7 @@ the support table and validation records.
   identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
   with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. The helper
   discovers stable metadata/Develop template UUIDs, names and revision hashes with `list_templates`
-  from explicitly authorized custom template folders (template iCloud sync must be off). Photo-revision inspection
+  from explicitly authorized default local or custom template folders (template iCloud sync must be off). Photo-revision inspection
   captures opaque source, XMP and owned app-sidecar tokens. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
   Template application, face, transcription, status/cancellation, and guarded mutation tools remain under implementation for 3.0.

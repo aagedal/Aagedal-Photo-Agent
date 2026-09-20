@@ -1557,6 +1557,16 @@ application, provider readiness and broader operation tools remain open. FFmpeg 
 now enforce absolute local input/output paths and file-only protocols; the Whisper binary/model
 integration is still separate. See [cycle 74](release/cycle-74-template-import-discovery-2026-09-20.md).
 
+**Progress — cycle 75, 2026-09-20:** Default local and custom template libraries now share explicit
+root authorization and final route/inventory revalidation; iCloud remains unavailable. MCP rejects
+malformed lifecycle envelopes and bounds encoded responses. The bounded Whisper NDJSON parser
+retains exact segment timing without inventing detected-language evidence. Source inspection found
+that the candidate filter fails to JSON-escape transcript text, requiring a reproducible emitter fix
+before provider integration. Nine synthetic image cases compare both artifacts, and production AVIF
+encoding now declares already-rendered input color values so ICC TIFFs retain their output signaling.
+See [cycle 75](release/cycle-75-local-discovery-avif-2026-09-20.md); these changes do not close the
+production operation, provider/model, real-client or broader release gates.
+
 ### Tool and operation contract
 
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
