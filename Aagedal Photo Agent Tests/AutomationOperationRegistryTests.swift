@@ -43,6 +43,100 @@ struct AutomationOperationRegistryTests {
         #expect(try second.requestCancellation(queued.id, now: now.addingTimeInterval(3)) == acknowledged)
     }
 
+    @Test("Stopped-owner reconciliation preserves evidence, terminal records and other owners")
+    func stoppedOwnerRecovery() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        let otherOwner = UUID()
+        let queued = try registry.enqueue(kind: .metadataTemplate, ownerID: owner, now: now)
+        let running = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.start(running.id, ownerID: owner, now: now.addingTimeInterval(1))
+        let requested = try registry.requestCancellation(running.id, now: now.addingTimeInterval(2))
+        let completed = try registry.enqueue(kind: .faceScan, ownerID: owner, now: now)
+        let failed = try registry.finish(completed.id, ownerID: owner, outcome: .failed, now: now)
+        let cancelled = try registry.enqueue(kind: .developTemplate, ownerID: owner, now: now)
+        _ = try registry.requestCancellation(cancelled.id, now: now)
+        let acknowledged = try registry.acknowledgeCancellation(cancelled.id, ownerID: owner, now: now)
+        let otherQueued = try registry.enqueue(kind: .voiceTranscription, ownerID: otherOwner, now: now)
+        let other = try registry.enqueue(kind: .iptcPatch, ownerID: otherOwner, now: now)
+        let otherRunning = try registry.start(other.id, ownerID: otherOwner, now: now)
+
+        // A fresh coordinator must not infer that persisted owners have stopped.
+        let restarted = AutomationOperationRegistry(storageDirectory: root)
+        #expect(try restarted.inspect(queued.id) == queued)
+        #expect(try restarted.inspect(running.id) == requested)
+        let recoveredAt = now.addingTimeInterval(3)
+        let recovered = try restarted.reconcileStoppedOwner(ownerID: owner, now: recoveredAt)
+        #expect(recovered.map(\.id) == [queued.id, running.id])
+        for record in recovered {
+            #expect(record.ownerID == owner)
+            #expect(record.createdAt == now)
+            #expect(record.updatedAt == recoveredAt)
+            #expect(record.state == .completed)
+            #expect(record.outcome == .recoveryRequired)
+        }
+        #expect(recovered[0].kind == queued.kind)
+        #expect(recovered[0].cancellationRequestedAt == nil)
+        #expect(recovered[1].kind == requested.kind)
+        #expect(recovered[1].cancellationRequestedAt == requested.cancellationRequestedAt)
+        #expect(try registry.inspect(failed.id) == failed)
+        #expect(try registry.inspect(acknowledged.id) == acknowledged)
+        #expect(try registry.inspect(otherQueued.id) == otherQueued)
+        #expect(try registry.inspect(otherRunning.id) == otherRunning)
+        let snapshot = try registry.records()
+        let persisted = try Data(contentsOf: root.appendingPathComponent("operations.json"))
+        #expect(try registry.reconcileStoppedOwner(ownerID: owner, now: recoveredAt.addingTimeInterval(10)).isEmpty)
+        #expect(try registry.reconcileStoppedOwner(ownerID: UUID(), now: now).isEmpty)
+        #expect(try AutomationOperationRegistry(storageDirectory: root).records() == snapshot)
+        #expect(try Data(contentsOf: root.appendingPathComponent("operations.json")) == persisted)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidTransition) {
+            try registry.finish(running.id, ownerID: owner, outcome: .verified, now: recoveredAt)
+        }
+    }
+
+    @Test("Recovery rejects an invalid clock for the whole batch without changing durable evidence")
+    func recoveryClockRollback() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        _ = try registry.enqueue(kind: .metadataTemplate, ownerID: owner, now: now)
+        let later = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.start(later.id, ownerID: owner, now: now.addingTimeInterval(10))
+        let records = try registry.records()
+        let url = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: url)
+        for invalidTime in [now.addingTimeInterval(5), Date(timeIntervalSinceReferenceDate: .infinity),
+                            Date(timeIntervalSinceReferenceDate: .nan)] {
+            #expect(throws: AutomationOperationRegistry.Failure.invalidArguments) {
+                try registry.reconcileStoppedOwner(ownerID: owner, now: invalidTime)
+            }
+            #expect(try Data(contentsOf: url) == bytes)
+            #expect(try AutomationOperationRegistry(storageDirectory: root).records() == records)
+        }
+    }
+
+    @Test("Recovery refuses archive growth beyond capacity without committing a partial batch")
+    func recoveryCapacityFailure() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        _ = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.enqueue(kind: .metadataTemplate, ownerID: owner, now: now)
+        let records = try registry.records()
+        let url = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: url)
+        let constrained = AutomationOperationRegistry(storageDirectory: root, maximumBytes: bytes.count)
+        #expect(throws: AutomationOperationRegistry.Failure.capacity) {
+            try constrained.reconcileStoppedOwner(ownerID: owner, now: now)
+        }
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(try AutomationOperationRegistry(storageDirectory: root).records() == records)
+    }
+
     @Test("Queued cancellation prevents execution and requires owner acknowledgement")
     func queuedCancellation() throws {
         let root = try directory()
@@ -194,6 +288,9 @@ struct AutomationOperationRegistryTests {
         #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) { try registry.records() }
         #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
             try registry.requestCancellation(record.id, now: now)
+        }
+        #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+            try registry.reconcileStoppedOwner(ownerID: record.ownerID, now: now)
         }
         #expect(try Data(contentsOf: url) == before)
         try #require(testOperationFlock(descriptor, LOCK_UN) == 0)

@@ -118,6 +118,26 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         }
     }
 
+    /// The caller must establish that this owner has stopped and can no longer execute
+    /// work before calling. Neither loading records nor elapsed time proves owner death.
+    /// Close its unresolved records with recoveryRequired, retaining their identity and
+    /// cancellation evidence without claiming that effects succeeded or were cancelled.
+    /// Returns only changed records; repeating reconciliation leaves timestamps intact.
+    func reconcileStoppedOwner(ownerID: UUID, now: Date = Date()) throws -> [Record] {
+        guard now.timeIntervalSinceReferenceDate.isFinite else { throw Failure.invalidArguments }
+        return try transaction { records in
+            let indices = records.indices.filter { records[$0].ownerID == ownerID && !records[$0].isTerminal }
+            // Validate the whole batch before changing any record, including on clock rollback.
+            guard indices.allSatisfy({ now >= records[$0].updatedAt }) else { throw Failure.invalidArguments }
+            return indices.map { index in
+                records[index].state = .completed
+                records[index].outcome = .recoveryRequired
+                records[index].updatedAt = now
+                return records[index]
+            }
+        }
+    }
+
     private func update(_ id: UUID, ownerID: UUID?, now: Date,
                         body: (inout Record) throws -> Void) throws -> Record {
         try transaction { records in

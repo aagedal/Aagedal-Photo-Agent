@@ -104,6 +104,59 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationPatchApprovalRevokesAndRefusesChangedPhoto() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifestURL = fixtureRoot.appendingPathComponent("patch-review-fixture.json")
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: String])
+        let planID = try XCTUnwrap(manifest["planID"])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let before = try Data(contentsOf: photo)
+        input.click()
+        input.typeText(planID)
+        app.buttons["automation.inspectPatchPlan"].click()
+        let approve = app.buttons["automation.approvePatchPlan"]
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        approve.click()
+        let status = app.staticTexts["automation.patchApprovalStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+        app.buttons["automation.revokePatchApproval"].click()
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        XCTAssertFalse(status.exists)
+        approve.click()
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        app.buttons["Clear Review"].click()
+        XCTAssertFalse(status.exists)
+        app.buttons["automation.inspectPatchPlan"].click()
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        approve.click()
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        app.staticTexts["Shortcuts"].click()
+        automation.click()
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        XCTAssertFalse(status.exists)
+        input.click()
+        input.typeKey("a", modifierFlags: .command)
+        input.typeText(planID)
+        app.buttons["automation.inspectPatchPlan"].click()
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        // A source replaced after inspection must fail the consent-time revalidation.
+        try before.write(to: photo, options: .atomic)
+        approve.click()
+        XCTAssertTrue(app.staticTexts["automation.patchPlanError"].waitForExistence(timeout: 8))
+        XCTAssertFalse(status.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+    }
+
+    @MainActor
     func testSearchKeepsFocusWhenResultsReappear() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)

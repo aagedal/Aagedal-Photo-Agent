@@ -9,6 +9,7 @@ nonisolated struct AutomationPatchReview: Sendable {
         let before: String
         let after: String
     }
+    fileprivate var approvalReview: MCPIPTCPatchApprovalStore.Review?
     let planID: String
     let path: String
     let expiresAt: Date
@@ -74,30 +75,54 @@ actor AutomationPatchReviewService {
         label: "com.aagedal.photo-agent.automation-patch-review", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
 
-    private let plans: MCPIPTCPatchPlanStore
+    private let approvals: MCPIPTCPatchApprovalStore
     private let facade: MCPAutomationFacade
 
     init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init()) {
-        self.plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
+        let plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
                 "Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans", isDirectory: true))
+        self.approvals = MCPIPTCPatchApprovalStore(plans: plans)
         self.facade = facade
     }
 
     func inspect(planID: String) throws -> AutomationPatchReview {
         try Task.checkCancellation()
-        let result = try plans.inspect(arguments: ["planID": .string(planID)], facade: facade)
+        let binding = try approvals.review(planID: planID, facade: facade)
         try Task.checkCancellation()
-        return try AutomationPatchReview(result)
+        var review = try AutomationPatchReview(binding.preview)
+        review.approvalReview = binding
+        return review
+    }
+
+    func approve(_ review: AutomationPatchReview) throws -> MCPIPTCPatchApprovalStore.Approval {
+        try Task.checkCancellation()
+        guard let binding = review.approvalReview else {
+            throw MCPIPTCPatchApprovalStore.Failure.invalidReview
+        }
+        let receipt = try approvals.approve(binding, facade: facade)
+        do {
+            try Task.checkCancellation()
+            return receipt
+        } catch {
+            approvals.revoke(receipt)
+            throw error
+        }
+    }
+
+    func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) {
+        approvals.revoke(receipt)
     }
 }
 
 @MainActor @Observable
 final class AutomationPatchReviewModel {
-    var planID = ""
+    var planID = "" { didSet { if planID != oldValue { clear() } } }
     private(set) var review: AutomationPatchReview?
     private(set) var message: String?
     private(set) var isLoading = false
+    private(set) var isApproved = false
+    private var approval: MCPIPTCPatchApprovalStore.Approval?
     private var generation = UUID()
     private var task: Task<Void, Never>?
     private let service: AutomationPatchReviewService
@@ -112,13 +137,56 @@ final class AutomationPatchReviewModel {
         }
     }
 
-    func clear() {
-        generation = UUID()
+    isolated deinit {
         task?.cancel()
-        task = nil
+        if let receipt = approval {
+            let service = service
+            Task { await service.revoke(receipt) }
+        }
+    }
+
+    func clear() {
+        revokeApproval()
         review = nil
         message = nil
         isLoading = false
+    }
+
+    func revokeApproval() {
+        generation = UUID()
+        task?.cancel()
+        task = nil
+        isLoading = false
+        isApproved = false
+        if let receipt = approval {
+            approval = nil
+            Task { [service] in await service.revoke(receipt) }
+        }
+    }
+
+    func approveReviewedPlan() {
+        guard let review, !isLoading, !isApproved else { return }
+        message = nil
+        isLoading = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let receipt = try await service.approve(review)
+                guard let self, self.generation == expected, !Task.isCancelled else {
+                    // Consent may finish while the user clears, navigates away or changes IDs.
+                    await service.revoke(receipt)
+                    return
+                }
+                self.approval = receipt
+                self.isApproved = true
+                self.isLoading = false
+                self.task = nil
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.clear()
+                self.message = error.localizedDescription
+            }
+        }
     }
 
     func inspect() {

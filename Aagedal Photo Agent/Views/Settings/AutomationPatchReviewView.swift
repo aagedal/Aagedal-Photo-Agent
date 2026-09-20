@@ -11,7 +11,6 @@ struct AutomationPatchReviewView: View {
                 TextField("Patch plan ID", text: $model.planID)
                     .accessibilityIdentifier("automation.patchPlanID")
                     .onSubmit { model.inspect() }
-                    .onChange(of: model.planID) { _, _ in model.clear() }
                 Button("Inspect Plan") { model.inspect() }
                     .disabled(model.isLoading || model.planID.isEmpty)
                     .accessibilityIdentifier("automation.inspectPatchPlan")
@@ -28,6 +27,7 @@ struct AutomationPatchReviewView: View {
                     } else {
                         Text("This plan has expired. Prepare a new patch in your client.")
                             .foregroundStyle(.secondary)
+                            .onAppear { model.revokeApproval() }
                     }
                 }
                 Button("Clear Review") { model.clear() }
@@ -55,6 +55,18 @@ struct AutomationPatchReviewView: View {
             }
             ForEach(Array(review.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(verbatim: warning).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Approve Reviewed Plan records consent for exactly these changes in this review session, after checking the files and authorization again. It does not write metadata. Clearing or leaving this review revokes consent.")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.isApproved {
+                Text("Reviewed plan approved for this session. No metadata was written; commit remains unavailable.")
+                    .accessibilityIdentifier("automation.patchApprovalStatus")
+                Button("Revoke Approval") { model.revokeApproval() }
+                    .accessibilityIdentifier("automation.revokePatchApproval")
+            } else {
+                Button("Approve Reviewed Plan") { model.approveReviewedPlan() }
+                    .disabled(model.isLoading)
+                    .accessibilityIdentifier("automation.approvePatchPlan")
             }
         }
     }
