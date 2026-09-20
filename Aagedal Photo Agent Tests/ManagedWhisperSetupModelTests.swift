@@ -213,4 +213,125 @@ struct ManagedWhisperSetupModelTests {
         #expect(await calls.removals == 1)
         #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
     }
+
+    @Test("UI-test launches without a valid model root never use the production cache")
+    func isolatedUITestStorage() throws {
+        #expect(ManagedWhisperSetupModel.uiTestModelDirectory(arguments: []) == nil)
+        #expect(ManagedWhisperSetupModel.uiTestModelDirectory(arguments: ["--ui-test-whisper-model-root", "/tmp/ignored"]) == nil)
+        for arguments in [["--ui-testing"], ["--ui-testing", "--ui-test-whisper-model-root"],
+                          ["--ui-testing", "--ui-test-whisper-model-root", "relative"]] {
+            let root = try #require(ManagedWhisperSetupModel.uiTestModelDirectory(arguments: arguments))
+            #expect(root.lastPathComponent.hasPrefix("WhisperUITests-"))
+            #expect(root.deletingLastPathComponent().standardizedFileURL == FileManager.default.temporaryDirectory.standardizedFileURL)
+        }
+        #expect(ManagedWhisperSetupModel.uiTestModelDirectory(arguments: ["--ui-testing", "--ui-test-whisper-model-root", "/tmp/fixture"])?.path == "/tmp/fixture")
+    }
+
+    @Test("User cancellation suppresses URLSession cancellation errors and delayed progress")
+    func cancelledTransportError() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let gate = Gate()
+        let progressGate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in nil },
+            download: { _, progress in
+                progress(0.2)
+                await gate.pause()
+                progress(0.9)
+                await progressGate.pause()
+                throw URLError(.cancelled)
+            }, remove: { _ in },
+            admit: { _, _ in throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        setup.downloadSelectedModel()
+        try await waitUntil { await gate.started && setup.progress == 0.2 }
+        setup.cancelDownload()
+        await gate.resume()
+        try await waitUntil { await progressGate.started }
+        await progressGate.resume()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.progress == 0.2)
+        #expect(setup.errorMessage == nil)
+        #expect(!setup.isReady && !setup.isInstalled)
+    }
+
+    @Test("Failed removal preserves installed recovery controls without restoring readiness")
+    func failedRemovalCanRetry() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in URL(fileURLWithPath: "/tmp/unused-model") },
+            download: { _, _ in throw URLError(.unsupportedURL) },
+            remove: { _ in
+                await calls.removed()
+                if await calls.removals == 1 { throw CocoaError(.fileWriteNoPermission) }
+            },
+            admit: { _, _ in throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        await setup.removeSelectedModel()
+        #expect(setup.isInstalled && !setup.isReady && !setup.isRefreshing)
+        #expect(setup.errorMessage != nil)
+        #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+        await setup.removeSelectedModel()
+        #expect(await calls.removals == 2)
+        #expect(!setup.isInstalled && !setup.isReady && !setup.isRefreshing)
+        #expect(setup.errorMessage == nil)
+    }
+
+    @Test("Removal serializes destructive actions and discards stale failure reconciliation")
+    func removalExclusionAndStaleRecovery() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let calls = Calls()
+        let gate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in await gate.pause(); return URL(fileURLWithPath: "/tmp/unused-model") },
+            download: { _, _ in await calls.downloaded(); throw URLError(.unsupportedURL) },
+            remove: { _ in await calls.removed(); throw CocoaError(.fileWriteNoPermission) },
+            admit: { _, _ in throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        let removal = Task { await setup.removeSelectedModel() }
+        try await waitUntil { await gate.started }
+        setup.downloadSelectedModel()
+        await setup.removeSelectedModel()
+        #expect(await calls.downloads == 0)
+        #expect(await calls.removals == 1)
+        setup.selectModel("tiny")
+        await gate.resume()
+        await removal.value
+        #expect(!setup.isInstalled && !setup.isReady && !setup.isRefreshing)
+        #expect(setup.errorMessage == nil)
+    }
+
+
+    @Test("Cancelling during admission revokes the late receipt while retaining installed-model recovery")
+    func cancelledAdmissionReceipt() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let admission = FFmpegWhisperArtifactAdmissionService()
+        let receipt = try await admission.admitCustom(executableURL: root.appendingPathComponent("ffmpeg"), modelURL: root.appendingPathComponent("model"))
+        let gate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in receipt.model.url },
+            download: { _, _ in receipt.model.url }, remove: { _ in },
+            admit: { _, _ in await gate.pause(); return receipt })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: operations)
+        setup.downloadSelectedModel()
+        try await waitUntil { await gate.started }
+        setup.cancelDownload()
+        await gate.resume()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.isInstalled && !setup.isReady)
+        #expect(setup.errorMessage == nil)
+        #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+        await #expect(throws: FFmpegWhisperArtifactAdmissionService.AdmissionError.revoked) {
+            try await admission.authorizer(for: receipt)(receipt.configuration())
+        }
+    }
+
 }

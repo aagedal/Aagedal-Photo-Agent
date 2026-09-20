@@ -290,6 +290,41 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testManagedWhisperRefusesCorruptCachedModelAcrossRelaunch() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]
+        let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
+        let modelRoot = fixtureRoot.appendingPathComponent("WhisperModels", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let model = modelRoot.appendingPathComponent("ggml-base.bin")
+        let corruptBytes = Data("incomplete model download".utf8)
+        try corruptBytes.write(to: model)
+
+        for _ in 0..<2 {
+            launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+            let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+            XCTAssertTrue(draft.waitForExistence(timeout: 15))
+            app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+            let error = app.staticTexts["The downloaded model has an unexpected size. Please try again."]
+            XCTAssertTrue(error.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["settings.transcription.whisper.download"].isEnabled)
+            XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.ready"].exists)
+            XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
+            XCTAssertEqual(try Data(contentsOf: model), corruptBytes)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: modelRoot.path), [model.lastPathComponent])
+            app.typeKey("w", modifierFlags: .command)
+            XCTAssertTrue(draft.waitForExistence(timeout: 10))
+            XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].isEnabled)
+            XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
+            for (index, file) in protectedFiles.enumerated() {
+                XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testCustomWhisperSetupRequiresFilesAndConsentWithoutChangingReview() throws {
         let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
         let originalSidecar = try Data(contentsOf: fixture.sidecarURL)

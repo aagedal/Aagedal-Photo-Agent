@@ -131,6 +131,131 @@ struct WhisperModelDownloadServiceTests {
         #expect(try Data(contentsOf: external) == bytes)
     }
 
+    @Test("Dangling links refuse download before fetching")
+    func danglingInstalledLink() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let missing = root.appendingPathComponent("missing")
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: missing)
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
+            Issue.record("Unsafe cached entry must be refused before fetching")
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.installedURL(for: model())
+        }
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.download(model())
+        }
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: target.path) == missing.path)
+    }
+
+    @Test("Linked parent is refused before creating model storage")
+    func linkedParent() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+        let linked = root.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: external)
+        let service = WhisperModelDownloadService(directory: linked.appendingPathComponent("models"))
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.download(model())
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test("Linked transfer output is refused without changing its source", arguments: [false, true])
+    func linkedTransferOutput(hardlink: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external")
+        try bytes.write(to: external)
+        #expect(chmod(external.path, 0o640) == 0)
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            if hardlink { try FileManager.default.linkItem(at: external, to: destination) }
+            else { try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: external) }
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.download(model())
+        }
+        #expect(try Data(contentsOf: external) == bytes)
+        let attributes = try FileManager.default.attributesOfItem(atPath: external.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o640)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["external"])
+    }
+
+    @Test("A model appearing during transfer is preserved")
+    func targetAppearsDuringTransfer() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = bytes
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+            try bytes.write(to: target)
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.storageChanged) {
+            _ = try await service.download(model())
+        }
+        #expect(try Data(contentsOf: target) == bytes)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["ggml-fixture.bin"])
+        #expect(try await service.installedURL(for: model()) == target)
+    }
+
+    @Test("Storage replacement refuses publication and cleans only the original partial")
+    func replacedDirectory() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("models")
+        let moved = root.appendingPathComponent("moved")
+        let bytes = bytes
+        let service = WhisperModelDownloadService(directory: storage, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+            try FileManager.default.moveItem(at: storage, to: moved)
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            // A replacement root's coincidentally named partial belongs to someone else.
+            try bytes.write(to: destination)
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.storageChanged) {
+            _ = try await service.download(model())
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: moved.path).isEmpty)
+        let remaining = try FileManager.default.contentsOfDirectory(at: storage, includingPropertiesForKeys: nil)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.pathExtension == "partial")
+        if let partial = remaining.first { #expect(try Data(contentsOf: partial) == bytes) }
+    }
+
+    private actor RetryTransfer {
+        var attempts = 0
+        func shouldFail() -> Bool {
+            attempts += 1
+            return attempts == 1
+        }
+    }
+
+    @Test("Interrupted transfer preserves the old file and the same service can retry")
+    func interruptedTransferRetry() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        let old = Data("old incomplete model".utf8)
+        try old.write(to: target)
+        let bytes = bytes
+        let transfer = RetryTransfer()
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+            if await transfer.shouldFail() { throw URLError(.networkConnectionLost) }
+        })
+        await #expect(throws: URLError.self) { _ = try await service.download(model()) }
+        #expect(try Data(contentsOf: target) == old)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["ggml-fixture.bin"])
+        #expect(try await service.download(model()) == target)
+        #expect(try Data(contentsOf: target) == bytes)
+    }
+
     private actor TransferGate {
         var started = false
         private var continuation: CheckedContinuation<Void, Never>?

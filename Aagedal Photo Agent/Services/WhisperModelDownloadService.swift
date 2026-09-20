@@ -28,11 +28,12 @@ actor WhisperModelDownloadService {
     typealias Fetch = @Sendable (WhisperDownloadableModel, URL, @escaping Progress) async throws -> Void
 
     enum DownloadError: Error, LocalizedError, Equatable {
-        case invalidModel, unsafeStorage, invalidResponse, sizeMismatch, checksumMismatch, busy
+        case invalidModel, unsafeStorage, storageChanged, invalidResponse, sizeMismatch, checksumMismatch, busy
         var errorDescription: String? {
             switch self {
             case .invalidModel: "The selected Whisper model is invalid."
             case .unsafeStorage: "The Whisper model storage location is not a private regular file or directory."
+            case .storageChanged: "The model storage changed during download. Please try again."
             case .invalidResponse: "The model server returned an invalid response. Please try again."
             case .sizeMismatch: "The downloaded model has an unexpected size. Please try again."
             case .checksumMismatch: "The downloaded model failed checksum verification. Please try again."
@@ -55,9 +56,9 @@ actor WhisperModelDownloadService {
 
     func installedURL(for model: WhisperDownloadableModel) throws -> URL? {
         let target = try targetURL(model)
-        guard FileManager.default.fileExists(atPath: target.path) else { return nil }
+        guard try identity(at: target) != nil else { return nil }
         try validateStorage(create: false)
-        try verify(target, model: model)
+        _ = try verify(target, model: model)
         return target
     }
 
@@ -66,20 +67,46 @@ actor WhisperModelDownloadService {
         let target = try targetURL(model)
         try Task.checkCancellation()
         try validateStorage(create: true)
-        if let installed = try? installedURL(for: model) { return installed }
+        let admittedDirectory = try identity(at: directory)
+        let admittedTarget = try identity(at: target)
+        do {
+            if let installed = try installedURL(for: model) { return installed }
+        } catch DownloadError.sizeMismatch {
+            // A corrupt regular model may be replaced, but unsafe storage must be refused.
+        } catch DownloadError.checksumMismatch {
+        }
+        guard try identity(at: directory)?.sameFile(as: admittedDirectory) == true,
+              try identity(at: target) == admittedTarget else { throw DownloadError.storageChanged }
+        let directoryDescriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directoryDescriptor >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(directoryDescriptor) }
+        var directoryInfo = stat()
+        guard fstat(directoryDescriptor, &directoryInfo) == 0,
+              FileIdentity(directoryInfo).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
         downloading = true
         defer { downloading = false }
         let temporary = directory.appendingPathComponent(".\(UUID().uuidString).partial")
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        // Cleanup stays bound to the admitted directory even if its pathname moves.
+        defer { _ = unlinkat(directoryDescriptor, temporary.lastPathComponent, 0) }
         progress(0)
         try await fetch(model, temporary, progress)
         try Task.checkCancellation()
         try validateStorage(create: false)
-        try verify(temporary, model: model)
-        guard chmod(temporary.path, 0o600) == 0 else { throw DownloadError.unsafeStorage }
+        guard try identity(at: directory)?.sameFile(as: admittedDirectory) == true else {
+            throw DownloadError.storageChanged
+        }
+        let verifiedPartial = try verify(temporary, model: model, directoryDescriptor: directoryDescriptor)
+        guard try identity(at: directory)?.sameFile(as: admittedDirectory) == true,
+              try identity(at: target) == admittedTarget else { throw DownloadError.storageChanged }
         try Task.checkCancellation()
+        var partialInfo = stat()
+        guard fstatat(directoryDescriptor, temporary.lastPathComponent, &partialInfo, AT_SYMLINK_NOFOLLOW) == 0,
+              FileIdentity(partialInfo) == verifiedPartial else { throw DownloadError.storageChanged }
         // POSIX rename publishes the verified sibling atomically, preserving an old model on failure.
-        guard rename(temporary.path, target.path) == 0 else {
+        let publication = admittedTarget == nil
+            ? renameatx_np(directoryDescriptor, temporary.lastPathComponent, directoryDescriptor, target.lastPathComponent, UInt32(RENAME_EXCL))
+            : renameat(directoryDescriptor, temporary.lastPathComponent, directoryDescriptor, target.lastPathComponent)
+        guard publication == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         progress(1)
@@ -106,14 +133,25 @@ actor WhisperModelDownloadService {
 
     private func validateStorage(create: Bool) throws {
         let manager = FileManager.default
+        // Refuse linked existing ancestors before creating anything beneath them.
+        try validateAncestors(allowMissing: create)
         if create { try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
         var info = stat()
         guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
               info.st_uid == getuid(), info.st_mode & 0o022 == 0 else { throw DownloadError.unsafeStorage }
+        try validateAncestors(allowMissing: false)
+    }
+
+    private func validateAncestors(allowMissing: Bool) throws {
+        var info = stat()
         // Standard system aliases (/var and /tmp) are resolved by Foundation; reject additional links.
         var ancestor = directory
         while ancestor.path != "/" {
-            guard lstat(ancestor.path, &info) == 0 else { throw DownloadError.unsafeStorage }
+            if lstat(ancestor.path, &info) != 0 {
+                guard allowMissing && errno == ENOENT else { throw DownloadError.unsafeStorage }
+                ancestor.deleteLastPathComponent()
+                continue
+            }
             if (info.st_mode & S_IFMT) == S_IFLNK && ancestor.path != "/var" && ancestor.path != "/tmp" {
                 throw DownloadError.unsafeStorage
             }
@@ -121,8 +159,43 @@ actor WhisperModelDownloadService {
         }
     }
 
-    private func verify(_ url: URL, model: WhisperDownloadableModel) throws {
-        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+    private struct FileIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+
+        init(_ info: stat) {
+            device = info.st_dev
+            inode = info.st_ino
+            size = info.st_size
+            modifiedSeconds = info.st_mtimespec.tv_sec
+            modifiedNanoseconds = info.st_mtimespec.tv_nsec
+            changedSeconds = info.st_ctimespec.tv_sec
+            changedNanoseconds = info.st_ctimespec.tv_nsec
+        }
+
+        func sameFile(as other: Self?) -> Bool {
+            other?.device == device && other?.inode == inode
+        }
+    }
+
+    private func identity(at url: URL) throws -> FileIdentity? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else {
+            if errno == ENOENT { return nil }
+            throw DownloadError.unsafeStorage
+        }
+        return FileIdentity(info)
+    }
+
+    private func verify(_ url: URL, model: WhisperDownloadableModel, directoryDescriptor: Int32? = nil) throws -> FileIdentity {
+        let descriptor = directoryDescriptor.map {
+            openat($0, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        } ?? open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard descriptor >= 0 else { throw DownloadError.unsafeStorage }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
@@ -140,6 +213,18 @@ actor WhisperModelDownloadService {
         }
         guard count == model.byteCount else { throw DownloadError.sizeMismatch }
         guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == model.sha256 else { throw DownloadError.checksumMismatch }
+        var current = stat()
+        let status = directoryDescriptor.map { fstatat($0, url.lastPathComponent, &current, AT_SYMLINK_NOFOLLOW) }
+            ?? lstat(url.path, &current)
+        guard status == 0, current.st_dev == info.st_dev, current.st_ino == info.st_ino,
+              current.st_size == info.st_size, current.st_nlink == 1,
+              current.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
+              current.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec,
+              current.st_ctimespec.tv_sec == info.st_ctimespec.tv_sec,
+              current.st_ctimespec.tv_nsec == info.st_ctimespec.tv_nsec else { throw DownloadError.storageChanged }
+        if directoryDescriptor != nil, fchmod(descriptor, 0o600) != 0 { throw DownloadError.unsafeStorage }
+        guard fstat(descriptor, &current) == 0 else { throw DownloadError.unsafeStorage }
+        return FileIdentity(current)
     }
 }
 

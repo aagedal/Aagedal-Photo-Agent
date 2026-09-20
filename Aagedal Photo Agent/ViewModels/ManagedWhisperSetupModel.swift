@@ -29,6 +29,7 @@ final class ManagedWhisperSetupModel {
     @ObservationIgnored private var receipt: FFmpegWhisperArtifactAdmissionService.Receipt?
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
     @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var isRemoving = false
 
     init(defaults: UserDefaults? = nil, downloads: WhisperModelDownloadService? = nil,
          admission: FFmpegWhisperArtifactAdmissionService = FFmpegWhisperArtifactAdmissionService(),
@@ -48,12 +49,15 @@ final class ManagedWhisperSetupModel {
     }
 
     /// UI tests must never discover or overwrite the user's downloaded weights.
-    private static func uiTestModelDirectory() -> URL? {
-        guard UITestLaunchConfiguration.current.isEnabled else { return nil }
-        let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: "--ui-test-whisper-model-root"),
-              arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/") else { return nil }
-        return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+    static func uiTestModelDirectory(arguments: [String] = ProcessInfo.processInfo.arguments) -> URL? {
+        guard arguments.contains("--ui-testing") else { return nil }
+        if let index = arguments.firstIndex(of: "--ui-test-whisper-model-root"),
+           arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/") {
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
+        // Missing or malformed test arguments must never fall back to the user's cache.
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhisperUITests-\(UUID().uuidString)", isDirectory: true)
     }
 
     func selectModel(_ id: String) {
@@ -66,7 +70,7 @@ final class ManagedWhisperSetupModel {
     func refresh() async {
         // A retained provider may be using this receipt. Its authorizer revalidates
         // exact bytes at execution; reopening Settings must not revoke it.
-        guard !isReady, !isDownloading, !isRefreshing else { return }
+        guard !isReady, !isDownloading, !isRefreshing, !isRemoving else { return }
         let request = generation
         let selected = selectedModel
         isRefreshing = true
@@ -93,7 +97,7 @@ final class ManagedWhisperSetupModel {
     }
 
     func downloadSelectedModel() {
-        guard !isDownloading else { return }
+        guard !isDownloading, !isRemoving else { return }
         invalidate()
         let request = generation
         let selected = selectedModel
@@ -102,7 +106,8 @@ final class ManagedWhisperSetupModel {
             do {
                 let url = try await operations.download(selected) { [weak self] fraction in
                     Task { @MainActor in
-                        guard let self, self.generation == request, self.isDownloading else { return }
+                        guard let self, self.generation == request, self.isDownloading,
+                              self.downloadTask?.isCancelled == false else { return }
                         self.progress = min(max(fraction, 0), 1)
                     }
                 }
@@ -124,7 +129,7 @@ final class ManagedWhisperSetupModel {
                 guard let self, self.generation == request else { return }
                 self.isDownloading = false
                 self.downloadTask = nil
-                if !(error is CancellationError) { self.errorMessage = error.localizedDescription }
+                if !Task.isCancelled, !(error is CancellationError) { self.errorMessage = error.localizedDescription }
             }
         }
     }
@@ -132,13 +137,32 @@ final class ManagedWhisperSetupModel {
     func cancelDownload() { downloadTask?.cancel() }
 
     func removeSelectedModel() async {
+        guard !isDownloading, !isRefreshing, !isRemoving else { return }
         let selected = selectedModel
+        let wasInstalled = isInstalled
         invalidate()
         let request = generation
+        isRemoving = true
         isRefreshing = true
-        defer { if request == generation { isRefreshing = false } }
+        defer {
+            isRemoving = false
+            if request == generation { isRefreshing = false }
+        }
         do { try await operations.remove(selected) }
-        catch { if request == generation { errorMessage = error.localizedDescription } }
+        catch {
+            guard request == generation else { return }
+            errorMessage = error.localizedDescription
+            // Failure does not prove absence. Keep removal/retry available, but never
+            // restore the revoked receipt. Reconcile a partially completed removal.
+            isInstalled = wasInstalled
+            do {
+                let installed = try await operations.installed(selected)
+                guard request == generation else { return }
+                isInstalled = installed != nil
+            } catch {
+                // Preserve the removal error and last known presence when inspection fails.
+            }
+        }
     }
 
     func provider(language: String, useGPU: Bool, translate: Bool,
