@@ -1,14 +1,19 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade and executor admission/cancellation integration, guarded IPTC mutation tools and curated Aagedal Media Converter FFmpeg/Whisper delivery remain. Caption now retains custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. The production workflow facade and executor admission/cancellation integration, guarded IPTC mutation tools and curated Aagedal Media Converter FFmpeg/Whisper delivery remain. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-21
-**Latest implementation state:** Implementation committed as `d0376b8`; full regression passes 3,209 tests / 336 suites, zero failures. Focused validation passes 111 tests / six suites; three native workflows, helper and repository checks also pass. Cycle 84 adds durable operation status/cancellation-request endpoints, custom Whisper options with exact draft evidence, and deterministic local approval expiry/late-completion handling. Production executors remain unconnected; physical metadata commits, recovery integration and curated model delivery remain open. See the [cycle 84 report](cycle-84-operation-tools-whisper-options-2026-09-21.md) for validation and remaining work.
-**Latest native evidence:** Cycle 84 passes three native workflows: local approval/revocation/source-drift refusal, Whisper bookmark/consent restoration and clearing, and language/translation/GPU persistence with unchanged photo/audio/review bytes. Fixtures use isolated preferences and generated disposable photos.
-**Cycle baseline:** `a258aa2`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** Committed as `1cdc45b`; final focused tests pass 68 / two suites and the actual helper probe passes. Cycle 85 moves Whisper setup and provider choice into Settings → Transcription, with shared app-session readiness and compact Caption controls. Full regression passes 3,210 tests / 336 suites, zero failures; repository validation passes. See the [cycle 85 report](cycle-85-transcription-settings-2026-09-21.md). Production executors, guarded IPTC commits and curated model delivery remain open.
+**Latest native evidence:** Cycle 85 passes three native workflows (165.169 seconds), verifying clean Caption controls, direct Settings navigation, shared readiness, persisted options/bookmarks, consent reset and unchanged fixture bytes. A fresh test session recovered from the earlier macOS UI-testing service interruption.
+**Cycle baseline:** `a46d1b6`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 85 Transcription Settings](cycle-85-transcription-settings-2026-09-21.md) implements the
+requested UI correction. Whisper setup no longer occupies Caption. App-session consent survives
+Settings closure but resets at relaunch; configuration changes are refused while transcription runs.
+
 
 [Cycle 84 operation tools, Whisper options and consent expiry](cycle-84-operation-tools-whisper-options-2026-09-21.md)
 adds privacy-safe durable operation inspection and cancellation requests, explicitly without production
@@ -747,6 +752,11 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 85 (`1cdc45b`) moves custom Whisper configuration to Settings → Transcription and keeps Caption compact.
+Full regression passes 3,210 tests / 336 suites. The prior implementation and release worklist remain
+unchanged; see the cycle 85 report for native evidence and environment limitations.
+
 
 Cycle 84 starts from clean `a258aa2`; implementation is committed as `d0376b8`. Full regression
 passes 3,209 tests / 336 suites (128.636 seconds), zero failures. Operation-record endpoints, persisted custom Whisper options,

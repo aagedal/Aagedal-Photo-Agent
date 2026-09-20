@@ -130,9 +130,9 @@ the support table and validation records.
   never replaces existing teams, assigns teams to a match, or links players to Known People.
   Player numbers must be unique integers from 0 through 9999. Unknown names, numbers and colours
   should be verified from a reliable source before submission.
-- Caption offers explicit **Apple Speech** or **Custom FFmpeg Whisper** transcription. Custom setup
+- **Settings → Transcription** selects **Apple Speech** or **Custom FFmpeg Whisper**. Custom setup
   requires selected compatible executable/model files and execution consent; generated text remains
-  an editable draft. Provider choice and security-scoped file bookmarks persist; each Caption session
+  an editable draft. Provider choice and security-scoped file bookmarks persist; each app session
   requires fresh execution consent and file identity validation. Language, translation into English,
   and GPU request settings persist; each draft retains the exact settings used to generate it.
   Curated model delivery and the bundled Whisper artifact remain under implementation.

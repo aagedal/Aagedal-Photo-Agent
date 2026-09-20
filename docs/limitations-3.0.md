@@ -170,7 +170,7 @@ provider adapter revalidates the WAV relationship and produces unapproved editab
 persisted build/model identity, language settings and segment evidence. It requires artifact
 authorization through Caption's explicit file selection and execution consent. Provider choice persists;
 security-scoped file bookmarks persist, while execution consent and identity admission must be renewed
-after closing the panel. Missing files require reconnecting the volume or selecting them again.
+after quitting the app. Missing files require reconnecting the volume or selecting them again.
 Language, English translation and GPU request settings now persist and are captured in each draft;
 compatibility and actual GPU execution depend on the custom build/model. Translated evidence uses
 provenance schema 2 and is refused by older readers. Curated delivery and the complete model lifecycle remain

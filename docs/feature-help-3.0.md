@@ -66,7 +66,7 @@ If an operation reports an issue, open **Details** for all affected paths and re
 
 Archive, source reassociation, reviewed Apple on-device transcription, transcript-template application,
 and explicit WAV delivery policy are implemented with the boundaries described below and in Known
-Limitations. Caption also offers **Custom FFmpeg Whisper** in the transcription-provider picker.
+Limitations. Configure the provider in **Settings → Transcription**. Caption contains playback, Transcribe, and transcript review; custom file selection, language, translation, GPU and consent controls live in Settings.
 Choose a compatible patched FFmpeg executable and model, grant explicit execution consent,
 then select **Enable Custom Files** to record their identities. This step does not execute them;
 **Transcribe** starts local inference. Language defaults to `auto`; you can enter a two-letter code,
@@ -74,7 +74,7 @@ request translation into English, and request GPU acceleration. Compatibility de
 build and model; GPU use is requested rather than verified. These settings persist across relaunch.
 Each draft records the settings used for that run. Results use the same
 editable review and explicit approval flow as Apple Speech. Provider choice and security-scoped
-file bookmarks are saved. Reopening restores available files, but requires fresh execution consent
+file bookmarks are saved. Relaunching restores available files, but requires fresh execution consent
 and **Enable Custom Files** to validate their current identities. **Clear Custom Files** forgets
 the selections across relaunch. Unavailable saved files can be reselected after reconnecting the volume. Custom files are unverified; hashes establish identity, not safety or trust.
 No assets download automatically and an unavailable custom provider never falls back to Apple Speech.

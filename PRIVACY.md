@@ -18,7 +18,7 @@ network service are listed below.
   segment text and normalized timing. Provider choice, language/translation/GPU request preferences,
   and security-scoped executable/model bookmarks
   are retained in local preferences. Clear Custom Files removes the saved bookmarks. Execution consent
-  and admitted identities last only while the Caption panel remains open; reopening requires fresh
+  and admitted identities last only for the current app session; relaunching requires fresh
   consent and identity validation. No model downloads occur. Custom executables run only after explicit Transcribe and are
   unverified software with the user's local process permissions. Review approval does not itself
   write transcript text into photo metadata.

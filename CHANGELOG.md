@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Moved Whisper provider, files, language, translation, GPU and consent setup into Settings →
+  Transcription. Caption retains a compact Transcribe action, a Settings shortcut and collapsible
+  transcription details. Setup remains available for the app session; quitting resets consent.
+
 - Custom Whisper now saves language, English translation and GPU request settings, and retains
   the exact request in transcript evidence. Translated drafts use a new provenance schema.
 - MCP exposes durable operation status and cooperative cancellation requests. Production workflow

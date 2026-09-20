@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 84: operation tools, Whisper options and consent expiry](release/cycle-84-operation-tools-whisper-options-2026-09-21.md) adds durable operation status/cancellation-request endpoints, persisted custom Whisper language/translation/GPU options with exact draft evidence, and deterministic consent-expiry handling. Production executors, guarded commits, curated model delivery and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 85: Transcription Settings](release/cycle-85-transcription-settings-2026-09-21.md) moves custom Whisper configuration and provider choice into Settings, preserves shared app-session readiness, and leaves compact transcription/review controls in Caption. Production executors, guarded commits, curated model delivery and broader release gates remain open.
 
 ## Portfolio
 
