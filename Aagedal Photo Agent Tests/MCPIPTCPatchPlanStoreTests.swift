@@ -271,7 +271,7 @@ struct MCPIPTCPatchPlanStoreTests {
     }
 
     @Test("Restarted durable plans exactly revalidate a real photo for set and clear", arguments: [false, true])
-    func realPhotoRestart(clear: Bool) throws {
+    func realPhotoRestart(clear: Bool) async throws {
         let root = try temporaryStorage()
         let storage = try temporaryStorage()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -301,11 +301,19 @@ struct MCPIPTCPatchPlanStoreTests {
         let id = try #require(prepared.objectValue?["planID"])
         let restarted = MCPIPTCPatchPlanStore(storageDirectory: storage)
         #expect(try restarted.inspect(arguments: ["planID": id], facade: facade) == prepared)
+        let reviewService = AutomationPatchReviewService(plans: restarted, facade: facade)
+        let reviewID = try #require(id.stringValue)
+        let review = try await reviewService.inspect(planID: reviewID)
+        #expect(review.changes.first?.before == "Embedded")
+        #expect(review.changes.first?.after == (clear ? "" : "New title"))
         #expect(try Data(contentsOf: photo) == bytes as Data)
         try authority.setEnabled(false)
         try authority.setEnabled(true)
         #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
             try restarted.inspect(arguments: ["planID": id], facade: facade)
+        }
+        await #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+            try await reviewService.inspect(planID: reviewID)
         }
     }
 

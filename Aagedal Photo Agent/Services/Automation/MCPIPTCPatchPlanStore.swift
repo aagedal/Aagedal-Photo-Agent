@@ -106,6 +106,10 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     /// Re-read under the normal retained snapshot admission. Never accept replacement values,
     /// revisions, paths or authority supplied alongside the opaque plan ID.
     func inspect(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date = Date()) throws -> MCPJSONValue {
+        try revalidatedPlan(arguments: arguments, facade: facade, now: now).result
+    }
+
+    private func revalidatedPlan(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date) throws -> Plan {
         guard Set(arguments.keys) == ["planID"], let id = arguments["planID"]?.stringValue,
               let uuid = UUID(uuidString: id), uuid.uuidString.lowercased() == id else {
             throw Failure.invalidArguments
@@ -125,7 +129,7 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
         // Production wall clock can pass the deadline while a large photo is being decoded.
         _ = try lookup(id: id, now: max(now, Date()))
-        return plan.result
+        return plan
     }
 
     private func lookup(id: String, now: Date) throws -> Plan {
@@ -139,6 +143,23 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
             }
             return plan
         }
+    }
+
+    /// Native review binds both the complete published preview and its captured local authority.
+    /// This is deliberately absent from the MCP tool surface and grants no write capability.
+    func localApprovalBinding(planID: String, facade: MCPAutomationFacade, now: Date) throws
+        -> (preview: MCPJSONValue, digest: String, expiresAt: Date) {
+        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade, now: now)
+        struct Binding: Encodable {
+            let preview: MCPJSONValue
+            let configuration: MCPAuthorizationConfiguration
+            let createdAt: Date
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = Self.digest(try encoder.encode(Binding(preview: plan.result,
+            configuration: plan.configuration, createdAt: plan.createdAt)))
+        return (plan.result, digest, plan.expiresAt)
     }
 
     /// The persistence lock spans reload, budget admission and atomic replacement across helpers.

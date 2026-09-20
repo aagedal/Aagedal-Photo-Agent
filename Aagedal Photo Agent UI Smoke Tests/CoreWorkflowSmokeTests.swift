@@ -35,6 +35,75 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationPatchReviewRefusesInvalidPlanWithoutChangingPhotos() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let before = try Data(contentsOf: image)
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        input.click()
+        input.typeText("not-a-plan")
+        app.buttons["automation.inspectPatchPlan"].click()
+        let error = app.staticTexts["automation.patchPlanError"]
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        let expectedError = "Enter the exact plan ID returned by prepare_iptc_patch."
+        XCTAssertTrue(error.label == expectedError || (error.value as? String) == expectedError)
+        input.click()
+        input.typeKey("a", modifierFlags: .command)
+        input.typeKey(.delete, modifierFlags: [])
+        XCTAssertFalse(error.exists)
+        XCTAssertFalse(app.buttons["automation.inspectPatchPlan"].isEnabled)
+        XCTAssertEqual(try Data(contentsOf: image), before)
+    }
+
+    @MainActor
+    func testAutomationPatchReviewDisplaysExactPlanAndRefusesChangedPhoto() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifestURL = fixtureRoot.appendingPathComponent("patch-review-fixture.json")
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: String])
+        let planID = try XCTUnwrap(manifest["planID"])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let before = try Data(contentsOf: photo)
+        input.click()
+        input.typeText(planID)
+        app.buttons["automation.inspectPatchPlan"].click()
+        let proposed = app.staticTexts[try XCTUnwrap(manifest["afterTitle"])]
+        XCTAssertTrue(proposed.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts[try XCTUnwrap(manifest["beforeTitle"])].exists)
+        XCTAssertTrue(app.staticTexts[try XCTUnwrap(manifest["beforeCity"])].exists)
+        XCTAssertTrue(app.staticTexts["(empty)"].exists)
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+        app.buttons["Clear Review"].click()
+        XCTAssertFalse(proposed.exists)
+        app.staticTexts["Shortcuts"].click()
+        automation.click()
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: String], manifest)
+        input.click()
+        input.typeKey("a", modifierFlags: .command)
+        input.typeText(planID)
+        // An external same-path replacement invalidates the exact source revision.
+        try before.write(to: photo, options: .atomic)
+        app.buttons["automation.inspectPatchPlan"].click()
+        XCTAssertTrue(app.staticTexts["automation.patchPlanError"].waitForExistence(timeout: 8))
+        XCTAssertFalse(proposed.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+    }
+
+    @MainActor
     func testSearchKeepsFocusWhenResultsReappear() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)
@@ -697,7 +766,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         knownPeopleRoot: URL? = nil,
         templateRoot: URL? = nil,
         localeIdentifier: String? = nil,
-        transcriptionProvider: String = "appleSpeech"
+        transcriptionProvider: String = "appleSpeech",
+        patchReviewFolder: URL? = nil
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -721,6 +791,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-profile-store", profileStore)
         append("--ui-test-known-people-root", knownPeopleRoot)
         append("--ui-test-template-root", templateRoot)
+        append("--ui-test-patch-review-folder", patchReviewFolder)
         app.launch()
         reopenMainWindowIfNeeded()
     }

@@ -171,6 +171,11 @@ struct AutomationSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Proofreading Plan Review") {
+                AutomationPatchReviewView()
+                    .id(model.configuration.authorizationRevision)
+            }
+
             Section("Privacy and activity") {
                 Text("Filenames and metadata are treated as untrusted data and are never instructions. Tool output can contain private metadata from authorized photos. Mutating tools will use Photo Agent's preview, conflict, preservation, verification, and recovery boundaries; this implementation stage exposes read-only discovery, authorization, revision, owned-draft and effective editorial metadata inspection.")
                     .font(.caption)

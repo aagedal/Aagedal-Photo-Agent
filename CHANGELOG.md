@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Settings → Automation now displays exact proofreading plans with before/proposed values,
+  validation warnings and expiry. Inspection rechecks current authority and carrier revisions;
+  approval and metadata commits remain unavailable.
+
 - Custom Whisper selections now survive Caption closure and app relaunch through security-scoped
   bookmarks. Every session still requires execution consent and fresh file identity checks;
   Clear Custom Files forgets the retained selections.
@@ -17,7 +21,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   app-session readiness and no helper transcription execution.
 
 - Caption now offers explicit Custom FFmpeg Whisper setup, execution consent and transcription into
-  the existing editable review flow. Provider choice persists; custom files and consent are session-only.
+  the existing editable review flow. Provider choice and custom file bookmarks persist; consent is session-only.
   Apple Speech remains available, with no automatic provider fallback or model download.
 - IPTC previews now bind exact carrier hashes, production preservation baselines and RAW-safe write-policy
   alternatives. They remain read-only; approval, physical write verification and commit recovery are pending.

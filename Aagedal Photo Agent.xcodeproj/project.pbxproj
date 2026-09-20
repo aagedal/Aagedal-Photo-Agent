@@ -150,6 +150,9 @@
 		C80000000000000000000002 /* FFmpegWhisperSetupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000001 /* FFmpegWhisperSetupModelTests.swift */; };
 		C80000000000000000000102 /* MetadataPreservationSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000101 /* MetadataPreservationSnapshot.swift */; };
 		C80000000000000000000202 /* MetadataWritePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C80000000000000000000201 /* MetadataWritePolicy.swift */; };
+		C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */; };
+		C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000101 /* AutomationOperationRegistryTests.swift */; };
+		C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000201 /* AutomationPatchReviewTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -384,6 +387,9 @@
 		C80000000000000000000001 /* FFmpegWhisperSetupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperSetupModelTests.swift; sourceTree = "<group>"; };
 		C80000000000000000000101 /* MetadataPreservationSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataPreservationSnapshot.swift; path = "Aagedal Photo Agent/Services/MetadataPreservationSnapshot.swift"; sourceTree = SOURCE_ROOT; };
 		C80000000000000000000201 /* MetadataWritePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataWritePolicy.swift; path = "Aagedal Photo Agent/Models/MetadataWritePolicy.swift"; sourceTree = SOURCE_ROOT; };
+		C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchApprovalStoreTests.swift; sourceTree = "<group>"; };
+		C82000000000000000000101 /* AutomationOperationRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationRegistryTests.swift; sourceTree = "<group>"; };
+		C82000000000000000000201 /* AutomationPatchReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationPatchReviewTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
@@ -510,6 +516,9 @@
 				C80000000000000000000001 /* FFmpegWhisperSetupModelTests.swift */,
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
+				C82000000000000000000201 /* AutomationPatchReviewTests.swift */,
+				C82000000000000000000101 /* AutomationOperationRegistryTests.swift */,
+				C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */,
 				C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */,
 				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
 				F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */,
@@ -922,6 +931,9 @@
 				C80000000000000000000002 /* FFmpegWhisperSetupModelTests.swift in Sources */,
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
+				C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */,
+				C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */,
+				C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */,
 				C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */,
 				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,
 				F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */,

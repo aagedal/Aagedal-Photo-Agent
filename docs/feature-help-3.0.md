@@ -121,6 +121,13 @@ These are read-only plans: no commit endpoint is available, actual write support
 publication approval are not yet verified, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
 
+To inspect a plan in Photo Agent, open **Settings → Automation → Proofreading Plan Review**,
+paste its exact `planID`, and choose **Inspect Plan**. The app rechecks the current authorization
+and photo/sidecar revisions on a background worker before displaying normalized before/proposed
+values and warnings. Repeatable values use quoted lists to preserve item boundaries. Changing the
+ID or leaving the view clears the displayed review; expired plans require fresh preparation.
+This is a checked snapshot, not live monitoring, approval, or a metadata write.
+
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
 it reports unknown availability and requires an app session. This catalog does not enable transcription.
