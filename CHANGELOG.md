@@ -10,6 +10,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Settings → Automation can now apply an exactly reviewed and approved proofreading plan to a
+  pending local metadata draft. Source and XMP bytes remain unchanged; photos open in metadata
+  editors and unsupported private extensions are refused. A retained operation reports verification,
+  cancellation or recovery separately from physical publication, which remains unavailable to MCP.
+- Added repeatable bundled Whisper process checks for model refusal, CPU inference, canonical
+  transcript output, timestamp bounds and destination failures; model-free checks run in repository CI.
+
 - Bundled Whisper model setup now recovers cleanly from cancelled downloads and failed removal.
   Installation rejects changed storage and unsafe files, and failed transfers preserve existing models.
 - MCP proofreading previews now record expected values for every production metadata verification
@@ -23,7 +30,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Custom Whisper now saves language, English translation and GPU request settings, and retains
   the exact request in transcript evidence. Translated drafts use a new provenance schema.
 - MCP exposes durable operation status and cooperative cancellation requests. Production workflow
-  executors remain unconnected; cancellation is not reported as completion.
+  executors beyond native pending drafts remain unconnected; cancellation is not reported as completion.
 - Proofreading consent now handles expiry and delayed approval completion safely after clearing,
   changing plans or leaving the review.
 

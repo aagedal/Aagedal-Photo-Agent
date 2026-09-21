@@ -1,8 +1,8 @@
 import Foundation
 
 /// Native-app-only, process-lifetime consent for an exact immutable patch plan. There is no
-/// Codable representation or MCP approval endpoint. Validation is evidence for a future retained
-/// write executor, not a write capability: that executor must revalidate inside its mutation gate.
+/// Codable representation or MCP approval endpoint. Validation alone is not a write capability. The retained native draft executor revalidates
+/// and consumes the receipt inside its mutation gate; physical publication remains unavailable.
 nonisolated final class MCPIPTCPatchApprovalStore: @unchecked Sendable {
     enum Failure: String, LocalizedError {
         case invalidReview = "invalid_patch_review"
@@ -81,17 +81,22 @@ nonisolated final class MCPIPTCPatchApprovalStore: @unchecked Sendable {
 
     /// Any observed drift permanently revokes this receipt, even if a later edit restores the
     /// original metadata. A successful check never extends the immutable plan's deadline.
-    func validate(_ approval: Approval, facade: MCPAutomationFacade, now: Date = Date()) throws -> MCPJSONValue {
+    /// `consumeForDraft` is used only at the native executor's final admission boundary, with
+    /// its live photo reservation held; removal and validation share this lock.
+    func validate(_ approval: Approval, facade: MCPAutomationFacade, now: Date = Date(),
+                  reservation: MCPProcessReservationLease? = nil, consumeForDraft: Bool = false) throws -> MCPJSONValue {
         lock.lock()
         defer { lock.unlock() }
+        guard !consumeForDraft || reservation != nil else { throw Failure.invalidReview }
         guard approval.generation == generation, approvals[approval.id] == approval else {
             throw Failure.unavailableApproval
         }
         do {
             let checkedAt = max(now, Date())
             guard now >= approval.approvedAt, checkedAt < approval.expiresAt else { throw Failure.expiredApproval }
-            let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: now)
+            let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: now, reservation: reservation)
             guard binding.digest == approval.digest else { throw Failure.changedReview }
+            if consumeForDraft { approvals.removeValue(forKey: approval.id) }
             return binding.preview
         } catch {
             approvals.removeValue(forKey: approval.id)

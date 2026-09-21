@@ -1641,6 +1641,15 @@ work as recovery required. Production executor integration, verified commits, li
 recovery execution and operation endpoints remain open; no Phase 5A criterion is newly complete.
 See [cycle 83 evidence](release/cycle-83-native-consent-recovery-2026-09-20.md).
 
+**Cycle 88 continuation:** Native exact-plan approval can now be consumed by **Apply to Pending Draft**.
+The executor uses production sidecar encoding in private staging, refuses unsupported opaque extensions
+and photos selected in metadata editors, installs through anchored directory descriptors, and verifies
+all effective fields while requiring unchanged source/XMP bytes. The retained operation kind is
+`iptc_draft`; it has cooperative cancellation and uncertain/recovery outcomes. This is app-history
+application only: physical publication and `commit_iptc_patch` remain unfinished. Repository validation
+also runs a repeatable model-free Whisper process probe, with optional local-model CPU checks.
+See [cycle 88 evidence](release/cycle-88-native-pending-draft-execution-2026-09-21.md).
+
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.

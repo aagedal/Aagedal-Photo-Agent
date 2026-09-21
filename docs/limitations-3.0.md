@@ -117,11 +117,16 @@ This is separate from the unapproved AI-origin analyzer described above.
   persist a committable plan. It captures production normalization and preservation preflight
   evidence but does not execute or verify physical writes. Settings supports explicit local
   exact-plan approval and revocation within the review session; this cannot authorize an MCP
-  commit in the current build. The internal operation registry can mark a known stopped owner's
+  commit in the current build. A separate native **Apply to Pending Draft** action consumes
+  consent to save the exact changes in app-owned metadata history, preserving source and XMP bytes.
+  It refuses photos selected in any metadata editor and private extensions the production codec
+  cannot preserve. A verified `iptc_draft` operation confirms this draft only; physical publication
+  still uses the normal metadata workflow. The internal operation registry can mark a known stopped owner's
   unresolved work as recovery required, but executor-liveness detection and actual recovery
   integration remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
-  records with fresh automation authorization. Cancellation only records a request; no production
-  executor is connected, and liveness is unknown.
+  records with fresh automation authorization. Cancellation records a cooperative request. The native draft executor checks it before
+  installation and verifies an already installed draft to completion. Other workflow executors
+  remain unconnected, and crash/relaunch owner-liveness detection and recovery remain unfinished.
   Develop, face, template, transcription,
   execution coordination, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.

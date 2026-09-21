@@ -7,8 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C86000000000000000000012 /* ManagedWhisperSetupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */; };
-		C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -157,6 +155,11 @@
 		C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82000000000000000000201 /* AutomationPatchReviewTests.swift */; };
 		C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000011 /* AutomationOperationRegistry.swift */; };
 		C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C84000000000000000000021 /* AutomationOperationPersistence.swift */; };
+		C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */; };
+		C86000000000000000000012 /* ManagedWhisperSetupModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */; };
+		C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */; };
+		C88000000000000000000202 /* MCPIPTCPatchExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */; };
+		C88000000000000000000302 /* AutomationDraftEditorAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -252,8 +255,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedWhisperSetupModelTests.swift; sourceTree = "<group>"; };
-		C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDownloadServiceTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -400,6 +401,11 @@
 		C82000000000000000000201 /* AutomationPatchReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationPatchReviewTests.swift; sourceTree = "<group>"; };
 		C84000000000000000000011 /* AutomationOperationRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationRegistry.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationRegistry.swift"; sourceTree = SOURCE_ROOT; };
 		C84000000000000000000021 /* AutomationOperationPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationOperationPersistence.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationOperationPersistence.swift"; sourceTree = SOURCE_ROOT; };
+		C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDownloadServiceTests.swift; sourceTree = "<group>"; };
+		C86000000000000000000002 /* ManagedWhisperSetupModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedWhisperSetupModelTests.swift; sourceTree = "<group>"; };
+		C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationExecutionCoordinatorTests.swift; sourceTree = "<group>"; };
+		C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchExecutionServiceTests.swift; sourceTree = "<group>"; };
+		C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationDraftEditorAdmissionTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
@@ -530,6 +536,9 @@
 				C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */,
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
+				C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */,
+				C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */,
+				C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */,
 				C82000000000000000000201 /* AutomationPatchReviewTests.swift */,
 				C82000000000000000000101 /* AutomationOperationRegistryTests.swift */,
 				C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */,
@@ -953,6 +962,9 @@
 				C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */,
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
+				C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */,
+				C88000000000000000000202 /* MCPIPTCPatchExecutionServiceTests.swift in Sources */,
+				C88000000000000000000302 /* AutomationDraftEditorAdmissionTests.swift in Sources */,
 				C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */,
 				C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */,
 				C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */,

@@ -109,14 +109,15 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
         try revalidatedPlan(arguments: arguments, facade: facade, now: now).result
     }
 
-    private func revalidatedPlan(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date) throws -> Plan {
+    private func revalidatedPlan(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date,
+                                 reservation: MCPProcessReservationLease? = nil) throws -> Plan {
         guard Set(arguments.keys) == ["planID"], let id = arguments["planID"]?.stringValue,
               let uuid = UUID(uuidString: id), uuid.uuidString.lowercased() == id else {
             throw Failure.invalidArguments
         }
         let plan = try lookup(id: id, now: now)
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
-        let current = try facade.withPhotoSnapshot(path: plan.request.path) { snapshot in
+        let current = try facade.withPhotoSnapshot(path: plan.request.path, reservation: reservation) { snapshot in
             do {
                 try MCPIPTCPatchPreparation.checkRevisions(plan.request, source: snapshot.sourceRevision,
                     xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
@@ -147,9 +148,10 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
 
     /// Native review binds both the complete published preview and its captured local authority.
     /// This is deliberately absent from the MCP tool surface and grants no write capability.
-    func localApprovalBinding(planID: String, facade: MCPAutomationFacade, now: Date) throws
+    func localApprovalBinding(planID: String, facade: MCPAutomationFacade, now: Date,
+                              reservation: MCPProcessReservationLease? = nil) throws
         -> (preview: MCPJSONValue, digest: String, expiresAt: Date) {
-        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade, now: now)
+        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade, now: now, reservation: reservation)
         struct Binding: Encodable {
             let preview: MCPJSONValue
             let configuration: MCPAuthorizationConfiguration
@@ -160,6 +162,14 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
         let digest = Self.digest(try encoder.encode(Binding(preview: plan.result,
             configuration: plan.configuration, createdAt: plan.createdAt)))
         return (plan.result, digest, plan.expiresAt)
+    }
+
+    /// Only the retained native draft executor uses this typed intent. No caller-provided
+    /// replacement fields can be substituted after exact-plan consent.
+    func requestForDraftExecution(planID: String, facade: MCPAutomationFacade,
+                                  reservation: MCPProcessReservationLease) throws -> MCPIPTCPatchPreparation.Request {
+        try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade,
+                            now: Date(), reservation: reservation).request
     }
 
     /// The persistence lock spans reload, budget admission and atomic replacement across helpers.

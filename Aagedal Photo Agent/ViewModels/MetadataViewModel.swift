@@ -138,7 +138,13 @@ final class MetadataViewModel {
     var folderProcessProgress = ""
     private(set) var pendingWriteBatchOutcome: PendingMetadataWriteBatchOutcome?
     var selectedCount = 0
-    var selectedURLs: [URL] = []
+    var selectedURLs: [URL] = [] {
+        didSet {
+            AutomationDraftEditorAdmission.shared.update(owner: automationDraftEditorOwner,
+                                                         selectedURLs: selectedURLs)
+        }
+    }
+    @ObservationIgnored private let automationDraftEditorOwner = UUID()
     var hasChanges = false
     var isInEditView = false
     var saveError: String? {
@@ -430,6 +436,7 @@ final class MetadataViewModel {
     }
 
     deinit {
+        AutomationDraftEditorAdmission.shared.remove(owner: automationDraftEditorOwner)
         metadataLoadTask?.cancel()
         writeTask?.cancel()
         batchProcessTask?.cancel()

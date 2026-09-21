@@ -74,6 +74,7 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
     func inspect(planID: String) async throws -> AutomationPatchReview
     func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval
     func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record
 }
 
 actor AutomationPatchReviewService: AutomationPatchReviewServing {
@@ -83,11 +84,17 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
 
     private let approvals: MCPIPTCPatchApprovalStore
     private let facade: MCPAutomationFacade
+    private let plans: MCPIPTCPatchPlanStore
+    private let operationRegistry: AutomationOperationRegistry?
+    private var executionCoordinator: AutomationOperationExecutionCoordinator?
 
-    init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init()) {
+    init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init(),
+         operationRegistry: AutomationOperationRegistry? = nil) {
         let plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
                 "Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans", isDirectory: true))
+        self.plans = plans
+        self.operationRegistry = operationRegistry
         self.approvals = MCPIPTCPatchApprovalStore(plans: plans)
         self.facade = facade
     }
@@ -119,6 +126,37 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
     func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) {
         approvals.revoke(receipt)
     }
+
+    /// The retained operation outlives a dismissed Settings panel. Cancellation requests
+    /// are checked before saving; an already saved draft is still verified to completion.
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+        try Task.checkCancellation()
+        let registry = try operationRegistry ?? AutomationOperationRegistry(
+            storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
+        let coordinator: AutomationOperationExecutionCoordinator
+        if let existing = executionCoordinator { coordinator = existing }
+        else {
+            coordinator = AutomationOperationExecutionCoordinator(registry: registry)
+            executionCoordinator = coordinator
+        }
+        let executor = MCPIPTCPatchExecutionService(plans: plans, approvals: approvals, facade: facade)
+        let accepted = try await coordinator.submit(kind: .iptcDraft) { context in
+            let result = await executor.applyToPendingDraft(receipt, context: context)
+            switch result.outcome {
+            case .draftSaved: return .verified
+            case .refused: return .failed
+            case .uncertain: return .recoveryRequired
+            case .cancelled:
+                _ = try registry.requestCancellation(context.operationID)
+                return .cancelled
+            }
+        }
+        return try await withTaskCancellationHandler {
+            try await coordinator.waitForCompletion(accepted.id)
+        } onCancel: {
+            Task.detached(priority: .utility) { _ = try? registry.requestCancellation(accepted.id) }
+        }
+    }
 }
 
 @MainActor @Observable
@@ -129,6 +167,8 @@ final class AutomationPatchReviewModel {
     private(set) var isLoading = false
     private(set) var isApproved = false
     private(set) var isExpired = false
+    private(set) var isApplying = false
+    private(set) var applicationResult: AutomationOperationRegistry.Record?
     private var approval: MCPIPTCPatchApprovalStore.Approval?
     private var generation = UUID()
     private var task: Task<Void, Never>?
@@ -158,6 +198,8 @@ final class AutomationPatchReviewModel {
     func clear() {
         revokeApproval()
         review = nil
+        applicationResult = nil
+        isApplying = false
         isExpired = false
         message = nil
         isLoading = false
@@ -177,7 +219,7 @@ final class AutomationPatchReviewModel {
 
     /// Called by the presentation clock; explicit time also makes deadline behavior deterministic.
     func expireReview(at now: Date) {
-        guard let review, !isExpired, now >= review.expiresAt else { return }
+        guard let review, !isExpired, !isApplying, applicationResult == nil, now >= review.expiresAt else { return }
         revokeApproval()
         isExpired = true
         message = "This plan has expired. Prepare a new patch in your client."
@@ -215,6 +257,42 @@ final class AutomationPatchReviewModel {
         }
     }
 
+
+    func applyApprovedPlanToPendingDraft() {
+        guard let receipt = approval, let review, !isLoading, !isApplying,
+              applicationResult == nil, !isExpired else { return }
+        guard now() < review.expiresAt else { expireReview(at: now()); return }
+        isApplying = true
+        isLoading = true
+        message = nil
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let result = try await service.applyToPendingDraft(receipt)
+                if result.outcome == .verified {
+                    NotificationCenter.default.post(name: .automationDraftDidChange,
+                        object: URL(fileURLWithPath: review.path))
+                }
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.approval = nil
+                self.isApproved = false
+                self.isLoading = false
+                self.isApplying = false
+                self.applicationResult = result
+                self.task = nil
+            } catch {
+                await service.revoke(receipt)
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.approval = nil
+                self.isApproved = false
+                self.isLoading = false
+                self.isApplying = false
+                self.message = "Draft application could not be confirmed. Inspect the photo's pending metadata and operation status before retrying."
+                self.task = nil
+            }
+        }
+    }
+
     func inspect() {
         clear()
         let id = planID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -239,4 +317,8 @@ final class AutomationPatchReviewModel {
             }
         }
     }
+}
+
+extension Notification.Name {
+    static let automationDraftDidChange = Notification.Name("automationDraftDidChange")
 }

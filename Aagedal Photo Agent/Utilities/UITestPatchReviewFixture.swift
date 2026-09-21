@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 
@@ -86,7 +87,12 @@ enum UITestPatchReviewFixture {
             let manifest = Manifest(planID: id, photoPath: photo.path, beforeTitle: beforeTitle,
                 afterTitle: afterTitle, beforeCity: beforeCity)
             try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("patch-review-fixture.json"), options: .atomic)
-            return AutomationPatchReviewService(plans: plans, facade: facade)
+            guard let canonical = realpath(folder.path, nil) else { throw Failure.invalidFolder }
+            defer { free(canonical) }
+            let operationFolder = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+                .appendingPathComponent("patch-operations")
+            return AutomationPatchReviewService(plans: plans, facade: facade,
+                operationRegistry: AutomationOperationRegistry(storageDirectory: operationFolder))
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

@@ -17,6 +17,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         case developTemplate = "develop_template"
         case voiceTranscription = "voice_transcription"
         case iptcPatch = "iptc_patch"
+        case iptcDraft = "iptc_draft"
     }
     enum Outcome: String, Codable, Sendable {
         case verified, failed, cancelled, partialUncertain, recoveryRequired, stale

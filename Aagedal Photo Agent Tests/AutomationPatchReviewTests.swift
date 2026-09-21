@@ -1,5 +1,6 @@
 import CoreGraphics
 import ImageIO
+import Darwin
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -17,7 +18,9 @@ struct AutomationPatchReviewTests {
         let original: Data
 
         init() throws {
-            root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+            defer { free(canonical) }
+            root = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
                 .appendingPathComponent("patch-approval-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             photo = root.appendingPathComponent("frame.jpg")
@@ -72,6 +75,10 @@ struct AutomationPatchReviewTests {
             self.pending = nil
             self.receipt = nil
             pending.resume(returning: receipt)
+        }
+
+        func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+            try await underlying.applyToPendingDraft(receipt)
         }
 
         func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async {
@@ -290,6 +297,55 @@ struct AutomationPatchReviewTests {
         #expect(await service.revocations == 1)
         #expect(model.message == "This plan has expired. Prepare a new patch in your client.")
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Native draft application verifies a durable operation and consumes consent") @MainActor
+    func applyDraft() async throws {
+        let fixture = try Fixture()
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.approveReviewedPlan()
+        try await waitUntil { model.isApproved }
+        model.applyApprovedPlanToPendingDraft()
+        try await waitUntil { !model.isLoading }
+        let result = try #require(model.applicationResult)
+        #expect(result.kind == .iptcDraft)
+        #expect(result.outcome == .verified)
+        #expect(result.isTerminal)
+        #expect(try registry.inspect(result.id) == result)
+        #expect(!model.isApproved)
+        #expect(!model.isApplying)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        let read = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: fixture.photo.path,
+            facade: fixture.facade).objectValue)
+        #expect(read["fields"]?.objectValue?["title"] == .string("After"))
+        #expect(read["hasPendingChanges"] == .bool(true))
+        model.applyApprovedPlanToPendingDraft()
+        #expect(try registry.records().count == 1)
+        model.expireReview(at: .distantFuture)
+        #expect(model.applicationResult == result)
+        #expect(!model.isExpired)
+    }
+
+    @Test("Drift after native approval refuses draft application without a carrier write")
+    func applicationRefusesDrift() async throws {
+        let fixture = try Fixture()
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry)
+        let review = try await service.inspect(planID: fixture.planID)
+        let receipt = try await service.approve(review)
+        try fixture.original.write(to: fixture.photo, options: .atomic)
+        let result = try await service.applyToPendingDraft(receipt)
+        #expect(result.outcome == .failed)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("frame.xmp").path))
     }
 
 }

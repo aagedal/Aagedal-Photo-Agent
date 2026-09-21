@@ -609,9 +609,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
     /// Parse and bound a result while the photo lease and carrier descriptors remain held.
     /// Only return it after carrier, ancestor and current authorization checks pass.
     /// The body must be a pure read: it must not publish its provisional result itself.
-    func withPhotoSnapshot<Value>(path: String, body: (MCPPhotoCarrierSnapshot) throws -> Value) throws -> Value {
+    func withPhotoSnapshot<Value>(path: String, reservation: MCPProcessReservationLease? = nil,
+                                  body: (MCPPhotoCarrierSnapshot) throws -> Value) throws -> Value {
         var result: Value?
-        _ = try capturePhotoEvidence(path: path, retainingBytes: true) { target, evidence in
+        _ = try capturePhotoEvidence(path: path, retainingBytes: true, reservation: reservation) { target, evidence in
             result = try body(Self.snapshot(target: target, evidence: evidence))
         }
         guard let result else { throw MCPAutomationReadError.photoChanged }
@@ -630,8 +631,99 @@ nonisolated struct MCPAutomationFacade: Sendable {
         )
     }
 
+    /// Publishes only an already encoded app draft into the retained authorized directory.
+    /// Every write, rename and cleanup is descriptor-relative; a pathname replacement can
+    /// invalidate the operation but cannot redirect its bytes through another ancestor.
+    @discardableResult
+    func installPendingDraft(data: Data, expected: MCPPhotoCarrierSnapshot,
+                             reservation: MCPProcessReservationLease,
+                             beforeInstall: @Sendable () throws -> Void = {}) throws -> URL {
+        guard !data.isEmpty, data.count <= 8_388_608,
+              reservation.coversPhoto(expected.target.url) else {
+            throw MCPAutomationReadError.unsafeCarrier
+        }
+        let target = try authorizationStore.authorizeExistingPath(expected.target.url.path)
+        guard target == expected.target else { throw MCPAutomationReadError.photoChanged }
+        let configuration = try authorizationStore.load()
+        guard configuration.isEnabled,
+              let root = configuration.roots.first(where: { $0.id == target.rootID }) else {
+            throw MCPAuthorizationError.rootChanged
+        }
+        let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
+        func validate() throws {
+            let current = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent,
+                in: directory, retainingBytes: false, onCaptureCheckpoint: {})
+            guard current.source == expected.sourceRevision,
+                  current.xmpSidecar == expected.xmpSidecarRevision,
+                  current.appSidecar == expected.appSidecarRevision else {
+                throw MCPAutomationReadError.photoChanged
+            }
+            try directory.requireSameAncestors()
+            guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+        }
+        try validate()
+        var privateDirectory = try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(
+            name: ".photo_metadata", in: directory.descriptor)
+        if privateDirectory == nil {
+            guard Darwin.mkdirat(directory.descriptor, ".photo_metadata", 0o700) == 0 else {
+                throw MCPAutomationReadError.photoChanged
+            }
+            privateDirectory = try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(
+                name: ".photo_metadata", in: directory.descriptor)
+        }
+        guard let destinationDirectory = privateDirectory else { throw MCPAutomationReadError.unsafeCarrier }
+        defer { _ = Darwin.close(destinationDirectory) }
+        let currentName = "\(target.url.lastPathComponent).meta.json"
+        let legacyName = "\(target.url.deletingPathExtension().lastPathComponent).meta.json"
+        var currentEntry = stat()
+        let currentExists = Darwin.fstatat(destinationDirectory, currentName, &currentEntry, AT_SYMLINK_NOFOLLOW) == 0
+        // Keep a sole owned legacy draft at its existing name. Migrating would require a
+        // second recoverable mutation; leaving two owned generations makes reads ambiguous.
+        let destinationName = !currentExists && expected.appSidecarBytes != nil ? legacyName : currentName
+        let temporaryName = ".automation-draft-\(UUID().uuidString).tmp"
+        let descriptor = Darwin.openat(destinationDirectory, temporaryName,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        var temporaryExists = true
+        defer {
+            _ = Darwin.close(descriptor)
+            if temporaryExists { _ = Darwin.unlinkat(destinationDirectory, temporaryName, 0) }
+        }
+        try data.withUnsafeBytes { buffer in
+            guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+            var written = 0
+            while written < buffer.count {
+                let count = Darwin.write(descriptor, base.advanced(by: written), buffer.count - written)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw MCPAutomationReadError.unsafeCarrier }
+                written += count
+            }
+        }
+        guard Darwin.fsync(descriptor) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        try beforeInstall()
+        try validate()
+        try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
+            in: directory.descriptor, descriptor: destinationDirectory)
+        var opened = stat(), staged = stat()
+        guard Darwin.fstat(descriptor, &opened) == 0,
+              Darwin.fstatat(destinationDirectory, temporaryName, &staged, AT_SYMLINK_NOFOLLOW) == 0,
+              (staged.st_mode & S_IFMT) == S_IFREG, staged.st_nlink == 1,
+              opened.st_dev == staged.st_dev, opened.st_ino == staged.st_ino,
+              staged.st_size == data.count else { throw MCPAutomationReadError.photoChanged }
+        guard Darwin.renameat(destinationDirectory, temporaryName, destinationDirectory,
+            destinationName) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        temporaryExists = false
+        guard Darwin.fsync(destinationDirectory) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        try directory.requireSameAncestors()
+        try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
+            in: directory.descriptor, descriptor: destinationDirectory)
+        guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+        return target.url.deletingLastPathComponent().appendingPathComponent(".photo_metadata")
+            .appendingPathComponent(destinationName)
+    }
+
     private func capturePhotoEvidence(
-        path: String, retainingBytes: Bool = false,
+        path: String, retainingBytes: Bool = false, reservation: MCPProcessReservationLease? = nil,
         consume: (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) throws -> Void = { _, _ in }
     ) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
         let target = try authorizationStore.authorizeExistingPath(path)
@@ -639,8 +731,14 @@ nonisolated struct MCPAutomationFacade: Sendable {
               MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()) else {
             throw MCPAutomationReadError.unsupportedPhoto
         }
-        let lease = try MCPProcessReservation.acquirePhoto(target.url)
-        defer { lease.release() }
+        let lease: MCPProcessReservationLease
+        if let reservation {
+            guard reservation.coversPhoto(target.url) else { throw MCPProcessReservationError.unavailable }
+            lease = reservation
+        } else {
+            lease = try MCPProcessReservation.acquirePhoto(target.url)
+        }
+        defer { if reservation == nil { lease.release() } }
         let configuration = try authorizationStore.load()
         guard configuration.isEnabled,
               let root = configuration.roots.first(where: { $0.id == target.rootID }) else {
@@ -1178,7 +1276,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func requireSameDirectory(name: String, in parent: Int32, descriptor: Int32) throws {
+    fileprivate static func requireSameDirectory(name: String, in parent: Int32, descriptor: Int32) throws {
         var opened = stat()
         var entry = stat()
         guard Darwin.fstat(descriptor, &opened) == 0,
@@ -1189,7 +1287,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func openSafeDirectoryIfPresent(name: String, in parent: Int32) throws -> Int32? {
+    fileprivate static func openSafeDirectoryIfPresent(name: String, in parent: Int32) throws -> Int32? {
         var snapshot = stat()
         guard Darwin.fstatat(parent, name, &snapshot, AT_SYMLINK_NOFOLLOW) == 0 else {
             if errno == ENOENT { return nil }

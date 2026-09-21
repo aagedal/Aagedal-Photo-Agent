@@ -4211,6 +4211,18 @@ struct ContentViewModifiers: ViewModifier {
                     break
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .automationDraftDidChange)) { notification in
+                guard let photoURL = notification.object as? URL,
+                      photoURL.deletingLastPathComponent().standardizedFileURL == browserViewModel.currentFolderURL?.standardizedFileURL else { return }
+                browserViewModel.refreshPendingStatusBatch(for: [photoURL])
+                guard metadataViewModel.selectedURLs.contains(photoURL) else { return }
+                guard !metadataViewModel.hasUnpersistedEditorChanges, !metadataViewModel.isSaving else {
+                    metadataViewModel.saveError = "An automation draft was saved for this photo. Your current editor changes remain open; reload and reconcile the pending draft before publishing."
+                    return
+                }
+                metadataViewModel.loadMetadata(for: browserViewModel.selectedImages,
+                    folderURL: browserViewModel.currentFolderURL)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
                 guard !metadataViewModel.hasChanges else { return }
                 let selected = browserViewModel.selectedImages

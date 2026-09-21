@@ -64,6 +64,13 @@ authorized folder separately in Settings, can remove a grant at any time, and ca
 without deleting the folder list. The helper reloads enablement and grants for every tool call and refuses
 changed roots, paths outside those roots, links/aliases, special files, and hidden Photo Agent stores.
 
+After exact local plan review and approval, **Apply to Pending Draft** writes the reviewed descriptive
+values to the photo folder's app-owned `.photo_metadata` history. This preserves photo and XMP bytes
+and requires the photo to be deselected in every metadata editor. It stores a privacy-safe operation
+record of kind `iptc_draft`, without photo paths or field values, in the local Automation/Operations
+archive. Cancelling is cooperative; an already saved draft is verified rather than silently undone.
+Physical metadata publication remains a separate normal-editor action.
+
 Team creation has a separate, default-off **Allow team creation** setting. When enabled together
 with local automation, `create_team` can add team names, kit colours and numbered player rosters
 to the local Teams library without photo-folder grants. With Teams iCloud sync on, the helper stores

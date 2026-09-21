@@ -157,6 +157,50 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationPatchAppliesOnlyToPendingDraft() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifestURL = fixtureRoot.appendingPathComponent("patch-review-fixture.json")
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: String])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let before = try Data(contentsOf: photo)
+        let draftURL = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        input.click()
+        input.typeText(try XCTUnwrap(manifest["planID"]))
+        app.buttons["automation.inspectPatchPlan"].click()
+        let approve = app.buttons["automation.approvePatchPlan"]
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        approve.click()
+        let apply = app.buttons["automation.applyPatchDraft"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: draftURL.path))
+        apply.click()
+        let result = app.staticTexts["automation.patchDraftStatus"]
+        XCTAssertTrue(result.waitForExistence(timeout: 12))
+        XCTAssertTrue(result.label.contains("saved and verified") || (result.value as? String)?.contains("saved and verified") == true)
+        XCTAssertFalse(apply.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        let draftBytes = try Data(contentsOf: draftURL)
+        let draft = try XCTUnwrap(JSONSerialization.jsonObject(with: draftBytes) as? [String: Any])
+        XCTAssertEqual(draft["pendingChanges"] as? Bool, true)
+        let metadata = try XCTUnwrap(draft["metadata"] as? [String: Any])
+        XCTAssertEqual(metadata["title"] as? String, manifest["afterTitle"])
+        XCTAssertTrue(metadata["city"] == nil || metadata["city"] is NSNull)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos)
+        XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 12))
+        XCTAssertEqual(try Data(contentsOf: draftURL), draftBytes)
+        XCTAssertEqual(try Data(contentsOf: photo), before)
+    }
+
+    @MainActor
     func testSearchKeepsFocusWhenResultsReappear() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)

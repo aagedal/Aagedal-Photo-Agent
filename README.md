@@ -115,10 +115,13 @@ the support table and validation records.
   `prepare_iptc_patch` returns read-only, revision-bound normalized before/after values, exact inputs and compatibility warnings
   for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`
   revalidates the retained preview. These expiring read-only plans survive helper restart in a bounded
-  private local archive but cannot be committed. Template application, face,
+  private local archive but cannot be committed by MCP. Settings can explicitly apply an approved
+  plan to a pending local draft after the photo is deselected in all editors, preserving the photo
+  and XMP. Template application, face,
   transcription, and photo mutation tools remain under implementation for 3.0.
   `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
-  cancellation requests; production executors are not connected, and a request is not completion.
+  cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
+  outcomes; other workflow executors remain unfinished, and a request is not completion.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and

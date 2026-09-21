@@ -143,7 +143,17 @@ ID or leaving the view clears the displayed review; expired plans require fresh 
 After reviewing all changes and warnings, **Approve Reviewed Plan** rechecks the exact files and
 authorization and records consent for this review session. **Revoke Approval**, **Clear Review**,
 changing the ID or leaving the review removes that consent. Approval writes no photo metadata;
-commit remains unavailable. The displayed values are a checked snapshot, not live monitoring.
+direct MCP commit remains unavailable. The displayed values are a checked snapshot, not live monitoring.
+
+After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
+local `.photo_metadata` history. First finish or discard editor changes and deselect the photo
+in every Photo Agent window. This action consumes the approval, rechecks authority under the
+photo reservation, preserves the source and XMP bytes, and verifies the saved effective values.
+It refuses unsupported private extensions before replacing the draft. Review and publish the
+pending draft through the normal metadata workflow; this action grants no physical-publication approval.
+The result includes an operation ID with kind `iptc_draft`. A verified result means the local draft
+was verified. Cancellation before saving leaves it unchanged; a cancellation arriving after installation
+does not undo a verified draft. An uncertain result requires inspection before retrying.
 
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
