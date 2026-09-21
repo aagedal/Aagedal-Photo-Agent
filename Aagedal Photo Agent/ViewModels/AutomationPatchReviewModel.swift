@@ -72,6 +72,7 @@ nonisolated struct AutomationPatchReview: Sendable {
 
 nonisolated protocol AutomationPatchReviewServing: Sendable {
     func inspect(planID: String) async throws -> AutomationPatchReview
+    func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report
     func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval
     func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record
@@ -106,6 +107,10 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
         var review = try AutomationPatchReview(binding.preview)
         review.approvalReview = binding
         return review
+    }
+
+    func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
+        try await MCPIPTCPatchXMPPreflightService(plans: plans, facade: facade).inspect(planID: planID)
     }
 
     func approve(_ review: AutomationPatchReview) throws -> MCPIPTCPatchApprovalStore.Approval {
@@ -168,6 +173,7 @@ final class AutomationPatchReviewModel {
     private(set) var isApproved = false
     private(set) var isExpired = false
     private(set) var isApplying = false
+    private(set) var xmpPreflight: MCPIPTCPatchXMPPreflightService.Report?
     private(set) var applicationResult: AutomationOperationRegistry.Record?
     private var approval: MCPIPTCPatchApprovalStore.Approval?
     private var generation = UUID()
@@ -198,6 +204,7 @@ final class AutomationPatchReviewModel {
     func clear() {
         revokeApproval()
         review = nil
+        xmpPreflight = nil
         applicationResult = nil
         isApplying = false
         isExpired = false
@@ -222,7 +229,35 @@ final class AutomationPatchReviewModel {
         guard let review, !isExpired, !isApplying, applicationResult == nil, now >= review.expiresAt else { return }
         revokeApproval()
         isExpired = true
+        xmpPreflight = nil
         message = "This plan has expired. Prepare a new patch in your client."
+    }
+
+    /// A dry run grants no consent. Replace prior evidence, and reject a result that
+    /// completes after navigation, expiry, cancellation or a different plan inspection.
+    func inspectXMPCandidate() {
+        guard let review, !isLoading, !isApplying, !isExpired, applicationResult == nil else { return }
+        guard now() < review.expiresAt else { expireReview(at: now()); return }
+        revokeApproval()
+        xmpPreflight = nil
+        message = nil
+        isLoading = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let result = try await service.inspectXMPCandidate(planID: review.planID)
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                guard self.now() < review.expiresAt else { self.expireReview(at: self.now()); return }
+                guard result.planID == review.planID else { throw MCPIPTCPatchPlanStore.Failure.invalidStorage }
+                self.xmpPreflight = result
+                self.isLoading = false
+                self.task = nil
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.clear()
+                self.message = error.localizedDescription
+            }
+        }
     }
 
     func approveReviewedPlan() {
@@ -263,6 +298,7 @@ final class AutomationPatchReviewModel {
               applicationResult == nil, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         isApplying = true
+        xmpPreflight = nil
         isLoading = true
         message = nil
         let expected = generation

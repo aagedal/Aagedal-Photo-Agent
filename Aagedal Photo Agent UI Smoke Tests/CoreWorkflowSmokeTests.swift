@@ -157,6 +157,48 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationPatchXMPDryRunPreservesPhotosAndRevokesConsent() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let original = try Data(contentsOf: photo)
+        input.click()
+        input.typeText(try XCTUnwrap(manifest["planID"]))
+        app.buttons["automation.inspectPatchPlan"].click()
+        let approve = app.buttons["automation.approvePatchPlan"]
+        XCTAssertTrue(approve.waitForExistence(timeout: 8))
+        approve.click()
+        let approval = app.staticTexts["automation.patchApprovalStatus"]
+        XCTAssertTrue(approval.waitForExistence(timeout: 8))
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let status = app.staticTexts["automation.patchXMPStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 12))
+        XCTAssertFalse(approval.exists)
+        XCTAssertFalse(app.buttons["automation.applyPatchDraft"].exists)
+        XCTAssertTrue(approve.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+        // Evidence remains a checked snapshot; a repeated dry run must reject source replacement.
+        try original.write(to: photo, options: .atomic)
+        dryRun.click()
+        XCTAssertTrue(app.staticTexts["automation.patchPlanError"].waitForExistence(timeout: 8))
+        XCTAssertFalse(status.exists)
+        XCTAssertFalse(approve.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+    }
+
+    @MainActor
     func testAutomationPatchAppliesOnlyToPendingDraft() throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)

@@ -58,6 +58,28 @@ struct AutomationPatchReviewView: View {
             ForEach(Array(review.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(verbatim: warning).font(.caption).foregroundStyle(.secondary)
             }
+            if model.applicationResult == nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Verify XMP Dry Run") { model.inspectXMPCandidate() }
+                        .disabled(model.isLoading || model.isApplying)
+                        .accessibilityIdentifier("automation.verifyPatchXMP")
+                    Text("Builds and checks a temporary XMP candidate for this plan. It does not save beside the photo or approve publication. Starting a dry run revokes any current approval.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let result = model.xmpPreflight {
+                        Text("XMP dry run verified. No photo or sidecar was changed.")
+                            .accessibilityIdentifier("automation.patchXMPStatus")
+                        Text(verbatim: "Proposed destination: \(result.targetPath)")
+                            .font(.caption).textSelection(.enabled)
+                        ForEach(Array(result.warnings.enumerated()), id: \.offset) { _, warning in
+                            Text(verbatim: warning).font(.caption).foregroundStyle(.secondary)
+                        }
+                        DisclosureGroup("Verification details") {
+                            Text(verbatim: "Temporary XMP: \(result.stagedByteCount) bytes\nSHA-256: \(result.stagedSHA256)")
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                    }
+                }
+            }
             Text("Approve Reviewed Plan records consent for exactly these changes in this review session, after checking the files and authorization again. It does not write metadata. Clearing or leaving this review revokes consent.")
                 .font(.caption).foregroundStyle(.secondary)
             if let result = model.applicationResult {

@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added **Verify XMP Dry Run** to native proofreading review. It checks a temporary production-written
+  sidecar, verifies editorial and parsed preservation evidence, and refuses stale plans without
+  changing live carriers. Publication remains unavailable.
+- Managed Whisper lookup and download now bind verification and transfer staging to the admitted
+  cache directory, reject writable shared model files, and clean up cancelled or failed partials.
+
 - Added native automation operation history with cancellation requests and confirmed removal of
   completed records. Abandoned managed operations are identified using process locks when history
   opens or refreshes; uncertain effects remain visible and protected from removal.

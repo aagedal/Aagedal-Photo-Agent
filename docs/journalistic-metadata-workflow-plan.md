@@ -1683,6 +1683,10 @@ See [cycle 89 evidence](release/cycle-89-operation-history-recovery-2026-09-21.m
   proposed changes and exact read tokens, then returns normalized before/after values, validation,
   preservation warnings, and an immutable expiring plan; `commit_iptc_patch` consumes that exact
   plan and refuses any source/JSON/XMP/approval drift before verified semantic read-back.
+  Native **Verify XMP Dry Run** now stages the production XMP writer, checks complete writable
+  editorial semantics and parsed technical/private-property preservation, and revalidates exact
+  carriers before displaying evidence. It grants no publication consent or installation authority;
+  arbitrary XML, embedded codestream preservation and recoverable commit remain open.
 - [ ] Limit direct MCP IPTC patches to registered descriptive fields and typed operations. Reject
   unknown field identifiers and whole-document replacement; do not let a model overwrite Camera Raw,
   C2PA, technical metadata, unedited XMP namespaces, transcript provenance, or app-private records.

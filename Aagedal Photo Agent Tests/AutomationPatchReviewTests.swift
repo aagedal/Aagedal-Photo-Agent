@@ -57,6 +57,9 @@ struct AutomationPatchReviewTests {
         private var pending: CheckedContinuation<MCPIPTCPatchApprovalStore.Approval, Never>?
         private var receipt: MCPIPTCPatchApprovalStore.Approval?
         private(set) var revocations = 0
+        private var pendingPreflight: CheckedContinuation<MCPIPTCPatchXMPPreflightService.Report, Never>?
+        private var preflightResult: MCPIPTCPatchXMPPreflightService.Report?
+        var hasPendingPreflight: Bool { pendingPreflight != nil }
         var hasPendingApproval: Bool { pending != nil }
 
         init(_ underlying: AutomationPatchReviewService) { self.underlying = underlying }
@@ -65,9 +68,21 @@ struct AutomationPatchReviewTests {
             try await underlying.inspect(planID: planID)
         }
 
+        func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
+            preflightResult = try await underlying.inspectXMPCandidate(planID: planID)
+            return await withCheckedContinuation { pendingPreflight = $0 }
+        }
+
         func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval {
             receipt = try await underlying.approve(review)
             return await withCheckedContinuation { pending = $0 }
+        }
+
+        func finishPreflight() {
+            guard let pendingPreflight, let preflightResult else { return }
+            self.pendingPreflight = nil
+            self.preflightResult = nil
+            pendingPreflight.resume(returning: preflightResult)
         }
 
         func finishApproval() {
@@ -346,6 +361,78 @@ struct AutomationPatchReviewTests {
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
         #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
         #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("frame.xmp").path))
+    }
+
+    @Test("XMP dry run displays checked evidence without granting consent or saving carriers") @MainActor
+    func xmpPreflight() async throws {
+        let fixture = try Fixture()
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isApproved)
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        let result = try #require(model.xmpPreflight)
+        #expect(result.planID == fixture.planID)
+        #expect(result.targetPath == URL(fileURLWithPath: try #require(fixture.prepared.objectValue?["canonicalPath"]?.stringValue))
+            .deletingPathExtension().appendingPathExtension("xmp").path)
+        #expect(result.stagedByteCount > 0)
+        #expect(result.stagedSHA256.count == 64)
+        #expect(!model.isApproved)
+        #expect(model.applicationResult == nil)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+        model.clear()
+        #expect(model.xmpPreflight == nil)
+    }
+
+    @Test("Late XMP dry runs cannot republish after clear, ID change or expiry", arguments: ["clear", "edit", "expire"])
+    @MainActor
+    func latePreflight(action: String) async throws {
+        let fixture = try Fixture()
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        let review = try #require(model.review)
+        model.inspectXMPCandidate()
+        try await waitUntil { await service.hasPendingPreflight }
+        switch action {
+        case "clear": model.clear()
+        case "edit": model.planID = UUID().uuidString.lowercased()
+        default: model.expireReview(at: review.expiresAt)
+        }
+        await service.finishPreflight()
+        // A subsequent actor roundtrip gives the returned result a chance to publish.
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!model.isLoading)
+        #expect(model.xmpPreflight == nil)
+        #expect(!model.isApproved)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    @Test("Source drift during a later dry run clears obsolete evidence") @MainActor
+    func preflightDrift() async throws {
+        let fixture = try Fixture()
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        #expect(model.xmpPreflight != nil)
+        try fixture.original.write(to: fixture.photo, options: .atomic)
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        #expect(model.review == nil)
+        #expect(model.xmpPreflight == nil)
+        #expect(model.message != nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
     }
 
 }

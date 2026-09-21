@@ -145,6 +145,13 @@ authorization and records consent for this review session. **Revoke Approval**, 
 changing the ID or leaving the review removes that consent. Approval writes no photo metadata;
 direct MCP commit remains unavailable. The displayed values are a checked snapshot, not live monitoring.
 
+**Verify XMP Dry Run** builds a temporary XMP sidecar using the production writer, checks every
+writable editorial value and the parsed unrelated/Develop properties, then rechecks the plan and
+live carriers. It removes the temporary candidate and shows the proposed destination and verification
+details. Starting a dry run revokes any existing approval. Pending values outside the patch are included
+and explicitly disclosed. This check does not approve publication or save beside the photo; embedded
+writes, arbitrary XML extension preservation, C2PA trust and recoverable installation remain separate.
+
 After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
 local `.photo_metadata` history. First finish or discard editor changes and deselect the photo
 in every Photo Agent window. This action consumes the approval, rechecks authority under the

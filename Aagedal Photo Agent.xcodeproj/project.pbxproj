@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C89000000000000000000102 /* AutomationOperationHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C89000000000000000000101 /* AutomationOperationHistoryTests.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
 		1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */; };
@@ -161,6 +160,7 @@
 		C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */; };
 		C88000000000000000000202 /* MCPIPTCPatchExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */; };
 		C88000000000000000000302 /* AutomationDraftEditorAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */; };
+		C89000000000000000000102 /* AutomationOperationHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C89000000000000000000101 /* AutomationOperationHistoryTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -215,6 +215,7 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
+		C90000000000000000000002 /* MCPIPTCPatchXMPPreflightServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90000000000000000000001 /* MCPIPTCPatchXMPPreflightServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -256,7 +257,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		C89000000000000000000101 /* AutomationOperationHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationHistoryTests.swift; sourceTree = "<group>"; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
 		0F23FE232CC64C60490D92B3 /* Aagedal Photo Agent Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Aagedal Photo Agent Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -408,6 +408,7 @@
 		C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationExecutionCoordinatorTests.swift; sourceTree = "<group>"; };
 		C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchExecutionServiceTests.swift; sourceTree = "<group>"; };
 		C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationDraftEditorAdmissionTests.swift; sourceTree = "<group>"; };
+		C89000000000000000000101 /* AutomationOperationHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationHistoryTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
@@ -466,6 +467,7 @@
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
 		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
+		C90000000000000000000001 /* MCPIPTCPatchXMPPreflightServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPreflightServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -539,6 +541,7 @@
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
 				C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */,
+				C90000000000000000000001 /* MCPIPTCPatchXMPPreflightServiceTests.swift */,
 				C88000000000000000000201 /* MCPIPTCPatchExecutionServiceTests.swift */,
 				C88000000000000000000301 /* AutomationDraftEditorAdmissionTests.swift */,
 				C89000000000000000000101 /* AutomationOperationHistoryTests.swift */,
@@ -966,6 +969,7 @@
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
 				C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */,
+				C90000000000000000000002 /* MCPIPTCPatchXMPPreflightServiceTests.swift in Sources */,
 				C88000000000000000000202 /* MCPIPTCPatchExecutionServiceTests.swift in Sources */,
 				C88000000000000000000302 /* AutomationDraftEditorAdmissionTests.swift in Sources */,
 				C89000000000000000000102 /* AutomationOperationHistoryTests.swift in Sources */,
