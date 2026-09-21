@@ -2,14 +2,25 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft execution now uses exact consent, rooted installation and retained operation records. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-21
-**Latest implementation state:** [Cycle 90](cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md) adds native exact-plan XMP dry-run verification through the production writer with parsed preservation checks, carrier/authority revalidation and consent-safe presentation. Whisper installed lookup and production transfer staging now retain cache-directory descriptors and reject unsafe writable models. Focused 59-test validation, complete 3,295-test / 343-suite regression and two native workflows pass; evidence is recorded in the cycle report. Physical publication and signed lifecycle remain open.
-**Latest native evidence:** Cycle 90 verifies XMP dry-run evidence, consent revocation, source-drift refusal and unchanged live carriers, plus pending-draft/history/removal/relaunch regression. Cycle 89 retains actual stopped-owner recovery evidence. Full physical publication/recovery remains open.
-**Implementation commits:** `bb9d7f3` (Whisper storage) and `55482e4` (XMP dry-run verification).
-**Cycle baseline:** `976e39a`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 91](cycle-91-template-preview-recovery-trust-2026-09-21.md) adds the exposed exact-revision single-photo literal metadata-template preview, passive XMP recovery-material storage, parent-directory durability for operation persistence, and signed Whisper descriptor/pure-transition foundations. The production model catalog is unchanged; physical writes, recovery execution, batch templates and durable trusted model installation remain open.
+**Latest native evidence:** Cycle 90 still owns GUI XMP dry-run/consent/source-drift and pending-draft/history/relaunch evidence. Cycle 91 exercises the actual bundled helper on persistent STDIO pipes and the new endpoint through synthetic template/JPEG fixtures; it makes no new GUI or accessibility acceptance claim.
+**Implementation commit:** `84064c5`. Final-source regression passes 3,313 tests / 346 suites; focused selection passes 99 tests / six suites; repository validation and independent review pass. Exact evidence is in the cycle report.
+**Cycle baseline:** `7238c43`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 91 template previews, recovery material and model trust](cycle-91-template-preview-recovery-trust-2026-09-21.md)
+adds read-only literal template previews with exact editor Append/Replace values and final template/photo
+revalidation. Passive journals retain original XMP bytes; signed model receipts authenticate descriptor
+content. Neither foundation enables recoverable physical writes or durable signed model lifecycle.
+
+Ordered next implementation actions: connect mode-bound consent and rooted recoverable publication;
+extend template preview to per-photo variables/approved keywords/batches and production executors;
+wire signed Whisper descriptors to persistent authority and atomic installation/update/rollback.
+External interoperability, real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and final
+signed-candidate/user-acceptance gates remain open. No-progress count is zero.
 
 [Cycle 90 XMP dry run and Whisper storage](cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md)
 adds a native temporary XMP candidate check and descriptor-bound managed-model lookup/staging.

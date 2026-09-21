@@ -10,6 +10,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added `preview_metadata_template` to local automation: exact template/photo revisions, read-only
+  Append/Replace previews for literal descriptive fields and Person Shown, and refusal of unsupported
+  or stale inputs. Batch application and template variables remain under implementation.
+- Added bounded XMP recovery-material storage and signed Whisper descriptor/transition foundations.
+  These do not enable physical publication or switch the production model distribution authority.
+  Writable operation-storage admission now flushes ancestor directory entries before recording work.
+
 - Added **Verify XMP Dry Run** to native proofreading review. It checks a temporary production-written
   sidecar, verifies editorial and parsed preservation evidence, and refuses stale plans without
   changing live carriers. Publication remains unavailable.

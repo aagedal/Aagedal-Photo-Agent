@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 90: XMP dry run and Whisper storage](release/cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md) adds native production-writer XMP candidate verification with parsed preservation and stale-plan refusal, plus descriptor-bound managed Whisper lookup and transfer staging. Physical MCP commits, recoverable installation, other production executors, signed model lifecycle and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 91: template previews, recovery material and model trust](release/cycle-91-template-preview-recovery-trust-2026-09-21.md) adds a read-only exact-template/single-photo preview matching literal editor Append/Replace semantics, a passive exact-byte XMP recovery journal, parent-directory durability for operation records and signed Whisper descriptor/transition foundations. Physical publication, batch/variable template execution, durable trusted model installation and broader release gates remain open.
 
 ## Portfolio
 

@@ -1659,6 +1659,15 @@ Whisper removal now uses the admitted directory descriptor and handles absent st
 See [cycle 89 evidence](release/cycle-89-operation-history-recovery-2026-09-21.md).
 
 
+**Cycle 91 continuation:** `preview_metadata_template` now exposes exact UUID/revision-bound,
+single-photo literal descriptive and Person Shown Append/Replace previews, matching editor values.
+It revalidates template inventory and photo carriers, rejects context-dependent/unsupported templates,
+and creates no plan or write. A passive XMP recovery journal retains exact original/candidate bytes
+and revision/authorization binding; signed Whisper descriptor verification and pure release-transition
+proposals are implemented separately from the production installer. Recoverable publication,
+batch/variable template execution, persisted trusted model lifecycle and broad release gates remain.
+See [cycle 91 evidence](release/cycle-91-template-preview-recovery-trust-2026-09-21.md).
+
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.

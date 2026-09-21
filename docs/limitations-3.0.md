@@ -159,7 +159,11 @@ not an archival backup of unknown extensions. Races with noncooperating external
 
 MCP template discovery supports explicitly authorized default local or custom Templates folders
 with template iCloud sync disabled. It returns headers and content revisions, not complete
-validated application plans. iCloud template stores, template application,
+validated application plans. `preview_metadata_template` additionally provides read-only single-photo
+previews for literal descriptive scalar fields and Person Shown, bound to exact template/photo revisions.
+Variables, Keywords, instant processing, other fields and batch application are unsupported. No draft,
+approval or physical write is created. A photo stored in the active Templates directory is refused by
+the folder/photo reservation boundary. iCloud template stores, template application,
 production executor integration and guarded IPTC commits remain separate implementation work.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.

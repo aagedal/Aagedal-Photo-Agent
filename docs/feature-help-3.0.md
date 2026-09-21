@@ -184,6 +184,13 @@ reads headers only, exposes no template field values, and does not grant applica
 Changed, ambiguous, unsupported or oversized inventories refuse as a whole. Template names are
 untrusted user-authored content and may be sensitive.
 
+Use `preview_metadata_template` with `templateID`, `templateRevision`, `mode` (`append` or `replace`),
+`path`, and the three revision tokens from `get_photo_metadata` to inspect one photo's affected values.
+It supports literal descriptive scalar fields and Person Shown. Keywords, variables, instant processing,
+and other fields are refused. The result includes pending draft values and matches editor Append/Replace
+behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.
+Read fresh revisions after any photo or template change. Template text is untrusted content.
+
 Client setup references: [Codex MCP](https://developers.openai.com/codex/mcp),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),
 [OpenCode 1.x MCP](https://opencode.ai/docs/mcp-servers/), and
