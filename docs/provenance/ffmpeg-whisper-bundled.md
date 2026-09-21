@@ -51,6 +51,33 @@ not establish transcription accuracy. These probes do not certify downloaded mod
 behavior. Source-pinned canonical escaping and fault handling remain covered by the sanitizer
 harness; the bundled-component validator also now requires the actual Whisper filter.
 
+## Repeatable process qualification
+
+Repository CI now runs `scripts/ci/probe_ffmpeg_whisper.py` against the bundled executable.
+It verifies the runner's required filter options, decodes a generated local five-second PCM
+WAV, and requires controlled Whisper initialization failures for missing and malformed models.
+A crash, successful exit, or unrelated error cannot satisfy either negative case. No model
+download or network access is needed. The focused probe tests reject invalid JSON schemas,
+duplicate fields, noninteger/out-of-bounds timestamps and misleading speech/failure evidence.
+
+The same command accepts an explicitly supplied local model and speech fixture:
+
+```sh
+python3 -B scripts/ci/probe_ffmpeg_whisper.py \
+  --model /path/to/model.bin --audio /path/to/speech.wav \
+  --output build/whisper-process-evidence
+```
+
+The output directory must not already exist. It retains input fixtures, logs, transcripts and
+a JSON report that identifies the binary, model and successful inference inputs by SHA-256.
+Without `--output`, temporary evidence is removed and the report is printed. Supplying a model
+adds CPU silence inference, canonical JSON/sample-duration checks and invalid-destination
+failure propagation. Supplying speech also requires some non-marker text; this is not a
+recognition-accuracy assertion. Empty silence output is permitted, but missing output is not.
+Reports explicitly distinguish executed model/speech checks from the default smoke scope.
+These checks do not qualify GPU execution, cancellation, real disk-full/closed-pipe behavior,
+downloaded-model provenance, recognition quality or a second clean reproduction.
+
 ## Redistribution
 
 Complete dependency notices ship in `License-FFmpeg-Dependencies.txt` and are available in

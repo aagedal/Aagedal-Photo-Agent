@@ -47,6 +47,8 @@ python3 -B scripts/ci/validate_bundled_components.py
 
 say "Checking pinned FFmpeg Whisper source correction"
 python3 -B scripts/ci/test_ffmpeg_whisper_patch.py
+python3 -B scripts/ci/test_ffmpeg_whisper_probe.py
+python3 -B scripts/ci/probe_ffmpeg_whisper.py
 
 say "Checking unified-log privacy classifications"
 python3 scripts/ci/test_logger_privacy_validator.py
