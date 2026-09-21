@@ -4,7 +4,7 @@
 **Updated:** 2026-09-21
 **Latest implementation state:** [Cycle 92](cycle-92-batch-preview-publication-consent-2026-09-21.md) expands literal template fields and exposes retained exact-revision batch preview for 1–8 photos. Separate native XMP candidate/mode-bound consent and a durable signed Whisper release authorization ledger are implemented. Physical installation, UI/one-shot consent integration, per-photo variables and production model distribution integration remain open.
 **Latest native evidence:** Cycle 90 still owns GUI XMP dry-run/consent/source-drift and pending-draft/history/relaunch evidence. Cycle 92 tests the actual bundled helper on persistent STDIO pipes and synthetic template/JPEG endpoints; it adds no GUI or accessibility acceptance claim.
-**Implementation commit:** Cycle-92 local commit recorded in the cycle report. Final-source regression passes 3,329 tests / 349 suites; focused selection passes 87 tests / seven suites; repository validation, whitespace checks and independent review pass.
+**Implementation commit:** `90da34c`. Final-source regression passes 3,329 tests / 349 suites; focused selection passes 87 tests / seven suites; repository validation, whitespace checks and independent review pass.
 **Cycle baseline:** `2539366`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.

@@ -3,6 +3,8 @@
 Baseline: `2539366`, initially clean. Three sub-agents implemented and cross-reviewed bounded
 slices; the coordinator implemented batch preview, integrated the helper/project and owns validation.
 State remains **IMPLEMENTING**. No broad release-readiness gate closes.
+Implementation commit: `90da34c`. The full suite tested this exact app/helper/test source; subsequent
+changes only record this commit identity and verification evidence.
 
 ## Implemented behavior
 
