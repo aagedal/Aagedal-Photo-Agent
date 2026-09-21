@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 87: model recovery and proofreading preservation evidence](release/cycle-87-model-recovery-semantic-evidence-2026-09-21.md) hardens managed Whisper cancellation, removal and download publication, and records all-field semantic expectations in MCP previews. The patched FFmpeg and explicit pinned model downloads are integrated. Production executors, verified commits, signed model lifecycle and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 88: native pending-draft execution](release/cycle-88-native-pending-draft-execution-2026-09-21.md) connects exact local proofreading consent to verified app-owned drafts with rooted installation, selected-editor refusal and retained operation outcomes. Repeatable bundled Whisper process probes now run in repository validation. Direct physical MCP commits, other production executors, signed model lifecycle and broader release gates remain open.
 
 ## Portfolio
 
