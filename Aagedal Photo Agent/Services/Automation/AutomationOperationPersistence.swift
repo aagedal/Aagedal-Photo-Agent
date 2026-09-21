@@ -10,10 +10,13 @@ nonisolated private func operationRegistryFlock(_ descriptor: Int32, _ operation
 nonisolated final class AutomationOperationPersistence: Sendable {
     private let directory: URL
     private let maximumBytes: Int
+    private let syncDirectoryParent: @Sendable (Int32) -> Int32
 
-    init(directory: URL, maximumBytes: Int) {
+    init(directory: URL, maximumBytes: Int,
+         syncDirectoryParent: @escaping @Sendable (Int32) -> Int32 = { Darwin.fsync($0) }) {
         self.directory = directory
         self.maximumBytes = maximumBytes
+        self.syncDirectoryParent = syncDirectoryParent
     }
 
     /// The open descriptor is the liveness proof. Kernel teardown releases it even
@@ -112,6 +115,14 @@ nonisolated final class AutomationOperationPersistence: Sendable {
                     next = Darwin.openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
                 }
                 guard next >= 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+                // Flush every parent on writable admission, including existing entries:
+                // a previous interrupted/failed creator may have left an unsynced path.
+                // Syncing only the journal and its final directory does not persist newly
+                // created ancestor entries. Read-only inspection never performs a flush.
+                if create, syncDirectoryParent(current) != 0 {
+                    Darwin.close(next)
+                    throw AutomationOperationRegistry.Failure.storageUnavailable
+                }
                 Darwin.close(current)
                 current = next
             }

@@ -478,7 +478,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -487,6 +487,33 @@ struct MCPServerCoreTests {
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }
+    }
+
+    @Test("Template preview protocol refuses missing, unknown and mistyped authority arguments")
+    func templatePreviewArguments() throws {
+        let authorization = store()
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization)
+        let arguments: [String: MCPJSONValue] = [
+            "templateID": .string(UUID().uuidString), "templateRevision": .string("sha256:" + String(repeating: "a", count: 64)),
+            "mode": .string("replace"), "path": .string("/unavailable/photo.jpg"),
+            "sourceRevision": .string("source"), "xmpSidecarRevision": .string("xmp"),
+            "appSidecarRevision": .string("app"),
+        ]
+        for key in MCPMetadataTemplatePreview.argumentKeys {
+            var missing = arguments
+            missing.removeValue(forKey: key)
+            let absent = tools.callTool(name: "preview_metadata_template", arguments: missing)
+            #expect(absent.objectValue?["isError"] == .bool(true))
+            var wrongType = arguments
+            wrongType[key] = .bool(true)
+            #expect(tools.callTool(name: "preview_metadata_template", arguments: wrongType).objectValue?["isError"] == .bool(true))
+        }
+        var unknown = arguments
+        unknown["commit"] = .bool(true)
+        #expect(tools.callTool(name: "preview_metadata_template", arguments: unknown).objectValue?["isError"] == .bool(true))
+        try authorization.setEnabled(false)
+        #expect(tools.callTool(name: "preview_metadata_template", arguments: arguments).objectValue?["isError"] == .bool(true))
     }
 
     @Test("Owned JSON draft inspection exposes only bounded descriptive fields and is not effective IPTC")
@@ -1622,7 +1649,11 @@ struct MCPServerCoreTests {
         try input.fileHandleForWriting.write(contentsOf: Data("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n".utf8))
         let discovery = try response()
         #expect(discovery["id"] as? Int == 3)
-        #expect((discovery["result"] as? [String: Any])?["tools"] is [Any])
+        let discoveredTools = try #require((discovery["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        let templatePreview = try #require(discoveredTools.first { $0["name"] as? String == "preview_metadata_template" })
+        #expect((templatePreview["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true)
+        let templateSchema = try #require(templatePreview["inputSchema"] as? [String: Any])
+        #expect(Set(templateSchema["required"] as? [String] ?? []) == MCPMetadataTemplatePreview.argumentKeys)
     }
 
     @Test("The app bundle contains a launchable hardened-runtime MCP helper")

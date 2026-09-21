@@ -84,6 +84,32 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
     }
 
     func list(kind: String) throws -> [String: MCPJSONValue] {
+        try withInventory(kind: kind) { first in
+            [
+                "kind": .string(kind),
+                "templates": .array(first.sorted { $0.id < $1.id }.map { entry in
+                    .object(["id": .string(entry.id), "name": .string(entry.name),
+                             "schemaVersion": .integer(1), "revision": .string(entry.revision)])
+                }),
+                "discoveryOnly": .bool(true),
+                "applicationAuthorized": .bool(false),
+            ]
+        }
+    }
+
+    /// Retains the exact inventory and its authority through the preview body.
+    func withMetadataTemplate<T>(id: UUID, revision: String,
+                                 body: (Data) throws -> T) throws -> T {
+        try withInventory(kind: "metadata") { entries in
+            guard let entry = entries.first(where: { $0.id == id.uuidString.lowercased() }),
+                  entry.revision == revision else {
+                throw MCPMetadataTemplatePreview.Failure.staleTemplate
+            }
+            return try body(entry.data)
+        }
+    }
+
+    private func withInventory<T>(kind: String, body: ([Entry]) throws -> T) throws -> T {
         guard ["metadata", "develop"].contains(kind) else { throw MCPTemplateDiscoveryError.invalidInventory }
         let configuration = try authorizationStore.load()
         guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
@@ -99,6 +125,7 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
         defer { reservation.release() }
         let opened = try Directory(root: root, target: target)
         let first = try opened.inventory(kind: kind)
+        let result = try body(first)
         checkpoint()
         guard try opened.inventory(kind: kind) == first else { throw MCPTemplateDiscoveryError.inventoryChanged }
         // A settings change must not publish the old library as the current library.
@@ -119,15 +146,7 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
             throw MCPTemplateDiscoveryError.inventoryChanged
         }
         try opened.validate()
-        return [
-            "kind": .string(kind),
-            "templates": .array(first.sorted { $0.id < $1.id }.map { entry in
-                .object(["id": .string(entry.id), "name": .string(entry.name),
-                         "schemaVersion": .integer(1), "revision": .string(entry.revision)])
-            }),
-            "discoveryOnly": .bool(true),
-            "applicationAuthorized": .bool(false),
-        ]
+        return result
     }
 
     private struct Entry: Equatable {
@@ -136,6 +155,7 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
         let revision: String
         let device: Int32
         let inode: UInt64
+        let data: Data
     }
 
     /// Keep all ancestors open and read only descriptor-relative, no-follow files.
@@ -278,7 +298,7 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
                     guard object["settings"]?.objectValue != nil else { throw MCPTemplateDiscoveryError.invalidInventory }
                 }
                 let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                entries.append(Entry(id: id.uuidString.lowercased(), name: title, revision: "sha256:\(hash)", device: info.st_dev, inode: info.st_ino))
+                entries.append(Entry(id: id.uuidString.lowercased(), name: title, revision: "sha256:\(hash)", device: info.st_dev, inode: info.st_ino, data: data))
             }
             guard try names() == before else { throw MCPTemplateDiscoveryError.inventoryChanged }
             try validate()
