@@ -2,14 +2,18 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft execution now uses exact consent, rooted installation and retained operation records. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-21
-**Latest implementation state:** [Cycle 89](cycle-89-operation-history-recovery-2026-09-21.md) adds native operation history, cooperative cancellation and confirmed removal of completed records while retaining uncertain/recovery evidence. New native executors hold per-owner kernel locks; opening or refreshing history reconciles abandoned managed operations without replay or repair. Legacy/missing-proof records remain unresolved. Managed Whisper removal is descriptor-bound, cancellation-aware and idempotent for absent storage. Complete regression passes 3,278 tests / 342 suites in 112.929 seconds; focused, repository, helper and native evidence is recorded in the cycle report.
-**Latest native evidence:** Cycle 89 validates held-live-owner refusal and recovery after actual process termination/relaunch, plus verified draft history and completed-record removal without removing draft bytes. Cycle 88 retains separate exact-consent application and source-drift refusal evidence. Full physical publication/recovery remains open.
-**Implementation commits:** `ee576d2` (Whisper removal), `172b68c` (operation history/recovery).
-**Cycle baseline:** `94b8847`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 90](cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md) adds native exact-plan XMP dry-run verification through the production writer with parsed preservation checks, carrier/authority revalidation and consent-safe presentation. Whisper installed lookup and production transfer staging now retain cache-directory descriptors and reject unsafe writable models. Focused 59-test validation, complete 3,295-test / 343-suite regression and two native workflows pass; evidence is recorded in the cycle report. Physical publication and signed lifecycle remain open.
+**Latest native evidence:** Cycle 90 verifies XMP dry-run evidence, consent revocation, source-drift refusal and unchanged live carriers, plus pending-draft/history/removal/relaunch regression. Cycle 89 retains actual stopped-owner recovery evidence. Full physical publication/recovery remains open.
+**Implementation commits:** `bb9d7f3` (Whisper storage) and `55482e4` (XMP dry-run verification).
+**Cycle baseline:** `976e39a`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 90 XMP dry run and Whisper storage](cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md)
+adds a native temporary XMP candidate check and descriptor-bound managed-model lookup/staging.
+It does not publish metadata, approve pending-value promotion or establish C2PA trust.
 
 [Cycle 89 operation history and recovery](cycle-89-operation-history-recovery-2026-09-21.md)
 adds native retained-record inspection/cancellation/removal, process-lock-backed abandonment
@@ -613,13 +617,15 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Next implementation slice after cycle 89:** Extend the exact-consent path from verified local
+**Next implementation slice after cycle 90:** Extend the exact-consent path from verified local
 pending drafts to an explicitly selected physical write mode with complete carrier-preservation,
 publication/C2PA approval, read-back and durable recovery. The native pending-draft executor is
 connected to operation records; helper commit remains unavailable. Native history now reconciles
 abandoned managed owners on open/Refresh. Implement actual recovery execution and safe lock-file
 cleanup, then connect face, template and transcription executors. Broaden native coverage to selected-editor refusal, cancellation and failure/recovery.
-The draft-only feature does not close the physical two-phase IPTC criterion.
+The native XMP dry run now checks temporary production-writer output and parsed preservation;
+arbitrary XML fidelity and embedded codestream checks remain. These features do not close the
+physical two-phase IPTC criterion.
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in
    [the companion design](known-people-companion-interchange-design.md). FTP Sync has a
@@ -694,7 +700,7 @@ The draft-only feature does not close the physical two-phase IPTC criterion.
 | --- | --- | --- |
 | Required features | Open | Remaining production MCP tools/coordination and FFmpeg Whisper implementation/verification; transcription/reviewed-variable native breadth; authentic reassociation/archive/delivery evidence; inventory dispositions |
 | Storage, cancellation and integrity | Open | Remaining writer completion/ownership and real-volume drills |
-| Automated regression and package | Cycle 77 final-source complete serial suite passes 3,128 tests / 330 suites; 86 focused tests, repository validation and bundled-helper protocol checks pass. Cycle 74 remains the latest native evidence: 14 distinct passing checks and one skipped opt-in speech case | Complete UI target, packaging and exact-candidate release checks |
+| Automated regression and package | Cycle 90 complete serial suite passes 3,295 tests / 343 suites; 59 focused tests, repository validation and two native workflows pass. Broader prior native evidence remains in dated cycle reports | Complete UI target, packaging and exact-candidate release checks |
 | Computer-use workflows | Native template import stale-preview refusal/fresh-preview recovery, independent actions, keyboard cancellation, byte-conflict recovery and earlier stale deletion; native voice-memo review/approval, single- and two-photo application, invalid-authority refusal/read-back and earlier narrow lifecycle checks passed | Remaining required workspaces, failures/recovery and authentic fixtures |
 | Accessibility/layout/display | Open | Full keyboard/VoiceOver, IME, contrast/motion, window/display evidence |
 | Performance/supported hardware | Open | Target tiers/budgets and measured workloads |

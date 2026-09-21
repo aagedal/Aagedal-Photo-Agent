@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 89: operation history and recovery](release/cycle-89-operation-history-recovery-2026-09-21.md) adds native retained-operation inspection, cancellation requests and confirmed completed-record removal, with protected uncertain evidence and process-lock-backed abandoned-owner reconciliation. Managed Whisper removal is now descriptor-bound and cancellation-aware. Physical MCP commits, recovery execution, other production executors, signed model lifecycle and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 90: XMP dry run and Whisper storage](release/cycle-90-xmp-dry-run-whisper-storage-2026-09-21.md) adds native production-writer XMP candidate verification with parsed preservation and stale-plan refusal, plus descriptor-bound managed Whisper lookup and transfer staging. Physical MCP commits, recoverable installation, other production executors, signed model lifecycle and broader release gates remain open.
 
 ## Portfolio
 
