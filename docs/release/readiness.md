@@ -2,13 +2,20 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft execution now uses exact consent, rooted installation and retained operation records. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-21
-**Latest implementation state:** [Cycle 88](cycle-88-native-pending-draft-execution-2026-09-21.md) connects exact local consent to a retained pending-draft executor. It stages the production codec, rejects unsupported private extensions and selected-editor conflicts, installs through anchored directory descriptors, and verifies all effective fields plus unchanged source/XMP bytes. The distinct `iptc_draft` operation supports cooperative cancellation and honest recovery-required outcomes. Direct physical MCP commits and other workflow executors remain unfinished. Complete regression passes 3,265 tests / 341 suites in 120.405 seconds; focused, repository, helper and native evidence is recorded in the cycle report.
-**Latest native evidence:** Cycle 88 passes three workflows in 90.599 seconds: explicit approval-to-draft application with relaunch persistence and unchanged source/XMP, consent revocation/source-drift refusal, and invalid-plan refusal. Implementation commits are `fb61dab` and `b00cfd1`. Cycle 87 retains separate explicit-model-download and corrupt-cache evidence.
-**Cycle baseline:** `e64e47f`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 89](cycle-89-operation-history-recovery-2026-09-21.md) adds native operation history, cooperative cancellation and confirmed removal of completed records while retaining uncertain/recovery evidence. New native executors hold per-owner kernel locks; opening or refreshing history reconciles abandoned managed operations without replay or repair. Legacy/missing-proof records remain unresolved. Managed Whisper removal is descriptor-bound, cancellation-aware and idempotent for absent storage. Complete regression passes 3,278 tests / 342 suites in 112.929 seconds; focused, repository, helper and native evidence is recorded in the cycle report.
+**Latest native evidence:** Cycle 89 validates held-live-owner refusal and recovery after actual process termination/relaunch, plus verified draft history and completed-record removal without removing draft bytes. Cycle 88 retains separate exact-consent application and source-drift refusal evidence. Full physical publication/recovery remains open.
+**Implementation commits:** `ee576d2` (Whisper removal), `172b68c` (operation history/recovery).
+**Cycle baseline:** `94b8847`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 89 operation history and recovery](cycle-89-operation-history-recovery-2026-09-21.md)
+adds native retained-record inspection/cancellation/removal, process-lock-backed abandonment
+reconciliation and safe managed Whisper removal. Recovery evidence stays protected; no writes are
+replayed, legacy owner liveness is not guessed, and lock files are retained against identity reuse.
+
 
 The current embedded-Whisper integration is detailed in [artifact provenance](../provenance/ffmpeg-whisper-bundled.md).
 The runtime is bundled, and model installation is an explicit Settings action with pinned content checks.
@@ -606,12 +613,12 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Next implementation slice after cycle 88:** Extend the exact-consent path from verified local
+**Next implementation slice after cycle 89:** Extend the exact-consent path from verified local
 pending drafts to an explicitly selected physical write mode with complete carrier-preservation,
 publication/C2PA approval, read-back and durable recovery. The native pending-draft executor is
-connected to operation records; helper commit remains unavailable. Add production crash/relaunch
-owner-liveness reconciliation and recovery UI, then connect face, template and transcription
-executors. Broaden native coverage to selected-editor refusal, cancellation and failure/recovery.
+connected to operation records; helper commit remains unavailable. Native history now reconciles
+abandoned managed owners on open/Refresh. Implement actual recovery execution and safe lock-file
+cleanup, then connect face, template and transcription executors. Broaden native coverage to selected-editor refusal, cancellation and failure/recovery.
 The draft-only feature does not close the physical two-phase IPTC criterion.
 
 1. Coordinate and implement the versioned Known People `.aagedalpeople` interchange in

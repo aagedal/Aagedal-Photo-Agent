@@ -121,12 +121,14 @@ This is separate from the unapproved AI-origin analyzer described above.
   consent to save the exact changes in app-owned metadata history, preserving source and XMP bytes.
   It refuses photos selected in any metadata editor and private extensions the production codec
   cannot preserve. A verified `iptc_draft` operation confirms this draft only; physical publication
-  still uses the normal metadata workflow. The internal operation registry can mark a known stopped owner's
-  unresolved work as recovery required, but executor-liveness detection and actual recovery
-  integration remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
+  still uses the normal metadata workflow. Opening or refreshing native Operation History uses
+  retained process locks to mark abandoned new managed operations as recovery required. Live owners,
+  legacy records and missing lock evidence are not inferred to have stopped. Recovery records remain
+  protected from removal; automatic replay/repair and broad interruption coverage remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
   records with fresh automation authorization. Cancellation records a cooperative request. The native draft executor checks it before
   installation and verifies an already installed draft to completion. Other workflow executors
-  remain unconnected, and crash/relaunch owner-liveness detection and recovery remain unfinished.
+  remain unconnected. Per-owner lock files are retained to prevent lock identity reuse; pruning them
+  requires a future coordinated cleanup protocol.
   Develop, face, template, transcription,
   execution coordination, and two-phase IPTC mutation tools are still release work and are not advertised by
   the server.

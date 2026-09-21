@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added native automation operation history with cancellation requests and confirmed removal of
+  completed records. Abandoned managed operations are identified using process locks when history
+  opens or refreshes; uncertain effects remain visible and protected from removal.
+- Managed Whisper model removal is now bound to the validated cache directory, succeeds when the
+  cache is already absent, and respects cancellation before deletion.
+
 - Settings → Automation can now apply an exactly reviewed and approved proofreading plan to a
   pending local metadata draft. Source and XMP bytes remain unchanged; photos open in metadata
   editors and unsupported private extensions are refused. A retained operation reports verification,

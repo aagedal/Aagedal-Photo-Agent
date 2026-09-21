@@ -155,6 +155,14 @@ The result includes an operation ID with kind `iptc_draft`. A verified result me
 was verified. Cancellation before saving leaves it unchanged; a cancellation arriving after installation
 does not undo a verified draft. An uncertain result requires inspection before retrying.
 
+Settings → Automation → **Operation History** lists retained outcomes and provides **Refresh**,
+**Request Cancellation**, and confirmed removal of completed records. Removing a record does not undo
+metadata changes or delete a pending draft. Records with uncertain effects remain protected.
+Opening or refreshing history checks process locks for new managed operations: if the owning process
+has stopped, unfinished work becomes **Recovery required**. Inspect the affected photo and pending
+metadata before retrying. No operation is automatically replayed or repaired; older records without
+owner-lock evidence remain unresolved.
+
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
 it reports unknown availability and requires an app session. This catalog does not enable transcription.

@@ -1650,6 +1650,15 @@ application only: physical publication and `commit_iptc_patch` remain unfinished
 also runs a repeatable model-free Whisper process probe, with optional local-model CPU checks.
 See [cycle 88 evidence](release/cycle-88-native-pending-draft-execution-2026-09-21.md).
 
+**Cycle 89 continuation:** Settings now lists retained operations with cooperative cancellation and
+confirmed completed-record removal, while uncertain/recovery evidence is protected. New native
+executors retain per-owner kernel locks; opening or refreshing history reconciles only abandoned
+managed owners with valid lock evidence. Work is never replayed or repaired automatically. Legacy
+records, missing proof, safe lock-file pruning and broader recovery execution remain open. Managed
+Whisper removal now uses the admitted directory descriptor and handles absent storage/cancellation.
+See [cycle 89 evidence](release/cycle-89-operation-history-recovery-2026-09-21.md).
+
+
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.

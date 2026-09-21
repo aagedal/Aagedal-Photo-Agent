@@ -101,8 +101,13 @@ Operation status and cancellation tools require local automation to be enabled. 
 opaque operation IDs, fixed kind/state/outcome values and timestamps, not paths, metadata or owner IDs.
 The private registry at `~/Library/Application Support/Aagedal Photo Agent/Automation/Operations`
 retains up to 256 records within a 1 MiB archive limit. There is no automatic eviction. Cancellation
-records a request and does not erase history or prove work stopped. Production executors are not yet
-connected. Stop the app and connected helpers before removing this directory to erase local history.
+records a request and does not erase history or prove work stopped. The native pending-draft executor
+is connected; other production executors remain unfinished. Settings → Automation → Operation History
+can remove completed records after confirmation, without undoing their effects; records requiring
+recovery are retained. Opening or refreshing history checks per-owner kernel locks and marks abandoned
+managed operations as requiring recovery, without replaying writes. Lock files contain no photo or
+metadata values and remain after individual record removal to prevent unsafe owner identity reuse.
+Stop the app and connected helpers before removing this directory to erase local history.
 
 ## Network features
 
