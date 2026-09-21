@@ -67,6 +67,66 @@ struct WhisperModelDownloadServiceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
+    @Test("Removal is idempotent when the cache or model has already disappeared")
+    func removeMissingCache() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("missing/models")
+        let service = WhisperModelDownloadService(directory: storage)
+        try await service.remove(model())
+        #expect(!FileManager.default.fileExists(atPath: storage.path))
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try await service.remove(model())
+        #expect(try FileManager.default.contentsOfDirectory(atPath: storage.path).isEmpty)
+    }
+
+    @Test("Cancelled removal preserves installed bytes and a subsequent removal succeeds")
+    func cancelledRemoval() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try bytes.write(to: target)
+        let service = WhisperModelDownloadService(directory: root)
+        let selected = model()
+        let removal = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await service.remove(selected)
+        }
+        await #expect(throws: CancellationError.self) { try await removal.value }
+        #expect(try Data(contentsOf: target) == bytes)
+        try await service.remove(selected)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+    }
+
+    @Test("Removal refuses linked ancestors even when the model cache is missing")
+    func removalLinkedParent() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+        let linked = root.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: external)
+        let service = WhisperModelDownloadService(directory: linked.appendingPathComponent("missing/models"))
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            try await service.remove(model())
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test("Removal never recursively deletes a directory occupying the model path")
+    func removalDirectoryLeaf() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        let child = target.appendingPathComponent("unrelated")
+        try bytes.write(to: child)
+        let service = WhisperModelDownloadService(directory: root)
+        await #expect(throws: (any Error).self) { try await service.remove(model()) }
+        #expect(try Data(contentsOf: child) == bytes)
+    }
+
     @Test("Failed replacement preserves the existing file")
     func preserveExisting() async throws {
         let root = try fixture()

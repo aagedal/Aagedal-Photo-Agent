@@ -116,9 +116,26 @@ actor WhisperModelDownloadService {
     func remove(_ model: WhisperDownloadableModel) throws {
         guard !downloading else { throw DownloadError.busy }
         let target = try targetURL(model)
+        try Task.checkCancellation()
+        // An absent cache is already removed, including first-use and external cleanup.
+        // Still reject linked ancestors before treating an absent leaf as success.
+        try validateAncestors(allowMissing: true)
+        guard let admittedDirectory = try identity(at: directory) else { return }
         try validateStorage(create: false)
-        // Removing the leaf never follows a link to another file.
-        if unlink(target.path) != 0 && errno != ENOENT {
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              FileIdentity(info).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
+        try validateStorage(create: false)
+        guard try identity(at: directory)?.sameFile(as: admittedDirectory) == true else {
+            throw DownloadError.storageChanged
+        }
+        try Task.checkCancellation()
+        // Stay bound to the admitted directory if its path subsequently moves.
+        // Removing the leaf never follows a link or recursively removes a directory.
+        if unlinkat(descriptor, target.lastPathComponent, 0) != 0 && errno != ENOENT {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
     }
