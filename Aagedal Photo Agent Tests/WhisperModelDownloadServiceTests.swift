@@ -349,6 +349,181 @@ struct WhisperModelDownloadServiceTests {
         _ = try await first.value
     }
 
+    @Test("Installed lookup refuses linked ancestors even when the model is absent")
+    func installedLookupLinkedParent() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external")
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: false)
+        let linked = root.appendingPathComponent("linked")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: external)
+        let service = WhisperModelDownloadService(directory: linked.appendingPathComponent("missing/models"))
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.installedURL(for: model())
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: external.path).isEmpty)
+    }
+
+    @Test("Cancelled installed lookup cannot report either availability or absence", arguments: [false, true])
+    func cancelledInstalledLookup(present: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        if present { try bytes.write(to: root.appendingPathComponent("ggml-fixture.bin")) }
+        let service = WhisperModelDownloadService(directory: root)
+        let selected = model()
+        let lookup = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.installedURL(for: selected)
+        }
+        await #expect(throws: CancellationError.self) { _ = try await lookup.value }
+    }
+
+    @Test("Installed verification rejects a directory replaced while hashing", arguments: [false, true])
+    func installedDirectoryReplacement(reuse: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("models")
+        let moved = root.appendingPathComponent("moved")
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        try bytes.write(to: storage.appendingPathComponent("ggml-fixture.bin"))
+        let service = WhisperModelDownloadService(directory: storage, fetch: { _, _, _ in
+            Issue.record("A changed cache must not trigger a replacement transfer")
+        }, verificationCheckpoint: {
+            try FileManager.default.moveItem(at: storage, to: moved)
+            try FileManager.default.createSymbolicLink(at: storage, withDestinationURL: moved)
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.storageChanged) {
+            if reuse { _ = try await service.download(model()) }
+            else { _ = try await service.installedURL(for: model()) }
+        }
+        #expect(try Data(contentsOf: moved.appendingPathComponent("ggml-fixture.bin")) == bytes)
+    }
+
+    @Test("Installed verification rechecks ancestors after descriptor-bound hashing")
+    func installedAncestorReplacement() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent")
+        let moved = root.appendingPathComponent("moved")
+        let storage = parent.appendingPathComponent("models")
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        try bytes.write(to: storage.appendingPathComponent("ggml-fixture.bin"))
+        let service = WhisperModelDownloadService(directory: storage, verificationCheckpoint: {
+            try FileManager.default.moveItem(at: parent, to: moved)
+            try FileManager.default.createSymbolicLink(at: parent, withDestinationURL: moved)
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.installedURL(for: model())
+        }
+        #expect(try Data(contentsOf: moved.appendingPathComponent("models/ggml-fixture.bin")) == bytes)
+    }
+
+    @Test("Publication rejects ancestors redirected during partial verification")
+    func publicationAncestorReplacement() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent")
+        let moved = root.appendingPathComponent("moved")
+        let storage = parent.appendingPathComponent("models")
+        let bytes = bytes
+        let service = WhisperModelDownloadService(directory: storage, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+        }, verificationCheckpoint: {
+            try FileManager.default.moveItem(at: parent, to: moved)
+            try FileManager.default.createSymbolicLink(at: parent, withDestinationURL: moved)
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.download(model())
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: moved.appendingPathComponent("models").path).isEmpty)
+    }
+
+    @Test("Writable installed models are refused before reuse", arguments: [0o620, 0o602, 0o666])
+    func writableInstalledModel(permissions: Int) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try bytes.write(to: target)
+        #expect(chmod(target.path, mode_t(permissions)) == 0)
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
+            Issue.record("Unsafe permissions must be refused before fetching")
+        })
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.installedURL(for: model())
+        }
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            _ = try await service.download(model())
+        }
+        #expect(try Data(contentsOf: target) == bytes)
+    }
+
+    @Test("Production staging writes only to its retained directory after path replacement")
+    func stagingRetainsDirectory() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("models")
+        let moved = root.appendingPathComponent("moved")
+        let source = root.appendingPathComponent("network-download")
+        try bytes.write(to: source)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false)
+        let descriptor = open(storage.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        #expect(descriptor >= 0)
+        defer { close(descriptor) }
+        try FileManager.default.moveItem(at: storage, to: moved)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: false)
+        try WhisperDownloadedFileStaging.copy(source, to: "test.partial", in: descriptor, byteCount: Int64(bytes.count))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: storage.path).isEmpty)
+        #expect(try Data(contentsOf: moved.appendingPathComponent("test.partial")) == bytes)
+    }
+
+    @Test("Production staging refuses existing output and linked source", arguments: [false, true])
+    func stagingRejectsUnsafeFiles(linkedSource: Bool) throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        let external = root.appendingPathComponent("external")
+        let target = root.appendingPathComponent("test.partial")
+        try bytes.write(to: external)
+        if linkedSource {
+            try FileManager.default.createSymbolicLink(at: source, withDestinationURL: external)
+        } else {
+            try bytes.write(to: source)
+            try FileManager.default.createSymbolicLink(at: target, withDestinationURL: external)
+        }
+        let descriptor = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        #expect(descriptor >= 0)
+        defer { close(descriptor) }
+        #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            try WhisperDownloadedFileStaging.copy(source, to: "test.partial", in: descriptor, byteCount: Int64(bytes.count))
+        }
+        #expect(try Data(contentsOf: external) == bytes)
+        if !linkedSource {
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: target.path) == external.path)
+        }
+    }
+
+    @Test("Cancellation during production staging removes only its partial")
+    func stagingCancellation() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source")
+        try bytes.write(to: source)
+        let descriptor = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        #expect(descriptor >= 0)
+        defer { close(descriptor) }
+        var checks = 0
+        #expect(throws: CancellationError.self) {
+            try WhisperDownloadedFileStaging.copy(source, to: "test.partial", in: descriptor, byteCount: Int64(bytes.count),
+                checkCancellation: {
+                    checks += 1
+                    if checks == 2 { throw CancellationError() }
+                })
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["source"])
+    }
+
     @Test("Path traversal model IDs are rejected before fetching")
     func unsafeID() async throws {
         let root = try fixture()
