@@ -8,10 +8,24 @@ import ImageIO
 enum UITestPatchReviewFixture {
     // SwiftUI can construct discarded reference-model initializers while retaining @State.
     // Keep one fixture/manifest pair for the lifetime of this explicitly opted-in test process.
+    private static var recoveryLease: AutomationOperationPersistence.OwnerLease?
     private static let currentService = Result { try makeService(configuration: .current) }
 
     static func currentServiceForModel() throws -> AutomationPatchReviewService? {
         try currentService.get()
+    }
+
+    static func operationRegistryForHistory(configuration: UITestLaunchConfiguration = .current) throws -> AutomationOperationRegistry? {
+        guard configuration.isEnabled else { return nil }
+        if !configuration.patchReviewRequested {
+            return AutomationOperationRegistry(storageDirectory: FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+                .appendingPathComponent("isolated-operation-history-\(UUID().uuidString)"))
+        }
+        guard let folder = configuration.patchReviewFolderURL,
+              let canonical = realpath(folder.path, nil) else { throw Failure.invalidFolder }
+        defer { free(canonical) }
+        return AutomationOperationRegistry(storageDirectory: URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+            .appendingPathComponent("patch-operations"))
     }
 
     private nonisolated final class ConfigurationBox: @unchecked Sendable {
@@ -91,8 +105,18 @@ enum UITestPatchReviewFixture {
             defer { free(canonical) }
             let operationFolder = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
                 .appendingPathComponent("patch-operations")
-            return AutomationPatchReviewService(plans: plans, facade: facade,
-                operationRegistry: AutomationOperationRegistry(storageDirectory: operationFolder))
+            let registry = AutomationOperationRegistry(storageDirectory: operationFolder)
+            if configuration.operationRecoveryRequested {
+                let owner = UUID()
+                let lease = try registry.acquireOwnerLease(ownerID: owner)
+                let record = try registry.enqueue(kind: .iptcDraft, ownerID: owner, ownerLease: lease)
+                _ = try registry.start(record.id, ownerID: owner)
+                _ = try registry.requestCancellation(record.id)
+                recoveryLease = lease
+                try Data(record.id.uuidString.lowercased().utf8).write(
+                    to: folder.appendingPathComponent("recovery-operation-id.txt"), options: .atomic)
+            }
+            return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

@@ -28,6 +28,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         let ownerID: UUID
         let kind: Kind
         let createdAt: Date
+        let ownerLeaseManaged: Bool?
         fileprivate(set) var updatedAt: Date
         fileprivate(set) var state: State
         fileprivate(set) var outcome: Outcome?
@@ -64,12 +65,13 @@ nonisolated final class AutomationOperationRegistry: Sendable {
     }
 
     /// No implicit eviction: retained records remain inspectable until explicitly removed.
-    func enqueue(kind: Kind, ownerID: UUID, now: Date = Date()) throws -> Record {
+    func enqueue(kind: Kind, ownerID: UUID, now: Date = Date(), ownerLease: AutomationOperationPersistence.OwnerLease? = nil) throws -> Record {
         guard now.timeIntervalSinceReferenceDate.isFinite else { throw Failure.invalidArguments }
+        if let ownerLease { try persistence.validateOwnerLease(ownerLease, ownerID: ownerID) }
         return try transaction { records in
             guard records.count < maximumRecords else { throw Failure.capacity }
             let record = Record(id: UUID(), ownerID: ownerID, kind: kind, createdAt: now,
-                updatedAt: now, state: .queued)
+                ownerLeaseManaged: ownerLease == nil ? nil : true, updatedAt: now, state: .queued)
             records.append(record)
             return record
         }
@@ -149,6 +151,42 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         }
     }
 
+    func acquireOwnerLease(ownerID: UUID) throws -> AutomationOperationPersistence.OwnerLease {
+        guard let lease = try persistence.acquireOwnerLease(ownerID: ownerID, create: true) else {
+            throw Failure.storageUnavailable
+        }
+        return lease
+    }
+
+    /// Only a released kernel lock proves abandonment. Missing evidence, legacy
+    /// records, elapsed time and process IDs never establish that writes have stopped.
+    /// Work is never replayed: uncertain effects always require explicit recovery.
+    func reconcileAbandonedOwners(now: Date = Date()) throws -> [Record] {
+        guard now.timeIntervalSinceReferenceDate.isFinite else { throw Failure.invalidArguments }
+        var leases: [AutomationOperationPersistence.OwnerLease] = []
+        defer { withExtendedLifetime(leases) {} }
+        return try transaction { records in
+            let owners = Set(records.filter { !$0.isTerminal && $0.ownerLeaseManaged == true }.map(\.ownerID))
+            var stopped = Set<UUID>()
+            for owner in owners {
+                if let lease = try persistence.acquireOwnerLease(ownerID: owner, create: false) {
+                    leases.append(lease)
+                    stopped.insert(owner)
+                }
+            }
+            let indices = records.indices.filter {
+                !records[$0].isTerminal && records[$0].ownerLeaseManaged == true && stopped.contains(records[$0].ownerID)
+            }
+            guard indices.allSatisfy({ now >= records[$0].updatedAt }) else { throw Failure.invalidArguments }
+            return indices.map { index in
+                records[index].state = .completed
+                records[index].outcome = .recoveryRequired
+                records[index].updatedAt = now
+                return records[index]
+            }
+        }
+    }
+
     private func update(_ id: UUID, ownerID: UUID?, now: Date,
                         body: (inout Record) throws -> Void) throws -> Record {
         try transaction { records in
@@ -188,7 +226,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
             let required: Set<String> = ["id", "ownerID", "kind", "createdAt", "updatedAt", "state"]
             for record in recordObjects {
                 guard required.isSubset(of: Set(record.keys)),
-                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt"])) else { throw Failure.invalidStorage }
+                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt", "ownerLeaseManaged"])) else { throw Failure.invalidStorage }
             }
             let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
             guard archive.schemaVersion == 1, archive.records.count <= maximumRecords,

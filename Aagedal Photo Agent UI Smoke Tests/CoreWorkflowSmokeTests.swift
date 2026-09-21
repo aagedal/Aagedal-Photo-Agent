@@ -193,11 +193,59 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let metadata = try XCTUnwrap(draft["metadata"] as? [String: Any])
         XCTAssertEqual(metadata["title"] as? String, manifest["afterTitle"])
         XCTAssertTrue(metadata["city"] == nil || metadata["city"] is NSNull)
+        let refresh = app.buttons["automation.refreshOperations"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        refresh.click()
+        let historyStatus = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "automation.operationStatus.")).firstMatch
+        XCTAssertTrue(historyStatus.waitForExistence(timeout: 8))
+        XCTAssertTrue(historyStatus.label.contains("not published") || (historyStatus.value as? String)?.contains("not published") == true)
+        let remove = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Remove completed operation record")).firstMatch
+        XCTAssertTrue(remove.waitForExistence(timeout: 8))
+        remove.click()
+        let confirmation = app.sheets.firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].click()
+        XCTAssertTrue(historyStatus.exists)
+        remove.click()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Remove Record"].click()
+        XCTAssertTrue(app.staticTexts["No retained operations"].waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: draftURL), draftBytes)
         app.terminate()
         launch(workflow: "open-folder", folder: photos)
         XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 12))
         XCTAssertEqual(try Data(contentsOf: draftURL), draftBytes)
         XCTAssertEqual(try Data(contentsOf: photo), before)
+    }
+
+    @MainActor
+    func testAutomationHistoryRecoversStoppedOwnerAfterRelaunch() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot, operationRecovery: true)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let refresh = app.buttons["automation.refreshOperations"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        let operationID = try String(contentsOf: fixtureRoot.appendingPathComponent("recovery-operation-id.txt"), encoding: .utf8)
+        let identifier = "automation.operationStatus.\(operationID)"
+        refresh.click()
+        let status = app.staticTexts[identifier]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertTrue(status.label.contains("Cancellation requested") || (status.value as? String)?.contains("Cancellation requested") == true)
+        // Terminating the process releases its kernel lease; no executor completion is fabricated.
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        let recovered = app.staticTexts[identifier]
+        XCTAssertTrue(recovered.waitForExistence(timeout: 8))
+        XCTAssertTrue(recovered.label.contains("Recovery required") || (recovered.value as? String)?.contains("Recovery required") == true)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Remove completed operation record")).firstMatch.exists)
+        app.buttons["automation.refreshOperations"].click()
+        XCTAssertTrue(recovered.exists)
     }
 
     @MainActor
@@ -1036,7 +1084,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         templateRoot: URL? = nil,
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
-        patchReviewFolder: URL? = nil
+        patchReviewFolder: URL? = nil,
+        operationRecovery: Bool = false
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -1062,6 +1111,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-known-people-root", knownPeopleRoot)
         append("--ui-test-template-root", templateRoot)
         append("--ui-test-patch-review-folder", patchReviewFolder)
+        if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
         app.launch()
         reopenMainWindowIfNeeded()
     }

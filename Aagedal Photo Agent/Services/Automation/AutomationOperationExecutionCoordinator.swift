@@ -41,6 +41,7 @@ actor AutomationOperationExecutionCoordinator {
     private let maximumConcurrentOperations: Int
     private var tasks: [UUID: Task<AutomationOperationRegistry.Record, Error>] = [:]
     private var accepting = true
+    private var ownerLease: AutomationOperationPersistence.OwnerLease?
 
     init(registry: AutomationOperationRegistry, ownerID: UUID = UUID(), maximumConcurrentOperations: Int = 4) {
         self.registry = registry
@@ -53,7 +54,8 @@ actor AutomationOperationExecutionCoordinator {
     func submit(kind: AutomationOperationRegistry.Kind, work: @escaping Work) throws -> AutomationOperationRegistry.Record {
         guard accepting else { throw Failure.stopped }
         guard tasks.count < maximumConcurrentOperations else { throw Failure.capacity }
-        let record = try registry.enqueue(kind: kind, ownerID: ownerID)
+        if ownerLease == nil { ownerLease = try registry.acquireOwnerLease(ownerID: ownerID) }
+        let record = try registry.enqueue(kind: kind, ownerID: ownerID, ownerLease: ownerLease)
         tasks[record.id] = Task { try await execute(record.id, work: work) }
         return record
     }
@@ -79,6 +81,7 @@ actor AutomationOperationExecutionCoordinator {
         }
         for task in retained.values { _ = await task.result }
         let reconciled = try registry.reconcileStoppedOwner(ownerID: ownerID)
+        ownerLease = nil
         if let requestError { throw requestError }
         return reconciled
     }

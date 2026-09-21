@@ -16,6 +16,63 @@ nonisolated final class AutomationOperationPersistence: Sendable {
         self.maximumBytes = maximumBytes
     }
 
+    /// The open descriptor is the liveness proof. Kernel teardown releases it even
+    /// when the app crashes. Never unlink/recreate these names: that would split locks.
+    nonisolated final class OwnerLease: Sendable {
+        fileprivate let descriptor: Int32
+        let ownerID: UUID
+        let directory: URL
+        fileprivate init(descriptor: Int32, ownerID: UUID, directory: URL) {
+            self.descriptor = descriptor
+            self.ownerID = ownerID
+            self.directory = directory
+        }
+        deinit { Darwin.close(descriptor) }
+    }
+
+    func validateOwnerLease(_ lease: OwnerLease, ownerID: UUID) throws {
+        guard lease.ownerID == ownerID, lease.directory == directory else {
+            throw AutomationOperationRegistry.Failure.wrongOwner
+        }
+        let root = try openDirectory(create: false)
+        guard root >= 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+        defer { Darwin.close(root) }
+        try validateNamedIdentity(lease.descriptor, name: "owner-\(ownerID.uuidString).lock", root: root)
+        try validateDirectoryIdentity(root)
+    }
+
+    func acquireOwnerLease(ownerID: UUID, create: Bool) throws -> OwnerLease? {
+        let root = try openDirectory(create: create)
+        guard root >= 0 else { return nil }
+        defer { Darwin.close(root) }
+        let name = "owner-\(ownerID.uuidString).lock"
+        let flags = O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | (create ? O_CREAT | O_EXCL : 0)
+        let descriptor = Darwin.openat(root, name, flags, 0o600)
+        guard descriptor >= 0 else {
+            if !create, errno == ENOENT { return nil }
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        do {
+            try validateFile(descriptor)
+            guard operationRegistryFlock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                if !create, errno == EWOULDBLOCK {
+                    Darwin.close(descriptor)
+                    return nil
+                }
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            try validateNamedIdentity(descriptor, name: name, root: root)
+            try validateDirectoryIdentity(root)
+            if create, fsync(descriptor) != 0 || fsync(root) != 0 {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            return OwnerLease(descriptor: descriptor, ownerID: ownerID, directory: directory)
+        } catch {
+            Darwin.close(descriptor)
+            throw error
+        }
+    }
+
     func transaction<T>(readOnly: Bool = false, _ body: (Data?) throws -> (T, Data)) throws -> T {
         let root = try openDirectory(create: !readOnly)
         guard root >= 0 else { return try body(nil).0 }

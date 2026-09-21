@@ -167,4 +167,106 @@ struct AutomationOperationExecutionCoordinatorTests {
         }
         #expect(try await runner.shutdown().isEmpty)
     }
+    @Test("Relaunch recovery requires a released managed-owner lock and preserves cancellation")
+    func abandonedOwnerRecovery() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let helper = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        var lease: AutomationOperationPersistence.OwnerLease? = try registry.acquireOwnerLease(ownerID: owner)
+        let managed = try registry.enqueue(kind: .iptcDraft, ownerID: owner, ownerLease: lease)
+        _ = try registry.start(managed.id, ownerID: owner)
+        let requested = try registry.requestCancellation(managed.id)
+        let legacy = try registry.enqueue(kind: .iptcDraft, ownerID: owner)
+        #expect(try helper.reconcileAbandonedOwners().isEmpty)
+        withExtendedLifetime(lease) {}
+        lease = nil
+        let recovered = try helper.reconcileAbandonedOwners()
+        #expect(recovered.map(\.id) == [managed.id])
+        #expect(recovered.first?.outcome == .recoveryRequired)
+        #expect(recovered.first?.cancellationRequestedAt == requested.cancellationRequestedAt)
+        #expect(try helper.inspect(legacy.id).state == .queued)
+        #expect(try helper.reconcileAbandonedOwners().isEmpty)
+        #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+            _ = try registry.acquireOwnerLease(ownerID: owner)
+        }
+    }
+
+    @Test("A live coordinator cannot be recovered by another registry")
+    func liveOwnerRecoveryRefused() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let entered = Gate(), release = Gate()
+        let record = try await runner.submit(kind: .iptcDraft) { _ in
+            await entered.open()
+            await release.wait()
+            return .verified
+        }
+        await entered.wait()
+        #expect(try registry.inspect(record.id).ownerLeaseManaged == true)
+        #expect(try registry.reconcileAbandonedOwners().isEmpty)
+        await release.open()
+        #expect(try await runner.waitForCompletion(record.id).outcome == .verified)
+    }
+
+    @Test("Owner leases cannot enroll another owner or another archive")
+    func mismatchedLeaseRefused() throws {
+        let root = try directory(), otherRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: otherRoot)
+        }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let other = AutomationOperationRegistry(storageDirectory: otherRoot)
+        let owner = UUID()
+        let lease = try registry.acquireOwnerLease(ownerID: owner)
+        #expect(throws: AutomationOperationRegistry.Failure.wrongOwner) {
+            _ = try registry.enqueue(kind: .iptcDraft, ownerID: UUID(), ownerLease: lease)
+        }
+        #expect(throws: AutomationOperationRegistry.Failure.wrongOwner) {
+            _ = try other.enqueue(kind: .iptcDraft, ownerID: owner, ownerLease: lease)
+        }
+    }
+
+    @Test("Missing owner evidence is unresolved and symlink evidence is refused")
+    func invalidOwnerEvidence() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        var lease: AutomationOperationPersistence.OwnerLease? = try registry.acquireOwnerLease(ownerID: owner)
+        let record = try registry.enqueue(kind: .iptcDraft, ownerID: owner, ownerLease: lease)
+        withExtendedLifetime(lease) {}
+        lease = nil
+        let lock = root.appendingPathComponent("owner-\(owner.uuidString).lock")
+        try FileManager.default.removeItem(at: lock)
+        #expect(try registry.reconcileAbandonedOwners().isEmpty)
+        #expect(try registry.inspect(record.id).state == .queued)
+        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: root.appendingPathComponent("operations.lock"))
+        #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+            _ = try registry.reconcileAbandonedOwners()
+        }
+        #expect(try registry.inspect(record.id).state == .queued)
+    }
+
+    @Test("Clock rollback refuses an abandoned-owner batch without changing any record")
+    func abandonedOwnerClockRollback() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID(), now = Date()
+        var lease: AutomationOperationPersistence.OwnerLease? = try registry.acquireOwnerLease(ownerID: owner)
+        let first = try registry.enqueue(kind: .iptcDraft, ownerID: owner, now: now, ownerLease: lease)
+        let later = try registry.enqueue(kind: .iptcDraft, ownerID: owner, now: now.addingTimeInterval(10), ownerLease: lease)
+        withExtendedLifetime(lease) {}
+        lease = nil
+        #expect(throws: AutomationOperationRegistry.Failure.invalidArguments) {
+            _ = try registry.reconcileAbandonedOwners(now: now)
+        }
+        #expect(try registry.records() == [first, later])
+    }
+
 }

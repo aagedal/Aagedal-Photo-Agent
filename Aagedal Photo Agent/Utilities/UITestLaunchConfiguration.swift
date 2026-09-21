@@ -28,6 +28,7 @@ struct UITestLaunchConfiguration {
     let whisperDefaultsSuite: String?
     let patchReviewFolderURL: URL?
     let patchReviewRequested: Bool
+    let operationRecoveryRequested: Bool
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -50,6 +51,7 @@ struct UITestLaunchConfiguration {
             ? value(after: "--ui-test-known-people-root").map { URL(fileURLWithPath: $0) }
             : nil
         whisperDefaultsSuite = isEnabled ? value(after: "--ui-test-whisper-defaults-suite") : nil
+        operationRecoveryRequested = isEnabled && arguments.contains("--ui-test-operation-recovery")
         patchReviewRequested = isEnabled && arguments.contains("--ui-test-patch-review-folder")
         patchReviewFolderURL = isEnabled
             ? value(after: "--ui-test-patch-review-folder").map { URL(fileURLWithPath: $0) }
