@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Expanded literal metadata-template previews to creators, organisations, scene/subject codes, date,
+  country, source type, urgency, rights URL and digital GUID, matching editor semantics. Added
+  `preview_metadata_template_batch` for 1–8 exact-revision photos with all-or-error results.
+- Added separate exact-candidate XMP publication-consent and persistent signed Whisper release-state
+  foundations. They do not yet enable physical publication or change the production model installer.
+
 - Added `preview_metadata_template` to local automation: exact template/photo revisions, read-only
   Append/Replace previews for literal descriptive fields and Person Shown, and refusal of unsupported
   or stale inputs. Batch application and template variables remain under implementation.

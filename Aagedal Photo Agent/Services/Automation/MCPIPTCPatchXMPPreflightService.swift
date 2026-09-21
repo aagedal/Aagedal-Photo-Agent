@@ -11,6 +11,28 @@ nonisolated struct MCPIPTCPatchXMPPreflightService: Sendable {
         let stagedByteCount: Int
         let stagedSHA256: String
         let warnings: [String]
+        let publicationBinding: PublicationBinding
+
+        fileprivate init(planID: String, targetPath: String, stagedByteCount: Int,
+                         stagedSHA256: String, warnings: [String], publicationBinding: PublicationBinding) {
+            self.planID = planID; self.targetPath = targetPath
+            self.stagedByteCount = stagedByteCount; self.stagedSHA256 = stagedSHA256
+            self.warnings = warnings; self.publicationBinding = publicationBinding
+        }
+    }
+
+    /// Only a successful production preflight can construct this binding. The plan digest
+    /// includes all carrier revisions, the complete preview and captured authorization.
+    /// This value is neither serializable nor a physical write capability.
+    struct PublicationBinding: Sendable, Equatable {
+        let planDigest: String
+        let expiresAt: Date
+        let promotesPendingDraft: Bool
+
+        fileprivate init(planDigest: String, expiresAt: Date, promotesPendingDraft: Bool) {
+            self.planDigest = planDigest; self.expiresAt = expiresAt
+            self.promotesPendingDraft = promotesPendingDraft
+        }
     }
 
     struct Hooks: Sendable {
@@ -74,7 +96,7 @@ nonisolated struct MCPIPTCPatchXMPPreflightService: Sendable {
               snapshot.sourceBytes == after.sourceBytes, snapshot.xmpBytes == after.xmpBytes,
               snapshot.appSidecarBytes == after.appSidecarBytes else { throw VerificationFailure() }
         var warnings = [
-            "Temporary XMP candidate only. No live write support, publication approval, or durable recovery installation is established.",
+            "Temporary XMP candidate only. No live metadata was written. This report alone establishes neither publication approval nor durable recovery.",
             "Preservation covers parsed XMP properties and production editorial semantics; it is not proof of arbitrary XML extension preservation.",
             "C2PA trust and publication consequences have not been assessed.",
             "This evaluates an XMP sidecar candidate, not embedded metadata support or the selected publication mode.",
@@ -85,7 +107,8 @@ nonisolated struct MCPIPTCPatchXMPPreflightService: Sendable {
         return Report(planID: planID, targetPath: service.sidecarURL(for: photo).path,
             stagedByteCount: bytes.count,
             stagedSHA256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
-            warnings: warnings)
+            warnings: warnings, publicationBinding: PublicationBinding(planDigest: binding.digest,
+                expiresAt: binding.expiresAt, promotesPendingDraft: read.resolution.hasPendingChanges))
     }
 
     static func verifyPreservation(before: Data?, after: Data) throws {

@@ -1668,6 +1668,14 @@ proposals are implemented separately from the production installer. Recoverable 
 batch/variable template execution, persisted trusted model lifecycle and broad release gates remain.
 See [cycle 91 evidence](release/cycle-91-template-preview-recovery-trust-2026-09-21.md).
 
+**Cycle 92 continuation:** literal template previews now cover creator/organisation lists, scene/subject
+codes, rights URL, digital GUID, date, country, source type and urgency with production editor parity.
+`preview_metadata_template_batch` retains authority for 1–8 explicit photos and rejects the entire
+result on any drift. Separate mode/candidate-bound native publication consent and persisted signed
+Whisper release authorization are implemented; neither is connected to a physical installer.
+Variables, Keywords, production execution, recovery/UI integration and model-byte transaction coupling
+remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-consent-2026-09-21.md).
+
 - [ ] Implement read-only capability and discovery tools for server version, supported formats,
   authorized roots, metadata templates, Develop templates, transcription providers, and provider
   readiness. Identify templates by stable UUID, not display name.

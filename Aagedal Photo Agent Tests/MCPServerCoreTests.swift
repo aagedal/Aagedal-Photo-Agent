@@ -478,7 +478,7 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -1654,6 +1654,11 @@ struct MCPServerCoreTests {
         #expect((templatePreview["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true)
         let templateSchema = try #require(templatePreview["inputSchema"] as? [String: Any])
         #expect(Set(templateSchema["required"] as? [String] ?? []) == MCPMetadataTemplatePreview.argumentKeys)
+        let batchPreview = try #require(discoveredTools.first { $0["name"] as? String == "preview_metadata_template_batch" })
+        #expect((batchPreview["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true)
+        let batchSchema = try #require(batchPreview["inputSchema"] as? [String: Any])
+        #expect(Set(batchSchema["required"] as? [String] ?? []) == MCPMetadataTemplateBatchPreview.argumentKeys)
+
     }
 
     @Test("The app bundle contains a launchable hardened-runtime MCP helper")

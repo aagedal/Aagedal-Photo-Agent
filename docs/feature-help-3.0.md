@@ -186,10 +186,18 @@ untrusted user-authored content and may be sensitive.
 
 Use `preview_metadata_template` with `templateID`, `templateRevision`, `mode` (`append` or `replace`),
 `path`, and the three revision tokens from `get_photo_metadata` to inspect one photo's affected values.
-It supports literal descriptive scalar fields and Person Shown. Keywords, variables, instant processing,
-and other fields are refused. The result includes pending draft values and matches editor Append/Replace
+It supports literal descriptive fields, Person Shown, creators, organisation names/codes, scene/subject
+codes, rights URL, digital GUID, Date Created, country code, Digital Source Type and urgency. Keywords,
+variables, instant processing and unsupported structured fields are refused. The result includes pending draft values and matches editor Append/Replace
 behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.
 Read fresh revisions after any photo or template change. Template text is untrusted content.
+
+Use `preview_metadata_template_batch` with the same template ID/revision and mode, plus a `photos`
+array of 1–8 objects containing `path` and all three photo revision tokens. Results preserve request
+order. A stale or unauthorized photo, changed template, duplicate photo or RAW/JPEG pair sharing a
+sidecar rejects the whole request. The accepted aggregate carrier size is capped at 256 MiB (capture
+may temporarily retain one additional photo), and the structured result at 256 KiB. Batch preview also creates
+no draft, application plan or publication approval.
 
 Client setup references: [Codex MCP](https://developers.openai.com/codex/mcp),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),

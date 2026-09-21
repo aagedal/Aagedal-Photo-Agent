@@ -7,7 +7,7 @@ import Testing
 
 @Suite("Read-only exact-plan XMP candidate verification")
 struct MCPIPTCPatchXMPPreflightServiceTests {
-    private final class Fixture {
+    final class Fixture {
         let root: URL
         let photo: URL
         let facade: MCPAutomationFacade

@@ -15,7 +15,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports nonempty literal descriptive scalar and Person Shown templates only. Variables, instant processing, keywords, and other fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, and source-type fields only. Variables, instant processing, keywords, and structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -23,7 +23,14 @@ nonisolated enum MCPMetadataTemplatePreview {
         }
     }
 
-    static let supportedFields = MCPIPTCPatchPreparation.scalarFields.union(["personShown"])
+    // Template editor keys differ from the persisted editorial keys exposed by metadata reads.
+    static let editorialKeys = ["creator": "creators", "organisationShownName": "organisationsShownNames",
+                                "organisationShownCode": "organisationsShownCodes", "sceneCode": "sceneCodes",
+                                "subjectCode": "subjectCodes"]
+    static let supportedFields = MCPIPTCPatchPreparation.scalarFields.union([
+        "personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode",
+        "webStatementOfRights", "digitalImageGUID", "dateCreated", "countryCode", "digitalSourceType", "urgency",
+    ])
     static let argumentKeys: Set<String> = ["templateID", "templateRevision", "mode", "path",
                                           "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"]
 
@@ -98,8 +105,14 @@ nonisolated enum MCPMetadataTemplatePreview {
                   let id = field["id"]?.stringValue, UUID(uuidString: id) != nil,
                   let key = field["fieldKey"]?.stringValue, supportedFields.contains(key),
                   let value = field["templateValue"]?.stringValue, value.utf8.count <= 32_768,
-                  !value.contains("{"), !value.contains("}"), !value.contains("\0") else {
+                  !value.contains("{"), !value.contains("}"), !value.contains("(number)"), !value.contains("\0") else {
                 throw Failure.unsupportedTemplate
+            }
+            // Creator transport may encode text via JSON escapes; inspect decoded entries too.
+            if key == "creator" {
+                guard IPTCMetadata.creators(fromTransportValue: value).allSatisfy({
+                    !$0.contains("{") && !$0.contains("}") && !$0.contains("(number)") && !$0.contains("\0")
+                }) else { throw Failure.unsupportedTemplate }
             }
             // ContentView builds the same dictionary: the last field with a given key wins.
             result[key] = value
@@ -112,27 +125,59 @@ nonisolated enum MCPMetadataTemplatePreview {
               record["hasXMPConflict"] == .bool(false) else { throw Failure.conflict }
         for (key, value) in request.revisions where record[key] != value { throw Failure.staleRevision }
         let changes = try templateFields.keys.sorted().map { key -> MCPJSONValue in
-            guard let before = fields[key], let value = templateFields[key] else { throw Failure.invalidArguments }
+            let editorialKey = editorialKeys[key] ?? key
+            guard supportedFields.contains(key), let before = fields[editorialKey], let value = templateFields[key],
+                  !value.contains("{"), !value.contains("}"), !value.contains("(number)"), !value.contains("\0") else { throw Failure.invalidArguments }
             let after: MCPJSONValue
-            if key == "personShown" {
+            if ["personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode"].contains(key) {
                 guard case .array(let current) = before, current.allSatisfy({ $0.stringValue != nil }) else {
                     throw Failure.invalidArguments
                 }
-                let incoming = value.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
-                let existing = Set(current.compactMap(\.stringValue))
-                // Match the editor exactly, including duplicates within incoming values.
-                after = .array(request.mode == "append"
-                    ? current + incoming.filter { !existing.contains($0) }.map(MCPJSONValue.string)
-                    : incoming.map(MCPJSONValue.string))
+                let existing = current.compactMap(\.stringValue)
+                let incoming: [String]
+                switch key {
+                case "creator": incoming = IPTCMetadata.creators(fromTransportValue: value)
+                case "sceneCode": incoming = IPTCSceneCode.normalizedValues(value.components(separatedBy: CharacterSet(charactersIn: ",;")))
+                case "subjectCode": incoming = IPTCSubjectCode.normalizedValues(value.components(separatedBy: CharacterSet(charactersIn: ",;")))
+                default:
+                    let whitespace: CharacterSet = key == "personShown" ? .whitespaces : .whitespacesAndNewlines
+                    incoming = value.split(separator: ",").map { String($0).trimmingCharacters(in: whitespace) }
+                }
+                let combined: [String]
+                if request.mode == "replace" { combined = incoming }
+                else if key == "creator" { combined = IPTCMetadata.normalizedCreators(existing + incoming) }
+                else if key == "subjectCode" { combined = IPTCSubjectCode.normalizedValues(existing + incoming) }
+                else {
+                    let known = Set(existing)
+                    // The editor retains duplicate incoming people/organisations, and existing scene values.
+                    combined = existing + incoming.filter { !known.contains($0) }
+                }
+                after = .array(combined.map(MCPJSONValue.string))
+            } else if key == "urgency" {
+                switch before {
+                case .null, .integer: break
+                default: throw Failure.invalidArguments
+                }
+                // Match the editor's Int conversion, including its nil result for malformed input.
+                after = Int(value).map { .integer(Int64($0)) } ?? .null
             } else {
                 guard before == .null || before.stringValue != nil else { throw Failure.invalidArguments }
-                let existing = before.stringValue ?? ""
-                // Supplier image IDs are atomic even in the editor's Append mode.
-                let append = request.mode == "append" && key != "imageSupplierImageID"
-                after = .string(append && !existing.isEmpty ? (value.isEmpty ? existing : existing + " " + value) : value)
+                switch key {
+                case "countryCode": after = ISO3166Country.normalizedAlpha3(value).map(MCPJSONValue.string) ?? .null
+                case "digitalSourceType": after = DigitalSourceType(metadataValue: value).map { .string($0.rawValue) } ?? .null
+                case "dateCreated":
+                    // Invalid dates are ignored by applyTemplateFields, including an empty literal.
+                    after = (try? EditorialDateCreated(parsing: value)) != nil ? .string(value) : before
+                default:
+                    let existing = before.stringValue ?? ""
+                    let append = request.mode == "append" && !["imageSupplierImageID", "digitalImageGUID"].contains(key)
+                    after = .string(append && !existing.isEmpty ? (value.isEmpty ? existing : existing + " " + value) : value)
+                }
             }
-            return .object(["field": .string(key), "before": before, "after": after,
-                            "templateValue": .string(value), "changed": .bool(before != after)])
+            var change: [String: MCPJSONValue] = ["field": .string(editorialKey), "before": before, "after": after,
+                "templateValue": .string(value), "changed": .bool(before != after)]
+            if editorialKey != key { change["templateField"] = .string(key) }
+            return .object(change)
         }
         var result = request.revisions
         result["schemaVersion"] = .integer(1)

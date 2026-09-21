@@ -49,10 +49,70 @@ struct MCPMetadataTemplatePreviewTests {
         #expect(preview.objectValue?["planID"] == nil)
     }
 
+    @Test("Expanded literal fields match production editor and use canonical metadata keys", arguments: ["append", "replace"])
+    @MainActor func expandedEditorSemantics(mode: String) throws {
+        // Include JSON creator transport, malformed values, duplicate incoming organisations,
+        // semicolon-separated codes and atomic identifiers to exercise distinct editor rules.
+        let variants: [[String: String]] = [
+            ["creator": "[\"Ann\",\"Bob\",\"Bob\"]", "organisationShownName": " Ann, Bob, Bob, \n ",
+             "organisationShownCode": " OLD, NEW, NEW ", "sceneCode": "010100;010200,010100",
+             "subjectCode": "01000000;02000000,01000000", "webStatementOfRights": "https://example.com/rights",
+             "digitalImageGUID": "new-guid", "dateCreated": "2026-09-21", "countryCode": "no",
+             "digitalSourceType": DigitalSourceType.digitalCapture.newsCodeURI, "urgency": "4"],
+            ["creator": "Doe, Jane", "organisationShownName": "", "organisationShownCode": "",
+             "sceneCode": "invalid", "subjectCode": "invalid", "webStatementOfRights": "",
+             "digitalImageGUID": "", "dateCreated": "invalid-date", "countryCode": "invalid",
+             "digitalSourceType": "invalid", "urgency": "invalid"],
+            ["dateCreated": "", "urgency": "99"],
+        ]
+        for values in variants {
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+            model.editingMetadata.creators = ["Ann"]
+            model.editingMetadata.organisationsShownNames = ["Ann"]
+            model.editingMetadata.organisationsShownCodes = ["OLD"]
+            model.editingMetadata.sceneCodes = ["010100"]
+            model.editingMetadata.subjectCodes = ["01000000"]
+            model.editingMetadata.webStatementOfRights = "Existing"
+            model.editingMetadata.digitalImageGUID = "old-guid"
+            model.editingMetadata.dateCreated = "2025-01-01"
+            model.editingMetadata.countryCode = "NOR"
+            model.editingMetadata.digitalSourceType = .humanEdits
+            model.editingMetadata.urgency = 3
+            func protocolFields(_ metadata: IPTCMetadata) throws -> [String: MCPJSONValue] {
+                let data = try JSONEncoder().encode(metadata)
+                let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                var fields = try #require(MCPEditorialFieldCatalog.read(from: ["metadata": object]))
+                for key in MCPEditorialFieldCatalog.fieldKeys where fields[key] == nil { fields[key] = .null }
+                return fields
+            }
+            let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+            var record = request.revisions
+            record["fields"] = .object(try protocolFields(model.editingMetadata))
+            record["hasXMPConflict"] = .bool(false)
+            let decoded = try MCPMetadataTemplatePreview.templateFields(template(values.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }))
+            let preview = try MCPMetadataTemplatePreview.preview(request: request, templateFields: decoded, metadata: .object(record))
+            model.applyTemplateFields(values, append: mode == "append")
+            let expected = try protocolFields(model.editingMetadata)
+            guard case .array(let changes) = preview.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+            #expect(changes.count == values.count)
+            for change in changes {
+                let item = try #require(change.objectValue)
+                let key = try #require(item["field"]?.stringValue)
+                #expect(item["after"] == expected[key], "Editor mismatch for \(key), mode \(mode)")
+                let templateKey = item["templateField"]?.stringValue ?? key
+                #expect(item["templateValue"] == values[templateKey].map(MCPJSONValue.string))
+            }
+            #expect(preview.objectValue?["previewOnly"] == .bool(true))
+            #expect(preview.objectValue?["commitAvailable"] == .bool(false))
+        }
+    }
+
     @Test("Unsupported context-dependent templates fail closed")
     func rejectsUnsupported() throws {
-        for (key, value) in [("keywords", "news"), ("creator", "Byline"), ("unknown", "value"),
-                             ("title", "{filename}"), ("title", "{unknown}"), ("title", "\0")] {
+        for (key, value) in [("keywords", "news"), ("imageSupplier", "Byline"), ("unknown", "value"),
+                             ("title", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
+                             ("title", "{voiceMemoTranscript}"), ("title", "{field:credit}"),
+                             ("creator", "{persons}"), ("creator", #"["\u007bfilename\u007d"]"#), ("dateCreated", "{date}"), ("title", "\0")] {
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                 try MCPMetadataTemplatePreview.templateFields(template([(key, value)]))
             }

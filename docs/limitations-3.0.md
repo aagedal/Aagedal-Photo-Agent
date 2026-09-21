@@ -160,11 +160,20 @@ not an archival backup of unknown extensions. Races with noncooperating external
 MCP template discovery supports explicitly authorized default local or custom Templates folders
 with template iCloud sync disabled. It returns headers and content revisions, not complete
 validated application plans. `preview_metadata_template` additionally provides read-only single-photo
-previews for literal descriptive scalar fields and Person Shown, bound to exact template/photo revisions.
-Variables, Keywords, instant processing, other fields and batch application are unsupported. No draft,
+previews for literal descriptive, people/creator/organisation, scene/subject, date, country, source-type
+and urgency fields, bound to exact template/photo revisions. `preview_metadata_template_batch` supports
+1–8 explicit photos with retained per-photo authority and no partial output. Duplicate/shared-sidecar
+inputs are refused. Variables, Keywords, instant processing, unsupported structured fields and batch
+application remain unavailable. No draft,
 approval or physical write is created. A photo stored in the active Templates directory is refused by
 the folder/photo reservation boundary. iCloud template stores, template application,
 production executor integration and guarded IPTC commits remain separate implementation work.
+Native XMP publication consent now has a separate exact-candidate/mode-bound foundation requiring
+explicit C2PA and pending-draft acknowledgements. It has no UI or one-shot installation integration.
+Signed Whisper release authorization can persist and revalidate signed high-water evidence across
+rollback, but it is not proof of installed model bytes. Its serialization is process-local; external
+ledger deletion/restoration and multi-process installation require additional protection. The production
+catalog and installer do not yet use that ledger.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
 The bundled FFmpeg now includes Whisper with corrected canonical JSON escaping and sample-bound

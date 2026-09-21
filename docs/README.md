@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 91: template previews, recovery material and model trust](release/cycle-91-template-preview-recovery-trust-2026-09-21.md) adds a read-only exact-template/single-photo preview matching literal editor Append/Replace semantics, a passive exact-byte XMP recovery journal, parent-directory durability for operation records and signed Whisper descriptor/transition foundations. Physical publication, batch/variable template execution, durable trusted model installation and broader release gates remain open.
+**Latest implementation continuation:** [Cycle 92: batch previews, publication consent and durable model trust](release/cycle-92-batch-preview-publication-consent-2026-09-21.md) expands literal template field coverage, exposes exact-revision all-or-error previews for 1–8 photos, separates XMP publication consent from draft consent, and persists authenticated Whisper release-state/high-water evidence. Physical publication, variable/application execution and integration of model trust with verified-byte installation remain open.
 
 ## Portfolio
 

@@ -145,3 +145,56 @@ nonisolated struct WhisperModelDistributionTrust: Sendable {
               !url.path.isEmpty else { throw TrustError.invalidDescriptor }
     }
 }
+
+/// Persistence evidence only. Decoding this envelope never authenticates a release.
+nonisolated struct WhisperModelReleaseRecord: Codable, Sendable {
+    private struct Evidence: Codable, Sendable {
+        let descriptor: Data
+        let signature: Data
+
+        init(_ receipt: WhisperModelDescriptorReceipt) {
+            descriptor = receipt.descriptorData
+            signature = receipt.signature
+        }
+
+        func verify(using trust: WhisperModelDistributionTrust) throws -> WhisperModelDescriptorReceipt {
+            try trust.verify(descriptor, signature: signature)
+        }
+    }
+
+    private let current: Evidence
+    private let previous: Evidence?
+    private let highWater: Evidence
+
+    init(state: WhisperModelReleaseState, highWater: WhisperModelDescriptorReceipt) {
+        current = Evidence(state.current)
+        previous = state.rollbackCandidate.map(Evidence.init)
+        self.highWater = Evidence(highWater)
+    }
+
+    func authenticated(using trust: WhisperModelDistributionTrust) throws -> (WhisperModelReleaseState, WhisperModelDescriptorReceipt) {
+        let current = try current.verify(using: trust)
+        let previous = try previous?.verify(using: trust)
+        let highWater = try highWater.verify(using: trust)
+        guard current.descriptor.modelID == highWater.descriptor.modelID,
+              current.descriptor.releaseSequence <= highWater.descriptor.releaseSequence else {
+            throw WhisperModelDistributionTrust.TrustError.invalidDescriptor
+        }
+        if current.descriptor.releaseSequence == highWater.descriptor.releaseSequence {
+            guard current.descriptorSHA256 == highWater.descriptorSHA256 else {
+                throw WhisperModelDistributionTrust.TrustError.invalidDescriptor
+            }
+        } else if previous != nil {
+            // A committed rollback consumes the sole retained candidate.
+            throw WhisperModelDistributionTrust.TrustError.invalidDescriptor
+        }
+        if let previous {
+            guard previous.descriptor.modelID == current.descriptor.modelID,
+                  previous.descriptor.releaseSequence < current.descriptor.releaseSequence else {
+                throw WhisperModelDistributionTrust.TrustError.invalidDescriptor
+            }
+        }
+        return (WhisperModelReleaseState(current: current, rollbackCandidate: previous,
+            highestAcceptedSequence: highWater.descriptor.releaseSequence), highWater)
+    }
+}
