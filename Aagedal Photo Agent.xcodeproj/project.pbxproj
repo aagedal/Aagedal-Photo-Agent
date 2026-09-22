@@ -978,7 +978,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ -n \"$CODE_SIGN_IDENTITY\" ] && [ \"$CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
+			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
