@@ -122,6 +122,57 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Legacy staging names carry no model identity. Explicitly remove one only when
+    /// its complete bytes match authenticated retained authority and another verified,
+    /// durable copy exists. Partial/unknown legacy files require separate recovery.
+    func cleanUpLegacyStaging(named name: String, expectedGeneration: UUID) async throws {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.removeLegacyStaging(named: name, expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func removeLegacyStaging(named name: String, expectedGeneration: UUID) throws {
+        let suffix = ".model-staging"
+        guard name.hasPrefix("."), name.hasSuffix(suffix) else { throw StoreError.unsafeStorage }
+        let identifier = String(name.dropFirst().dropLast(suffix.count))
+        guard UUID(uuidString: identifier)?.uuidString == identifier else { throw StoreError.unsafeStorage }
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, highWater) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        var original = stat()
+        guard fstatat(fd, name, &original, AT_SYMLINK_NOFOLLOW) == 0,
+              original.st_mode & S_IFMT == S_IFREG, original.st_uid == geteuid(),
+              original.st_nlink == 1, original.st_mode & 0o077 == 0 else { throw StoreError.unsafeStorage }
+        let receipts = [state.current, state.rollbackCandidate, highWater].compactMap { $0 }
+        var matched = false
+        for receipt in receipts where receipt.descriptor.byteCount == original.st_size {
+            do {
+                try verifyModel(receipt, directoryFD: fd, filename: name)
+            } catch StoreError.invalidModelBytes {
+                continue
+            }
+            // Never delete the only surviving copy, even with a valid release ledger.
+            try verifyModel(receipt, directoryFD: fd)
+            matched = true
+            break
+        }
+        guard matched else { throw StoreError.invalidModelBytes }
+        try Task.checkCancellation()
+        try validateDirectoryIdentity()
+        var named = stat()
+        guard fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              named.st_dev == original.st_dev, named.st_ino == original.st_ino,
+              named.st_mode == original.st_mode, named.st_uid == original.st_uid,
+              named.st_nlink == 1, named.st_size == original.st_size,
+              named.st_ctimespec.tv_sec == original.st_ctimespec.tv_sec,
+              named.st_ctimespec.tv_nsec == original.st_ctimespec.tv_nsec else {
+            throw StoreError.unsafeStorage
+        }
+        guard unlinkat(fd, name, 0) == 0, fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try validateDirectoryIdentity()
+    }
+
     private func cleanUpOrphans(expectedGeneration: UUID) throws -> Int {
         let fd = try openTransaction()
         defer { closeTransaction(fd) }

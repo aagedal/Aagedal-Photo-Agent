@@ -39,6 +39,100 @@ struct WhisperModelDistributionStateStoreTests {
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
     }
 
+    @Test("Explicit legacy cleanup verifies duplicate bytes and preserves signed authority")
+    func legacyDuplicateCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let store = try fixture.store()
+        let firstBytes = Data("first".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let secondBytes = Data("second".utf8)
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source, expectedGeneration: first.generation)
+        let rolledBack = try await store.rollBackInstalled(expectedGeneration: second.generation)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        // Both current and consumed rollback high-water copies remain attributable.
+        for bytes in [firstBytes, secondBytes] {
+            let name = ".\(UUID().uuidString).model-staging"
+            let legacy = fixture.directory.appendingPathComponent(name)
+            try bytes.write(to: legacy)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+                try await store.cleanUpLegacyStaging(named: name, expectedGeneration: second.generation)
+            }
+            try await store.cleanUpLegacyStaging(named: name, expectedGeneration: rolledBack.generation)
+            #expect(!FileManager.default.fileExists(atPath: legacy.path))
+            let receipt = try fixture.receipt(1, bytes: bytes)
+            let retained = fixture.directory.appendingPathComponent("ggml-tiny-\(receipt.descriptor.sha256).bin")
+            #expect(try Data(contentsOf: retained) == bytes)
+        }
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+    }
+
+    @Test("Legacy cleanup refuses unknown bytes, missing counterparts and unsafe names")
+    func legacyCleanupRefusesUnprovenOwnership() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let bytes = Data("model".utf8)
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1, bytes: bytes), expectedGeneration: nil)
+        let name = ".\(UUID().uuidString).model-staging"
+        let legacy = fixture.directory.appendingPathComponent(name)
+        for candidate in [Data("other".utf8), bytes] {
+            try candidate.write(to: legacy)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
+            await #expect(throws: (any Error).self) {
+                try await store.cleanUpLegacyStaging(named: name, expectedGeneration: initial.generation)
+            }
+            #expect(try Data(contentsOf: legacy) == candidate)
+        }
+        for invalid in ["../" + name, ".tiny." + name, ".not-a-uuid.model-staging", "tiny.release-state.json"] {
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+                try await store.cleanUpLegacyStaging(named: invalid, expectedGeneration: initial.generation)
+            }
+        }
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.cleanUpLegacyStaging(named: name, expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: legacy) == bytes)
+    }
+
+    @Test("Legacy cleanup refuses symlinks, hard links and changed signing authority")
+    func legacyCleanupUnsafeStorage() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let bytes = Data("model".utf8)
+        let source = fixture.directory.appendingPathComponent("download")
+        try bytes.write(to: source)
+        let store = try fixture.store()
+        let initial = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try #require(await store.installedURL())
+        let name = ".\(UUID().uuidString).model-staging"
+        let legacy = fixture.directory.appendingPathComponent(name)
+        try FileManager.default.createSymbolicLink(at: legacy, withDestinationURL: installed)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.cleanUpLegacyStaging(named: name, expectedGeneration: initial.generation)
+        }
+        try FileManager.default.removeItem(at: legacy)
+        try FileManager.default.linkItem(at: installed, to: legacy)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.cleanUpLegacyStaging(named: name, expectedGeneration: initial.generation)
+        }
+        try FileManager.default.removeItem(at: legacy)
+        try bytes.write(to: legacy)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: legacy.path)
+        let otherTrust = try WhisperModelDistributionTrust(publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation)
+        let other = try WhisperModelDistributionStateStore(directory: fixture.directory, modelID: "tiny", trust: otherTrust)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await other.cleanUpLegacyStaging(named: name, expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: legacy) == bytes)
+        #expect(try Data(contentsOf: installed) == bytes)
+    }
+
     @Test("Recovery removes an interrupted published model while retaining current and rollback bytes")
     func interruptedPublicationCleanup() async throws {
         let fixture = try Fixture()
