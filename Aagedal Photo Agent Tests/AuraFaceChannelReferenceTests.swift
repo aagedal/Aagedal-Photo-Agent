@@ -137,7 +137,7 @@ struct AuraFaceChannelReferenceTests {
     }
 
     @Test(
-        "Bundled production model matches RGB reference and rejects BGR channel order",
+        "Local candidate model matches RGB reference and rejects BGR channel order",
         .enabled(
             if: Self.hasCandidateModel,
             "Requires the optional manifest-declared AuraFaceR100.mlpackage; the preprocessing test still runs in clean offline CI."
@@ -152,8 +152,11 @@ struct AuraFaceChannelReferenceTests {
         let modelFileHash = SHA256.hash(data: try Data(contentsOf: modelFile))
             .map { String(format: "%02x", $0) }.joined()
         #expect(modelFileHash == reference.modelFileSHA256)
-        let bundledURL = try #require(CoreMLFaceEmbedder.bundledModelURL())
-        let embedder = CoreMLFaceEmbedder(modelURL: bundledURL)
+        // The developer package is deliberately excluded from the app bundle. Compile
+        // this optional fixture in a temporary location for channel-order validation.
+        let compiledURL = try await MLModel.compileModel(at: Self.candidateModelPackageURL)
+        defer { try? FileManager.default.removeItem(at: compiledURL) }
+        let embedder = CoreMLFaceEmbedder(modelURL: compiledURL)
         let rgb = try await embedder.embed(fixture.image())
         let bgr = try await embedder.embed(fixture.image(swappingRedAndBlue: true))
         let rgbSimilarity = cosine(rgb, expected)

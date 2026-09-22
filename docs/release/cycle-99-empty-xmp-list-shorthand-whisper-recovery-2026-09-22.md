@@ -1,8 +1,8 @@
 # Cycle 99 — empty XMP restoration, list shorthand and interrupted model install
 
 Baseline: `e7a71fa`, clean. Three independent implementation changes were committed as
-`2688047`, `6cbceab` and `8a8a7fd`. State remains **IMPLEMENTING**; no whole release
-gate is newly closed.
+`2688047`, `6cbceab` and `8a8a7fd`. Candidate-build fixes are `c805b87` and `79d82b0`.
+State remains **IMPLEMENTING**; no whole release gate is newly closed.
 
 ## Implemented behavior
 
@@ -21,6 +21,12 @@ gate is newly closed.
   preceding generation. It verifies the signed receipt, expected generation and installed
   bytes before committing the transition. Missing ledgers, absent/corrupt model bytes and
   replay are refused. Production signed catalog and Settings integration remain open.
+- The bundle-signing phase now respects `CODE_SIGNING_ALLOWED=NO`, and the synchronized
+  app target excludes the developer AuraFace `.mlpackage`. The first candidate attempt
+  exposed each issue in sequence; the final clean-source candidate omits the compiled
+  model without deleting or moving developer files. The optional RGB/BGR reference test
+  compiles that local developer package into a temporary test artifact instead of
+  requiring it inside the app bundle.
 
 ## Verification
 
@@ -32,15 +38,22 @@ photos, model bytes and signing keys. No production recipients or user photos ar
   receipt resumption.
 - Template preview focused run: 18 tests, zero failures. Whisper state focused run:
   29 tests, zero failures.
-- Integrated complete unit regression: **3,425 tests / 353 suites**, zero failures,
-  102.820 seconds: `build/qa-v3-cycle99-full-retry.{log,xcresult}`.
+- Final integrated complete unit regression: **3,425 tests / 353 suites**, zero failures,
+  85.928 seconds: `build/qa-v3-cycle99-full-verified.{log,xcresult}`.
   The initial sandboxed run stopped before compilation because Xcode could not write
-  compiler/SwiftPM caches; approved elevated execution completed the run.
+  compiler/SwiftPM caches. An earlier full run after target exclusion found the test's
+  stale bundled-model assumption; its corrected focused suite passes two tests, and
+  the final full run passes.
 - Repository validation and whitespace checks pass:
-  `build/qa-v3-cycle99-repository.log`. The built MCP helper passes persistent pipes,
+  `build/qa-v3-cycle99-repository-final.log`. The built MCP helper passes persistent pipes,
   pipelining, malformed-input recovery, provider discovery and honest executor
   boundaries: `build/qa-v3-cycle99-helper.{log,json}`. Helper SHA-256:
   `594f2cde141894d078abccf68f97594b9f7b0f7d544eb1c32be3a332228a995c`.
+- A fresh unsigned Release candidate from clean revision `79d82b0` passes recursive
+  model omission and exact ZIP payload verification (82 bundle entries):
+  `build/model-omission-candidate-cycle99-final-2026-09-22`. The ZIP is 72,073,009
+  bytes, SHA-256 `0676195a14f389eb9cb91bc40cbe39c4ba9047eff6c779f85e5fd4c777c36b9d`.
+  This is local packaging evidence, not signed/notarized or production-server evidence.
 
 ## Remaining before final release
 
