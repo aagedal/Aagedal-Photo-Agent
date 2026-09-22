@@ -115,6 +115,13 @@ actor AutomationOperationExecutionCoordinator {
         if outcome == .cancelled {
             // The work closure may return this only after establishing that no
             // uncertain effects remain. The registry requires a durable request.
+            let record = try registry.inspect(id)
+            guard record.cancellationRequestedAt != nil else {
+                // A mistaken executor return must not strand a running record after
+                // its retained task exits. Without a durable request, preserve the
+                // same conservative outcome used for an unexpected thrown error.
+                return try registry.finish(id, ownerID: ownerID, outcome: await context.fallbackOutcome())
+            }
             return try registry.acknowledgeCancellation(id, ownerID: ownerID)
         }
         return try registry.finish(id, ownerID: ownerID, outcome: outcome)

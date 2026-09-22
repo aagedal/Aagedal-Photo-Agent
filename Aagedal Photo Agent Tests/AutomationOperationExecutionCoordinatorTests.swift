@@ -133,6 +133,26 @@ struct AutomationOperationExecutionCoordinatorTests {
         #expect(try await runner.waitForCompletion(record.id).outcome == outcome)
     }
 
+    @Test("An unsolicited cancelled outcome closes the record conservatively", arguments: [false, true])
+    func unsolicitedCancellation(afterEffects: Bool) async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry, maximumConcurrentOperations: 1)
+        let record = try await runner.submit(kind: .metadataTemplate) { context in
+            if afterEffects { try await context.markEffectsMayHaveOccurred() }
+            return .cancelled
+        }
+        let terminal = try await runner.waitForCompletion(record.id)
+        #expect(terminal.state == .completed)
+        #expect(terminal.outcome == (afterEffects ? .recoveryRequired : .failed))
+        #expect(terminal.cancellationRequestedAt == nil)
+        #expect(try await runner.waitForCompletion(record.id) == terminal)
+        let next = try await runner.submit(kind: .metadataTemplate) { _ in .verified }
+        #expect(try await runner.waitForCompletion(next.id).outcome == .verified)
+        #expect(try await runner.shutdown().isEmpty)
+    }
+
     @Test("Graceful shutdown waits for writes and recovers only stopped unresolved ownership")
     func shutdown() async throws {
         let root = try directory()
