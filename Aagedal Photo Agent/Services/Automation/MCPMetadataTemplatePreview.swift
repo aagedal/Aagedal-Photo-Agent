@@ -3,7 +3,7 @@ import Foundation
 /// A read-only, exact-revision preview of the literal template subset whose editor
 /// semantics do not depend on preferences or approved lists. Recursive scalar and list field references
 /// use the retained effective metadata and refuse sources changed by the template. The bounded filename
-/// variable uses only the retained photo snapshot. Sequence uses explicit request order.
+/// and list shorthand variables use only the retained photo snapshot. Sequence uses explicit request order.
 nonisolated enum MCPMetadataTemplatePreview {
     enum Failure: String, LocalizedError {
         case invalidArguments = "invalid_arguments"
@@ -17,7 +17,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Only {filename}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keywords, and other structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. {filename}, {persons}, {keywords}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keyword template fields, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -136,7 +136,7 @@ nonisolated enum MCPMetadataTemplatePreview {
     }
 
     private static func isSupportedValue(_ value: String, for key: String) -> Bool {
-        let tokens = ["{filename}"] + sequenceTokens + fieldTokens
+        let tokens = ["{filename}", "{persons}", "{keywords}"] + sequenceTokens + fieldTokens
         let candidate = filenameVariableFields.contains(key)
             ? tokens.reduce(value) { $0.replacingOccurrences(of: $1, with: "") } : value
         return isLiteralValue(candidate, for: key)
@@ -193,6 +193,23 @@ nonisolated enum MCPMetadataTemplatePreview {
             guard occurrences == 0 || growth <= (32_768 - count) / occurrences else { throw Failure.outputLimit }
         }
         return value.replacingOccurrences(of: token, with: replacement)
+    }
+
+    private static func contextualList(_ source: String, fields: [String: MCPJSONValue],
+                                       templateFields: [String: String]) throws -> String {
+        guard templateFields[source] == nil else { throw Failure.unsupportedTemplate }
+        guard case .array(let items) = fields[source] else { throw Failure.invalidArguments }
+        var remaining = 32_768
+        var strings: [String] = []
+        for item in items {
+            guard let string = item.stringValue else { throw Failure.invalidArguments }
+            let separatorBytes = strings.isEmpty ? 0 : 2
+            guard string.utf8.count <= remaining - separatorBytes else { throw Failure.outputLimit }
+            remaining -= string.utf8.count + separatorBytes
+            guard isLiteralValue(string, for: source) else { throw Failure.unsupportedTemplate }
+            strings.append(string)
+        }
+        return strings.joined(separator: ", ")
     }
 
     /// Resolve canonical field references in retained scalar and string-list values. Memoization
@@ -267,6 +284,12 @@ nonisolated enum MCPMetadataTemplatePreview {
                     with: (filename as NSString).deletingPathExtension)
                 guard value.utf8.count <= 32_768, isSupportedValue(value, for: key) else { throw Failure.outputLimit }
             } else { value = templateValue }
+            let usedContextualLists = ["persons", "keywords"].filter { templateValue.contains("{\($0)}") }
+            for source in usedContextualLists {
+                let field = source == "persons" ? "personShown" : "keywords"
+                let text = try contextualList(field, fields: fields, templateFields: templateFields)
+                value = try replacingBounded("{\(source)}", in: value, with: text)
+            }
             let directFieldSources = allFieldVariableSources.sorted().filter { templateValue.contains("{field:\($0)}") }
             var fieldCache: [String: (value: String, sources: Set<String>)] = [:]
             var fieldDependencies: Set<String> = []
@@ -284,7 +307,7 @@ nonisolated enum MCPMetadataTemplatePreview {
                 value = value.replacingOccurrences(of: token, with: String(format: "%0\(width)d", sequenceIndex))
             }
             guard value.utf8.count <= 32_768 else { throw Failure.outputLimit }
-            if templateValue.contains("{filename}") || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
+            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
                 guard isLiteralValue(value, for: key) else { throw Failure.unsupportedTemplate }
             }
             let after: MCPJSONValue
@@ -364,10 +387,11 @@ nonisolated enum MCPMetadataTemplatePreview {
             }
             var change: [String: MCPJSONValue] = ["field": .string(editorialKey), "before": before, "after": after,
                 "templateValue": .string(templateValue), "changed": .bool(before != after)]
-            if templateValue.contains("{filename}") || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
+            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
                 change["resolvedTemplateValue"] = .string(value)
                 change["resolvedVariables"] = .array(
                     (templateValue.contains("{filename}") ? [.string("filename")] : [])
+                    + usedContextualLists.map(MCPJSONValue.string)
                     + (usedSequenceTokens.isEmpty ? [] : [.string("seq")])
                     + usedFieldSources.map { .string("field:\($0)") })
                 if !usedSequenceTokens.isEmpty { change["sequenceIndex"] = .integer(Int64(sequenceIndex)) }
@@ -387,16 +411,19 @@ nonisolated enum MCPMetadataTemplatePreview {
         result["previewOnly"] = .bool(true)
         result["commitAvailable"] = .bool(false)
         let resolvesFilename = templateFields.values.contains { $0.contains("{filename}") }
+        let resolvesContextualLists = templateFields.values.contains { $0.contains("{persons}") || $0.contains("{keywords}") }
         let resolvesSequence = templateFields.values.contains { value in sequenceTokens.contains { value.contains($0) } }
         let resolvesFields = templateFields.values.contains { value in fieldTokens.contains { value.contains($0) } }
         result["valueSemantics"] = .string(resolvesFields
             ? "retained-field-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
+            : resolvesContextualLists
+            ? "retained-list-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
             : resolvesSequence
             ? "request-order-sequence-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
             : resolvesFilename
             ? "snapshot-filename-and-literal-template-editor-values; no-physical-write-or-publication-validation"
             : "literal-template-editor-values; no-physical-write-or-publication-validation")
-        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename and acyclic recursive scalar/list field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
+        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename, person/keyword list, and acyclic recursive scalar/list field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
         let output = MCPJSONValue.object(result)
         guard try JSONEncoder().encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output

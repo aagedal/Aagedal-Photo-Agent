@@ -18,6 +18,72 @@ struct MCPMetadataTemplatePreviewTests {
         }, processInstantly: instantly))
     }
 
+    @Test("Retained people and keyword shorthands match production interpolation", arguments: ["append", "replace"])
+    func contextualListVariables(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        let raw = "People: {persons} / {persons}; tags: {keywords} / {keywords}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .string("Before"),
+            "personShown": .array([.string("Ann Å"), .string("Bob")]),
+            "keywords": .array([.string("News"), .string("Sport")])])
+        var metadata = IPTCMetadata()
+        metadata.personShown = ["Ann Å", "Bob"]
+        metadata.keywords = ["News", "Sport"]
+        let resolved = PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+        let change = try #require(changes.first?.objectValue)
+        #expect(change["resolvedTemplateValue"] == .string(resolved))
+        #expect(change["resolvedVariables"] == .array([.string("persons"), .string("keywords")]))
+        #expect(change["after"] == .string(mode == "append" ? "Before " + resolved : resolved))
+        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-list") == true)
+        record["fields"] = .object(["title": .null, "personShown": .array([]), "keywords": .array([])])
+        let empty = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let emptyChanges) = empty.objectValue?["changes"] else {
+            Issue.record("Missing empty-list changes"); return
+        }
+        #expect(emptyChanges.first?.objectValue?["resolvedTemplateValue"] == .string("People:  / ; tags:  / "))
+    }
+
+    @Test("Contextual list shorthands refuse changed, malformed, and second-order sources")
+    func contextualListRefusals() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .null, "personShown": .array([.string("Ann")]),
+            "keywords": .array([.string("News")])])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{persons}", "personShown": "Changed"], metadata: .object(record))
+        }
+        for token in ["{seq}", "{field:title}", "{keywords}", "(number)", "brace}", "\0"] {
+            record["fields"] = .object(["title": .null, "personShown": .array([.string(token)])])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": "{persons}"], metadata: .object(record))
+            }
+        }
+        record["fields"] = .object(["title": .null, "keywords": .array([.integer(1)])])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{keywords}"], metadata: .object(record))
+        }
+        record["fields"] = .object(["title": .null, "keywords": .array([.string(String(repeating: "Å", count: 16_384))])])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{keywords}{keywords}"], metadata: .object(record))
+        }
+        for raw in ["{persons} {initials}", "{keywords} {gps}", "{Persons}"] {
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+            }
+        }
+    }
+
     @Test("Literal field references match the production interpolator", arguments: ["append", "replace"])
     func fieldReferences(mode: String) throws {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
