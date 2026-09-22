@@ -73,6 +73,9 @@ struct AutomationPatchReviewView: View {
                         ForEach(Array(result.warnings.enumerated()), id: \.offset) { _, warning in
                             Text(verbatim: warning).font(.caption).foregroundStyle(.secondary)
                         }
+                        if let publicationReview = model.xmpPublicationReview {
+                            publicationConsent(publicationReview)
+                        }
                         DisclosureGroup("Verification details") {
                             Text(verbatim: "Temporary XMP: \(result.stagedByteCount) bytes\nSHA-256: \(result.stagedSHA256)")
                                 .font(.caption.monospaced()).textSelection(.enabled)
@@ -102,6 +105,35 @@ struct AutomationPatchReviewView: View {
                 Button("Approve Reviewed Plan") { model.approveReviewedPlan() }
                     .disabled(model.isLoading)
                     .accessibilityIdentifier("automation.approvePatchPlan")
+            }
+        }
+    }
+
+    private func publicationConsent(_ review: MCPIPTCPatchXMPPublicationApprovalStore.Review) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("XMP publication consent").font(.headline)
+            ForEach(Array(review.consequences.enumerated()), id: \.offset) { _, consequence in
+                Text(verbatim: consequence).font(.caption).foregroundStyle(.secondary)
+            }
+            Toggle("I understand the C2PA and preservation limitations", isOn: $model.acknowledgesC2PA)
+                .accessibilityIdentifier("automation.acknowledgeXMPC2PA")
+                .disabled(model.isLoading || model.isApplying)
+            if review.report.publicationBinding.promotesPendingDraft {
+                Toggle("I approve publishing all pending draft values, including changes outside this patch", isOn: $model.acknowledgesPendingDraft)
+                    .accessibilityIdentifier("automation.acknowledgeXMPPendingDraft")
+                    .disabled(model.isLoading || model.isApplying)
+            }
+            Text("This records separate consent for the checked XMP candidate in this session. Publication is not available yet. No files are changed. Clearing, leaving, expiry or another approval revokes this consent.")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.isXMPPublicationApproved {
+                Text("XMP candidate approved for this session. No metadata has been published.")
+                    .accessibilityIdentifier("automation.patchXMPApprovalStatus")
+                Button("Revoke XMP Approval") { model.revokeApproval() }
+                    .accessibilityIdentifier("automation.revokeXMPApproval")
+            } else {
+                Button("Approve XMP Candidate") { model.approveReviewedXMPPublication() }
+                    .disabled(!model.canApproveXMPPublication)
+                    .accessibilityIdentifier("automation.approveXMPCandidate")
             }
         }
     }

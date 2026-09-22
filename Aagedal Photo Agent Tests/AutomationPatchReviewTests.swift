@@ -57,6 +57,10 @@ struct AutomationPatchReviewTests {
         private var pending: CheckedContinuation<MCPIPTCPatchApprovalStore.Approval, Never>?
         private var receipt: MCPIPTCPatchApprovalStore.Approval?
         private(set) var revocations = 0
+        private(set) var publicationRevocations = 0
+        private var pendingPublication: CheckedContinuation<MCPIPTCPatchXMPPublicationApprovalStore.Approval, Never>?
+        private var publicationReceipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval?
+        var hasPendingPublicationApproval: Bool { pendingPublication != nil }
         private var pendingPreflight: CheckedContinuation<MCPIPTCPatchXMPPreflightService.Report, Never>?
         private var preflightResult: MCPIPTCPatchXMPPreflightService.Report?
         var hasPendingPreflight: Bool { pendingPreflight != nil }
@@ -71,6 +75,29 @@ struct AutomationPatchReviewTests {
         func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
             preflightResult = try await underlying.inspectXMPCandidate(planID: planID)
             return await withCheckedContinuation { pendingPreflight = $0 }
+        }
+
+        func reviewXMPPublication(_ report: MCPIPTCPatchXMPPreflightService.Report) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Review {
+            try await underlying.reviewXMPPublication(report)
+        }
+
+        func approveXMPPublication(_ review: MCPIPTCPatchXMPPublicationApprovalStore.Review,
+            acknowledgesC2PA: Bool, acknowledgesPendingDraft: Bool) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Approval {
+            publicationReceipt = try await underlying.approveXMPPublication(review,
+                acknowledgesC2PA: acknowledgesC2PA, acknowledgesPendingDraft: acknowledgesPendingDraft)
+            return await withCheckedContinuation { pendingPublication = $0 }
+        }
+
+        func revokeXMPPublication(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async {
+            await underlying.revokeXMPPublication(receipt)
+            publicationRevocations += 1
+        }
+
+        func finishPublicationApproval() {
+            guard let pendingPublication, let publicationReceipt else { return }
+            self.pendingPublication = nil
+            self.publicationReceipt = nil
+            pendingPublication.resume(returning: publicationReceipt)
         }
 
         func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval {
@@ -433,6 +460,117 @@ struct AutomationPatchReviewTests {
         #expect(model.xmpPreflight == nil)
         #expect(model.message != nil)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    @Test("Native XMP consent needs acknowledgement and is separate from pending draft approval") @MainActor
+    func publicationConsent() async throws {
+        let fixture = try Fixture()
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        #expect(model.xmpPublicationReview != nil)
+        #expect(!model.canApproveXMPPublication)
+        model.approveReviewedXMPPublication()
+        #expect(!model.isXMPPublicationApproved)
+        model.acknowledgesC2PA = true
+        #expect(model.canApproveXMPPublication)
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isXMPPublicationApproved)
+        #expect(!model.isApproved)
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isApproved)
+        #expect(!model.isXMPPublicationApproved)
+        #expect(!model.acknowledgesC2PA)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    @Test("Late XMP consent is revoked after clear, edit, expiry or acknowledgement withdrawal",
+        arguments: ["clear", "edit", "expire", "withdraw", "clock"])
+    @MainActor
+    func latePublicationConsent(action: String) async throws {
+        let fixture = try Fixture()
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        var now = Date()
+        let model = AutomationPatchReviewModel(service: service, now: { now })
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        let review = try #require(model.review)
+        model.inspectXMPCandidate()
+        try await waitUntil { await service.hasPendingPreflight }
+        await service.finishPreflight()
+        try await waitUntil { !model.isLoading }
+        model.acknowledgesC2PA = true
+        model.approveReviewedXMPPublication()
+        try await waitUntil { await service.hasPendingPublicationApproval }
+        switch action {
+        case "clear": model.clear()
+        case "edit": model.planID = UUID().uuidString.lowercased()
+        case "expire": model.expireReview(at: review.expiresAt)
+        case "clock": now = review.expiresAt
+        default: model.acknowledgesC2PA = false
+        }
+        await service.finishPublicationApproval()
+        try await waitUntil { await service.publicationRevocations == 1 }
+        #expect(!model.isXMPPublicationApproved)
+        #expect(!model.isApproved)
+        #expect(!model.isLoading)
+        if action == "clock" || action == "expire" { #expect(model.isExpired) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    @Test("Source replacement invalidates native XMP publication review before consent") @MainActor
+    func publicationDrift() async throws {
+        let fixture = try Fixture()
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        model.acknowledgesC2PA = true
+        try fixture.original.write(to: fixture.photo, options: .atomic)
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        #expect(!model.isXMPPublicationApproved)
+        #expect(model.review == nil)
+        #expect(model.xmpPublicationReview == nil)
+        #expect(model.message != nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    @Test("Pending-value publication requires both acknowledgements and withdrawal revokes consent") @MainActor
+    func pendingPublicationConsent() async throws {
+        let fixture = try MCPIPTCPatchXMPPreflightServiceTests.Fixture(pending: true)
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade))
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { await service.hasPendingPreflight }
+        await service.finishPreflight()
+        try await waitUntil { !model.isLoading }
+        #expect(model.xmpPublicationReview?.report.publicationBinding.promotesPendingDraft == true)
+        model.acknowledgesC2PA = true
+        #expect(!model.canApproveXMPPublication)
+        model.approveReviewedXMPPublication()
+        #expect(!(await service.hasPendingPublicationApproval))
+        model.acknowledgesPendingDraft = true
+        #expect(model.canApproveXMPPublication)
+        model.approveReviewedXMPPublication()
+        try await waitUntil { await service.hasPendingPublicationApproval }
+        await service.finishPublicationApproval()
+        try await waitUntil { model.isXMPPublicationApproved }
+        model.acknowledgesPendingDraft = false
+        #expect(!model.isXMPPublicationApproved)
+        #expect(!model.canApproveXMPPublication)
+        try await waitUntil { await service.publicationRevocations == 1 }
     }
 
 }

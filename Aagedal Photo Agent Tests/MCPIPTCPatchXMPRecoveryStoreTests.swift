@@ -53,6 +53,40 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(try Data(contentsOf: fixture.journal) == journal)
     }
 
+    @Test("Publication recovery preserves exact app history and operation/approval identities", arguments: [false, true])
+    func appHistory(absent: Bool) throws {
+        let fixture = try Fixture()
+        let operationID = UUID(), approvalID = UUID()
+        let original = absent ? nil : Data([0, 128, 255])
+        let material = try fixture.store.stage(id: operationID, planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("candidate".utf8),
+            appSidecarRecovery: .init(original: original), publicationApprovalID: approvalID)
+        let reopened = try #require(try fixture.store.load())
+        #expect(reopened == material)
+        #expect(reopened.id == operationID)
+        #expect(reopened.publicationApprovalID == approvalID)
+        #expect(try #require(reopened.appSidecarRecovery).original == original)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.occupied) {
+            try fixture.store.stage(id: operationID, planID: "plan", targetPath: "/test.xmp",
+                binding: fixture.binding, original: nil, candidate: Data("candidate".utf8),
+                appSidecarRecovery: .init(original: original), publicationApprovalID: UUID())
+        }
+    }
+
+    @Test("App history and publication consent bindings cannot be partially supplied")
+    func partialPublicationBinding() throws {
+        let fixture = try Fixture()
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.invalidArguments) {
+            try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp", binding: fixture.binding,
+                original: nil, candidate: Data("candidate".utf8), appSidecarRecovery: .init(original: nil))
+        }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.invalidArguments) {
+            try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp", binding: fixture.binding,
+                original: nil, candidate: Data("candidate".utf8), publicationApprovalID: UUID())
+        }
+        #expect(try fixture.store.load() == nil)
+    }
+
     @Test("Corrupt or unsupported journals fail closed and cannot be overwritten", arguments: [1, 99])
     func corruption(version: Int) throws {
         let fixture = try Fixture()

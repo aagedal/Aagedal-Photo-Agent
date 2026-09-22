@@ -188,6 +188,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(approve.exists)
         XCTAssertEqual(try Data(contentsOf: photo), original)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+        let xmpApprove = app.buttons["automation.approveXMPCandidate"]
+        XCTAssertTrue(xmpApprove.waitForExistence(timeout: 8))
+        XCTAssertFalse(xmpApprove.isEnabled)
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 8))
+        acknowledgement.click()
+        XCTAssertTrue(xmpApprove.isEnabled)
+        xmpApprove.click()
+        let xmpApproval = app.staticTexts["automation.patchXMPApprovalStatus"]
+        XCTAssertTrue(xmpApproval.waitForExistence(timeout: 8))
+        XCTAssertFalse(approval.exists)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: photo.deletingLastPathComponent().path), ["review.jpg"])
+        app.buttons["automation.revokeXMPApproval"].click()
+        XCTAssertFalse(xmpApproval.exists)
+        XCTAssertFalse(xmpApprove.isEnabled)
         // Evidence remains a checked snapshot; a repeated dry run must reject source replacement.
         try original.write(to: photo, options: .atomic)
         dryRun.click()

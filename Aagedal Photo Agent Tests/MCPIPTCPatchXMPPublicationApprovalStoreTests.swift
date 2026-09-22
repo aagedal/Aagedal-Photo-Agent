@@ -15,6 +15,46 @@ struct MCPIPTCPatchXMPPublicationApprovalStoreTests {
         return (report, try #require(bytes.read()))
     }
 
+    @Test("Publication admission consumes exact consent once while retaining the photo lease")
+    func consumeOnce() async throws {
+        let fixture = try Fixture()
+        let (report, bytes) = try await candidate(fixture)
+        let store = Store(plans: fixture.plans)
+        let review = try store.review(report, mode: .xmpSidecar, facade: fixture.facade)
+        let approval = try store.approve(review, acknowledgesC2PAConsequences: true,
+            acknowledgesPendingDraftPromotion: false, facade: fixture.facade)
+        let reservation = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        defer { reservation.release() }
+        try store.validate(approval, candidate: bytes, mode: .xmpSidecar, targetPath: report.targetPath,
+            facade: fixture.facade, reservation: reservation, consumeForPublication: true)
+        #expect(throws: Store.Failure.unavailableApproval) {
+            try store.validate(approval, candidate: bytes, mode: .xmpSidecar, targetPath: report.targetPath,
+                facade: fixture.facade, reservation: reservation, consumeForPublication: true)
+        }
+    }
+
+    @Test("A released reservation cannot consume publication consent")
+    func releasedReservation() async throws {
+        let fixture = try Fixture()
+        let (report, bytes) = try await candidate(fixture)
+        let store = Store(plans: fixture.plans)
+        let review = try store.review(report, mode: .xmpSidecar, facade: fixture.facade)
+        let approval = try store.approve(review, acknowledgesC2PAConsequences: true,
+            acknowledgesPendingDraftPromotion: false, facade: fixture.facade)
+        let reservation = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        reservation.release()
+        #expect(throws: (any Error).self) {
+            try store.validate(approval, candidate: bytes, mode: .xmpSidecar, targetPath: report.targetPath,
+                facade: fixture.facade, reservation: reservation, consumeForPublication: true)
+        }
+        let fresh = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        defer { fresh.release() }
+        #expect(throws: Store.Failure.unavailableApproval) {
+            try store.validate(approval, candidate: bytes, mode: .xmpSidecar, targetPath: report.targetPath,
+                facade: fixture.facade, reservation: fresh)
+        }
+    }
+
     @Test("C2PA and pending draft consequences require independent native acknowledgement")
     func consequences() async throws {
         let fixture = try Fixture(pending: true)

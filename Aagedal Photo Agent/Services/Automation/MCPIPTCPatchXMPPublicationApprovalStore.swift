@@ -3,7 +3,8 @@ import Foundation
 
 /// Native-only, process-lifetime consent for one verified XMP sidecar candidate. Draft
 /// approvals are a different type and cannot enter this store. There is deliberately no
-/// installer, consumption API, Codable receipt or MCP endpoint; validation grants no write.
+/// installer, Codable receipt or MCP endpoint; validation grants no write. Native admission
+/// can consume a receipt exactly once while retaining the matching photo reservation.
 nonisolated final class MCPIPTCPatchXMPPublicationApprovalStore: @unchecked Sendable {
     enum Mode: Sendable, Equatable { case xmpSidecar }
     enum Failure: Error, Equatable {
@@ -95,11 +96,11 @@ nonisolated final class MCPIPTCPatchXMPPublicationApprovalStore: @unchecked Send
     }
 
     /// Requires the exact restaged bytes and retained photo reservation. Drift permanently
-    /// revokes consent. A future installer must additionally consume consent at its final
-    /// admission boundary and establish durable recovery before any carrier replacement.
+    /// revokes consent. Native admission sets `consumeForPublication` only after establishing
+    /// durable recovery; removal and exact-candidate validation share the same lock.
     func validate(_ approval: Approval, candidate: Data, mode: Mode, targetPath: String,
                   facade: MCPAutomationFacade, reservation: MCPProcessReservationLease,
-                  now: Date = Date()) throws {
+                  now: Date = Date(), consumeForPublication: Bool = false) throws {
         lock.lock()
         defer { lock.unlock() }
         guard approval.generation == generation, approvals[approval.id] == approval else {
@@ -117,6 +118,7 @@ nonisolated final class MCPIPTCPatchXMPPublicationApprovalStore: @unchecked Send
             let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade,
                 now: now, reservation: reservation)
             guard binding.digest == approval.planDigest else { throw Failure.changedReview }
+            if consumeForPublication { approvals.removeValue(forKey: approval.id) }
         } catch {
             approvals.removeValue(forKey: approval.id)
             throw error
