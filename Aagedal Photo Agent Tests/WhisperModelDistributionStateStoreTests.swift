@@ -392,12 +392,12 @@ struct WhisperModelDistributionStateStoreTests {
         let bytes = Data("release".utf8)
         let receipt = try fixture.receipt(2, bytes: bytes)
         let model = fixture.directory.appendingPathComponent("ggml-tiny-\(receipt.descriptor.sha256).bin")
-        try bytes.write(to: model)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: model.path)
         await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
             try await store.completeInterruptedInstallation(receipt, expectedGeneration: UUID())
         }
         let first = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        try bytes.write(to: model)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: model.path)
         let ledger = try Data(contentsOf: fixture.stateURL)
         try Data("altered".utf8).write(to: model)
         await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
@@ -415,6 +415,53 @@ struct WhisperModelDistributionStateStoreTests {
             try await store.completeInterruptedInstallation(receipt, expectedGeneration: first.generation)
         }
         #expect(try Data(contentsOf: model) == bytes)
+    }
+
+    @Test("Lost ledger with retained model bytes cannot restart the release floor")
+    func missingLedgerRetainedContentRefusesInitialAcceptance() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let firstBytes = Data("first release".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let secondBytes = Data("second release".utf8)
+        try secondBytes.write(to: source)
+        _ = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source,
+                                    expectedGeneration: first.generation)
+        let installed = try #require(await store.installedURL())
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        #expect(try await store.load()?.generation == nil)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.accept(fixture.receipt(1, bytes: firstBytes), expectedGeneration: nil)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.install(fixture.receipt(3, bytes: secondBytes), from: source,
+                                    expectedGeneration: nil)
+        }
+        #expect(try Data(contentsOf: installed) == secondBytes)
+        #expect(!FileManager.default.fileExists(atPath: fixture.stateURL.path))
+    }
+
+    @Test("Partial model-scoped staging blocks first acceptance after ledger loss")
+    func missingLedgerPartialOrphanRefusesInitialAcceptance() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(2), expectedGeneration: nil)
+        let staged = fixture.directory.appendingPathComponent(".tiny.\(UUID().uuidString).model-staging")
+        let partial = Data("partial download".utf8)
+        try partial.write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        }
+        #expect(try Data(contentsOf: staged) == partial)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
     }
 
     @Test("Cleanup authenticates authority and preflights unsafe candidates before deleting")

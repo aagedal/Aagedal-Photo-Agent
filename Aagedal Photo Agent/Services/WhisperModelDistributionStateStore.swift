@@ -380,6 +380,7 @@ actor WhisperModelDistributionStateStore {
         defer { closeTransaction(fd) }
         let existing = try read(directoryFD: fd)
         guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        if existing == nil { try rejectUnclaimedModelArtifacts(directoryFD: fd) }
         guard receipt.descriptor.modelID == modelID else { throw WhisperModelDistributionTrust.TrustError.wrongModel }
         _ = try existing.map { try trust.updating($0.1, to: receipt) } ?? trust.initialState(receipt)
         try Task.checkCancellation()
@@ -404,7 +405,8 @@ actor WhisperModelDistributionStateStore {
         guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
         try publicationCheckpoint()
         return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
-                              directoryFD: fd, requireInstalled: true)
+                              directoryFD: fd, requireInstalled: true,
+                              firstInstallPreflightCompleted: true)
     }
 
     private var filename: String { "\(modelID).release-state.json" }
@@ -526,9 +528,13 @@ actor WhisperModelDistributionStateStore {
     }
 
     private func transition(receipt: WhisperModelDescriptorReceipt?, expectedGeneration: UUID?,
-                            directoryFD fd: Int32, requireInstalled: Bool) throws -> Snapshot {
+                            directoryFD fd: Int32, requireInstalled: Bool,
+                            firstInstallPreflightCompleted: Bool = false) throws -> Snapshot {
         let existing = try read(directoryFD: fd)
         guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        if existing == nil && !firstInstallPreflightCompleted {
+            try rejectUnclaimedModelArtifacts(directoryFD: fd)
+        }
         let next: WhisperModelReleaseState
         let highWater: WhisperModelDescriptorReceipt
         if let receipt {
@@ -563,5 +569,39 @@ actor WhisperModelDistributionStateStore {
         guard fsync(fd) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         try validateDirectoryIdentity()
         return Snapshot(generation: document.generation, release: next)
+    }
+
+    /// A lost ledger cannot be distinguished from first install using signed model
+    /// descriptors alone. Refuse first acceptance when this model left any scoped
+    /// content or staging evidence behind. This detects a common interrupted/lost
+    /// ledger case; an external monotonic authority is still needed for recovery
+    /// when both the ledger and all scoped artifacts have disappeared.
+    private func rejectUnclaimedModelArtifacts(directoryFD fd: Int32) throws {
+        let scanFD = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard scanFD >= 0 else { throw StoreError.unsafeStorage }
+        guard let stream = fdopendir(scanFD) else {
+            close(scanFD)
+            throw StoreError.unsafeStorage
+        }
+        defer { closedir(stream) }
+        var scanned = 0
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw StoreError.unsafeStorage }
+                break
+            }
+            scanned += 1
+            guard scanned <= 4_096 else { throw StoreError.cleanupLimitExceeded }
+            let nameCapacity = Int(entry.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: nameCapacity) {
+                    String(cString: $0)
+                }
+            }
+            if isCleanupCandidate(name) { throw StoreError.invalidState }
+        }
+        try validateDirectoryIdentity()
     }
 }

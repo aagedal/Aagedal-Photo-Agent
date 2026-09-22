@@ -1,15 +1,20 @@
 # 3.0 coordinator state
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-09-22
-**Latest implementation state:** [Cycle 99](cycle-99-empty-xmp-list-shorthand-whisper-recovery-2026-09-22.md) adds empty-original XMP restoration, retained `{persons}`/`{keywords}` template previews and completion of an interrupted signed model install with verified published bytes. A clean-source unsigned candidate passes model omission and ZIP verification after build-script and target-exclusion fixes. Unreceipted XMP recovery, missing-ledger model recovery and production signing/executor integration remain open.
+**Updated:** 2026-09-23
+**Latest implementation state:** [Cycle 100](cycle-100-keyword-reference-model-floor-2026-09-23.md) adds read-only retained `{field:keywords}` template previews and refuses first signed Whisper acceptance when a missing ledger leaves model-scoped artifacts. The full 3,428-test suite passes. An interrupted first install still needs authenticated recovery; unreceipted XMP recovery, production signing/executor integration and broad release gates remain open.
 **Latest native evidence:** Cycle 98 passes three workflows (132.978 seconds): unchanged staging, explicit-confirmation restoration and stale XMP replacement refusal, with cancellation and relaunch persistence checks. Initial activation failures were superseded by the passing retry. Broader existing-carrier native and accessibility cases remain open.
-**Implementation commits:** `2688047`, `6cbceab`, `8a8a7fd`, `c805b87`, `79d82b0`; the optional AuraFace reference test is updated in the final validation commit. Focused XMP, template, model and AuraFace tests pass; final full regression passes 3,425 tests / 353 suites with zero failures (85.928 seconds); repository and helper checks pass. The unsigned Release candidate passes model omission and ZIP payload verification.
-**Cycle baseline:** `e7a71fa`, initially clean. Validation and commit evidence are recorded in the cycle report. No whole release-readiness gate is newly closed.
+**Implementation commits:** Cycle 99 commits are recorded below. Cycle 100 implementation and evidence are in the dated report; final complete regression passes 3,428 tests / 353 suites. The prior unsigned Release candidate passes model omission and ZIP payload verification; no new release candidate was built this cycle.
+**Cycle baseline:** `45c5ed1`, initially clean. Validation evidence is recorded in the cycle report. No whole release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 100 retained keyword references and missing-ledger model floor](cycle-100-keyword-reference-model-floor-2026-09-23.md)
+adds an exact-snapshot keyword field reference in read-only template previews and refuses
+initial model acceptance when missing-ledger artifacts remain. The full suite passes;
+first-install recovery still requires external monotonic authority.
 
 [Cycle 99 empty XMP restoration, list shorthand and interrupted model install](cycle-99-empty-xmp-list-shorthand-whisper-recovery-2026-09-22.md)
 adds zero-byte original sidecar restoration, retained person/keyword shorthand previews
@@ -25,7 +30,7 @@ workflow integration remain open.
 Ordered next implementation actions: unreceipted recovery policy and broader native
 restoration cases, then the guarded helper commit boundary; authoritative Approved Keywords and
 shared face-scan/template/transcription executors; production signed Whisper descriptors,
-Settings/download integration and missing-ledger/partial-orphan recovery. External interoperability,
+Settings/download integration and authenticated missing-ledger/partial-orphan recovery. External interoperability,
 real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user
 acceptance gates remain open. No-progress count is zero.
 

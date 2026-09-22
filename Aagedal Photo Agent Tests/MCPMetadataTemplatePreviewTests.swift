@@ -49,6 +49,30 @@ struct MCPMetadataTemplatePreviewTests {
         #expect(emptyChanges.first?.objectValue?["resolvedTemplateValue"] == .string("People:  / ; tags:  / "))
     }
 
+    @Test("Canonical keyword field references read retained metadata without authoring keywords")
+    func retainedKeywordFieldReference() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        let raw = "Tags: {field:keywords}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .null, "keywords": .array([.string("News"), .string("Sport")])])
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        var metadata = IPTCMetadata()
+        metadata.keywords = ["News", "Sport"]
+        #expect(changes.first?.objectValue?["resolvedTemplateValue"] ==
+                .string(PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)))
+        #expect(changes.first?.objectValue?["resolvedVariables"] == .array([.string("field:keywords")]))
+        record["fields"] = .object(["title": .null, "keywords": .array([.string("{seq}")])])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        }
+    }
+
     @Test("Contextual list shorthands refuse changed, malformed, and second-order sources")
     func contextualListRefusals() throws {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
@@ -149,7 +173,7 @@ struct MCPMetadataTemplatePreviewTests {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
         var record = request.revisions
         record["hasXMPConflict"] = .bool(false)
-        for leaf in ["{field:credit}", "{field:city}", "{field:title}", "{field:keywords}",
+        for leaf in ["{field:credit}", "{field:city}", "{field:title}",
                      "{field:Country}", "{filename}", "{seq}", "{initials}", "(number)", "brace}", "\0"] {
             record["fields"] = .object(["title": .null, "credit": .string("{field:city}"), "city": .string(leaf)])
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
@@ -210,6 +234,7 @@ struct MCPMetadataTemplatePreviewTests {
                 var metadata = IPTCMetadata()
                 metadata.city = "Oslo"
                 switch source {
+                case "keywords": metadata.keywords = items
                 case "personShown": metadata.personShown = items
                 case "creator": metadata.creators = items
                 case "organisationShownName": metadata.organisationsShownNames = items
@@ -247,16 +272,18 @@ struct MCPMetadataTemplatePreviewTests {
                     try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw], metadata: .object(record))
                 }
             }
-            for item in [raw, "{field:credit}", "{seq}", "{filename}", "{initials}", "{field:keywords}", "\0"] {
+            for item in [raw, "{field:credit}", "{seq}", "{filename}", "{initials}", "\0"] {
                 record["fields"] = .object(["title": .null, persisted: .array([.string(item)]), "credit": .string(raw)])
                 #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                     try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw], metadata: .object(record))
                 }
             }
             record["fields"] = .object(["title": .null, persisted: .array([.string("Person")])])
-            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
-                try MCPMetadataTemplatePreview.preview(request: request,
-                    templateFields: ["title": raw, source: "Changed"], metadata: .object(record))
+            if source != "keywords" {
+                #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                    try MCPMetadataTemplatePreview.preview(request: request,
+                        templateFields: ["title": raw, source: "Changed"], metadata: .object(record))
+                }
             }
             record["fields"] = .object(["title": .null,
                 persisted: .array([.string(String(repeating: "Å", count: 16_384)), .string("")])])
@@ -546,7 +573,7 @@ struct MCPMetadataTemplatePreviewTests {
     func rejectsUnsupported() throws {
         for (key, value) in [("keywords", "news"), ("creatorContactInfo", "Byline"), ("unknown", "value"),
                              ("credit", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
-                             ("title", "{voiceMemoTranscript}"), ("title", "{field:keywords}"),
+                             ("title", "{voiceMemoTranscript}"),
                              ("creator", "{persons}"), ("creator", #"["\u007bfilename\u007d"]"#), ("dateCreated", "{date}"), ("title", "\0")] {
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                 try MCPMetadataTemplatePreview.templateFields(template([(key, value)]))

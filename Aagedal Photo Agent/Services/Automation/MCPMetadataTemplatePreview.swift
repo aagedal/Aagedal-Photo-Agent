@@ -45,9 +45,10 @@ nonisolated enum MCPMetadataTemplatePreview {
         "country", "countryCode", "event", "instructions", "source",
     ]
     // Canonical template keys map to the effective metadata's persisted array keys.
-    // Keywords remain excluded until Approved Keywords authority is available.
+    // A reference to retained keywords is read-only. Authoring a keywords template
+    // field still requires the separate Approved Keywords authority.
     static let listFieldVariableSources: Set<String> = [
-        "personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode",
+        "keywords", "personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode",
     ]
     static var allFieldVariableSources: Set<String> { fieldVariableSources.union(listFieldVariableSources) }
     static var fieldTokens: [String] { allFieldVariableSources.sorted().map { "{field:\($0)}" } }
