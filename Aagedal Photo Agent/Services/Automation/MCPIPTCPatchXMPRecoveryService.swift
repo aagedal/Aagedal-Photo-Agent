@@ -138,6 +138,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                         }
                         if let bytes = state.material.original {
                             _ = try facade.installXMPSidecar(data: bytes, expected: current, reservation: reservation,
+                                restoringEmptyOriginal: bytes.isEmpty,
                                 beforeInstall: { try requireAuthority(state.material) }, afterInstall: recordXMP)
                         } else {
                             try facade.removeOriginallyAbsentCarrier(.xmp, original: original, candidate: state.material.candidate,
@@ -192,7 +193,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         guard let installed, let app = material.appSidecarRecovery, app.candidate != nil,
               material.sourcePath == snapshot.target.url.path,
               snapshot.sourceRevision == material.binding.sourceRevision,
-              (material.original?.isEmpty != true), (app.original?.isEmpty != true) else { return false }
+              (app.original?.isEmpty != true) else { return false }
         try requireAuthority(material)
         let xmpRevision = restored?.xmpRevision ?? installed.xmpRevision
         let xmpBytes = restored == nil ? material.candidate : material.original

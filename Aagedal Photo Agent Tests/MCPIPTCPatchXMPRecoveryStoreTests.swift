@@ -380,6 +380,55 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
         await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
     }
 
+    @Test("Restoration recreates an originally empty XMP file rather than removing it", arguments: [false, true])
+    func restoresEmptyXMP(installApp: Bool) async throws {
+        let fixture = try Fixture(existingXMP: false)
+        let xmp = fixture.photo.deletingPathExtension().appendingPathExtension("xmp")
+        try Data().write(to: xmp)
+        let original = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(original.xmpBytes == Data())
+        let (store, material) = try partiallyPublished(fixture, installApp: installApp)
+        #expect(material.original == Data())
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(FileManager.default.fileExists(atPath: xmp.path))
+        #expect(after.xmpBytes == Data())
+        #expect(after.xmpSidecarRevision != original.xmpSidecarRevision)
+        #expect(after.appSidecarBytes == original.appSidecarBytes)
+        #expect(try store.loadRestoredDisposition() == material)
+    }
+
+    @Test("Restoration resumes from an empty-XMP receipt after reopening")
+    func resumesEmptyXMP() async throws {
+        let fixture = try Fixture(existingXMP: false)
+        let xmp = fixture.photo.deletingPathExtension().appendingPathExtension("xmp")
+        try Data().write(to: xmp)
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        do {
+            let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+            defer { lease.release() }
+            let current = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+            #expect(throws: (any Error).self) {
+                try fixture.facade.installXMPSidecar(data: Data(), expected: current, reservation: lease)
+            }
+            try fixture.facade.installXMPSidecar(data: Data(), expected: current, reservation: lease,
+                restoringEmptyOriginal: true, afterInstall: { after in
+                    try store.recordRestored(material, restored: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil), verify: {})
+                })
+        }
+        let reopened = MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture))
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: reopened, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        #expect(FileManager.default.fileExists(atPath: xmp.path))
+        #expect(try Data(contentsOf: xmp).isEmpty)
+        #expect(try reopened.loadRestoredDisposition() == material)
+    }
+
     @Test("Restoration resumes from a durable XMP receipt and blocks publication receipt replay")
     func resumesRestoration() async throws {
         let fixture = try Fixture(pending: true)

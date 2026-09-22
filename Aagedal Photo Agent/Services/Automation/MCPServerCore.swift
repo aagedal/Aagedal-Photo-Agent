@@ -746,9 +746,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
     @discardableResult
     func installXMPSidecar(data: Data, expected: MCPPhotoCarrierSnapshot,
                            reservation: MCPProcessReservationLease,
+                           restoringEmptyOriginal: Bool = false,
                            beforeInstall: @Sendable () throws -> Void = {},
                              afterInstall: (@Sendable (MCPPhotoCarrierSnapshot) throws -> Void)? = nil) throws -> URL {
-        guard !data.isEmpty, data.count <= 8_388_608,
+        guard (!data.isEmpty || restoringEmptyOriginal), data.count <= 8_388_608,
               reservation.coversPhoto(expected.target.url) else {
             throw MCPAutomationReadError.unsafeCarrier
         }
@@ -783,14 +784,16 @@ nonisolated struct MCPAutomationFacade: Sendable {
             _ = Darwin.close(descriptor)
             if temporaryExists { _ = Darwin.unlinkat(directory.descriptor, temporaryName, 0) }
         }
-        try data.withUnsafeBytes { buffer in
-            guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
-            var written = 0
-            while written < buffer.count {
-                let count = Darwin.write(descriptor, base.advanced(by: written), buffer.count - written)
-                if count < 0, errno == EINTR { continue }
-                guard count > 0 else { throw MCPAutomationReadError.unsafeCarrier }
-                written += count
+        if !data.isEmpty {
+            try data.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+                var written = 0
+                while written < buffer.count {
+                    let count = Darwin.write(descriptor, base.advanced(by: written), buffer.count - written)
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { throw MCPAutomationReadError.unsafeCarrier }
+                    written += count
+                }
             }
         }
         guard Darwin.fsync(descriptor) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
@@ -804,14 +807,16 @@ nonisolated struct MCPAutomationFacade: Sendable {
               staged.st_size == data.count else { throw MCPAutomationReadError.photoChanged }
         // Read the retained staging descriptor back, rather than trusting only its size.
         var readback = Data(count: data.count)
-        try readback.withUnsafeMutableBytes { buffer in
-            guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
-            var consumed = 0
-            while consumed < buffer.count {
-                let count = Darwin.pread(descriptor, base.advanced(by: consumed), buffer.count - consumed, off_t(consumed))
-                if count < 0, errno == EINTR { continue }
-                guard count > 0 else { throw MCPAutomationReadError.photoChanged }
-                consumed += count
+        if !data.isEmpty {
+            try readback.withUnsafeMutableBytes { buffer in
+                guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+                var consumed = 0
+                while consumed < buffer.count {
+                    let count = Darwin.pread(descriptor, base.advanced(by: consumed), buffer.count - consumed, off_t(consumed))
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { throw MCPAutomationReadError.photoChanged }
+                    consumed += count
+                }
             }
         }
         guard readback == data else { throw MCPAutomationReadError.photoChanged }
