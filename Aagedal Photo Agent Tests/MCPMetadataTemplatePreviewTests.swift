@@ -185,10 +185,50 @@ struct MCPMetadataTemplatePreviewTests {
         }
     }
 
+    @Test("Filename variables use snapshot authority and production interpolation", arguments: ["append", "replace"])
+    func filenameVariable(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        let raw = "Photo {filename} / {filename}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .string("Existing")])
+        record["canonicalPath"] = .string("/retained/Ålesund.final.jpg")
+        let result = try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+        let change = try #require(changes.first?.objectValue)
+        let resolved = PresetVariableInterpolator().resolve(raw, filename: "Ålesund.final.jpg")
+        #expect(change["templateValue"] == .string(raw))
+        #expect(change["resolvedTemplateValue"] == .string(resolved))
+        #expect(change["resolvedVariables"] == .array([.string("filename")]))
+        #expect(change["after"] == .string(mode == "append" ? "Existing " + resolved : resolved))
+        #expect(result.objectValue?["commitAvailable"] == .bool(false))
+        record.removeValue(forKey: "canonicalPath")
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        }
+        for filename in ["{seq}.jpg", "{field:credit}.jpg", "(number).jpg", "brace}.jpg"] {
+            record["canonicalPath"] = .string("/retained/" + filename)
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+            }
+        }
+        record["canonicalPath"] = .string("/retained/" + String(repeating: "a", count: 200) + ".jpg")
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": String(repeating: "{filename}", count: 200)], metadata: .object(record))
+        }
+        for value in ["{filename} {initials}", "{{filename}}", "{filename} (number)"] {
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.templateFields(template([("title", value)]))
+            }
+        }
+    }
+
     @Test("Unsupported context-dependent templates fail closed")
     func rejectsUnsupported() throws {
         for (key, value) in [("keywords", "news"), ("creatorContactInfo", "Byline"), ("unknown", "value"),
-                             ("title", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
+                             ("credit", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
                              ("title", "{voiceMemoTranscript}"), ("title", "{field:credit}"),
                              ("creator", "{persons}"), ("creator", #"["\u007bfilename\u007d"]"#), ("dateCreated", "{date}"), ("title", "\0")] {
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {

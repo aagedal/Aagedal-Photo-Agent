@@ -42,14 +42,14 @@ struct MCPMetadataTemplateBatchPreviewTests {
         #expect(try MCPMetadataTemplateBatchPreview.requests(arguments: arguments((0..<8).map { photo("/p/\($0).jpg") })).count == 8)
     }
 
-    @Test("Batch endpoint preserves requested order, photo bytes and all-or-error authority")
-    func endpoint() throws {
+    @Test("Batch endpoint preserves requested order, photo bytes and all-or-error authority", arguments: [false, true])
+    func endpoint(filenameVariable: Bool) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("apa-batch-preview-\(UUID())").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("Templates")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let template = MetadataTemplate(name: "Batch", fields: [TemplateField(fieldKey: "title", templateValue: "suffix")])
+        let template = MetadataTemplate(name: "Batch", fields: [TemplateField(fieldKey: "title", templateValue: filenameVariable ? "Photo {filename}" : "suffix")])
         let data = try JSONEncoder().encode(template)
         let templateURL = directory.appendingPathComponent(template.id.uuidString + ".json")
         try data.write(to: templateURL)
@@ -86,11 +86,19 @@ struct MCPMetadataTemplateBatchPreviewTests {
         #expect(previews.compactMap { $0.objectValue?["canonicalPath"]?.stringValue } == photos.map(\.path))
         #expect(content["commitAvailable"] == .bool(false))
         #expect(content["photoCount"] == .integer(2))
-        for preview in previews {
-            #expect(preview.objectValue?["changes"] == .array([.object([
+        for (index, preview) in previews.enumerated() {
+            var expected: [String: MCPJSONValue] = [
                 "field": .string("title"), "before": .null, "after": .string("suffix"),
                 "templateValue": .string("suffix"), "changed": .bool(true),
-            ])]))
+            ]
+            if filenameVariable {
+                let resolved = "Photo " + photos[index].deletingPathExtension().lastPathComponent
+                expected["after"] = .string(resolved)
+                expected["templateValue"] = .string("Photo {filename}")
+                expected["resolvedTemplateValue"] = .string(resolved)
+                expected["resolvedVariables"] = .array([.string("filename")])
+            }
+            #expect(preview.objectValue?["changes"] == .array([.object(expected)]))
         }
         for photo in photos { #expect(try Data(contentsOf: photo) == bytes as Data) }
         #expect(try Data(contentsOf: templateURL) == data)
