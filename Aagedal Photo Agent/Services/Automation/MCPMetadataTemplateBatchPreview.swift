@@ -61,7 +61,7 @@ nonisolated enum MCPMetadataTemplateBatchPreview {
                     try Task.checkCancellation()
                     guard let snapshot = snapshots[index] else { throw MCPMetadataTemplatePreview.Failure.invalidArguments }
                     return try MCPMetadataTemplatePreview.preview(request: requests[index], templateFields: fields,
-                        metadata: MCPMetadataSnapshotReader.read(snapshot).protocolValue())
+                        metadata: MCPMetadataSnapshotReader.read(snapshot).protocolValue(), sequenceIndex: index + 1)
                 }
                 let result = MCPJSONValue.object([
                     "schemaVersion": .integer(1), "previewOnly": .bool(true), "commitAvailable": .bool(false),

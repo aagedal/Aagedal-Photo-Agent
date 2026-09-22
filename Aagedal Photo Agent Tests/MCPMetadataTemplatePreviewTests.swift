@@ -225,6 +225,55 @@ struct MCPMetadataTemplatePreviewTests {
         }
     }
 
+    @Test("Bounded sequence variables match production interpolation without caller context", arguments: ["append", "replace"])
+    func sequenceVariables(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        let raw = "{seq} / " + (1...9).map { "{seq:\($0)}" }.joined(separator: " / ")
+        for key in ["title", "description", "extendedDescription", "instructions"] {
+            let values = try MCPMetadataTemplatePreview.templateFields(template([(key, raw)]))
+            var record = request.revisions
+            record["hasXMPConflict"] = .bool(false)
+            record["fields"] = .object([key: .string("Existing")])
+            // Sequence-only previews do not require filename authority.
+            let result = try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+            guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+            let change = try #require(changes.first?.objectValue)
+            let resolved = PresetVariableInterpolator().resolve(raw, sequenceIndex: 1)
+            #expect(change["after"] == .string(mode == "append" ? "Existing " + resolved : resolved))
+            #expect(change["resolvedTemplateValue"] == .string(resolved))
+            #expect(change["resolvedVariables"] == .array([.string("seq")]))
+            #expect(change["sequenceIndex"] == .integer(1))
+            #expect(result.objectValue?["commitAvailable"] == .bool(false))
+        }
+        // Filename values must stay literal even when the same supported sequence
+        // token already occurs in the template and would otherwise be expanded later.
+        for filename in ["frame-{seq}.jpg", "frame-{seq:3}.jpg", "frame.{seq}"] {
+            var record = request.revisions
+            record["hasXMPConflict"] = .bool(false)
+            record["fields"] = .object(["title": .null])
+            record["canonicalPath"] = .string("/retained/" + filename)
+            let values = try MCPMetadataTemplatePreview.templateFields(
+                template([("title", "{filename} / {seq} / {seq:3}")]))
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request, templateFields: values,
+                    metadata: .object(record))
+            }
+        }
+        for raw in ["{seq:0}", "{seq:10}", "{seq:9999999999}", "{seq:-1}", "{seq:01}", "{seq:}", "{seq} {initials}"] {
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+            }
+        }
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.templateFields(template([("credit", "{seq}")]))
+        }
+        var args = arguments()
+        args["sequenceIndex"] = .integer(100)
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.Request(arguments: args)
+        }
+    }
+
     @Test("Unsupported context-dependent templates fail closed")
     func rejectsUnsupported() throws {
         for (key, value) in [("keywords", "news"), ("creatorContactInfo", "Byline"), ("unknown", "value"),

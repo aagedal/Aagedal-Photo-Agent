@@ -2,7 +2,7 @@ import Foundation
 
 /// A read-only, exact-revision preview of the literal template subset whose editor
 /// semantics do not depend on preferences or approved lists. The bounded filename
-/// variable uses only the retained photo snapshot, never a caller-supplied context.
+/// variable uses only the retained photo snapshot. Sequence uses explicit request order.
 nonisolated enum MCPMetadataTemplatePreview {
     enum Failure: String, LocalizedError {
         case invalidArguments = "invalid_arguments"
@@ -16,7 +16,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Only {filename} in title, description, extendedDescription and instructions is resolved. Other variables, instant processing, keywords, and other structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Only {filename}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Other variables, instant processing, keywords, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -35,6 +35,7 @@ nonisolated enum MCPMetadataTemplatePreview {
         "mediaTopic", "genre", "imageSupplier",
     ])
     static let filenameVariableFields: Set<String> = ["title", "description", "extendedDescription", "instructions"]
+    static let sequenceTokens = ["{seq}"] + (1...9).map { "{seq:\($0)}" }
     static let argumentKeys: Set<String> = ["templateID", "templateRevision", "mode", "path",
                                           "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"]
 
@@ -119,8 +120,9 @@ nonisolated enum MCPMetadataTemplatePreview {
     }
 
     private static func isSupportedValue(_ value: String, for key: String) -> Bool {
+        let tokens = ["{filename}"] + sequenceTokens
         let candidate = filenameVariableFields.contains(key)
-            ? value.replacingOccurrences(of: "{filename}", with: "") : value
+            ? tokens.reduce(value) { $0.replacingOccurrences(of: $1, with: "") } : value
         return isLiteralValue(candidate, for: key)
     }
 
@@ -159,7 +161,8 @@ nonisolated enum MCPMetadataTemplatePreview {
         return key != "creator" || IPTCMetadata.creators(fromTransportValue: value).allSatisfy(literal)
     }
 
-    static func preview(request: Request, templateFields: [String: String], metadata: MCPJSONValue) throws -> MCPJSONValue {
+    static func preview(request: Request, templateFields: [String: String], metadata: MCPJSONValue, sequenceIndex: Int = 1) throws -> MCPJSONValue {
+        guard (1...MCPMetadataTemplateBatchPreview.maximumPhotos).contains(sequenceIndex) else { throw Failure.invalidArguments }
         guard let record = metadata.objectValue, let fields = record["fields"]?.objectValue,
               record["hasXMPConflict"] == .bool(false) else { throw Failure.conflict }
         for (key, value) in request.revisions where record[key] != value { throw Failure.staleRevision }
@@ -167,22 +170,33 @@ nonisolated enum MCPMetadataTemplatePreview {
             let editorialKey = editorialKeys[key] ?? key
             guard supportedFields.contains(key), let before = fields[editorialKey], let templateValue = templateFields[key],
                   templateValue.utf8.count <= 32_768, isSupportedValue(templateValue, for: key) else { throw Failure.invalidArguments }
-            let value: String
+            var value: String
             if templateValue.contains("{filename}") {
                 guard let path = record["canonicalPath"]?.stringValue, path.hasPrefix("/"), !path.contains("\0") else {
                     throw Failure.invalidArguments
                 }
                 let filename = URL(fileURLWithPath: path).lastPathComponent
                 // Refuse second-order placeholders in a filename before the production
-                // interpolator can interpret them as additional variable authority.
+                // interpolator can interpret them as additional variable authority, including
+                // a sequence token also present in the approved template itself.
                 guard isLiteralValue(filename, for: key) else { throw Failure.unsupportedTemplate }
                 // Matches the production interpolator's filename-only substitution. The
                 // helper target deliberately excludes its app/voice-memo dependencies;
                 // parity is tested against PresetVariableInterpolator in the app target.
                 value = templateValue.replacingOccurrences(of: "{filename}",
                     with: (filename as NSString).deletingPathExtension)
-                guard value.utf8.count <= 32_768, isLiteralValue(value, for: key) else { throw Failure.outputLimit }
+                guard value.utf8.count <= 32_768, isSupportedValue(value, for: key) else { throw Failure.outputLimit }
             } else { value = templateValue }
+            let usedSequenceTokens = sequenceTokens.filter { templateValue.contains($0) }
+            // Width is selected from the fixed allowlist, never arbitrary template input.
+            for token in usedSequenceTokens {
+                let width = token == "{seq}" ? 1 : Int(token.dropFirst(5).dropLast())!
+                value = value.replacingOccurrences(of: token, with: String(format: "%0\(width)d", sequenceIndex))
+            }
+            guard value.utf8.count <= 32_768 else { throw Failure.outputLimit }
+            if templateValue.contains("{filename}") || !usedSequenceTokens.isEmpty {
+                guard isLiteralValue(value, for: key) else { throw Failure.unsupportedTemplate }
+            }
             let after: MCPJSONValue
             if ["mediaTopic", "genre", "imageSupplier"].contains(key) {
                 guard case .array = before else { throw Failure.invalidArguments }
@@ -260,9 +274,12 @@ nonisolated enum MCPMetadataTemplatePreview {
             }
             var change: [String: MCPJSONValue] = ["field": .string(editorialKey), "before": before, "after": after,
                 "templateValue": .string(templateValue), "changed": .bool(before != after)]
-            if templateValue.contains("{filename}") {
+            if templateValue.contains("{filename}") || !usedSequenceTokens.isEmpty {
                 change["resolvedTemplateValue"] = .string(value)
-                change["resolvedVariables"] = .array([.string("filename")])
+                change["resolvedVariables"] = .array(
+                    (templateValue.contains("{filename}") ? [.string("filename")] : [])
+                    + (usedSequenceTokens.isEmpty ? [] : [.string("seq")]))
+                if !usedSequenceTokens.isEmpty { change["sequenceIndex"] = .integer(Int64(sequenceIndex)) }
             }
             if editorialKey != key { change["templateField"] = .string(key) }
             return .object(change)
@@ -279,10 +296,13 @@ nonisolated enum MCPMetadataTemplatePreview {
         result["previewOnly"] = .bool(true)
         result["commitAvailable"] = .bool(false)
         let resolvesFilename = templateFields.values.contains { $0.contains("{filename}") }
-        result["valueSemantics"] = .string(resolvesFilename
+        let resolvesSequence = templateFields.values.contains { value in sequenceTokens.contains { value.contains($0) } }
+        result["valueSemantics"] = .string(resolvesSequence
+            ? "request-order-sequence-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
+            : resolvesFilename
             ? "snapshot-filename-and-literal-template-editor-values; no-physical-write-or-publication-validation"
             : "literal-template-editor-values; no-physical-write-or-publication-validation")
-        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Only explicitly supported filename variables are resolved from the retained photo. No plan, approval, or write is created.")])
+        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
         let output = MCPJSONValue.object(result)
         guard try JSONEncoder().encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output

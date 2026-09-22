@@ -42,14 +42,14 @@ struct MCPMetadataTemplateBatchPreviewTests {
         #expect(try MCPMetadataTemplateBatchPreview.requests(arguments: arguments((0..<8).map { photo("/p/\($0).jpg") })).count == 8)
     }
 
-    @Test("Batch endpoint preserves requested order, photo bytes and all-or-error authority", arguments: [false, true])
-    func endpoint(filenameVariable: Bool) throws {
+    @Test("Batch endpoint preserves requested order, photo bytes and all-or-error authority", arguments: ["suffix", "Photo {filename}", "Photo {filename} / {seq} / {seq:3}"])
+    func endpoint(templateValue: String) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("apa-batch-preview-\(UUID())").resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("Templates")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let template = MetadataTemplate(name: "Batch", fields: [TemplateField(fieldKey: "title", templateValue: filenameVariable ? "Photo {filename}" : "suffix")])
+        let template = MetadataTemplate(name: "Batch", fields: [TemplateField(fieldKey: "title", templateValue: templateValue)])
         let data = try JSONEncoder().encode(template)
         let templateURL = directory.appendingPathComponent(template.id.uuidString + ".json")
         try data.write(to: templateURL)
@@ -91,12 +91,15 @@ struct MCPMetadataTemplateBatchPreviewTests {
                 "field": .string("title"), "before": .null, "after": .string("suffix"),
                 "templateValue": .string("suffix"), "changed": .bool(true),
             ]
-            if filenameVariable {
-                let resolved = "Photo " + photos[index].deletingPathExtension().lastPathComponent
+            if templateValue.contains("{") {
+                let resolved = PresetVariableInterpolator().resolve(templateValue,
+                    filename: photos[index].lastPathComponent, sequenceIndex: index + 1)
                 expected["after"] = .string(resolved)
-                expected["templateValue"] = .string("Photo {filename}")
+                expected["templateValue"] = .string(templateValue)
                 expected["resolvedTemplateValue"] = .string(resolved)
-                expected["resolvedVariables"] = .array([.string("filename")])
+                expected["resolvedVariables"] = .array(templateValue.contains("{seq")
+                    ? [.string("filename"), .string("seq")] : [.string("filename")])
+                if templateValue.contains("{seq") { expected["sequenceIndex"] = .integer(Int64(index + 1)) }
             }
             #expect(preview.objectValue?["changes"] == .array([.object(expected)]))
         }
