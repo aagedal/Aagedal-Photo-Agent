@@ -116,6 +116,17 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Resumes a crash that left complete model-scoped staging bytes before content
+    /// publication. The signed receipt and current ledger authorize the transition;
+    /// a partial or unrelated staging file cannot become an installed model.
+    func completeInterruptedStaging(_ receipt: WhisperModelDescriptorReceipt, named stagingName: String,
+                                    expectedGeneration: UUID) async throws -> Snapshot {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.publishInterruptedStaging(receipt, named: stagingName,
+                                                     expectedGeneration: expectedGeneration)
+        }
+    }
+
     /// Rechecks bytes on every lookup; a ledger alone never establishes installation.
     /// The returned path is not a retained read capability. Consumers must still use
     /// the transcription runner's artifact admission when opening it later.
@@ -407,6 +418,34 @@ actor WhisperModelDistributionStateStore {
         return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
                               directoryFD: fd, requireInstalled: true,
                               firstInstallPreflightCompleted: true)
+    }
+
+    private func publishInterruptedStaging(_ receipt: WhisperModelDescriptorReceipt,
+                                           named stagingName: String, expectedGeneration: UUID) throws -> Snapshot {
+        let prefix = ".\(modelID)."
+        let suffix = ".model-staging"
+        guard stagingName.hasPrefix(prefix), stagingName.hasSuffix(suffix),
+              UUID(uuidString: String(stagingName.dropFirst(prefix.count).dropLast(suffix.count)))?.uuidString
+                == String(stagingName.dropFirst(prefix.count).dropLast(suffix.count)) else {
+            throw StoreError.unsafeStorage
+        }
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, _) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        guard receipt.descriptor.modelID == modelID else { throw WhisperModelDistributionTrust.TrustError.wrongModel }
+        _ = try trust.updating(state, to: receipt)
+        try verifyModel(receipt, directoryFD: fd, filename: stagingName)
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+        let name = modelFilename(receipt)
+        if renameatx_np(fd, stagingName, fd, name, UInt32(RENAME_EXCL)) != 0, errno != EEXIST {
+            throw StoreError.unsafeStorage
+        }
+        guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try publicationCheckpoint()
+        return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
+                              directoryFD: fd, requireInstalled: true)
     }
 
     private var filename: String { "\(modelID).release-state.json" }

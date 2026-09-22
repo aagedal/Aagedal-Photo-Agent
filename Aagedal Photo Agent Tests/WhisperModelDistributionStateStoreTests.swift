@@ -417,6 +417,77 @@ struct WhisperModelDistributionStateStoreTests {
         #expect(try Data(contentsOf: model) == bytes)
     }
 
+    @Test("Complete staged bytes can resume an interrupted update under signed authority")
+    func completeInterruptedStaging() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let bytes = Data("staged release".utf8)
+        let receipt = try fixture.receipt(2, bytes: bytes)
+        let name = ".tiny.\(UUID().uuidString).model-staging"
+        let staged = fixture.directory.appendingPathComponent(name)
+        try bytes.write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        let oldLedger = try Data(contentsOf: fixture.stateURL)
+        let reopened = try fixture.store()
+        let recovered = try await reopened.completeInterruptedStaging(receipt, named: name,
+                                                                       expectedGeneration: initial.generation)
+        #expect(recovered.release.current.descriptor.releaseSequence == 2)
+        #expect(recovered.release.rollbackCandidate?.descriptor.releaseSequence == 1)
+        #expect(try Data(contentsOf: fixture.stateURL) != oldLedger)
+        let installed = try #require(await reopened.installedURL())
+        #expect(try Data(contentsOf: installed) == bytes)
+        #expect(!FileManager.default.fileExists(atPath: staged.path))
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await reopened.completeInterruptedStaging(receipt, named: name,
+                                                           expectedGeneration: initial.generation)
+        }
+    }
+
+    @Test("Staging recovery refuses partial bytes, foreign names and lost ledgers")
+    func completeInterruptedStagingRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let bytes = Data("complete release".utf8)
+        let receipt = try fixture.receipt(2, bytes: bytes)
+        let name = ".tiny.\(UUID().uuidString).model-staging"
+        let staged = fixture.directory.appendingPathComponent(name)
+        try Data("partial".utf8).write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.completeInterruptedStaging(receipt, named: name,
+                                                       expectedGeneration: initial.generation)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.completeInterruptedStaging(receipt, named: "../\(name)",
+                                                       expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: staged) == Data("partial".utf8))
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        try bytes.write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        let installed = fixture.directory.appendingPathComponent("ggml-tiny-\(receipt.descriptor.sha256).bin")
+        try Data("unrelated".utf8).write(to: installed)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: installed.path)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.completeInterruptedStaging(receipt, named: name,
+                                                       expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: installed) == Data("unrelated".utf8))
+        #expect(try Data(contentsOf: staged) == bytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.completeInterruptedStaging(receipt, named: name,
+                                                       expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: staged) == bytes)
+    }
+
     @Test("Lost ledger with retained model bytes cannot restart the release floor")
     func missingLedgerRetainedContentRefusesInitialAcceptance() async throws {
         let fixture = try Fixture()
