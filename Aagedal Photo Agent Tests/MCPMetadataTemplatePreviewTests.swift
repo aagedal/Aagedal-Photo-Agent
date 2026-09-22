@@ -18,6 +18,82 @@ struct MCPMetadataTemplatePreviewTests {
         }, processInstantly: instantly))
     }
 
+    @Test("Literal field references match the production interpolator", arguments: ["append", "replace"])
+    func fieldReferences(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .string("Before"), "credit": .string("Agency"), "city": .null])
+        let raw = "{field:credit} / {field:city} / {field:credit}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        let result = try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        var metadata = IPTCMetadata()
+        metadata.credit = "Agency"
+        let resolved = PresetVariableInterpolator().resolve(raw, filename: "frame.jpg", existingMetadata: metadata)
+        guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+        let change = try #require(changes.first?.objectValue)
+        #expect(change["after"] == .string(mode == "append" ? "Before " + resolved : resolved))
+        #expect(change["resolvedTemplateValue"] == .string(resolved))
+        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-scalar-field") == true)
+        #expect(change["resolvedVariables"] == .array([.string("field:city"), .string("field:credit")]))
+        for incoming in ["{seq}", "{filename}", "{initials}", "{field:city}", "(number)", "brace}"] {
+            record["fields"] = .object(["title": .string("Before"), "credit": .string(incoming), "city": .null])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+            }
+        }
+        record["fields"] = .object(["title": .string("Before"), "credit": .string("Agency"), "city": .null])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw, "credit": "Changed"], metadata: .object(record))
+        }
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": "{field:title}"], metadata: .object(record))
+        }
+        record["fields"] = .object(["title": .string("Before")])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        }
+    }
+
+    @Test("Field expansion is bounded before allocation with UTF-8 byte accounting")
+    func fieldExpansionLimit() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .null, "credit": .string(String(repeating: "Å", count: 16_384))])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": String(repeating: "{field:credit}", count: 2_000)], metadata: .object(record))
+        }
+        let atLimit = try MCPMetadataTemplatePreview.replacingBounded("{field:credit}",
+            in: "{field:credit}", with: String(repeating: "Å", count: 16_384))
+        #expect(atLimit.utf8.count == 32_768)
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            try MCPMetadataTemplatePreview.replacingBounded("{field:credit}",
+                in: "x{field:credit}", with: String(repeating: "Å", count: 16_384))
+        }
+    }
+
+    @Test("Every allowed scalar field reference agrees with production resolution")
+    func allFieldReferences() throws {
+        for source in MCPMetadataTemplatePreview.fieldVariableSources {
+            let target = source == "title" ? "description" : "title"
+            let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+            let scalar = source == "dateCreated" ? "2026-09-22" : source == "countryCode" ? "NOR" : "Literal Å value"
+            let fieldData = try JSONEncoder().encode([source: scalar])
+            let metadata = try JSONDecoder().decode(IPTCMetadata.self, from: fieldData)
+            var record = request.revisions
+            record["hasXMPConflict"] = .bool(false)
+            record["fields"] = .object([source: .string(scalar), target: .null])
+            let raw = "{field:\(source)}"
+            let result = try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: [target: raw], metadata: .object(record))
+            guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+            #expect(changes.first?.objectValue?["after"] == .string(
+                PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)))
+        }
+    }
+
     @Test("Literal append and replace values agree with the production editor", arguments: ["append", "replace"])
     @MainActor func editorSemantics(mode: String) throws {
         let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
@@ -278,7 +354,7 @@ struct MCPMetadataTemplatePreviewTests {
     func rejectsUnsupported() throws {
         for (key, value) in [("keywords", "news"), ("creatorContactInfo", "Byline"), ("unknown", "value"),
                              ("credit", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
-                             ("title", "{voiceMemoTranscript}"), ("title", "{field:credit}"),
+                             ("title", "{voiceMemoTranscript}"), ("title", "{field:keywords}"),
                              ("creator", "{persons}"), ("creator", #"["\u007bfilename\u007d"]"#), ("dateCreated", "{date}"), ("title", "\0")] {
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                 try MCPMetadataTemplatePreview.templateFields(template([(key, value)]))
