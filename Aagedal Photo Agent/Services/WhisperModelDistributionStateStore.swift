@@ -14,7 +14,7 @@ nonisolated private func whisperReleaseFlock(_ descriptor: Int32, _ operation: I
 /// fallback that could silently lower the accepted release floor.
 actor WhisperModelDistributionStateStore {
     enum StoreError: Error, Equatable {
-        case staleGeneration, invalidState, unsafeStorage, storageBusy, invalidModelBytes
+        case staleGeneration, invalidState, unsafeStorage, storageBusy, invalidModelBytes, cleanupLimitExceeded
     }
 
     struct Snapshot: Sendable {
@@ -35,12 +35,14 @@ actor WhisperModelDistributionStateStore {
     private let modelID: String
     private let trust: WhisperModelDistributionTrust
     private let installationCheckpoint: @Sendable () throws -> Void
+    private let publicationCheckpoint: @Sendable () throws -> Void
     nonisolated let filesystemQueue = DispatchSerialQueue(
         label: "com.aagedal.photo-agent.whisper-release-state", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
 
     init(directory: URL, modelID: String, trust: WhisperModelDistributionTrust,
-         installationCheckpoint: @escaping @Sendable () throws -> Void = {}) throws {
+         installationCheckpoint: @escaping @Sendable () throws -> Void = {},
+         publicationCheckpoint: @escaping @Sendable () throws -> Void = {}) throws {
         guard !modelID.isEmpty, modelID.utf8.count <= 64,
               modelID.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else {
             throw StoreError.invalidState
@@ -62,6 +64,7 @@ actor WhisperModelDistributionStateStore {
         self.modelID = modelID
         self.trust = trust
         self.installationCheckpoint = installationCheckpoint
+        self.publicationCheckpoint = publicationCheckpoint
     }
 
     func load() async throws -> Snapshot? {
@@ -107,6 +110,94 @@ actor WhisperModelDistributionStateStore {
         try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
             try await self.readInstalledURL()
         }
+    }
+
+    /// Explicit maintenance after relaunch. Authenticated authority is required before
+    /// deleting anything; absent/corrupt ledgers must be recovered separately. All
+    /// candidates are checked before mutation, and retries tolerate a partial sweep.
+    /// Old unscoped staging names are intentionally outside this model's ownership.
+    func cleanUpInterruptedInstallation(expectedGeneration: UUID) async throws -> Int {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.cleanUpOrphans(expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func cleanUpOrphans(expectedGeneration: UUID) throws -> Int {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, highWater) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        // Keep signed high-water bytes too: rollback consumes its candidate without
+        // lowering replay protection, and maintenance must not silently erase it.
+        var retained = Set([modelFilename(state.current), modelFilename(highWater)])
+        if let rollback = state.rollbackCandidate { retained.insert(modelFilename(rollback)) }
+        let scanFD = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard scanFD >= 0 else { throw StoreError.unsafeStorage }
+        guard let stream = fdopendir(scanFD) else {
+            close(scanFD)
+            throw StoreError.unsafeStorage
+        }
+        defer { closedir(stream) }
+        var candidates: [(String, stat)] = []
+        var scanned = 0
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw StoreError.unsafeStorage }
+                break
+            }
+            scanned += 1
+            guard scanned <= 4_096 else { throw StoreError.cleanupLimitExceeded }
+            let nameCapacity = Int(entry.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: nameCapacity) {
+                    String(cString: $0)
+                }
+            }
+            guard !retained.contains(name), isCleanupCandidate(name) else { continue }
+            var info = stat()
+            guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
+                  info.st_nlink == 1, info.st_mode & 0o077 == 0 else { throw StoreError.unsafeStorage }
+            candidates.append((name, info))
+            guard candidates.count <= 64 else { throw StoreError.cleanupLimitExceeded }
+        }
+        try validateDirectoryIdentity()
+        for (name, original) in candidates {
+            try Task.checkCancellation()
+            var named = stat()
+            guard fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  named.st_dev == original.st_dev, named.st_ino == original.st_ino,
+                  named.st_mode == original.st_mode, named.st_nlink == 1,
+                  named.st_uid == original.st_uid,
+                  named.st_size == original.st_size,
+                  named.st_ctimespec.tv_sec == original.st_ctimespec.tv_sec,
+                  named.st_ctimespec.tv_nsec == original.st_ctimespec.tv_nsec else {
+                throw StoreError.unsafeStorage
+            }
+            guard unlinkat(fd, name, 0) == 0 else { throw StoreError.unsafeStorage }
+        }
+        guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try validateDirectoryIdentity()
+        return candidates.count
+    }
+
+    private func isCleanupCandidate(_ name: String) -> Bool {
+        let contentPrefix = "ggml-\(modelID)-"
+        if name.hasPrefix(contentPrefix), name.hasSuffix(".bin") {
+            let digest = name.dropFirst(contentPrefix.count).dropLast(4)
+            return digest.utf8.count == 64 && digest.utf8.allSatisfy {
+                (48...57).contains($0) || (97...102).contains($0)
+            }
+        }
+        for (prefix, suffix) in [(".\(modelID).", ".model-staging"), (".\(filename).", ".staging")] {
+            if name.hasPrefix(prefix), name.hasSuffix(suffix) {
+                let identifier = String(name.dropFirst(prefix.count).dropLast(suffix.count))
+                return UUID(uuidString: identifier)?.uuidString == identifier
+            }
+        }
+        return false
     }
 
     private func modelFilename(_ receipt: WhisperModelDescriptorReceipt) -> String {
@@ -170,7 +261,7 @@ actor WhisperModelDistributionStateStore {
         _ = try existing.map { try trust.updating($0.1, to: receipt) } ?? trust.initialState(receipt)
         try Task.checkCancellation()
         guard source.isFileURL, !source.path.contains("\0") else { throw StoreError.unsafeStorage }
-        let temporary = ".\(UUID().uuidString).model-staging"
+        let temporary = ".\(modelID).\(UUID().uuidString).model-staging"
         defer { unlinkat(fd, temporary, 0) }
         try WhisperDownloadedFileStaging.copy(source, to: temporary, in: fd,
             byteCount: receipt.descriptor.byteCount, checkCancellation: { try Task.checkCancellation() })
@@ -187,6 +278,7 @@ actor WhisperModelDistributionStateStore {
         }
         // Persist the content filename before publishing a ledger that references it.
         guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try publicationCheckpoint()
         return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
                               directoryFD: fd, requireInstalled: true)
     }

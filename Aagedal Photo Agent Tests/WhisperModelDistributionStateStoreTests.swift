@@ -39,6 +39,107 @@ struct WhisperModelDistributionStateStoreTests {
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
     }
 
+    @Test("Recovery removes an interrupted published model while retaining current and rollback bytes")
+    func interruptedPublicationCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let store = try fixture.store()
+        let firstBytes = Data("first".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let firstURL = try #require(await store.installedURL())
+        let secondBytes = Data("second".utf8)
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source, expectedGeneration: first.generation)
+        let secondURL = try #require(await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let thirdBytes = Data("third".utf8)
+        let thirdReceipt = try fixture.receipt(3, bytes: thirdBytes)
+        try thirdBytes.write(to: source)
+        let failing = try WhisperModelDistributionStateStore(directory: fixture.directory,
+            modelID: "tiny", trust: fixture.trust, publicationCheckpoint: { throw CancellationError() })
+        await #expect(throws: CancellationError.self) {
+            try await failing.install(thirdReceipt, from: source, expectedGeneration: second.generation)
+        }
+        let orphan = fixture.directory.appendingPathComponent("ggml-tiny-\(thirdReceipt.descriptor.sha256).bin")
+        #expect(try Data(contentsOf: orphan) == thirdBytes)
+        let restarted = try fixture.store()
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await restarted.cleanUpInterruptedInstallation(expectedGeneration: first.generation)
+        }
+        #expect(try await restarted.cleanUpInterruptedInstallation(expectedGeneration: second.generation) == 1)
+        #expect(try await restarted.cleanUpInterruptedInstallation(expectedGeneration: second.generation) == 0)
+        #expect(!FileManager.default.fileExists(atPath: orphan.path))
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        let rolledBack = try await restarted.rollBackInstalled(expectedGeneration: second.generation)
+        #expect(try await restarted.cleanUpInterruptedInstallation(expectedGeneration: rolledBack.generation) == 0)
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        _ = try await restarted.install(thirdReceipt, from: source, expectedGeneration: rolledBack.generation)
+    }
+
+    @Test("Cleanup authenticates authority and preflights unsafe candidates before deleting")
+    func cleanupFailsClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let staged = fixture.directory.appendingPathComponent(".tiny.\(UUID().uuidString).model-staging")
+        try Data("staged".utf8).write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        let symlink = fixture.directory.appendingPathComponent("ggml-tiny-\(String(repeating: "b", count: 64)).bin")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: staged)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: staged) == Data("staged".utf8))
+        try FileManager.default.removeItem(at: symlink)
+        let otherTrust = try WhisperModelDistributionTrust(publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation)
+        let other = try WhisperModelDistributionStateStore(directory: fixture.directory, modelID: "tiny", trust: otherTrust)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await other.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
+        try Data("broken".utf8).write(to: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
+        #expect(try Data(contentsOf: staged) == Data("staged".utf8))
+    }
+
+    @Test("Cleanup is bounded and preserves other-model and legacy staging files")
+    func cleanupBoundsAndScope() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        var staged: [URL] = []
+        for _ in 0..<65 {
+            let url = fixture.directory.appendingPathComponent(".tiny.\(UUID().uuidString).model-staging")
+            try Data("staged".utf8).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            staged.append(url)
+        }
+        let untouched = [".\(UUID().uuidString).model-staging", ".base.\(UUID().uuidString).model-staging",
+                         "ggml-base-\(String(repeating: "c", count: 64)).bin", ".tiny.not-a-uuid.model-staging"]
+        for name in untouched { try Data("keep".utf8).write(to: fixture.directory.appendingPathComponent(name)) }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.cleanupLimitExceeded) {
+            try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation)
+        }
+        #expect(staged.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        try FileManager.default.removeItem(at: staged.removeLast())
+        #expect(try await store.cleanUpInterruptedInstallation(expectedGeneration: initial.generation) == 64)
+        for name in untouched {
+            #expect(try Data(contentsOf: fixture.directory.appendingPathComponent(name)) == Data("keep".utf8))
+        }
+    }
+
     @Test("Signed installation, update and rollback retain verified bytes across restart")
     func verifiedInstallationLifecycle() async throws {
         let fixture = try Fixture()
