@@ -17,6 +17,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
     struct Review: Sendable {
         let photoPath: String
         let materialID: UUID
+        let installedCarriers: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?
         let canResolveUnchanged: Bool
         let message: String
         fileprivate let material: MCPIPTCPatchXMPRecoveryStore.Material
@@ -31,18 +32,23 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
     }
 
     func inspect(photoPath: String? = nil) throws -> Review? {
-        guard let material = try recovery.load() else { return nil }
+        guard let state = try recovery.loadRecoveryState() else { return nil }
+        let material = state.material
         guard let path = material.sourcePath ?? photoPath else { throw Failure.missingPhotoPath }
         if let photoPath, let saved = material.sourcePath, photoPath != saved { throw Failure.staleReview }
         let snapshot = try facade.withPhotoSnapshot(path: path) { $0 }
         guard snapshot.target.url.deletingPathExtension().appendingPathExtension("xmp").path == material.targetPath,
-              try recovery.load() == material else { throw Failure.staleReview }
+              let currentState = try recovery.loadRecoveryState(),
+              currentState.material == material, currentState.installed == state.installed else { throw Failure.staleReview }
         let unchanged = try matchesOriginal(snapshot, material: material)
+        let identityMessage = state.installed.map {
+            $0.appRevision == nil ? " Installed XMP identity is retained." : " Installed XMP and app history identities are retained."
+        } ?? ""
         return Review(photoPath: snapshot.target.url.path, materialID: material.id,
-            canResolveUnchanged: unchanged,
+            installedCarriers: state.installed, canResolveUnchanged: unchanged,
             message: unchanged
                 ? "The original photo, XMP and app history are unchanged. Resolve abandoned staging to allow a new publication review."
-                : "Publication or external changes may have occurred. Recovery is retained; automatic restoration is unavailable.",
+                : "Publication or external changes may have occurred. Recovery is retained; automatic restoration is unavailable." + identityMessage,
             material: material, snapshot: snapshot)
     }
 

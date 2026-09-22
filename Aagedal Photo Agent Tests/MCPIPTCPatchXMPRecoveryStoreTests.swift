@@ -144,6 +144,53 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadVerifiedDisposition() }
     }
 
+    @Test("Installed identity progression survives reopen and refuses rollback or mismatched generations")
+    func installedIdentities() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        let xmp = MCPIPTCPatchXMPRecoveryStore.InstalledCarriers(xmpRevision: "installed-xmp", appRevision: nil)
+        let both = MCPIPTCPatchXMPRecoveryStore.InstalledCarriers(xmpRevision: "installed-xmp", appRevision: "installed-app")
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordInstalled(material, installed: both, verify: {})
+        }
+        try fixture.store.recordInstalled(material, installed: xmp, verify: {})
+        #expect(try fixture.store.load() == material)
+        #expect(try fixture.store.loadInstalledCarriers() == xmp)
+        let before = try Data(contentsOf: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordInstalled(material, installed: both) { throw MCPIPTCPatchXMPRecoveryStore.Failure.verification }
+        }
+        #expect(try Data(contentsOf: fixture.journal) == before)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordUnchanged(material, verify: {})
+        }
+        try fixture.store.recordInstalled(material, installed: both, verify: {})
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordInstalled(material, installed: xmp, verify: {})
+        }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordInstalled(material, installed: .init(xmpRevision: "substituted", appRevision: "installed-app"), verify: {})
+        }
+        try fixture.store.recordVerified(material, verify: {})
+        #expect(try fixture.store.loadVerifiedDisposition()?.installed == both)
+        #expect(try fixture.store.load() == nil)
+    }
+
+    @Test("Changing an incomplete receipt envelope cannot claim completion")
+    func incompleteReceiptVersion() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        try fixture.store.recordInstalled(material, installed: .init(xmpRevision: "installed", appRevision: nil), verify: {})
+        var envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.journal)) as? [String: Any])
+        envelope["version"] = 4
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadVerifiedDisposition() }
+    }
+
     @Test("App history and publication consent bindings cannot be partially supplied")
     func partialPublicationBinding() throws {
         let fixture = try Fixture()

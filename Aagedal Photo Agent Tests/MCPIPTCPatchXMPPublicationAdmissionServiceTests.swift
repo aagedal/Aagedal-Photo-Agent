@@ -65,6 +65,7 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(admitted.operationID == operationID)
         #expect(material.id == operationID)
         #expect(material.publicationApprovalID == receipt.id)
+        #expect(try recovery.loadInstalledCarriers() == nil)
         #expect(material.original == before.xmpBytes)
         #expect(try #require(material.appSidecarRecovery).original == before.appSidecarBytes)
         #expect(material.candidate != material.original)
@@ -127,10 +128,12 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(try recovery.loadVerifiedDisposition()?.material.planID == planID)
         let final = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
         #expect(try MCPMetadataSnapshotReader.read(final).resolution.metadata.title == "Second")
+        #expect(try recovery.loadVerifiedDisposition()?.installed == .init(
+            xmpRevision: final.xmpSidecarRevision, appRevision: final.appSidecarRevision))
     }
 
-    @Test("Carrier changes at disposition preserve unresolved recovery", arguments: ["source", "xmp", "app"])
-    func changedBeforeDisposition(carrier: String) async throws {
+    @Test("Carrier changes at disposition preserve unresolved recovery", arguments: ["source", "xmp", "app"], [false, true])
+    func changedBeforeDisposition(carrier: String, sameBytes: Bool) async throws {
         let fixture = try Fixture(pending: true)
         let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
         let receipt = try await approval(fixture, store: store)
@@ -140,12 +143,15 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
             : fixture.root.appendingPathComponent(".photo_metadata/\(fixture.photo.lastPathComponent).meta.json"))
         let changed = Data("external change".utf8)
         let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade,
-            hooks: .init(beforeDisposition: { try changed.write(to: target) }))
+            hooks: .init(beforeDisposition: {
+                let bytes = sameBytes ? try Data(contentsOf: target) : changed
+                try bytes.write(to: target, options: .atomic)
+            }))
         let result = await service.publish(receipt, context: try context(fixture))
         #expect(result.outcome == .uncertain)
         #expect(try recovery.load() != nil)
         #expect(try recovery.loadVerifiedDisposition() == nil)
-        #expect(try Data(contentsOf: target) == changed)
+        if !sameBytes { #expect(try Data(contentsOf: target) == changed) }
     }
 
     @Test("Publication refuses to discard an effective pending Capture Date before changing carriers")
@@ -184,6 +190,9 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(after.sourceRevision == before.sourceRevision)
         #expect(after.xmpBytes == material.candidate)
         #expect(after.appSidecarBytes == before.appSidecarBytes)
+        let installed = try #require(try recovery.loadInstalledCarriers())
+        #expect(installed.xmpRevision == after.xmpSidecarRevision)
+        #expect(installed.appRevision == nil)
         #expect(material.original == before.xmpBytes)
         #expect(material.appSidecarRecovery?.original == before.appSidecarBytes)
         #expect(material.appSidecarRecovery?.candidate != nil)

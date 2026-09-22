@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -55,6 +56,23 @@ struct MCPXMPSidecarInstallationTests {
         #expect(after.sourceRevision == fixture.snapshot.sourceRevision)
         #expect(after.appSidecarRevision == fixture.snapshot.appSidecarRevision)
         #expect(after.sourceBytes == fixture.snapshot.sourceBytes)
+        try fixture.assertNoStaging()
+    }
+
+    @Test("Installed receipt callback identifies the exact installed generation")
+    func installedReceiptIdentity() throws {
+        let fixture = try Fixture(existing: true)
+        try fixture.facade.installXMPSidecar(data: fixture.candidate, expected: fixture.snapshot,
+            reservation: fixture.reservation, afterInstall: { snapshot in
+                var identity = stat()
+                #expect(Darwin.lstat(fixture.xmp.path, &identity) == 0)
+                let identityPart = "\(identity.st_dev):\(identity.st_ino):\(identity.st_size):\(identity.st_mtimespec.tv_sec):\(identity.st_mtimespec.tv_nsec):\(identity.st_ctimespec.tv_sec):\(identity.st_ctimespec.tv_nsec):"
+                var bytes = Data("apa-mcp-revision-v1:xmp:\(identityPart)".utf8)
+                bytes.append(fixture.candidate)
+                let token = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                #expect(snapshot.xmpSidecarRevision == token)
+                #expect(snapshot.xmpBytes == fixture.candidate)
+            })
         try fixture.assertNoStaging()
     }
 

@@ -208,6 +208,14 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                             guard try recovery.load() == material,
                                   material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                             else { throw Failure.verification }
+                        }, afterInstall: { installed in
+                            try recovery.recordInstalled(material,
+                                installed: .init(xmpRevision: installed.xmpSidecarRevision, appRevision: nil)) {
+                                guard installed.sourceRevision == snapshot.sourceRevision,
+                                      installed.appSidecarRevision == snapshot.appSidecarRevision,
+                                      material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                                else { throw Failure.verification }
+                            }
                         })
                     try hooks.afterXMPInstall()
                     let installedXMP = try facade.withPhotoSnapshot(path: snapshot.target.url.path,
@@ -225,10 +233,22 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                             guard try recovery.load() == material,
                                   material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                             else { throw Failure.verification }
+                        }, afterInstall: { installed in
+                            try recovery.recordInstalled(material,
+                                installed: .init(xmpRevision: installed.xmpSidecarRevision,
+                                    appRevision: installed.appSidecarRevision)) {
+                                guard installed.sourceRevision == snapshot.sourceRevision,
+                                      installed.xmpSidecarRevision == installedXMP.xmpSidecarRevision,
+                                      material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                                else { throw Failure.verification }
+                            }
                         })
                     let final = try facade.withPhotoSnapshot(path: snapshot.target.url.path,
                         reservation: admission.reservation) { $0 }
-                    guard final.sourceRevision == snapshot.sourceRevision,
+                    guard let installedReceipt = try recovery.loadInstalledCarriers(),
+                          installedReceipt.xmpRevision == final.xmpSidecarRevision,
+                          installedReceipt.appRevision == final.appSidecarRevision,
+                          final.sourceRevision == snapshot.sourceRevision,
                           final.sourceBytes == snapshot.sourceBytes,
                           final.xmpSidecarRevision == installedXMP.xmpSidecarRevision,
                           final.xmpBytes == material.candidate, final.appSidecarBytes == appCandidate,
