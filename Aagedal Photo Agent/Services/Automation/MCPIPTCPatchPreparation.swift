@@ -197,7 +197,12 @@ nonisolated enum MCPIPTCPatchPreparation {
         result["canonicalPath"] = .string(canonicalPath)
         result["rootID"] = .string(rootID)
         result["changes"] = .array(changes)
-        result["expiresAt"] = .string(ISO8601DateFormatter().string(from: now.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime)))
+        // Foundation may round the final fraction of a second up when formatting.
+        // Floor explicitly so the published deadline never exceeds the five-minute
+        // authority bound checked by both retention and durable restoration.
+        let deadline = Date(timeIntervalSince1970:
+            floor(now.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime).timeIntervalSince1970))
+        result["expiresAt"] = .string(ISO8601DateFormatter().string(from: deadline))
         result["valueSemantics"] = .string("production-semantic-normalization; sourceValue-and-requestedValue-retain-exact-inputs; physical-write-not-evaluated")
         result["previewOnly"] = .bool(true)
         result["commitAvailable"] = .bool(false)

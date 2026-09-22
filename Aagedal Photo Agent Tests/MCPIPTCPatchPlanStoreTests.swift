@@ -14,7 +14,7 @@ struct MCPIPTCPatchPlanStoreTests {
     private let now = Date(timeIntervalSince1970: 2_000_000_000)
     private let rootID = UUID(uuidString: "40c770d1-dc70-42c7-999e-4b21b8794385")!
 
-    private func fixture() throws -> (MCPIPTCPatchPreparation.Request, MCPJSONValue, MCPAuthorizationConfiguration) {
+    private func fixture(createdAt: Date? = nil) throws -> (MCPIPTCPatchPreparation.Request, MCPJSONValue, MCPAuthorizationConfiguration) {
         let request = try MCPIPTCPatchPreparation.Request(arguments: [
             "path": .string("/photos/frame.jpg"), "sourceRevision": .string("source"),
             "xmpSidecarRevision": .string("xmp"), "appSidecarRevision": .string("app"),
@@ -30,7 +30,7 @@ struct MCPIPTCPatchPlanStoreTests {
         configuration.isEnabled = true
         configuration.roots = [MCPAuthorizedRoot(id: rootID, displayName: "photos", canonicalPath: "/photos",
             identity: MCPFileIdentity(device: 1, inode: 2), bookmarkData: nil)]
-        return (request, try MCPIPTCPatchPreparation.preview(request: request, metadata: metadata, now: now), configuration)
+        return (request, try MCPIPTCPatchPreparation.preview(request: request, metadata: metadata, now: createdAt ?? now), configuration)
     }
 
     @Test("Retention adds opaque identity and explicitly disclaims durable storage and write authority")
@@ -46,6 +46,34 @@ struct MCPIPTCPatchPlanStoreTests {
         #expect(fields["previewOnly"] == .bool(true))
         #expect(fields["commitAvailable"] == .bool(false))
         for (key, value) in try #require(preview.objectValue) { #expect(fields[key] == value) }
+    }
+
+    @Test("Second-resolution deadlines never round beyond authority at fractional boundaries",
+        arguments: [0.0, 0.9994, 0.9995, 0.9999])
+    func fractionalDeadline(fraction: TimeInterval) throws {
+        let createdAt = now.addingTimeInterval(fraction)
+        let (request, preview, configuration) = try fixture(createdAt: createdAt)
+        let text = try #require(preview.objectValue?["expiresAt"]?.stringValue)
+        let expiry = try #require(ISO8601DateFormatter().date(from: text))
+        #expect(expiry == now.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime))
+        #expect(expiry <= createdAt.addingTimeInterval(MCPIPTCPatchPlanStore.lifetime))
+        let directory = try temporaryStorage()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = MCPIPTCPatchPlanStore(storageDirectory: directory)
+        let retained = try first.retain(request: request, preview: preview,
+            configuration: configuration, createdAt: createdAt)
+        let id = try #require(retained.objectValue?["planID"])
+        let restarted = MCPIPTCPatchPlanStore(storageDirectory: directory)
+        let facade = MCPAutomationFacade(authorizationStore: MCPAuthorizationStore(
+            readConfigurationData: { nil }, writeConfigurationData: { _ in }))
+        // Reaching the authority check proves the archive's lifetime validation accepted
+        // the fractional creation instant, rather than rejecting storage as malformed.
+        #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+            try restarted.inspect(arguments: ["planID": id], facade: facade, now: createdAt)
+        }
+        #expect(throws: MCPIPTCPatchPlanStore.Failure.expiredPlan) {
+            try restarted.inspect(arguments: ["planID": id], facade: facade, now: expiry)
+        }
     }
 
     @Test("Count and serialized byte budgets refuse additional live plans without evicting them")
