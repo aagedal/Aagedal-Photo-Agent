@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-21
+**Last reviewed:** 2026-09-22
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 92: batch previews, publication consent and durable model trust](release/cycle-92-batch-preview-publication-consent-2026-09-21.md) expands literal template field coverage, exposes exact-revision all-or-error previews for 1–8 photos, separates XMP publication consent from draft consent, and persists authenticated Whisper release-state/high-water evidence. Physical publication, variable/application execution and integration of model trust with verified-byte installation remain open.
+**Latest implementation continuation:** [Cycle 93: publication review, structured previews and model locking](release/cycle-93-publication-review-template-model-locking-2026-09-22.md) adds separate native XMP consent, one-shot internal recovery admission, literal Media Topic/Genre/Image Supplier previews and cross-process Whisper release-ledger coordination. Physical publication, production template/variable execution and verified-byte model lifecycle integration remain open.
 
 ## Portfolio
 

@@ -1484,6 +1484,14 @@ speech/silence probes; nine image comparisons still pass. This does not complete
 trusted artifact/model lifecycle or provider UI. See
 [cycle 79](release/cycle-79-durable-previews-whisper-timing-2026-09-20.md).
 
+**Cycle 93 continuation (2026-09-22):** Native XMP review now has separate candidate-bound consent,
+explicit consequence acknowledgements and lifecycle revocation. Internal one-shot admission verifies
+restaged bytes and retains original XMP/app-history recovery; it does not install or reconcile live
+carriers. Literal template previews include Media Topic, Genre and Image Supplier using editor parsing.
+Whisper release-ledger transactions now coordinate cooperating processes with verified-directory locks;
+installed-byte lifecycle and production distribution integration remain open. See
+[cycle 93](release/cycle-93-publication-review-template-model-locking-2026-09-22.md).
+
 ### MCP transport and authority
 
 - [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex CLI,

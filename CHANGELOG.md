@@ -10,6 +10,12 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added native **Approve XMP Candidate** consent after a verified dry run, with separate C2PA and
+  pending-draft acknowledgements, expiry and revocation. Physical publication remains unavailable.
+- Expanded literal template previews to Media Topic, Genre and Image Supplier structured values.
+- Serialized signed Whisper release-ledger transitions across cooperating processes; installed-model
+  lifecycle integration remains unfinished.
+
 - Expanded literal metadata-template previews to creators, organisations, scene/subject codes, date,
   country, source type, urgency, rights URL and digital GUID, matching editor semantics. Added
   `preview_metadata_template_batch` for 1–8 exact-revision photos with all-or-error results.

@@ -152,6 +152,12 @@ details. Starting a dry run revokes any existing approval. Pending values outsid
 and explicitly disclosed. This check does not approve publication or save beside the photo; embedded
 writes, arbitrary XML extension preservation, C2PA trust and recoverable installation remain separate.
 
+After a successful dry run, **Approve XMP Candidate** records separate consent for those exact candidate
+bytes. Read the publication consequences and acknowledge C2PA/preservation limitations; when the candidate
+includes pending draft values, their promotion needs its own acknowledgement. Clearing, leaving,
+expiry, withdrawing an acknowledgement or granting a different approval revokes this consent. The
+interface explicitly reports that no metadata was published: physical installation remains unavailable.
+
 After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
 local `.photo_metadata` history. First finish or discard editor changes and deselect the photo
 in every Photo Agent window. This action consumes the approval, rechecks authority under the
@@ -187,7 +193,8 @@ untrusted user-authored content and may be sensitive.
 Use `preview_metadata_template` with `templateID`, `templateRevision`, `mode` (`append` or `replace`),
 `path`, and the three revision tokens from `get_photo_metadata` to inspect one photo's affected values.
 It supports literal descriptive fields, Person Shown, creators, organisation names/codes, scene/subject
-codes, rights URL, digital GUID, Date Created, country code, Digital Source Type and urgency. Keywords,
+codes, rights URL, digital GUID, Date Created, country code, Digital Source Type, urgency, Media Topic,
+Genre and Image Supplier. Structured values use the same parsing and normalization as the editor. Keywords,
 variables, instant processing and unsupported structured fields are refused. The result includes pending draft values and matches editor Append/Replace
 behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.
 Read fresh revisions after any photo or template change. Template text is untrusted content.
