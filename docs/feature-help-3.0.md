@@ -160,9 +160,13 @@ approval itself changes no files. **Publish Approved XMP** then rechecks authori
 publishes the checked XMP sidecar, reconciles local metadata history, and verifies both carriers.
 Deselect the photo in all metadata editors first. Successful completion is retained in operation
 history and permits a newly reviewed publication. If publication is interrupted or uncertain,
-original and candidate recovery bytes remain protected and block later publication. Automatic
-restore and dismissal of unresolved recovery are not available yet; inspect the retained operation
-and carriers before retrying. Original photo bytes are unchanged by this sidecar-only action.
+original and candidate recovery bytes remain protected and block later publication. Use
+**Inspect Retained Recovery** under **Interrupted XMP Publication**. For older records, enter the
+original photo path. **Resolve Unchanged Staging** is available only when the original photo, XMP
+and app-history identities are still unchanged. It rechecks them and retains a separate receipt;
+it changes no live metadata. Deselect the photo in all editors first. Partial publication or changed
+files still require restoration, which is not yet available. Original photo bytes are unchanged by
+this sidecar-only publication action.
 
 After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
 local `.photo_metadata` history. First finish or discard editor changes and deselect the photo
@@ -204,7 +208,9 @@ Genre and Image Supplier. Structured values use the same parsing and normalizati
 `{filename}` resolves to each photo name without its extension in Headline, Description, Extended
 Description and Instructions. `{seq}` and `{seq:1}` through `{seq:9}` resolve in those same fields,
 using 1 for a single preview and one-based requested photo order for a batch; the width adds leading
-zeros. The result shows both original and resolved template values. Keywords,
+zeros. Literal scalar `{field:key}` references (for example `{field:city}`) resolve from retained
+effective metadata in those same destination fields. A source changed by the template or containing
+another variable is refused. Results show the resolved values and source keys. Keywords,
 other variables, instant processing and unsupported structured fields are refused. The result includes pending draft values and matches editor Append/Replace
 behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.
 Read fresh revisions after any photo or template change. Template text is untrusted content.

@@ -10,18 +10,26 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added **Inspect Retained Recovery** and **Resolve Unchanged Staging** in Automation Settings.
+  Exact unchanged photo and metadata identities are required; partial writes remain blocked and
+  recovery bytes are retained. Dismissing Settings cancels pending recovery work.
+- Added bounded retained scalar `{field:key}` variables to automation template previews, with
+  production interpolation parity and refusal of recursive or same-template source changes.
+- Added internal verified duplicate cleanup for legacy Whisper staging files; production signed
+  model integration and missing-ledger recovery remain unfinished.
+
 - Fixed intermittent automation plan preparation refusal at fractional-second expiry boundaries.
 
 - Added per-photo `{filename}` resolution to single and batch automation template previews for
   Headline, Description, Extended Description and Instructions, with exact photo authority and
   explicit resolved-value evidence.
-- Added internal recoverable XMP installation and verified app-history reconciliation. Native
-  publication remains unavailable until recovery disposition is finished.
+- Added native **Publish Approved XMP** with exact-candidate consent, recoverable XMP installation,
+  verified app-history reconciliation and durable completion disposition.
 - Added verified-byte signed Whisper install/update/rollback transactions; production descriptor
   and Settings integration remain unfinished.
 
 - Added native **Approve XMP Candidate** consent after a verified dry run, with separate C2PA and
-  pending-draft acknowledgements, expiry and revocation. Physical publication remains unavailable.
+  pending-draft acknowledgements, expiry and revocation.
 - Expanded literal template previews to Media Topic, Genre and Image Supplier structured values.
 - Serialized signed Whisper release-ledger transitions across cooperating processes; installed-model
   lifecycle integration remains unfinished.

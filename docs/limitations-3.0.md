@@ -58,11 +58,13 @@ These are material product and evidence boundaries, not a list of unfinished int
 - Native XMP publication requires a checked plan, dry run and separate session consent. It writes
   the sidecar and reconciles local history; helper clients cannot invoke physical publication.
 - Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further
-  publication. Automatic restore and dismissal of unresolved pre-write staging are not implemented.
+  publication. Unchanged pre-write staging can be explicitly resolved after exact identity checks;
+  automatic restoration after partial publication is not implemented.
   Completed recovery material lasts only until the next publication is staged; it is not permanent
   undo history. Original photo bytes are unchanged by this sidecar-only workflow.
-- Template previews support filename and bounded request-order sequence variables. Approved Keywords,
-  context-dependent variables and shared production template/face-scan/transcription executors remain open.
+- Template previews support filename, bounded request-order sequence variables and retained literal
+  scalar `{field:key}` references whose sources are unchanged by the template. Approved Keywords,
+  recursive/other context variables and shared production template/face-scan/transcription executors remain open.
 
 ## Metadata and delivery interoperability
 

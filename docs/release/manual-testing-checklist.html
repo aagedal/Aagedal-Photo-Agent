@@ -279,8 +279,19 @@
     "source": "cycle-93-publication-review-template-model-locking-2026-09-22.md",
     "setup": "Use a disposable exact-plan fixture and hash its photo, XMP and app history. Include a case with pending values outside the patch.",
     "steps": "Inspect the plan and Verify XMP Dry Run. Check that Approve XMP Candidate is disabled until C2PA limitations are acknowledged and, when applicable, pending draft promotion is separately acknowledged. Approve, withdraw acknowledgement, approve again, leave and reopen. Repeat with source replacement before consent and plan expiry. Confirm that ordinary draft approval revokes XMP approval.",
-    "expected": "Consent is candidate-specific and separate from draft approval. Withdrawal, navigation, replacement and expiry cannot retain usable consent. Status says no metadata was published. There is no physical publish action. Photo, XMP and app-history bytes remain unchanged throughout consent-only steps.",
+    "expected": "Consent is candidate-specific and separate from draft approval. Withdrawal, navigation, replacement and expiry cannot retain usable consent. Status says no metadata was published during consent-only steps. Publish Approved XMP is offered only after separate approval; explicitly publish a disposable candidate and verify both sidecars, unchanged photo bytes and persistence after relaunch. Photo, XMP and app-history bytes remain unchanged throughout consent-only steps.",
     "cleanup": "Clear review and delete only disposable fixtures; restore original Automation Settings."
+  },
+  {
+    "id": "A24",
+    "lane": "Agent computer use",
+    "priority": "P0",
+    "title": "Interrupted XMP staging inspection and unchanged resolution",
+    "source": "cycle-96-unchanged-recovery-field-preview-legacy-cleanup-2026-09-22.md",
+    "setup": "Use disposable exact-plan photos and isolated recovery storage. Interrupt after durable staging before the first carrier install; retain original source, XMP and app-history hashes and identities.",
+    "steps": "1. Open Automation Settings and Inspect Retained Recovery. 2. Compare the photo path and unchanged-state result. Resolve Unchanged Staging and inspect again. 3. Relaunch and verify the disposition receipt and unchanged carriers. 4. Repeat after replacing a source or sidecar, including same-byte replacement, and after authority revocation. 5. Dismiss Settings while inspection or resolution is queued. 6. For a legacy source-less journal, supply the exact original photo path. 7. For a partially installed candidate, verify resolution is refused and original recovery material remains available.",
+    "expected": "Only exact unchanged photo/carrier generations permit explicit resolution. No live metadata changes, no false publication success, and recovery bytes remain retained until the next publication is staged. Changed and uncertain carriers remain blocked. Dismissal cancels queued work and suppresses stale completions. Partial-publication restore remains an implementation gate.",
+    "cleanup": "Retain sanitized receipts and before/after evidence; remove only disposable fixture storage."
   },
   {
     "id": "U01",
