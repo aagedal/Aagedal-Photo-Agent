@@ -89,6 +89,48 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(try fixture.store.load() == material)
     }
 
+    @Test("Verified disposition survives reopening, rejects replay and admits the next operation")
+    func verifiedDisposition() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        try fixture.store.recordVerified(material, verify: {})
+        #expect(try fixture.store.load() == nil)
+        #expect(try fixture.store.loadVerifiedDisposition()?.material == material)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.occupied) {
+            try fixture.store.stage(id: material.id, planID: material.planID, targetPath: material.targetPath,
+                binding: material.binding, original: material.original, candidate: material.candidate,
+                appSidecarRecovery: material.appSidecarRecovery, publicationApprovalID: material.publicationApprovalID)
+        }
+        let next = try fixture.stage()
+        #expect(try fixture.store.load() == next)
+        #expect(try fixture.store.loadVerifiedDisposition() == nil)
+    }
+
+    @Test("Failed verification or mismatched material cannot resolve retained recovery")
+    func dispositionRefusal() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        let bytes = try Data(contentsOf: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordVerified(material) { throw MCPIPTCPatchXMPRecoveryStore.Failure.verification }
+        }
+        let mismatched = MCPIPTCPatchXMPRecoveryStore.Material(id: UUID(), planID: material.planID,
+            targetPath: material.targetPath, binding: material.binding, original: material.original,
+            candidate: material.candidate, appSidecarRecovery: material.appSidecarRecovery,
+            publicationApprovalID: material.publicationApprovalID)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordVerified(mismatched, verify: {})
+        }
+        #expect(try Data(contentsOf: fixture.journal) == bytes)
+        #expect(try fixture.store.load() == material)
+        #expect(try fixture.store.loadVerifiedDisposition() == nil)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.occupied) { try fixture.stage() }
+    }
+
     @Test("App history and publication consent bindings cannot be partially supplied")
     func partialPublicationBinding() throws {
         let fixture = try Fixture()
@@ -110,6 +152,22 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         let corrupt = try JSONSerialization.data(withJSONObject: ["version": version, "payload": "AA==", "sha256": "bad"])
         try corrupt.write(to: fixture.journal)
         #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.load() }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.stage() }
+        #expect(try Data(contentsOf: fixture.journal) == corrupt)
+    }
+
+    @Test("Changing only the envelope version cannot turn unresolved recovery into completion")
+    func forgedDispositionVersion() throws {
+        let fixture = try Fixture()
+        _ = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        var envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.journal)) as? [String: Any])
+        envelope["version"] = 4
+        let corrupt = try JSONSerialization.data(withJSONObject: envelope)
+        try corrupt.write(to: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.load() }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadVerifiedDisposition() }
         #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.stage() }
         #expect(try Data(contentsOf: fixture.journal) == corrupt)
     }

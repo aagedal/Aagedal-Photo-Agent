@@ -88,7 +88,8 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade)
         let result = await service.publish(receipt, context: try context(fixture))
         #expect(result.outcome == .verified)
-        let material = try #require(try recovery.load())
+        #expect(try recovery.load() == nil)
+        let material = try #require(try recovery.loadVerifiedDisposition()).material
         let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
         #expect(after.sourceRevision == before.sourceRevision)
         #expect(after.sourceBytes == before.sourceBytes)
@@ -101,6 +102,50 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(app.imageMetadataSnapshot?.title == "After")
         if pending { #expect(app.metadata.credit == "Pending unedited credit") }
         #expect(!app.history.isEmpty)
+    }
+
+    @Test("A second newly reviewed publication succeeds after durable completion")
+    func successivePublications() async throws {
+        let fixture = try Fixture()
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let first = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade)
+        #expect(await service.publish(first, context: try context(fixture)).outcome == .verified)
+        let read = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: fixture.photo.path, facade: fixture.facade).objectValue)
+        var arguments: [String: MCPJSONValue] = ["path": .string(fixture.photo.path), "operations": .array([
+            .object(["field": .string("title"), "operation": .string("set"), "value": .string("Second")])])]
+        for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = read[key] }
+        let preview = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: fixture.facade, plans: fixture.plans)
+        let planID = try #require(preview.objectValue?["planID"]?.stringValue)
+        let report = try await MCPIPTCPatchXMPPreflightService(plans: fixture.plans, facade: fixture.facade).inspect(planID: planID)
+        let review = try store.review(report, mode: .xmpSidecar, facade: fixture.facade)
+        let second = try store.approve(review, acknowledgesC2PAConsequences: true,
+            acknowledgesPendingDraftPromotion: true, facade: fixture.facade)
+        #expect(await service.publish(second, context: try context(fixture)).outcome == .verified)
+        #expect(try recovery.load() == nil)
+        #expect(try recovery.loadVerifiedDisposition()?.material.planID == planID)
+        let final = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(try MCPMetadataSnapshotReader.read(final).resolution.metadata.title == "Second")
+    }
+
+    @Test("Carrier changes at disposition preserve unresolved recovery", arguments: ["source", "xmp", "app"])
+    func changedBeforeDisposition(carrier: String) async throws {
+        let fixture = try Fixture(pending: true)
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let target = carrier == "source" ? fixture.photo : (carrier == "xmp"
+            ? URL(fileURLWithPath: receipt.targetPath)
+            : fixture.root.appendingPathComponent(".photo_metadata/\(fixture.photo.lastPathComponent).meta.json"))
+        let changed = Data("external change".utf8)
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade,
+            hooks: .init(beforeDisposition: { try changed.write(to: target) }))
+        let result = await service.publish(receipt, context: try context(fixture))
+        #expect(result.outcome == .uncertain)
+        #expect(try recovery.load() != nil)
+        #expect(try recovery.loadVerifiedDisposition() == nil)
+        #expect(try Data(contentsOf: target) == changed)
     }
 
     @Test("Publication refuses to discard an effective pending Capture Date before changing carriers")

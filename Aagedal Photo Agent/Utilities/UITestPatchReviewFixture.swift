@@ -116,7 +116,7 @@ enum UITestPatchReviewFixture {
                 try Data(record.id.uuidString.lowercased().utf8).write(
                     to: folder.appendingPathComponent("recovery-operation-id.txt"), options: .atomic)
             }
-            return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry)
+            return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry, recoveryDirectory: operationFolder)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

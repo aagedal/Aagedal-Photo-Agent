@@ -43,7 +43,7 @@ struct AutomationPatchReviewView: View {
             Text(verbatim: review.path).font(.caption).textSelection(.enabled)
             Text("Checked snapshot · expires \(review.expiresAt.formatted(date: .omitted, time: .standard))")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Changes after inspection require a fresh check. Direct publication to the photo or XMP remains unavailable here.")
+            Text("Changes after inspection require a fresh check. XMP publication requires a verified dry run and separate consent below.")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(review.changes) { change in
                 VStack(alignment: .leading, spacing: 4) {
@@ -123,13 +123,17 @@ struct AutomationPatchReviewView: View {
                     .accessibilityIdentifier("automation.acknowledgeXMPPendingDraft")
                     .disabled(model.isLoading || model.isApplying)
             }
-            Text("This records separate consent for the checked XMP candidate in this session. Publication is not available yet. No files are changed. Clearing, leaving, expiry or another approval revokes this consent.")
+            Text("This records separate consent for the checked XMP candidate in this session. Approval changes no files. Publish Approved XMP then saves beside the photo and reconciles local metadata history. Deselect this photo in all metadata editors first. Clearing, leaving, expiry or another approval revokes consent.")
                 .font(.caption).foregroundStyle(.secondary)
             if model.isXMPPublicationApproved {
                 Text("XMP candidate approved for this session. No metadata has been published.")
                     .accessibilityIdentifier("automation.patchXMPApprovalStatus")
+                Button("Publish Approved XMP") { model.publishApprovedXMP() }
+                    .disabled(model.isLoading || model.isApplying)
+                    .accessibilityIdentifier("automation.publishApprovedXMP")
                 Button("Revoke XMP Approval") { model.revokeApproval() }
                     .accessibilityIdentifier("automation.revokeXMPApproval")
+                    .disabled(model.isLoading || model.isApplying)
             } else {
                 Button("Approve XMP Candidate") { model.approveReviewedXMPPublication() }
                     .disabled(!model.canApproveXMPPublication)
@@ -139,7 +143,19 @@ struct AutomationPatchReviewView: View {
     }
 
     private func applicationMessage(_ result: AutomationOperationRegistry.Record) -> String {
-        switch result.outcome {
+        if result.kind == .iptcPatch {
+            switch result.outcome {
+            case .verified:
+                return "XMP published and local metadata history verified. Original photo bytes were unchanged."
+            case .cancelled:
+                return "XMP publication cancelled before saving. No metadata was changed."
+            case .stale, .failed:
+                return "XMP publication was refused before saving. Deselect the photo in all metadata editors and inspect a fresh plan. Retained recovery may need review before retrying."
+            case .partialUncertain, .recoveryRequired, nil:
+                return "XMP publication needs recovery. Metadata may have changed. Original and candidate recovery files are retained; inspect operation history and the photo’s metadata before retrying. Automatic restore is unavailable."
+            }
+        }
+        return switch result.outcome {
         case .verified:
             "Pending draft saved and verified. The photo and XMP were unchanged. Review the draft in the metadata workspace before publishing."
         case .cancelled:

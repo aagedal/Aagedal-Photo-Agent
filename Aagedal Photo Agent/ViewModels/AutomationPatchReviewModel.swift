@@ -76,6 +76,7 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
     func reviewXMPPublication(_ report: MCPIPTCPatchXMPPreflightService.Report) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Review
     func approveXMPPublication(_ review: MCPIPTCPatchXMPPublicationApprovalStore.Review,
         acknowledgesC2PA: Bool, acknowledgesPendingDraft: Bool) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Approval
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record
     func revokeXMPPublication(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async
     func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval
     func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async
@@ -91,16 +92,21 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
     private let approvals: MCPIPTCPatchApprovalStore
     private let facade: MCPAutomationFacade
     private let plans: MCPIPTCPatchPlanStore
+    private let recoveryDirectory: URL?
+    private let publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks
     private let operationRegistry: AutomationOperationRegistry?
     private var executionCoordinator: AutomationOperationExecutionCoordinator?
 
     init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init(),
-         operationRegistry: AutomationOperationRegistry? = nil) {
+         operationRegistry: AutomationOperationRegistry? = nil, recoveryDirectory: URL? = nil,
+         publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks = .init()) {
         let plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
                 "Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans", isDirectory: true))
         self.plans = plans
         self.operationRegistry = operationRegistry
+        self.recoveryDirectory = recoveryDirectory
+        self.publicationHooks = publicationHooks
         self.approvals = MCPIPTCPatchApprovalStore(plans: plans)
         self.publicationApprovals = MCPIPTCPatchXMPPublicationApprovalStore(plans: plans)
         self.facade = facade
@@ -136,6 +142,38 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
         } catch {
             publicationApprovals.revoke(receipt)
             throw error
+        }
+    }
+
+    /// Explicit native consent is the only entry point; helper clients cannot publish.
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+        try Task.checkCancellation()
+        let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
+        let registry = operationRegistry ?? AutomationOperationRegistry(storageDirectory: directory)
+        let coordinator: AutomationOperationExecutionCoordinator
+        if let existing = executionCoordinator { coordinator = existing }
+        else {
+            coordinator = AutomationOperationExecutionCoordinator(registry: registry)
+            executionCoordinator = coordinator
+        }
+        let executor = MCPIPTCPatchXMPPublicationAdmissionService(plans: plans,
+            approvals: publicationApprovals, recovery: .init(directory: directory),
+            facade: facade, hooks: publicationHooks)
+        let accepted = try await coordinator.submit(kind: .iptcPatch) { context in
+            let result = await executor.publish(receipt, context: context)
+            switch result.outcome {
+            case .verified: return .verified
+            case .refused: return .failed
+            case .uncertain: return .recoveryRequired
+            case .cancelled:
+                _ = try registry.requestCancellation(context.operationID)
+                return .cancelled
+            }
+        }
+        return try await withTaskCancellationHandler {
+            try await coordinator.waitForCompletion(accepted.id)
+        } onCancel: {
+            Task.detached(priority: .utility) { _ = try? registry.requestCancellation(accepted.id) }
         }
     }
 
@@ -330,7 +368,7 @@ final class AutomationPatchReviewModel {
     }
 
     func approveReviewedPlan() {
-        guard let review, !isLoading, !isApproved, !isExpired else { return }
+        guard let review, !isLoading, !isApplying, applicationResult == nil, !isApproved, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         revokeApproval()
         message = nil
@@ -397,6 +435,43 @@ final class AutomationPatchReviewModel {
                 guard let self, self.generation == expected, !Task.isCancelled else { return }
                 self.clear()
                 self.message = "XMP publication approval could not be confirmed. Inspect a fresh plan and verify its XMP candidate again."
+            }
+        }
+    }
+
+    func publishApprovedXMP() {
+        guard let receipt = publicationApproval, let review, isXMPPublicationApproved,
+              !isLoading, !isApplying, applicationResult == nil, !isExpired else { return }
+        guard now() < review.expiresAt else { expireReview(at: now()); return }
+        isApplying = true
+        isLoading = true
+        message = nil
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let result = try await service.publishXMP(receipt)
+                if result.outcome == .verified || result.outcome == .recoveryRequired {
+                    NotificationCenter.default.post(name: .automationDraftDidChange,
+                        object: URL(fileURLWithPath: review.path))
+                }
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.publicationApproval = nil
+                self.isXMPPublicationApproved = false
+                self.xmpPublicationReview = nil
+                self.xmpPreflight = nil
+                self.isLoading = false
+                self.isApplying = false
+                self.applicationResult = result
+                self.task = nil
+            } catch {
+                await service.revokeXMPPublication(receipt)
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.publicationApproval = nil
+                self.isXMPPublicationApproved = false
+                self.isLoading = false
+                self.isApplying = false
+                self.message = "XMP publication could not be confirmed. Inspect retained operation history and recovery before preparing another plan."
+                self.task = nil
             }
         }
     }

@@ -11,7 +11,7 @@ nonisolated final class AutomationDraftEditorAdmission: @unchecked Sendable {
         case selectedInEditor
 
         var errorDescription: String? {
-            "Deselect this photo in every Photo Agent window before applying the pending draft. Finish or discard editor changes first."
+            "Deselect this photo in every Photo Agent window before applying an automation draft or publishing XMP. Finish or discard editor changes first."
         }
     }
 

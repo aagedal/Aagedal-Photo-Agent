@@ -1,12 +1,12 @@
 import CryptoKit
 import Foundation
 
-/// Durable recovery material only. This store neither grants publication consent nor reads,
-/// installs, restores or deletes a live carrier. A future installer must bind these bytes to
-/// retained root descriptors, carrier identities, exact-plan consent and app-history recovery.
+/// Durable recovery material and verified completion dispositions. This store neither grants
+/// publication consent nor reads, installs, restores or deletes a live carrier. The caller binds
+/// disposition to retained root descriptors, exact carrier identities and native consent.
 /// Checksums detect corruption, not tampering by another process running as this account.
 nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
-    enum Failure: Error, Equatable { case invalidArguments, occupied, corruptJournal }
+    enum Failure: Error, Equatable { case invalidArguments, occupied, corruptJournal, verification }
     enum Observation: Sendable, Equatable {
         case originalPresent, candidatePresent, conflict
     }
@@ -41,6 +41,10 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         }
     }
 
+    struct VerifiedDisposition: Codable, Sendable, Equatable {
+        let material: Material
+    }
+
     private struct Envelope: Codable {
         let version: Int
         let payload: Data
@@ -70,9 +74,13 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         try validate(proposed)
         return try persistence.transaction { existing in
             if let existing {
-                let material = try decode(existing)
-                guard material == proposed else { throw Failure.occupied }
-                return (material, existing)
+                let record = try decodeRecord(existing)
+                if !record.verified {
+                    guard record.material == proposed else { throw Failure.occupied }
+                    return (record.material, existing)
+                }
+                // A completed operation cannot reacquire authority by replaying its journal.
+                guard record.material.id != proposed.id else { throw Failure.occupied }
             }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]
@@ -88,7 +96,8 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     /// conceal a missing, substituted, over-permissive or corrupt recovery file.
     func load() throws -> Material? {
         try persistence.transaction(readOnly: true) { bytes in
-            (try bytes.map(decode), bytes ?? Data())
+            let record = try bytes.map(decodeRecord)
+            return (record?.verified == true ? nil : record?.material, bytes ?? Data())
         }
     }
 
@@ -100,19 +109,48 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         return .conflict
     }
 
-    private func decode(_ bytes: Data) throws -> Material {
+    /// The most recent verified material is retained for inspection until a new operation
+    /// is staged. This is a disposition receipt, never a grant to publish or restore bytes.
+    func loadVerifiedDisposition() throws -> VerifiedDisposition? {
+        try persistence.transaction(readOnly: true) { bytes in
+            let record = try bytes.map(decodeRecord)
+            return (record?.verified == true ? record.map { VerifiedDisposition(material: $0.material) } : nil,
+                bytes ?? Data())
+        }
+    }
+
+    /// Called only in the retained rooted carrier transaction. The verifier must recheck
+    /// identities, authorization and both installed candidates while the journal lock is held.
+    /// Failed verification leaves the exact unresolved journal untouched.
+    func recordVerified(_ expected: Material, verify: () throws -> Void) throws {
+        try persistence.transaction { bytes in
+            guard let bytes else { throw Failure.verification }
+            let record = try decodeRecord(bytes)
+            guard !record.verified, record.material == expected,
+                  expected.appSidecarRecovery?.candidate != nil else { throw Failure.verification }
+            try verify()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            let payload = try encoder.encode(VerifiedDisposition(material: expected))
+            return ((), try encoder.encode(Envelope(version: 4, payload: payload, sha256: Self.digest(payload))))
+        }
+    }
+
+    private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool) {
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
-            guard [1, 2, 3].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
+            guard [1, 2, 3, 4].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
                 throw Failure.corruptJournal
             }
-            let material = try JSONDecoder().decode(Material.self, from: envelope.payload)
+            let material = envelope.version == 4
+                ? try JSONDecoder().decode(VerifiedDisposition.self, from: envelope.payload).material
+                : try JSONDecoder().decode(Material.self, from: envelope.payload)
             guard (envelope.version >= 2) == (material.appSidecarRecovery != nil),
-                  (envelope.version == 3) == (material.appSidecarRecovery?.candidate != nil) else {
+                  (envelope.version >= 3) == (material.appSidecarRecovery?.candidate != nil) else {
                 throw Failure.corruptJournal
             }
             try validate(material)
-            return material
+            return (material, envelope.version == 4)
         } catch { throw Failure.corruptJournal }
     }
 

@@ -1,9 +1,8 @@
 import Foundation
 
-/// Internal admission groundwork, intentionally not connected to a publication button or
-/// helper endpoint. It consumes exact native consent only after durable recovery is read back.
-/// An internal transaction can install and verify both carriers; native UI and helper exposure
-/// remain blocked until durable recovery disposition is implemented.
+/// Native XMP publication consumes exact consent only after durable recovery is read back.
+/// The rooted transaction installs and verifies XMP plus reconciled app history; helper
+/// clients cannot invoke publication. Unresolved recovery blocks further publication.
 nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
     enum Failure: Error, Equatable { case verification, missingAuthorizationRevision }
 
@@ -32,6 +31,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
     struct Hooks: Sendable {
         var afterStaging: @Sendable (URL) throws -> Void = { _ in }
         var afterRecovery: @Sendable () throws -> Void = {}
+        var beforeDisposition: @Sendable () throws -> Void = {}
         var afterXMPInstall: @Sendable () throws -> Void = {}
     }
 
@@ -175,8 +175,8 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         let message: String
     }
 
-    /// Internal transaction only. Durable recovery remains retained even after verification
-    /// until an explicit disposition protocol is implemented; no helper endpoint exposes it.
+    /// Verified publication receives a durable disposition; uncertain/interrupted operations
+    /// retain unresolved recovery and block replacement. No helper endpoint exposes this API.
     @MetadataSidecarFilesystemActor
     func publish(_ approval: MCPIPTCPatchXMPPublicationApprovalStore.Approval,
                  context: AutomationOperationExecutionCoordinator.Context) async -> PublicationResult {
@@ -242,8 +242,21 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                               IPTCMetadataVerifier.canonicalValue(for: $0, in: saved.metadata)
                                 == IPTCMetadataVerifier.canonicalValue(for: $0, in: actual)
                           }) else { throw Failure.verification }
+                    try hooks.beforeDisposition()
+                    try recovery.recordVerified(material) {
+                        let current = try facade.withPhotoSnapshot(path: snapshot.target.url.path,
+                            reservation: admission.reservation) { $0 }
+                        guard current.sourceRevision == final.sourceRevision,
+                              current.sourceBytes == final.sourceBytes,
+                              current.xmpSidecarRevision == final.xmpSidecarRevision,
+                              current.xmpBytes == material.candidate,
+                              current.appSidecarRevision == final.appSidecarRevision,
+                              current.appSidecarBytes == appCandidate,
+                              material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                        else { throw Failure.verification }
+                    }
                     return PublicationResult(outcome: .verified,
-                        message: "XMP and app history verified. Durable recovery is retained pending explicit disposition.")
+                        message: "XMP and app history verified. Publication completion is durably recorded.")
                 }
             } catch {
                 return PublicationResult(outcome: effects.occurred ? .uncertain : (error is CancellationError ? .cancelled : .refused),

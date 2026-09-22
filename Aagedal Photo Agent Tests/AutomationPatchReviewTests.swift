@@ -88,6 +88,10 @@ struct AutomationPatchReviewTests {
             return await withCheckedContinuation { pendingPublication = $0 }
         }
 
+        func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+            try await underlying.publishXMP(receipt)
+        }
+
         func revokeXMPPublication(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async {
             await underlying.revokeXMPPublication(receipt)
             publicationRevocations += 1
@@ -460,6 +464,111 @@ struct AutomationPatchReviewTests {
         #expect(model.xmpPreflight == nil)
         #expect(model.message != nil)
         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.root.path) == ["frame.jpg"])
+    }
+
+    private nonisolated final class PublicationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entered = false
+        private let resume = DispatchSemaphore(value: 0)
+        var isWaiting: Bool { lock.withLock { entered } }
+        func wait() throws {
+            lock.withLock { entered = true }
+            guard resume.wait(timeout: .now() + 10) == .success else { throw CancellationError() }
+        }
+        func release() { resume.signal() }
+    }
+
+    @Test("Leaving native publication requests durable cancellation and suppresses late results")
+    @MainActor
+    func clearDuringPublication() async throws {
+        let fixture = try Fixture()
+        let storage = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: storage)
+        let gate = PublicationGate()
+        defer { gate.release() }
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, recoveryDirectory: storage,
+            publicationHooks: .init(afterRecovery: { try gate.wait() }))
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        model.acknowledgesC2PA = true
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isXMPPublicationApproved)
+        model.publishApprovedXMP()
+        try await waitUntil { gate.isWaiting }
+        let accepted = try #require(registry.records().first)
+        model.clear()
+        try await waitUntil { (try? registry.inspect(accepted.id).cancellationRequestedAt) != nil }
+        gate.release()
+        try await waitUntil { (try? registry.inspect(accepted.id).isTerminal) == true }
+        let completed = try registry.inspect(accepted.id)
+        #expect(completed.outcome == .cancelled)
+        #expect(model.applicationResult == nil)
+        #expect(model.review == nil)
+        #expect(!model.isApplying)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        #expect(try MCPIPTCPatchXMPRecoveryStore(directory: storage).load()?.id == accepted.id)
+    }
+
+    @Test("Native publication requires exact consent and records verified or recoverable results", arguments: ["success", "drift", "interrupted", "selected"])
+    @MainActor
+    func nativePublication(scenario: String) async throws {
+        let fixture = try Fixture()
+        let storage = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: storage)
+        let hooks = MCPIPTCPatchXMPPublicationAdmissionService.Hooks(afterXMPInstall: {
+            if scenario == "interrupted" { throw CancellationError() }
+        })
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, recoveryDirectory: storage, publicationHooks: hooks)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.publishApprovedXMP()
+        #expect(model.applicationResult == nil)
+        #expect(try registry.records().isEmpty)
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        model.acknowledgesC2PA = true
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isXMPPublicationApproved)
+        if scenario == "drift" { try fixture.original.write(to: fixture.photo, options: .atomic) }
+        let editor = UUID()
+        if scenario == "selected" {
+            AutomationDraftEditorAdmission.shared.update(owner: editor, selectedURLs: [fixture.photo])
+        }
+        defer { AutomationDraftEditorAdmission.shared.remove(owner: editor) }
+        model.publishApprovedXMP()
+        try await waitUntil { !model.isLoading }
+        let result = try #require(model.applicationResult)
+        #expect(result.kind == .iptcPatch)
+        #expect(result.outcome == (scenario == "success" ? .verified : (scenario == "interrupted" ? .recoveryRequired : .failed)))
+        #expect(!model.isXMPPublicationApproved)
+        #expect(try registry.inspect(result.id) == result)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        let xmp = fixture.photo.deletingPathExtension().appendingPathExtension("xmp")
+        #expect(FileManager.default.fileExists(atPath: xmp.path) == (scenario == "success" || scenario == "interrupted"))
+        if scenario == "success" {
+            let snapshot = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+            #expect(try MCPMetadataSnapshotReader.read(snapshot).resolution.metadata.title == "After")
+            let bytes = try #require(snapshot.appSidecarBytes)
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            #expect(try !decoder.decode(MetadataSidecar.self, from: bytes).pendingChanges)
+            #expect(try MCPIPTCPatchXMPRecoveryStore(directory: storage).load() == nil)
+        } else if scenario == "interrupted" {
+            #expect(try MCPIPTCPatchXMPRecoveryStore(directory: storage).load()?.id == result.id)
+        }
+        model.publishApprovedXMP()
+        #expect(try registry.records().count == 1)
+        model.clear()
     }
 
     @Test("Native XMP consent needs acknowledgement and is separate from pending draft approval") @MainActor

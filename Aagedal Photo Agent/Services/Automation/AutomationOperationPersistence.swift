@@ -8,6 +8,9 @@ nonisolated private func operationRegistryFlock(_ descriptor: Int32, _ operation
 /// lock through reload and replacement, so a second process cannot bypass capacity limits.
 /// The checksum detects corruption, not malicious changes by the same local account.
 nonisolated final class AutomationOperationPersistence: Sendable {
+    // Reads and writes through one retained registry must not compete for independent
+    // nonblocking flock descriptors. Other instances/processes still fail closed on contention.
+    private let transactionLock = NSRecursiveLock()
     private let directory: URL
     private let maximumBytes: Int
     private let syncDirectoryParent: @Sendable (Int32) -> Int32
@@ -77,6 +80,8 @@ nonisolated final class AutomationOperationPersistence: Sendable {
     }
 
     func transaction<T>(readOnly: Bool = false, _ body: (Data?) throws -> (T, Data)) throws -> T {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
         let root = try openDirectory(create: !readOnly)
         guard root >= 0 else { return try body(nil).0 }
         defer { Darwin.close(root) }

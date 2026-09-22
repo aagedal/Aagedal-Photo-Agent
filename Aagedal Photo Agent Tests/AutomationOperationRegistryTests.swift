@@ -18,6 +18,59 @@ struct AutomationOperationRegistryTests {
             .appendingPathComponent("operation-registry-\(UUID().uuidString)", isDirectory: true)
     }
 
+    @Test("Same-instance inspection waits for a held transaction and observes its committed bytes")
+    func sameInstanceTransactionSerialization() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = AutomationOperationPersistence(directory: root, maximumBytes: 1_024)
+        let original = Data("before".utf8)
+        let committed = Data("after".utf8)
+        try persistence.transaction { _ in ((), original) }
+        // Blocking coordination stays off the main actor. Separate GCD queues
+        // guarantee actual overlapping OS-lock attempts.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+          DispatchQueue(label: "test.operation-persistence.orchestration").async {
+            defer { continuation.resume() }
+            let writerEntered = DispatchSemaphore(value: 0)
+            let releaseWriter = DispatchSemaphore(value: 0)
+            let readerStarted = DispatchSemaphore(value: 0)
+            let readerFinished = DispatchSemaphore(value: 0)
+            let completed = DispatchGroup()
+            completed.enter()
+            DispatchQueue(label: "test.operation-persistence.writer").async {
+                defer { completed.leave() }
+                do {
+                    try persistence.transaction { existing in
+                        #expect(existing == original)
+                        writerEntered.signal()
+                        try #require(releaseWriter.wait(timeout: .now() + 5) == .success)
+                        return ((), committed)
+                    }
+                } catch { Issue.record("Held writer failed: \(error)") }
+            }
+            let writerReady = writerEntered.wait(timeout: .now() + 5)
+            #expect(writerReady == .success)
+            completed.enter()
+            DispatchQueue(label: "test.operation-persistence.reader").async {
+                defer { readerFinished.signal(); completed.leave() }
+                readerStarted.signal()
+                do {
+                    let read = try persistence.transaction(readOnly: true) { existing in
+                        (existing, existing ?? Data())
+                    }
+                    #expect(read == committed)
+                } catch { Issue.record("Same-instance inspection must wait instead of failing: \(error)") }
+            }
+            #expect(readerStarted.wait(timeout: .now() + 5) == .success)
+            // Previously the independent flock descriptor immediately failed here.
+            #expect(readerFinished.wait(timeout: .now() + .milliseconds(200)) == .timedOut)
+            releaseWriter.signal()
+            #expect(completed.wait(timeout: .now() + 10) == .success)
+          }
+        }
+        #expect(try persistence.transaction(readOnly: true) { ($0, $0 ?? Data()) } == committed)
+    }
+
     @Test("Independent coordinators observe durable cancellation without inventing completion")
     func cooperativeCancellation() throws {
         let root = try directory()
