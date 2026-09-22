@@ -34,7 +34,7 @@ struct MCPMetadataTemplatePreviewTests {
         let change = try #require(changes.first?.objectValue)
         #expect(change["after"] == .string(mode == "append" ? "Before " + resolved : resolved))
         #expect(change["resolvedTemplateValue"] == .string(resolved))
-        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-scalar-field") == true)
+        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-field") == true)
         #expect(change["resolvedVariables"] == .array([.string("field:city"), .string("field:credit")]))
         for incoming in ["{seq}", "{filename}", "{initials}", "(number)", "brace}"] {
             record["fields"] = .object(["title": .string("Before"), "credit": .string(incoming), "city": .null])
@@ -127,6 +127,76 @@ struct MCPMetadataTemplatePreviewTests {
         #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
             try MCPMetadataTemplatePreview.replacingBounded("{field:credit}",
                 in: "x{field:credit}", with: String(repeating: "Å", count: 16_384))
+        }
+    }
+
+    @Test("Retained list references match production and report recursive dependencies", arguments: ["append", "replace"])
+    func listFieldReferences(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        for source in MCPMetadataTemplatePreview.listFieldVariableSources {
+            let persisted = MCPMetadataTemplatePreview.editorialKeys[source] ?? source
+            for items in [[], ["Å person", "Second, entry", "Å person"], ["{field:city}", "Agency"]] as [[String]] {
+                var record = request.revisions
+                record["hasXMPConflict"] = .bool(false)
+                let fields: [String: MCPJSONValue] = ["title": .string("Before"), "city": .string("Oslo"),
+                    persisted: .array(items.map(MCPJSONValue.string))]
+                record["fields"] = .object(fields)
+                var metadata = IPTCMetadata()
+                metadata.city = "Oslo"
+                switch source {
+                case "personShown": metadata.personShown = items
+                case "creator": metadata.creators = items
+                case "organisationShownName": metadata.organisationsShownNames = items
+                case "organisationShownCode": metadata.organisationsShownCodes = items
+                case "sceneCode": metadata.sceneCodes = items
+                case "subjectCode": metadata.subjectCodes = items
+                default: Issue.record("Unexpected list source")
+                }
+                let raw = "People: {field:\(source)}"
+                let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+                let result = try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: values, metadata: .object(record))
+                guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+                let resolved = PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)
+                #expect(changes.first?.objectValue?["resolvedTemplateValue"] == .string(resolved))
+                #expect(changes.first?.objectValue?["after"] == .string(mode == "append" ? "Before " + resolved : resolved))
+                let dependencies = (items.contains("{field:city}") ? [source, "city"] : [source]).sorted()
+                #expect(changes.first?.objectValue?["resolvedVariables"] == .array(dependencies.map { .string("field:\($0)") }))
+                #expect(result.objectValue?["commitAvailable"] == .bool(false))
+            }
+        }
+    }
+
+    @Test("List references reject changed sources, cycles, malformed carriers and oversized joins")
+    func listFieldReferenceRefusals() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        for source in MCPMetadataTemplatePreview.listFieldVariableSources {
+            let persisted = MCPMetadataTemplatePreview.editorialKeys[source] ?? source
+            let raw = "{field:\(source)}"
+            for value in [MCPJSONValue.null, .string("Person"), .array([.integer(1)])] {
+                record["fields"] = .object(["title": .null, persisted: value])
+                #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+                    try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw], metadata: .object(record))
+                }
+            }
+            for item in [raw, "{field:credit}", "{seq}", "{filename}", "{initials}", "{field:keywords}", "\0"] {
+                record["fields"] = .object(["title": .null, persisted: .array([.string(item)]), "credit": .string(raw)])
+                #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                    try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw], metadata: .object(record))
+                }
+            }
+            record["fields"] = .object(["title": .null, persisted: .array([.string("Person")])])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": raw, source: "Changed"], metadata: .object(record))
+            }
+            record["fields"] = .object(["title": .null,
+                persisted: .array([.string(String(repeating: "Å", count: 16_384)), .string("")])])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+                try MCPMetadataTemplatePreview.preview(request: request, templateFields: ["title": raw], metadata: .object(record))
+            }
         }
     }
 
