@@ -59,11 +59,13 @@ These are material product and evidence boundaries, not a list of unfinished int
   the sidecar and reconciles local history; helper clients cannot invoke physical publication.
 - Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further
   publication. Unchanged pre-write staging can be explicitly resolved after exact identity checks;
-  automatic restoration after partial publication is not implemented.
+  identified partial writes can be explicitly restored after confirmation. Restoration refuses external
+  changes, empty original carriers and missing installed/restored identity receipts. An interruption
+  after changing a file but before saving its receipt remains unresolved. No automatic restoration runs.
   Completed recovery material lasts only until the next publication is staged; it is not permanent
   undo history. Original photo bytes are unchanged by this sidecar-only workflow.
 - Template previews support filename, bounded request-order sequence variables and retained acyclic
-  scalar `{field:key}` chains whose sources are unchanged by the template. Approved Keywords,
+  scalar/list `{field:key}` chains whose sources are unchanged by the template. Approved Keywords,
   other context variables and shared production template/face-scan/transcription executors remain open.
 
 ## Metadata and delivery interoperability
@@ -177,7 +179,8 @@ previews for literal descriptive, people/creator/organisation, scene/subject, da
 urgency, Media Topic, Genre and Image Supplier fields, bound to exact template/photo revisions. `preview_metadata_template_batch` supports
 1–8 explicit photos with retained per-photo authority and no partial output. Duplicate/shared-sidecar
 inputs are refused. `{filename}` is resolved from each retained photo for Headline, Description,
-Extended Description and Instructions. Other variables, Keywords, instant processing, unsupported
+Extended Description and Instructions, alongside request-order sequence variables and bounded acyclic
+retained scalar/list field references. Other contextual variables, Keywords, instant processing, unsupported
 structured fields and batch application remain unavailable. No draft,
 approval or physical write is created. A photo stored in the active Templates directory is refused by
 the folder/photo reservation boundary. iCloud template stores, template application,
@@ -186,12 +189,15 @@ Native XMP publication consent now has a separate exact-candidate/mode-bound fou
 explicit C2PA and pending-draft acknowledgements in native review. Internal one-shot admission retains
 original and candidate XMP/app-history bytes. An internal transaction now installs XMP through retained
 directory descriptors, reconciles app history and verifies both carriers. It refuses pending Capture Date
-changes and orientation drafts that it cannot publish. Recovery disposition remains unfinished, so native
-consent does not start this transaction and no helper commit endpoint exposes it. Recovery journals remain
-retained even after success; they must not be treated as resolved or silently discarded.
+changes and orientation drafts that it cannot publish. Native Publish Approved XMP runs this transaction
+with separate consent and records verified completion; no helper commit endpoint exposes it. Interrupted
+publication retains recovery material and blocks another publication until explicitly resolved. Completed
+receipts remain until the next staged publication; they are not permanent undo history.
 Signed Whisper release authorization persists and revalidates signed high-water evidence across
 rollback. Internal install/update transactions now copy, hash and synchronize model bytes before committing
-release state; rollback and lookup reverify retained bytes. Verified-directory locks serialize cooperating
+release state; rollback and lookup reverify retained bytes. Missing current or rollback-candidate bytes
+can be restored internally under the existing authenticated ledger without selecting another release,
+consuming rollback or lowering the replay floor. Verified-directory locks serialize cooperating
 processes; external ledger deletion/restoration remains outside replay protection. Production signing
 authority, catalog fetching and managed Settings integration remain unfinished; the shipped pinned-download
 path has not switched to this lifecycle. Interrupted-install orphan cleanup and storage-failure qualification

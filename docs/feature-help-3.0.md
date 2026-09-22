@@ -164,9 +164,12 @@ original and candidate recovery bytes remain protected and block later publicati
 **Inspect Retained Recovery** under **Interrupted XMP Publication**. For older records, enter the
 original photo path. **Resolve Unchanged Staging** is available only when the original photo, XMP
 and app-history identities are still unchanged. It rechecks them and retains a separate receipt;
-it changes no live metadata. Deselect the photo in all editors first. Partial publication or changed
-files still require restoration, which is not yet available. Original photo bytes are unchanged by
-this sidecar-only publication action.
+it changes no live metadata. When retained publication identities still match, **Restore Original Metadata…**
+offers a separate confirmation for the inspected photo. It restores the original XMP and app history,
+removes metadata files that were originally absent, and retains a restoration receipt. Deselect the
+photo in all editors first. External changes, missing identity receipts and empty original carriers
+remain blocked. If interrupted, inspect again; only steps with durable restoration receipts can resume.
+Original photo bytes are unchanged by these sidecar-only actions.
 
 After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
 local `.photo_metadata` history. First finish or discard editor changes and deselect the photo
@@ -208,9 +211,9 @@ Genre and Image Supplier. Structured values use the same parsing and normalizati
 `{filename}` resolves to each photo name without its extension in Headline, Description, Extended
 Description and Instructions. `{seq}` and `{seq:1}` through `{seq:9}` resolve in those same fields,
 using 1 for a single preview and one-based requested photo order for a batch; the width adds leading
-zeros. Scalar `{field:key}` references (for example `{field:city}`) resolve from retained
-effective metadata in those same destination fields, including acyclic chains of canonical scalar
-references. Every source must be unchanged by the template. Cycles, other nested variables and
+zeros. Scalar and list `{field:key}` references (for example `{field:city}` or `{field:personShown}`)
+resolve from retained effective metadata in those same destination fields, including acyclic chains.
+Lists support people, creators, organisation names/codes and scene/subject codes, joined with comma-space separators. Every source must be unchanged by the template. Cycles, other nested variables and
 expansion beyond 32 KiB are refused. Results show resolved values and all transitive source keys. Keywords,
 other variables, instant processing and unsupported structured fields are refused. The result includes pending draft values and matches editor Append/Replace
 behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.

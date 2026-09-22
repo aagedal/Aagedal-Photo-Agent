@@ -2,27 +2,30 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-22
-**Latest implementation state:** [Cycle 97](cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md) adds durable installed-carrier identity receipts, bounded acyclic recursive field previews and internal missing-model-content recovery under retained signed authority. Explicit partial-publication restoration and production signing/executor integration remain open.
-**Latest native evidence:** Cycle 97 passes all five selected workflows (188.518 seconds): consent/revocation, unchanged staging resolution, refusal of same-byte photo replacement, preservation of external XMP after inspection, and publication/relaunch persistence. Initial runner/desktop delays were superseded by the passing retry. Broader accessibility and partial-publication restoration remain open.
-**Implementation commits and verification:** `c345380` (recursive fields), `c498d88` (signed model content recovery), `ce7f9a4` (installed identities), `a21bbd2` (native refusal coverage). Final application source passes 73 focused tests / six suites and 3,401 full tests / 352 suites, zero failures (83.519 seconds). Repository and bundled-helper checks pass. Independent review resolved receipt identity and staging cleanup ownership issues.
-**Cycle baseline:** `b31f03d`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 98](cycle-98-native-restoration-list-fields-rollback-content-2026-09-22.md) adds native explicitly confirmed partial-publication restoration, durable restoration receipts/resumption, retained scalar/list template references, missing signed rollback-model content recovery and conservative unsolicited-cancellation completion. Unreceipted/empty-carrier recovery and production signing/executor integration remain open.
+**Latest native evidence:** Cycle 98 passes three workflows (132.978 seconds): unchanged staging, explicit-confirmation restoration and stale XMP replacement refusal, with cancellation and relaunch persistence checks. Initial activation failures were superseded by the passing retry. Broader existing-carrier native and accessibility cases remain open.
+**Implementation commits:** `87279a8`, `649925c`, `cc0dc16`, `ec4a738`. Focused tests pass 107 tests / eight suites plus four confirmation tests / one suite; full regression passes 3,419 tests / 353 suites with zero failures (83.997 seconds); repository and helper checks pass.
+**Cycle baseline:** `1747bf9`, initially clean. Validation and commit evidence are recorded in the cycle report. No whole release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
 
-[Cycle 97 installed identities, recursive previews and model content recovery](cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md)
-records installed carrier generations durably and includes them in recovery inspection. Restoration
-is still unavailable. Template previews now resolve acyclic retained scalar chains with transitive
-source evidence and bounded allocation. Signed model content recovery preserves existing ledger,
-rollback and replay-floor authority; production integration remains open.
+[Cycle 98 native restoration, list fields and rollback content](cycle-98-native-restoration-list-fields-rollback-content-2026-09-22.md)
+records explicit native restoration of identified partial publications, separate durable restoration
+progress/completion, canonical list field references and authenticated rollback-content repair.
+Restoration refuses external identity changes and missing receipt evidence; production model and
+workflow integration remain open.
 
-Ordered next implementation actions: safe absent-carrier removal and restartable explicit
-partial-publication restoration, then the guarded helper commit boundary; authoritative Approved
-Keywords and shared face-scan/template/transcription executors; production signed Whisper descriptors,
+Ordered next implementation actions: unreceipted/empty-carrier recovery policy and broader native
+restoration cases, then the guarded helper commit boundary; authoritative Approved Keywords and
+shared face-scan/template/transcription executors; production signed Whisper descriptors,
 Settings/download integration and missing-ledger/partial-orphan recovery. External interoperability,
 real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user
 acceptance gates remain open. No-progress count is zero.
+
+[Cycle 97 installed identities, recursive previews and model content recovery](cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md)
+retains preceding installed-carrier receipts and five passing native publication/refusal workflows.
 
 [Cycle 96 unchanged recovery, field previews and legacy model cleanup](cycle-96-unchanged-recovery-field-preview-legacy-cleanup-2026-09-22.md)
 retains the preceding exact-unchanged staging resolution and authenticated duplicate cleanup foundation.

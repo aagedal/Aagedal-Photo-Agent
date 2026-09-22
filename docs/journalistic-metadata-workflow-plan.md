@@ -1492,6 +1492,14 @@ Whisper release-ledger transactions now coordinate cooperating processes with ve
 installed-byte lifecycle and production distribution integration remain open. See
 [cycle 93](release/cycle-93-publication-review-template-model-locking-2026-09-22.md).
 
+**Cycle 98 continuation (2026-09-22):** Native interrupted-publication recovery now offers separate
+confirmation to restore exact retained originals or remove originally absent carriers, with durable
+restoration progress/completion and conservative refusal of external generation changes or missing
+receipts. Template previews resolve canonical retained scalar/list chains. Signed model storage can
+repair missing rollback-candidate content without changing release authority. Unreceipted/empty-carrier
+recovery, production MCP executors/commits and signed model Settings integration remain open.
+See [implementation and evidence](release/cycle-98-native-restoration-list-fields-rollback-content-2026-09-22.md).
+
 ### MCP transport and authority
 
 - [x] Add a signed bundled STDIO MCP entry point suitable for local clients such as Codex CLI,

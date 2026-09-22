@@ -10,6 +10,16 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Restore identified interrupted XMP publications from Automation Settings after a separate confirmation.
+  Original metadata is restored or originally absent files are removed; durable restoration receipts
+  support resuming recorded progress. Changed or uncertain files remain blocked.
+- Expand automation template field references to retained people, creators, organisations and
+  scene/subject-code lists, including bounded recursive resolution.
+- Restore missing signed Whisper rollback-candidate content without changing the active model,
+  consuming rollback or lowering replay protection. Production lifecycle integration remains open.
+- Close automation operations conservatively when an executor reports cancellation without a
+  cancellation request, preventing stranded running records.
+
 - Retain installed XMP and app-history identities during reviewed publication, including interrupted
   writes, and show retained identity evidence in recovery inspection. Full restoration remains open.
 - Resolve bounded acyclic `{field:key}` chains in automation template previews and report every

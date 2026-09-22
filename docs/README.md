@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 97: installed identities, recursive previews and model content recovery](release/cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md) adds durable installed-carrier receipts, bounded recursive scalar field previews and internal missing-model recovery under retained signed authority. Partial-publication restoration, production executors and production signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 98: native restoration, list fields and rollback content](release/cycle-98-native-restoration-list-fields-rollback-content-2026-09-22.md) adds explicitly confirmed partial-publication restoration with durable progress, retained scalar/list template references, missing rollback-model content recovery and conservative operation completion. Unreceipted recovery, production executors and production signed-model integration remain open.
 
 ## Portfolio
 
