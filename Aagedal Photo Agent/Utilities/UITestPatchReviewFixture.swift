@@ -89,6 +89,22 @@ enum UITestPatchReviewFixture {
             ]] as CFDictionary)
             guard CGImageDestinationFinalize(destination) else { throw Failure.imageCreation }
             try (bytes as Data).write(to: photo, options: .withoutOverwriting)
+            if configuration.existingRecoveryCarriersRequested {
+                let originalXMP = Data("""
+                    <?xpacket begin="\u{FEFF}"?>
+                    <x:xmpmeta xmlns:x="adobe:ns:meta/">
+                      <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                        <rdf:Description rdf:about="" xmlns:smoke="https://example.test/ui-smoke/" smoke:retained="Original opaque value"/>
+                      </rdf:RDF>
+                    </x:xmpmeta>
+                    <?xpacket end="w"?>
+                    """.utf8)
+                try originalXMP.write(to: photo.deletingPathExtension().appendingPathExtension("xmp"), options: .withoutOverwriting)
+                guard var metadata = try XMPSidecarService().loadSidecar(for: photo) else { throw Failure.invalidPlan }
+                metadata.credit = "Original pending history credit"
+                _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,
+                    pendingChanges: true, metadata: metadata, imageMetadataSnapshot: metadata), for: photo, in: root)
+            }
             let box = ConfigurationBox()
             let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
             try authority.addRoot(root)

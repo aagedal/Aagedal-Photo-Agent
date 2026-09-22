@@ -264,19 +264,24 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
     @MainActor
     func testAutomationRestoresInterruptedXMPAfterExplicitConfirmation() throws {
-        try exercisePartialPublicationRestoration(replaceAfterInspection: false)
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false, originalCarriersPresent: false)
+    }
+
+    @MainActor
+    func testAutomationRestoresExistingXMPAndHistoryAfterExplicitConfirmation() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false, originalCarriersPresent: true)
     }
 
     @MainActor
     func testAutomationRestorationRefusesReplacedXMPAfterInspection() throws {
-        try exercisePartialPublicationRestoration(replaceAfterInspection: true)
+        try exercisePartialPublicationRestoration(replaceAfterInspection: true, originalCarriersPresent: false)
     }
 
     @MainActor
-    private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool) throws {
+    private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool, originalCarriersPresent: Bool) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
-            xmpPublicationInterruption: true)
+            xmpPublicationInterruption: true, existingRecoveryCarriers: originalCarriersPresent)
         app.typeKey(",", modifierFlags: .command)
         let automation = app.staticTexts["Automation"]
         XCTAssertTrue(automation.waitForExistence(timeout: 8))
@@ -289,6 +294,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let original = try Data(contentsOf: photo)
         let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
         let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        let originalXMP = originalCarriersPresent ? try Data(contentsOf: xmp) : nil
+        let originalHistory = originalCarriersPresent ? try Data(contentsOf: history) : nil
         input.click()
         input.typeText(try XCTUnwrap(manifest["planID"]))
         app.buttons["automation.inspectPatchPlan"].click()
@@ -298,6 +305,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
         XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
         acknowledgement.click()
+        if originalCarriersPresent {
+            let pendingAcknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPPendingDraft"]
+            XCTAssertTrue(pendingAcknowledgement.waitForExistence(timeout: 8))
+            pendingAcknowledgement.click()
+        }
         app.buttons["automation.approveXMPCandidate"].click()
         let publish = app.buttons["automation.publishApprovedXMP"]
         XCTAssertTrue(publish.waitForExistence(timeout: 8))
@@ -305,7 +317,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["automation.patchDraftStatus"].waitForExistence(timeout: 12))
         let published = try Data(contentsOf: xmp)
         XCTAssertFalse(published.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
         app.buttons["Clear Review"].click()
         let inspect = app.buttons["automation.inspectRecovery"]
         XCTAssertTrue(inspect.waitForExistence(timeout: 8))
@@ -328,7 +340,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let status = app.staticTexts["automation.recoveryStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 12))
         XCTAssertEqual(try Data(contentsOf: photo), original)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
         if replaceAfterInspection {
             XCTAssertEqual(try Data(contentsOf: journal), staged)
             XCTAssertEqual(try Data(contentsOf: xmp), published)
@@ -338,7 +350,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         } else {
             XCTAssertTrue(status.label.hasPrefix("Original metadata restored.") ||
                 (status.value as? String)?.hasPrefix("Original metadata restored.") == true)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertEqual(try? Data(contentsOf: xmp), originalXMP)
             let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: journal)) as? [String: Any])
             XCTAssertEqual(envelope["version"] as? Int, 8)
         }
@@ -347,7 +359,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
         XCTAssertEqual(try Data(contentsOf: journal), finalJournal)
         XCTAssertEqual(try Data(contentsOf: photo), original)
-        XCTAssertEqual(FileManager.default.fileExists(atPath: xmp.path), replaceAfterInspection)
+        XCTAssertEqual(try? Data(contentsOf: xmp), replaceAfterInspection ? published : originalXMP)
+        XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
     }
 
     @MainActor
@@ -1387,7 +1400,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         patchReviewFolder: URL? = nil,
         operationRecovery: Bool = false,
         xmpStagingInterruption: Bool = false,
-        xmpPublicationInterruption: Bool = false
+        xmpPublicationInterruption: Bool = false,
+        existingRecoveryCarriers: Bool = false
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -1416,6 +1430,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
         if xmpStagingInterruption { app.launchArguments.append("--ui-test-xmp-staging-interruption") }
         if xmpPublicationInterruption { app.launchArguments.append("--ui-test-xmp-publication-interruption") }
+        if existingRecoveryCarriers { app.launchArguments.append("--ui-test-existing-recovery-carriers") }
         app.launch()
         reopenMainWindowIfNeeded()
     }
