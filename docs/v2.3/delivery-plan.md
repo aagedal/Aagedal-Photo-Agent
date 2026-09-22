@@ -1,5 +1,11 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Cycle 100 continuation (2026-09-23):** Existing XMP and app-history restoration
+passes a native relaunch case; retained GPS coordinates resolve in read-only template
+previews; complete staged Whisper bytes can be recovered under signed, matching
+ledger authority. The integrated suite passed 3,432 tests. The remaining release
+gates are recorded in the [cycle note](../release/cycle-100-restoration-template-whisper-2026-09-23.md).
+
 **RAW preview resolution continuation (2026-09-19):** Full-screen primary-cache and
 awaited-prefetch hits now require sufficient pixels for the display/source target. Undersized
 RAW ImageIO screen/zoom results use a validated sensor-decode fallback instead of becoming

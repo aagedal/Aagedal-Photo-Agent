@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**Cycle 100 continuation (2026-09-23):** Native restoration now covers existing XMP
+and app-history bytes through relaunch; read-only template preview resolves retained
+GPS coordinates; authenticated Whisper recovery accepts complete staged model bytes.
+The integrated suite passed 3,432 tests. Release-level gates remain open; see the
+[cycle evidence](release/cycle-100-restoration-template-whisper-2026-09-23.md).
+
 **RAW preview resolution continuation (2026-09-19):** Full-screen primary-cache and
 awaited-prefetch hits now require sufficient pixels for the display/source target. Undersized
 RAW ImageIO screen/zoom results use a validated sensor-decode fallback instead of becoming
