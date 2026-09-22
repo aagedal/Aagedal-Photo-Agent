@@ -131,6 +131,49 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Restore only missing current content using the already authenticated ledger.
+    /// This is not release acceptance: generation, rollback and replay floor stay intact.
+    /// Existing corrupt or unsafe content is refused rather than overwritten.
+    func restoreMissingCurrentModel(from source: URL, expectedGeneration: UUID) async throws -> URL {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.restoreMissingBytes(from: source, expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func restoreMissingBytes(from source: URL, expectedGeneration: UUID) throws -> URL {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, _) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        let receipt = state.current
+        let name = modelFilename(receipt)
+        var existing = stat()
+        if fstatat(fd, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
+            try verifyModel(receipt, directoryFD: fd)
+            try validateDirectoryIdentity()
+            return directory.appendingPathComponent(name)
+        }
+        guard errno == ENOENT, source.isFileURL, !source.path.contains("\0") else {
+            throw StoreError.unsafeStorage
+        }
+        let temporary = ".\(modelID).\(UUID().uuidString).model-staging"
+        try WhisperDownloadedFileStaging.copy(source, to: temporary, in: fd,
+            byteCount: receipt.descriptor.byteCount, checkCancellation: { try Task.checkCancellation() })
+        // copy owns cleanup on failure; only remove a name we successfully created.
+        defer { _ = unlinkat(fd, temporary, 0) }
+        try installationCheckpoint()
+        try verifyModel(receipt, directoryFD: fd, filename: temporary)
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+        // Never replace a file that appeared while the staged copy was being checked.
+        guard renameatx_np(fd, temporary, fd, name, UInt32(RENAME_EXCL)) == 0,
+              fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try publicationCheckpoint()
+        try verifyModel(receipt, directoryFD: fd)
+        try validateDirectoryIdentity()
+        return directory.appendingPathComponent(name)
+    }
+
     private func removeLegacyStaging(named name: String, expectedGeneration: UUID) throws {
         let suffix = ".model-staging"
         guard name.hasPrefix("."), name.hasSuffix(suffix) else { throw StoreError.unsafeStorage }
@@ -313,9 +356,10 @@ actor WhisperModelDistributionStateStore {
         try Task.checkCancellation()
         guard source.isFileURL, !source.path.contains("\0") else { throw StoreError.unsafeStorage }
         let temporary = ".\(modelID).\(UUID().uuidString).model-staging"
-        defer { unlinkat(fd, temporary, 0) }
         try WhisperDownloadedFileStaging.copy(source, to: temporary, in: fd,
             byteCount: receipt.descriptor.byteCount, checkCancellation: { try Task.checkCancellation() })
+        // copy owns cleanup on failure; only remove a name we successfully created.
+        defer { _ = unlinkat(fd, temporary, 0) }
         // Deterministic cancellation coverage after staging, before content publication.
         try installationCheckpoint()
         try Task.checkCancellation()

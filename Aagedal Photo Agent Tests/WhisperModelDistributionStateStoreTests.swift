@@ -39,6 +39,111 @@ struct WhisperModelDistributionStateStoreTests {
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
     }
 
+    @Test("Missing current bytes restore after rollback without changing durable authority")
+    func restoreMissingCurrentAfterRollback() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("first release".utf8)
+        let source = fixture.directory.appendingPathComponent("source")
+        try bytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try #require(try await store.installedURL())
+        let nextBytes = Data("second release".utf8)
+        try nextBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: nextBytes), from: source, expectedGeneration: first.generation)
+        let rollback = try await store.rollBackInstalled(expectedGeneration: second.generation)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try FileManager.default.removeItem(at: installed)
+        try bytes.write(to: source)
+        let restored = try await store.restoreMissingCurrentModel(from: source, expectedGeneration: rollback.generation)
+        #expect(restored == installed)
+        #expect(try Data(contentsOf: restored) == bytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await store.load()?.release.highestAcceptedSequence == 2)
+        #expect(try await store.installedURL() == installed)
+        // A retry does not require the source once the durable current copy exists.
+        try FileManager.default.removeItem(at: source)
+        #expect(try await store.restoreMissingCurrentModel(from: source, expectedGeneration: rollback.generation) == installed)
+    }
+
+    @Test("Missing-byte restoration refuses stale authority and incorrect bytes")
+    func restoreMissingRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("model".utf8)
+        let source = fixture.directory.appendingPathComponent("source")
+        try bytes.write(to: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.restoreMissingCurrentModel(from: source, expectedGeneration: UUID())
+        }
+        let state = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try #require(try await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try FileManager.default.removeItem(at: installed)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.restoreMissingCurrentModel(from: source, expectedGeneration: UUID())
+        }
+        try Data("wrong".utf8).write(to: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.restoreMissingCurrentModel(from: source, expectedGeneration: state.generation)
+        }
+        #expect(!FileManager.default.fileExists(atPath: installed.path))
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path).allSatisfy { !$0.hasSuffix(".model-staging") })
+        // Existing corrupt content must not be overwritten by otherwise correct input.
+        try Data("wrong".utf8).write(to: installed)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: installed.path)
+        try bytes.write(to: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.restoreMissingCurrentModel(from: source, expectedGeneration: state.generation)
+        }
+        #expect(try Data(contentsOf: installed) == Data("wrong".utf8))
+    }
+
+    @Test("Restoration never overwrites content appearing during staging")
+    func restoreConcurrentContent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("model".utf8)
+        let source = fixture.directory.appendingPathComponent("source")
+        try bytes.write(to: source)
+        let state = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try #require(try await store.installedURL())
+        try FileManager.default.removeItem(at: installed)
+        let racing = try WhisperModelDistributionStateStore(directory: fixture.directory, modelID: "tiny",
+            trust: fixture.trust, installationCheckpoint: {
+                try Data("concurrent".utf8).write(to: installed)
+            })
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await racing.restoreMissingCurrentModel(from: source, expectedGeneration: state.generation)
+        }
+        #expect(try Data(contentsOf: installed) == Data("concurrent".utf8))
+        #expect(try await store.load()?.generation == state.generation)
+    }
+
+    @Test("Restoration interruption after publication leaves a retryable verified copy")
+    func restorePublicationInterruption() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("model".utf8)
+        let source = fixture.directory.appendingPathComponent("source")
+        try bytes.write(to: source)
+        let state = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try #require(try await store.installedURL())
+        try FileManager.default.removeItem(at: installed)
+        let interrupted = try WhisperModelDistributionStateStore(directory: fixture.directory, modelID: "tiny",
+            trust: fixture.trust, publicationCheckpoint: { throw CancellationError() })
+        await #expect(throws: CancellationError.self) {
+            try await interrupted.restoreMissingCurrentModel(from: source, expectedGeneration: state.generation)
+        }
+        #expect(try await store.load()?.generation == state.generation)
+        #expect(try await store.restoreMissingCurrentModel(from: source, expectedGeneration: state.generation) == installed)
+    }
+
     @Test("Explicit legacy cleanup verifies duplicate bytes and preserves signed authority")
     func legacyDuplicateCleanup() async throws {
         let fixture = try Fixture()
