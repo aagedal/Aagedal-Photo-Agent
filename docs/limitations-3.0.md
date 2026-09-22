@@ -1,7 +1,7 @@
 # Aagedal Photo Agent 3.0 known limitations
 
 **Status:** release-candidate draft  
-**Last reviewed:** 2026-09-15
+**Last reviewed:** 2026-09-22
 
 These are material product and evidence boundaries, not a list of unfinished internal tasks.
 
@@ -52,6 +52,17 @@ These are material product and evidence boundaries, not a list of unfinished int
   validation remain release gates and are not claimed by this draft.
 - Color, alignment, keyboard-only, VoiceOver, upgrade/downgrade, and crash-interruption automation does not
   replace the open release-candidate manual validation passes.
+
+## Reviewed automation publication
+
+- Native XMP publication requires a checked plan, dry run and separate session consent. It writes
+  the sidecar and reconciles local history; helper clients cannot invoke physical publication.
+- Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further
+  publication. Automatic restore and dismissal of unresolved pre-write staging are not implemented.
+  Completed recovery material lasts only until the next publication is staged; it is not permanent
+  undo history. Original photo bytes are unchanged by this sidecar-only workflow.
+- Template previews support filename and bounded request-order sequence variables. Approved Keywords,
+  context-dependent variables and shared production template/face-scan/transcription executors remain open.
 
 ## Metadata and delivery interoperability
 

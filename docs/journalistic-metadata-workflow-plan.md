@@ -1719,6 +1719,14 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
   transcription, and IPTC commits. Status must distinguish queued/running/completed/cancelled,
   verified success, definite failure, partial/uncertain mutation, retained recovery, and stale plan.
 
+**Cycle 95 continuation (2026-09-22):** Native reviewed XMP publication now invokes the rooted
+transaction, records durable verified completion and permits a subsequent newly approved publication.
+Interrupted or uncertain recovery remains blocking; restore and safe pre-write disposition remain open.
+Template previews additionally resolve bounded sequence variables in explicit request order. Signed
+Whisper lifecycle storage can explicitly clean model-scoped interrupted-install orphans against an
+authenticated generation; production integration and missing-ledger recovery remain open. No whole
+MCP or distribution gate is closed. See [cycle 95](release/cycle-95-native-publication-sequence-model-cleanup-2026-09-22.md).
+
 **Cycle 94 continuation (2026-09-22):** Single/batch template previews resolve bounded `{filename}`
 values from retained photo snapshots for descriptive scalar destinations. The internal XMP transaction
 now installs rooted carriers, reconciles app history and verifies exact bytes/semantics with durable

@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 94: rooted publication, filename previews and verified model installation](release/cycle-94-rooted-publication-filename-model-installation-2026-09-22.md) adds an internal recoverable XMP/app-history transaction, per-photo filename template previews and signed model installation/rollback bound to verified bytes. Native publication/recovery disposition, broader production executors and production signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 95: native publication, sequence previews and model cleanup](release/cycle-95-native-publication-sequence-model-cleanup-2026-09-22.md) connects reviewed native XMP publication to the verified transaction, records completed disposition, adds request-order sequence previews and bounded authenticated model orphan cleanup. Interrupted publication recovery, broader production executors and production signed-model integration remain open.
 
 ## Portfolio
 
