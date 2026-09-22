@@ -78,6 +78,75 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(try recovery.load() == material)
     }
 
+    @Test("Internal publication verifies XMP and reconciles pending app history", arguments: [false, true])
+    func publication(pending: Bool) async throws {
+        let fixture = try Fixture(pending: pending)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade)
+        let result = await service.publish(receipt, context: try context(fixture))
+        #expect(result.outcome == .verified)
+        let material = try #require(try recovery.load())
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceRevision == before.sourceRevision)
+        #expect(after.sourceBytes == before.sourceBytes)
+        #expect(after.xmpBytes == material.candidate)
+        #expect(after.appSidecarBytes == material.appSidecarRecovery?.candidate)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let app = try decoder.decode(MetadataSidecar.self, from: #require(after.appSidecarBytes))
+        #expect(!app.pendingChanges)
+        #expect(app.metadata.title == "After")
+        #expect(app.imageMetadataSnapshot?.title == "After")
+        if pending { #expect(app.metadata.credit == "Pending unedited credit") }
+        #expect(!app.history.isEmpty)
+    }
+
+    @Test("Publication refuses to discard an effective pending Capture Date before changing carriers")
+    func pendingCaptureDateIsNotDiscarded() async throws {
+        let fixture = try Fixture(pending: true, pendingCaptureDate: "2020:01:02 03:04:05")
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(try MCPMetadataSnapshotReader.read(before).resolution.metadata.captureDate == "2020:01:02 03:04:05")
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade)
+        let result = await service.publish(receipt, context: try context(fixture))
+        #expect(result.outcome == .refused)
+        #expect(try recovery.load() == nil)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceRevision == before.sourceRevision)
+        #expect(after.xmpSidecarRevision == before.xmpSidecarRevision)
+        #expect(after.appSidecarRevision == before.appSidecarRevision)
+        #expect(try MCPMetadataSnapshotReader.read(after).resolution.hasPendingChanges)
+        #expect(try MCPMetadataSnapshotReader.read(after).resolution.metadata.captureDate == "2020:01:02 03:04:05")
+    }
+
+    @Test("Interruption after XMP install retains both recovery originals and reports uncertainty")
+    func interruptedPublication() async throws {
+        let fixture = try Fixture(pending: true)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade,
+            hooks: .init(afterXMPInstall: { throw CancellationError() }))
+        let result = await service.publish(receipt, context: try context(fixture))
+        #expect(result.outcome == .uncertain)
+        let material = try #require(try recovery.load())
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceRevision == before.sourceRevision)
+        #expect(after.xmpBytes == material.candidate)
+        #expect(after.appSidecarBytes == before.appSidecarBytes)
+        #expect(material.original == before.xmpBytes)
+        #expect(material.appSidecarRecovery?.original == before.appSidecarBytes)
+        #expect(material.appSidecarRecovery?.candidate != nil)
+        let retried = await service.publish(receipt, context: try context(fixture))
+        #expect(retried.outcome == .refused)
+        #expect(try recovery.load() == material)
+    }
+
     @Test("Missing XMP and app history are recorded as absent without creating either carrier")
     func missingCarriers() async throws {
         let fixture = try Fixture(existingXMP: false)

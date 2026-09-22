@@ -2,7 +2,8 @@ import Foundation
 
 /// Internal admission groundwork, intentionally not connected to a publication button or
 /// helper endpoint. It consumes exact native consent only after durable recovery is read back.
-/// It never installs a carrier, reconciles app history or claims publication completed.
+/// An internal transaction can install and verify both carriers; native UI and helper exposure
+/// remain blocked until durable recovery disposition is implemented.
 nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
     enum Failure: Error, Equatable { case verification, missingAuthorizationRevision }
 
@@ -13,12 +14,15 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         let operationID: UUID
         let planID: String
         let targetPath: String
-        private let reservation: MCPProcessReservationLease
+        fileprivate let reservation: MCPProcessReservationLease
+        fileprivate let snapshot: MCPPhotoCarrierSnapshot
+        fileprivate let material: MCPIPTCPatchXMPRecoveryStore.Material
 
         fileprivate init(operationID: UUID, planID: String, targetPath: String,
-                         reservation: MCPProcessReservationLease) {
+                         reservation: MCPProcessReservationLease, snapshot: MCPPhotoCarrierSnapshot,
+                         material: MCPIPTCPatchXMPRecoveryStore.Material) {
             self.operationID = operationID; self.planID = planID; self.targetPath = targetPath
-            self.reservation = reservation
+            self.reservation = reservation; self.snapshot = snapshot; self.material = material
         }
 
         func release() { reservation.release() }
@@ -28,6 +32,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
     struct Hooks: Sendable {
         var afterStaging: @Sendable (URL) throws -> Void = { _ in }
         var afterRecovery: @Sendable () throws -> Void = {}
+        var afterXMPInstall: @Sendable () throws -> Void = {}
     }
 
     /// MetadataIOCoordinator executes its body in an unstructured task. Carry cancellation
@@ -129,6 +134,8 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                       == IPTCMetadataVerifier.canonicalValue(for: $0, in: actual)
               }) else { throw Failure.verification }
         try MCPIPTCPatchXMPPreflightService.verifyPreservation(before: snapshot.xmpBytes, after: candidate)
+        let appCandidate = try stageAppHistory(snapshot: snapshot, expected: expected,
+            stagedPhoto: stagedPhoto, staging: staging)
         let targetPath = service.sidecarURL(for: photo).path
         try approvals.validate(approval, candidate: candidate, mode: .xmpSidecar, targetPath: targetPath,
             facade: facade, reservation: reservation)
@@ -139,7 +146,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
             targetPath: targetPath, binding: .init(sourceRevision: snapshot.sourceRevision,
                 xmpSidecarRevision: snapshot.xmpSidecarRevision, appSidecarRevision: snapshot.appSidecarRevision,
                 authorizationRevision: authorizationRevision), original: snapshot.xmpBytes, candidate: candidate,
-            appSidecarRecovery: .init(original: snapshot.appSidecarBytes), publicationApprovalID: approval.id)
+            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: appCandidate), publicationApprovalID: approval.id)
         try hooks.afterRecovery()
         try await context.checkCancellation()
         // No await follows these final checks. Same-byte inode changes, revoked/regranted
@@ -152,6 +159,150 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                 facade: facade, reservation: reservation, consumeForPublication: true)
         }
         return Admission(operationID: context.operationID, planID: approval.planID,
-            targetPath: targetPath, reservation: reservation)
+            targetPath: targetPath, reservation: reservation, snapshot: snapshot, material: material)
+    }
+
+    private final class Effects: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func mark() { lock.withLock { value = true } }
+        var occurred: Bool { lock.withLock { value } }
+    }
+
+    enum PublicationOutcome: Sendable, Equatable { case verified, refused, uncertain, cancelled }
+    struct PublicationResult: Sendable {
+        let outcome: PublicationOutcome
+        let message: String
+    }
+
+    /// Internal transaction only. Durable recovery remains retained even after verification
+    /// until an explicit disposition protocol is implemented; no helper endpoint exposes it.
+    @MetadataSidecarFilesystemActor
+    func publish(_ approval: MCPIPTCPatchXMPPublicationApprovalStore.Approval,
+                 context: AutomationOperationExecutionCoordinator.Context) async -> PublicationResult {
+        let effects = Effects()
+        let cancellation = Cancellation()
+        return await withTaskCancellationHandler {
+            do {
+                let admission = try await admit(approval, context: context)
+                defer { admission.release() }
+                try Task.checkCancellation()
+                try await context.checkCancellation()
+                try await context.markEffectsMayHaveOccurred()
+                try Task.checkCancellation()
+                // No suspension after entering the held transaction: cancellation cannot skip
+                // reconciliation or verification once the first carrier could have changed.
+                return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: admission.snapshot.target.url)) { @MetadataSidecarFilesystemActor in
+                    let snapshot = admission.snapshot
+                    guard let material = try recovery.load(), material == admission.material,
+                          material.id == admission.operationID,
+                          material.planID == admission.planID, material.targetPath == admission.targetPath,
+                          material.publicationApprovalID == approval.id,
+                          material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision,
+                          let appCandidate = material.appSidecarRecovery?.candidate else { throw Failure.verification }
+                    try AutomationDraftEditorAdmission.shared.requireUnselected(snapshot.target.url)
+                    try cancellation.checking { effects.mark() }
+                    _ = try facade.installXMPSidecar(data: material.candidate, expected: snapshot,
+                        reservation: admission.reservation, beforeInstall: {
+                            guard try recovery.load() == material,
+                                  material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                            else { throw Failure.verification }
+                        })
+                    try hooks.afterXMPInstall()
+                    let installedXMP = try facade.withPhotoSnapshot(path: snapshot.target.url.path,
+                        reservation: admission.reservation) { $0 }
+                    guard installedXMP.sourceRevision == snapshot.sourceRevision,
+                          installedXMP.sourceBytes == snapshot.sourceBytes,
+                          installedXMP.xmpBytes == material.candidate,
+                          installedXMP.appSidecarRevision == snapshot.appSidecarRevision,
+                          installedXMP.appSidecarBytes == snapshot.appSidecarBytes,
+                          try recovery.load() == material,
+                          material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                    else { throw Failure.verification }
+                    _ = try facade.installPendingDraft(data: appCandidate, expected: installedXMP,
+                        reservation: admission.reservation, beforeInstall: {
+                            guard try recovery.load() == material,
+                                  material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                            else { throw Failure.verification }
+                        })
+                    let final = try facade.withPhotoSnapshot(path: snapshot.target.url.path,
+                        reservation: admission.reservation) { $0 }
+                    guard final.sourceRevision == snapshot.sourceRevision,
+                          final.sourceBytes == snapshot.sourceBytes,
+                          final.xmpSidecarRevision == installedXMP.xmpSidecarRevision,
+                          final.xmpBytes == material.candidate, final.appSidecarBytes == appCandidate,
+                          try recovery.load() == material,
+                          material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                    else { throw Failure.verification }
+                    let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+                    let saved = try decoder.decode(MetadataSidecar.self, from: appCandidate)
+                    let actual = try MCPMetadataSnapshotReader.read(final).resolution.metadata
+                    guard !saved.pendingChanges,
+                          IPTCMetadataVerificationField.writableFields.allSatisfy({
+                              IPTCMetadataVerifier.canonicalValue(for: $0, in: saved.metadata)
+                                == IPTCMetadataVerifier.canonicalValue(for: $0, in: actual)
+                          }) else { throw Failure.verification }
+                    return PublicationResult(outcome: .verified,
+                        message: "XMP and app history verified. Durable recovery is retained pending explicit disposition.")
+                }
+            } catch {
+                return PublicationResult(outcome: effects.occurred ? .uncertain : (error is CancellationError ? .cancelled : .refused),
+                    message: effects.occurred
+                        ? "Publication may have changed metadata. Recovery is retained; review the carriers before retrying."
+                        : error.localizedDescription)
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+
+    @MetadataSidecarFilesystemActor
+    private func stageAppHistory(snapshot: MCPPhotoCarrierSnapshot, expected: IPTCMetadata,
+                                 stagedPhoto: URL, staging: URL) throws -> Data {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let current = try snapshot.appSidecarBytes.map { try decoder.decode(MetadataSidecar.self, from: $0) }
+        // Orientation has its own commit contract; never silently mark that draft saved.
+        guard current?.orientationDraft == nil else { throw Failure.verification }
+        let baseline = try MCPMetadataSnapshotReader.read(snapshot).resolution.metadata
+        if current?.pendingChanges == true {
+            // Capture Date is not written by this descriptive publication. Clearing a
+            // pending record would otherwise discard its effective value and silently
+            // restore the physical carrier's value despite a successful writable-field check.
+            let physicalSnapshot = MCPPhotoCarrierSnapshot(target: snapshot.target,
+                sourceBytes: snapshot.sourceBytes, xmpBytes: snapshot.xmpBytes, appSidecarBytes: nil,
+                sourceModificationDate: snapshot.sourceModificationDate,
+                xmpModificationDate: snapshot.xmpModificationDate,
+                sourceRevision: snapshot.sourceRevision, xmpSidecarRevision: snapshot.xmpSidecarRevision,
+                appSidecarRevision: snapshot.appSidecarRevision)
+            let physical = try MCPMetadataSnapshotReader.read(physicalSnapshot).resolution.metadata
+            guard IPTCMetadataVerifier.canonicalValue(for: .captureDate, in: expected)
+                    == IPTCMetadataVerifier.canonicalValue(for: .captureDate, in: physical) else {
+                throw Failure.verification
+            }
+        }
+        var reconciled = current ?? MetadataSidecar(sourceFile: stagedPhoto.lastPathComponent)
+        reconciled.metadata = expected
+        reconciled.imageMetadataSnapshot = expected
+        reconciled.pendingChanges = false
+        reconciled.history += MetadataHistoryEntry.changes(from: baseline, to: expected, timestamp: Date())
+        reconciled.history.trimToHistoryLimit()
+        let directory = staging.appendingPathComponent(".photo_metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let url = directory.appendingPathComponent("\(stagedPhoto.lastPathComponent).meta.json")
+        if let original = snapshot.appSidecarBytes { try original.write(to: url) }
+        let service = MetadataSidecarService()
+        let saved = try service.saveSidecar(reconciled, for: stagedPhoto, in: staging)
+        let bytes = try Data(contentsOf: url)
+        let decoded = try decoder.decode(MetadataSidecar.self, from: bytes)
+        guard !decoded.pendingChanges, decoded.orientationDraft == nil,
+              service.fieldMutationRecordsEqual(saved, decoded),
+              IPTCMetadataVerificationField.allCases.allSatisfy({
+                  IPTCMetadataVerifier.canonicalValue(for: $0, in: expected)
+                    == IPTCMetadataVerifier.canonicalValue(for: $0, in: decoded.metadata)
+              }) else { throw Failure.verification }
+        if let original = snapshot.appSidecarBytes, let current {
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            guard try MCPIPTCPatchExecutionService.preservesUnknownFields(original: original,
+                known: encoder.encode(current), installed: bytes) else { throw Failure.verification }
+        }
+        return bytes
     }
 }

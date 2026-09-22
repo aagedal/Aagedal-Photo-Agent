@@ -14,7 +14,7 @@ struct MCPIPTCPatchXMPPreflightServiceTests {
         let plans = MCPIPTCPatchPlanStore()
         let planID: String
 
-        init(pending: Bool = false, existingXMP: Bool = true) throws {
+        init(pending: Bool = false, existingXMP: Bool = true, pendingCaptureDate: String? = nil) throws {
             root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
                 .appendingPathComponent("xmp-preflight-test-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -38,6 +38,7 @@ struct MCPIPTCPatchXMPPreflightServiceTests {
             if pending {
                 var metadata = try #require(XMPSidecarService().loadSidecar(for: photo))
                 metadata.credit = "Pending unedited credit"
+                if let pendingCaptureDate { metadata.captureDate = pendingCaptureDate }
                 _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,
                     pendingChanges: true, metadata: metadata, imageMetadataSnapshot: metadata), for: photo, in: root)
             }

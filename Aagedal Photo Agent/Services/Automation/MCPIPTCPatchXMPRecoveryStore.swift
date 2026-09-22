@@ -33,6 +33,12 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
 
     struct AppSidecarRecovery: Codable, Sendable, Equatable {
         let original: Data?
+        /// Exact reconciled app history prepared before any live carrier mutation.
+        let candidate: Data?
+
+        init(original: Data?, candidate: Data? = nil) {
+            self.original = original; self.candidate = candidate
+        }
     }
 
     private struct Envelope: Codable {
@@ -51,7 +57,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         self.maximumCarrierBytes = min(max(0, maximumCarrierBytes), 8_388_608)
         persistence = AutomationOperationPersistence(
             directory: directory.appendingPathComponent("iptc-xmp-recovery", isDirectory: true),
-            maximumBytes: 48_000_000)
+            maximumBytes: 64_000_000)
     }
 
     @discardableResult
@@ -71,7 +77,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]
             let payload = try encoder.encode(proposed)
-            let data = try encoder.encode(Envelope(version: appSidecarRecovery == nil ? 1 : 2,
+            let data = try encoder.encode(Envelope(version: appSidecarRecovery?.candidate != nil ? 3 : (appSidecarRecovery == nil ? 1 : 2),
                 payload: payload, sha256: Self.digest(payload)))
             try Task.checkCancellation()
             return (proposed, data)
@@ -97,11 +103,12 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     private func decode(_ bytes: Data) throws -> Material {
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
-            guard [1, 2].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
+            guard [1, 2, 3].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
                 throw Failure.corruptJournal
             }
             let material = try JSONDecoder().decode(Material.self, from: envelope.payload)
-            guard (envelope.version == 2) == (material.appSidecarRecovery != nil) else {
+            guard (envelope.version >= 2) == (material.appSidecarRecovery != nil),
+                  (envelope.version == 3) == (material.appSidecarRecovery?.candidate != nil) else {
                 throw Failure.corruptJournal
             }
             try validate(material)
@@ -121,6 +128,8 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
               !material.candidate.isEmpty, material.candidate.count <= maximumCarrierBytes,
               (material.original?.count ?? 0) <= maximumCarrierBytes,
               (material.appSidecarRecovery?.original?.count ?? 0) <= maximumCarrierBytes,
+              (material.appSidecarRecovery?.candidate?.count ?? 0) <= maximumCarrierBytes,
+              material.appSidecarRecovery?.candidate?.isEmpty != true,
               (material.appSidecarRecovery == nil) == (material.publicationApprovalID == nil),
               material.original != material.candidate else { throw Failure.invalidArguments }
     }

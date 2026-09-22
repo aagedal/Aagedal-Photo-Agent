@@ -223,6 +223,7 @@
 		C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */; };
 		C92000000000000000000202 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */; };
 		C93000000000000000000102 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */; };
+		C94000000000000000000102 /* MCPXMPSidecarInstallationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */; };
 		C92000000000000000000302 /* WhisperModelDistributionStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */; };
 		C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */; };
 /* End PBXBuildFile section */
@@ -484,6 +485,7 @@
 		C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPMetadataTemplateBatchPreviewTests.swift; sourceTree = "<group>"; };
 		C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationApprovalStoreTests.swift; sourceTree = "<group>"; };
 		C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift; sourceTree = "<group>"; };
+		C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPXMPSidecarInstallationTests.swift; sourceTree = "<group>"; };
 		C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDistributionStateStoreTests.swift; sourceTree = "<group>"; };
 		C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPMetadataTemplateBatchPreview.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataTemplateBatchPreview.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -563,6 +565,7 @@
 				C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */,
 				C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */,
 				C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */,
+				C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */,
 				C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */,
 				C91000000000000000000301 /* MCPMetadataTemplatePreviewTests.swift */,
 				C91000000000000000000201 /* MCPIPTCPatchXMPRecoveryStoreTests.swift */,
@@ -1000,6 +1003,7 @@
 				C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */,
 				C92000000000000000000202 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift in Sources */,
 				C93000000000000000000102 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift in Sources */,
+				C94000000000000000000102 /* MCPXMPSidecarInstallationTests.swift in Sources */,
 				C92000000000000000000302 /* WhisperModelDistributionStateStoreTests.swift in Sources */,
 				C91000000000000000000302 /* MCPMetadataTemplatePreviewTests.swift in Sources */,
 				C91000000000000000000202 /* MCPIPTCPatchXMPRecoveryStoreTests.swift in Sources */,

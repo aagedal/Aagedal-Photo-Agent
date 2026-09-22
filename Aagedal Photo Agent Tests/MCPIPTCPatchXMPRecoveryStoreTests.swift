@@ -73,6 +73,22 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         }
     }
 
+    @Test("Reconciliation bytes survive reopening and cannot be replaced by the same operation")
+    func reconciliation() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        #expect(try fixture.store.load() == material)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.occupied) {
+            try fixture.store.stage(id: material.id, planID: material.planID, targetPath: material.targetPath,
+                binding: material.binding, original: material.original, candidate: material.candidate,
+                appSidecarRecovery: .init(original: nil, candidate: Data("replacement".utf8)),
+                publicationApprovalID: material.publicationApprovalID)
+        }
+        #expect(try fixture.store.load() == material)
+    }
+
     @Test("App history and publication consent bindings cannot be partially supplied")
     func partialPublicationBinding() throws {
         let fixture = try Fixture()
