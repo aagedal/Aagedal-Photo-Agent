@@ -1,7 +1,7 @@
 import Foundation
 
 /// A read-only, exact-revision preview of the literal template subset whose editor
-/// semantics do not depend on preferences or approved lists. Literal scalar field references
+/// semantics do not depend on preferences or approved lists. Recursive scalar field references
 /// use the retained effective metadata and refuse sources changed by the template. The bounded filename
 /// variable uses only the retained photo snapshot. Sequence uses explicit request order.
 nonisolated enum MCPMetadataTemplatePreview {
@@ -17,7 +17,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Only {filename}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Literal scalar {field:key} references are also supported when the source is unchanged by the template. Other variables, instant processing, keywords, and other structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Only {filename}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keywords, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -189,6 +189,37 @@ nonisolated enum MCPMetadataTemplatePreview {
         return value.replacingOccurrences(of: token, with: replacement)
     }
 
+    /// Resolve only canonical field references in retained scalar values. Memoization
+    /// bounds graph traversal; the active chain rejects cycles instead of publishing
+    /// the production interpolator's partially unresolved cyclic result.
+    private static func resolveField(_ source: String, fields: [String: MCPJSONValue],
+                                     templateFields: [String: String], active: Set<String>,
+                                     cache: inout [String: (value: String, sources: Set<String>)], dependencies: inout Set<String>) throws -> String {
+        guard !active.contains(source), templateFields[source] == nil else { throw Failure.unsupportedTemplate }
+        if let cached = cache[source] {
+            dependencies.formUnion(cached.sources)
+            return cached.value
+        }
+        var sourceDependencies: Set<String> = [source]
+        guard let captured = fields[source], captured == .null || captured.stringValue != nil else {
+            throw Failure.invalidArguments
+        }
+        var text = captured.stringValue ?? ""
+        guard text.utf8.count <= 32_768 else { throw Failure.outputLimit }
+        let literal = fieldTokens.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
+        guard isLiteralValue(literal, for: source) else { throw Failure.unsupportedTemplate }
+        let nestedSources = fieldVariableSources.sorted().filter { text.contains("{field:\($0)}") }
+        for dependency in nestedSources {
+            let replacement = try resolveField(dependency, fields: fields, templateFields: templateFields,
+                                               active: active.union([source]), cache: &cache, dependencies: &sourceDependencies)
+            text = try replacingBounded("{field:\(dependency)}", in: text, with: replacement)
+        }
+        guard isLiteralValue(text, for: source) else { throw Failure.unsupportedTemplate }
+        cache[source] = (text, sourceDependencies)
+        dependencies.formUnion(sourceDependencies)
+        return text
+    }
+
     static func preview(request: Request, templateFields: [String: String], metadata: MCPJSONValue, sequenceIndex: Int = 1) throws -> MCPJSONValue {
         guard (1...MCPMetadataTemplateBatchPreview.maximumPhotos).contains(sequenceIndex) else { throw Failure.invalidArguments }
         guard let record = metadata.objectValue, let fields = record["fields"]?.objectValue,
@@ -215,19 +246,16 @@ nonisolated enum MCPMetadataTemplatePreview {
                     with: (filename as NSString).deletingPathExtension)
                 guard value.utf8.count <= 32_768, isSupportedValue(value, for: key) else { throw Failure.outputLimit }
             } else { value = templateValue }
-            let usedFieldSources = fieldVariableSources.sorted().filter { templateValue.contains("{field:\($0)}") }
-            for source in usedFieldSources {
-                // Production can resolve references after template application. Refuse any
-                // changed source rather than guessing its processing order or recursion.
-                guard templateFields[source] == nil else { throw Failure.unsupportedTemplate }
-                guard let captured = fields[source], captured == .null || captured.stringValue != nil else {
-                    throw Failure.invalidArguments
-                }
-                let text = captured.stringValue ?? ""
-                guard isLiteralValue(text, for: source) else { throw Failure.unsupportedTemplate }
+            let directFieldSources = fieldVariableSources.sorted().filter { templateValue.contains("{field:\($0)}") }
+            var fieldCache: [String: (value: String, sources: Set<String>)] = [:]
+            var fieldDependencies: Set<String> = []
+            for source in directFieldSources {
+                let text = try resolveField(source, fields: fields, templateFields: templateFields,
+                                            active: [], cache: &fieldCache, dependencies: &fieldDependencies)
                 value = try replacingBounded("{field:\(source)}", in: value, with: text)
                 guard value.utf8.count <= 32_768 else { throw Failure.outputLimit }
             }
+            let usedFieldSources = fieldDependencies.sorted()
             let usedSequenceTokens = sequenceTokens.filter { templateValue.contains($0) }
             // Width is selected from the fixed allowlist, never arbitrary template input.
             for token in usedSequenceTokens {
@@ -347,7 +375,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             : resolvesFilename
             ? "snapshot-filename-and-literal-template-editor-values; no-physical-write-or-publication-validation"
             : "literal-template-editor-values; no-physical-write-or-publication-validation")
-        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename and literal scalar field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
+        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename and acyclic recursive scalar field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
         let output = MCPJSONValue.object(result)
         guard try JSONEncoder().encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output

@@ -36,7 +36,7 @@ struct MCPMetadataTemplatePreviewTests {
         #expect(change["resolvedTemplateValue"] == .string(resolved))
         #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-scalar-field") == true)
         #expect(change["resolvedVariables"] == .array([.string("field:city"), .string("field:credit")]))
-        for incoming in ["{seq}", "{filename}", "{initials}", "{field:city}", "(number)", "brace}"] {
+        for incoming in ["{seq}", "{filename}", "{initials}", "(number)", "brace}"] {
             record["fields"] = .object(["title": .string("Before"), "credit": .string(incoming), "city": .null])
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                 try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
@@ -52,6 +52,62 @@ struct MCPMetadataTemplatePreviewTests {
         record["fields"] = .object(["title": .string("Before")])
         #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
             try MCPMetadataTemplatePreview.preview(request: request, templateFields: values, metadata: .object(record))
+        }
+    }
+
+    @Test("Recursive retained scalar references match production", arguments: ["append", "replace"])
+    func recursiveFieldReferences(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        var metadata = IPTCMetadata()
+        metadata.credit = "{field:city} / {field:source}"
+        metadata.city = "{field:country}"
+        metadata.source = "{field:country}"
+        metadata.country = "Norge Å"
+        record["fields"] = .object(["title": .string("Before"), "credit": .string(metadata.credit!),
+            "city": .string(metadata.city!), "source": .string(metadata.source!), "country": .string(metadata.country!)])
+        let raw = "{field:credit} / {field:city} / {field:credit}"
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: ["title": raw], metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+        let expected = PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)
+        #expect(changes.first?.objectValue?["resolvedTemplateValue"] == .string(expected))
+        #expect(changes.first?.objectValue?["resolvedVariables"] == .array(
+            ["city", "country", "credit", "source"].map { .string("field:\($0)") }))
+        #expect(changes.first?.objectValue?["after"] == .string(mode == "append" ? "Before " + expected : expected))
+    }
+
+    @Test("Recursive field graphs refuse cycles, changed sources and unsupported nested authority")
+    func recursiveFieldRefusals() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        for leaf in ["{field:credit}", "{field:city}", "{field:title}", "{field:keywords}",
+                     "{field:Country}", "{filename}", "{seq}", "{initials}", "(number)", "brace}", "\0"] {
+            record["fields"] = .object(["title": .null, "credit": .string("{field:city}"), "city": .string(leaf)])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": "{field:credit}"], metadata: .object(record))
+            }
+        }
+        record["fields"] = .object(["title": .null, "credit": .string("{field:city}"), "city": .string("Before")])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{field:credit}", "city": "After"], metadata: .object(record))
+        }
+        for leaf in [MCPJSONValue.array([]), .integer(1)] {
+            record["fields"] = .object(["title": .null, "credit": .string("{field:city}"), "city": leaf])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": "{field:credit}"], metadata: .object(record))
+            }
+        }
+        record["fields"] = .object(["title": .null, "credit": .string("{field:city}{field:city}"),
+            "city": .string(String(repeating: "Å", count: 16_384))])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{field:credit}"], metadata: .object(record))
         }
     }
 
