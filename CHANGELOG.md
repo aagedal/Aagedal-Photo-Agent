@@ -10,6 +10,16 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Fixed intermittent automation plan preparation refusal at fractional-second expiry boundaries.
+
+- Added per-photo `{filename}` resolution to single and batch automation template previews for
+  Headline, Description, Extended Description and Instructions, with exact photo authority and
+  explicit resolved-value evidence.
+- Added internal recoverable XMP installation and verified app-history reconciliation. Native
+  publication remains unavailable until recovery disposition is finished.
+- Added verified-byte signed Whisper install/update/rollback transactions; production descriptor
+  and Settings integration remain unfinished.
+
 - Added native **Approve XMP Candidate** consent after a verified dry run, with separate C2PA and
   pending-draft acknowledgements, expiry and revocation. Physical publication remains unavailable.
 - Expanded literal template previews to Media Topic, Genre and Image Supplier structured values.

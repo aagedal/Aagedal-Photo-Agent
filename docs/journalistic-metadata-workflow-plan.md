@@ -1719,6 +1719,14 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
   transcription, and IPTC commits. Status must distinguish queued/running/completed/cancelled,
   verified success, definite failure, partial/uncertain mutation, retained recovery, and stale plan.
 
+**Cycle 94 continuation (2026-09-22):** Single/batch template previews resolve bounded `{filename}`
+values from retained photo snapshots for descriptive scalar destinations. The internal XMP transaction
+now installs rooted carriers, reconciles app history and verifies exact bytes/semantics with durable
+original/candidate recovery material; native/helper publication remains disconnected pending recovery
+disposition. Signed Whisper state now has verified-byte install/update/rollback, while production trust,
+catalog and Settings integration remain open. No complete executor/publication/lifecycle criterion is
+closed by these slices. See [cycle 94](release/cycle-94-rooted-publication-filename-model-installation-2026-09-22.md).
+
 ### FFmpeg Whisper provider
 
 - [ ] Replace the photo-only FFmpeg artifact with the exact reproducible Aagedal Media Converter

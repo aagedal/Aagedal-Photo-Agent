@@ -110,12 +110,12 @@ the support table and validation records.
   with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. The helper
   discovers stable metadata/Develop template UUIDs, names and revision hashes with `list_templates`
   from explicitly authorized default local or custom template folders (template iCloud sync must be off). Photo-revision inspection
-  captures opaque source, XMP and owned app-sidecar tokens. `preview_metadata_template` previews a literal
+  captures opaque source, XMP and owned app-sidecar tokens. `preview_metadata_template` previews a
   template for one photo using exact template and photo revisions, with Append/Replace
   behavior matching the editor for descriptive fields, creators, organisations, scene/subject codes,
   date, country, source type, urgency, Media Topic, Genre and Image Supplier. `preview_metadata_template_batch` extends the same preview
-  to 1–8 explicit photos, retaining and revalidating every photo and returning no partial result. It refuses variables, Keywords, instant processing and unsupported
-  fields; it creates no draft or approval. `get_photo_metadata` returns bounded, typed
+  to 1–8 explicit photos, retaining and revalidating every photo and returning no partial result. Both previews resolve `{filename}` from each retained photo in Headline, Description, Extended Description and Instructions. Other variables, Keywords, instant processing and unsupported
+  fields are refused; it creates no draft or approval. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
   `prepare_iptc_patch` returns read-only, revision-bound normalized before/after values, exact inputs and compatibility warnings
   for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`

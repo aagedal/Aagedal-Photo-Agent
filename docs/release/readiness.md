@@ -2,26 +2,30 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft execution now uses exact consent, rooted installation and retained operation records. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-22
-**Latest implementation state:** [Cycle 93](cycle-93-publication-review-template-model-locking-2026-09-22.md) adds native candidate-bound XMP consent and lifecycle revocation, internal one-shot admission with XMP/app-history recovery, literal Media Topic/Genre/Image Supplier previews and verified-directory locking for signed Whisper state. No live publication or production model-installation integration is claimed.
-**Latest native evidence:** Cycle 93 passes XMP dry-run/consent and the existing pending-draft/history/relaunch workflow on disposable fixtures; evidence is recorded in the cycle report. Broader accessibility and publication recovery acceptance remain open.
-**Implementation commit and validation:** `802157c` includes all cycle 93 source and test changes. Focused selection passes 59 tests / seven suites; corrected Whisper process suite passes 13 tests; two native workflows, repository validation and independent review pass. Final integrated regression passes 3,346 tests / 350 suites with zero failures; see cycle report.
-**Cycle baseline:** `ace5f8b`, initially clean. No broad release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 94](cycle-94-rooted-publication-filename-model-installation-2026-09-22.md) adds internal rooted XMP publication and app-history reconciliation with retained recovery, filename-aware single/batch template previews, and signed Whisper installation/update/rollback with verified-byte authority. Native publication and production signed-model integration remain unavailable.
+**Latest native evidence:** Cycle 93 passes XMP dry-run/consent and pending-draft/history/relaunch workflows on disposable fixtures. Cycle 94 native XCTest failed to activate the app for all three requested workflows. Direct candidate inspection opened Settings and read provider choices, but does not replace fixture workflow evidence. Broader accessibility and publication recovery acceptance remain open.
+**Implementation commits:** `ffdfda5` (rooted XMP transaction), `505e015` (filename previews), `2a7dd3f` (verified model lifecycle), `a2d6371` (final publication durability) and `238edc7` (fractional-expiry fix). Focused selections pass 83, 34 and 32 tests; final complete regression at `238edc7` passes 3,364 tests / 351 suites, zero failures. Repository validation and bundled-helper probe pass. Native activation failures remain recorded. See cycle report for evidence.
+**Cycle baseline:** `7e1c19d`, initially clean. No broad release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
 
-[Cycle 93 publication review, structured previews and model locking](cycle-93-publication-review-template-model-locking-2026-09-22.md)
-adds native separate consent, exact one-shot recovery admission, structured literal previews and
-cross-process release-state transactions. Native approval and internal admission remain distinct:
-there is no publication button, live installer, app-history reconciliation or recovery disposition yet.
-Model authorization still does not establish verified installed-byte authority.
+[Cycle 94 rooted publication, filename previews and model installation](cycle-94-rooted-publication-filename-model-installation-2026-09-22.md)
+adds tested internal XMP/app-history installation and read-back, pending Capture Date preservation,
+retained filename authority and verified-byte model transitions. XMP journals remain unresolved even
+after success and native/helper publication stays disconnected until disposition is implemented.
+Production model Settings/downloads still use pinned models; signed network authority remains open.
 
-Ordered next implementation actions: finish rooted recoverable publication and app-history reconciliation,
-then connect native consent to that verified transaction; add template reference/per-photo variables,
-approved Keywords and production executors; couple signed Whisper state to verified model installation,
-updates and rollback. External interoperability, real-server/cloud/hardware/accessibility, privacy/legal,
-remote-CI and exact signed-candidate/user-acceptance gates remain open. No-progress count is zero.
+Ordered next implementation actions: finish explicit publication disposition/recovery and connect
+native consent to the verified transaction; add approved Keywords, broader per-photo variables and
+shared face-scan/template/transcription executors; configure production signed Whisper descriptors,
+Settings/download integration and interrupted-install orphan handling. External interoperability,
+real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user-
+acceptance gates remain open. No-progress count is zero.
+
+[Cycle 93 publication review, structured previews and model locking](cycle-93-publication-review-template-model-locking-2026-09-22.md)
+retains the preceding native consent and cross-process ledger foundation.
 
 [Cycle 92 batch previews, publication consent and durable model trust](cycle-92-batch-preview-publication-consent-2026-09-21.md)
 retains the preceding bounded batch preview and separate consent/ledger foundations.

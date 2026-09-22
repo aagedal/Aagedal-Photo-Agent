@@ -163,19 +163,26 @@ validated application plans. `preview_metadata_template` additionally provides r
 previews for literal descriptive, people/creator/organisation, scene/subject, date, country, source-type
 urgency, Media Topic, Genre and Image Supplier fields, bound to exact template/photo revisions. `preview_metadata_template_batch` supports
 1–8 explicit photos with retained per-photo authority and no partial output. Duplicate/shared-sidecar
-inputs are refused. Variables, Keywords, instant processing, unsupported structured fields and batch
-application remain unavailable. No draft,
+inputs are refused. `{filename}` is resolved from each retained photo for Headline, Description,
+Extended Description and Instructions. Other variables, Keywords, instant processing, unsupported
+structured fields and batch application remain unavailable. No draft,
 approval or physical write is created. A photo stored in the active Templates directory is refused by
 the folder/photo reservation boundary. iCloud template stores, template application,
 production executor integration and guarded IPTC commits remain separate implementation work.
 Native XMP publication consent now has a separate exact-candidate/mode-bound foundation requiring
 explicit C2PA and pending-draft acknowledgements in native review. Internal one-shot admission retains
-original XMP and app-history recovery bytes, but no live installation, history reconciliation or recovery
-resolution is connected. Native consent never reports publication or starts that unfinished transaction.
+original and candidate XMP/app-history bytes. An internal transaction now installs XMP through retained
+directory descriptors, reconciles app history and verifies both carriers. It refuses pending Capture Date
+changes and orientation drafts that it cannot publish. Recovery disposition remains unfinished, so native
+consent does not start this transaction and no helper commit endpoint exposes it. Recovery journals remain
+retained even after success; they must not be treated as resolved or silently discarded.
 Signed Whisper release authorization persists and revalidates signed high-water evidence across
-rollback, but it is not proof of installed model bytes. Verified-directory locks serialize cooperating
-processes; external ledger deletion/restoration remains outside replay protection. Installed-byte
-transactions and the production catalog/installer do not yet use that ledger.
+rollback. Internal install/update transactions now copy, hash and synchronize model bytes before committing
+release state; rollback and lookup reverify retained bytes. Verified-directory locks serialize cooperating
+processes; external ledger deletion/restoration remains outside replay protection. Production signing
+authority, catalog fetching and managed Settings integration remain unfinished; the shipped pinned-download
+path has not switched to this lifecycle. Interrupted-install orphan cleanup and storage-failure qualification
+remain open.
 Template import preview authority detects changed inventory before writes and between entries;
 it does not provide filesystem compare-and-swap against arbitrary noncooperating writers.
 The bundled FFmpeg now includes Whisper with corrected canonical JSON escaping and sample-bound
