@@ -6,6 +6,11 @@ import Testing
 
 @Suite("FFmpeg Whisper owned process jobs")
 struct FFmpegWhisperJobRunnerTests {
+    private enum CancellationEvent: Sendable {
+        case ready(jobPath: String, pid: pid_t)
+        case completed(Result<FFmpegWhisperJobResult, any Error>)
+    }
+
     private func directory() throws -> URL {
         let root = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
         defer { free(root) }
@@ -67,16 +72,48 @@ struct FFmpegWhisperJobRunnerTests {
         let directory = try directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let witness = directory.appendingPathComponent("job-path")
-        let request = try request("pwd > '\(witness.path)'\nwhile :; do :; done", directory: directory)
-        let task = Task { try await FFmpegWhisperJobRunner().run(request) }
-        for _ in 0..<100 {
-            if FileManager.default.fileExists(atPath: witness.path) { break }
-            try await Task.sleep(for: .milliseconds(10))
+        let request = try request("printf '%s\\n%s\\n' \"$PWD\" \"$$\" > '\(witness.path)'\nwhile :; do :; done", directory: directory)
+        try await withThrowingTaskGroup(of: CancellationEvent.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                do { return .completed(.success(try await FFmpegWhisperJobRunner().run(request))) }
+                catch { return .completed(.failure(error)) }
+            }
+            group.addTask {
+                while true {
+                    try Task.checkCancellation()
+                    // File existence alone can observe the shell's redirection before its
+                    // write. Require the complete, newline-terminated readiness message.
+                    if let text = try? String(contentsOf: witness, encoding: .utf8) {
+                        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+                        if lines.count == 3, !lines[0].isEmpty, lines[2].isEmpty,
+                           let pid = pid_t(lines[1]), pid > 0 {
+                            return .ready(jobPath: String(lines[0]), pid: pid)
+                        }
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            }
+            // Race readiness against actual runner completion, not an assumed launch
+            // duration. The request's unchanged deadline bounds a child that never starts.
+            let first = try #require(try await group.next())
+            guard case let .ready(job, pid) = first else {
+                if case let .completed(result) = first { _ = try result.get() }
+                Issue.record("The runner completed before the child reported readiness")
+                return
+            }
+            group.cancelAll()
+            let completion = try #require(try await group.next())
+            guard case let .completed(result) = completion else {
+                Issue.record("Expected runner completion after cancellation")
+                return
+            }
+            #expect(throws: CancellationError.self) { try result.get() }
+            let childStatus = kill(pid, 0)
+            let childError = errno
+            #expect(childStatus == -1 && childError == ESRCH)
+            #expect(!FileManager.default.fileExists(atPath: job))
         }
-        task.cancel()
-        await #expect(throws: CancellationError.self) { try await task.value }
-        let job = try String(contentsOf: witness, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(!FileManager.default.fileExists(atPath: job))
     }
 
     @Test("Oversized output kills the producer and removes its owned job without publication")
