@@ -26,16 +26,180 @@ struct WhisperModelDistributionStateStoreTests {
         func store() throws -> WhisperModelDistributionStateStore {
             try WhisperModelDistributionStateStore(directory: directory, modelID: "tiny", trust: trust)
         }
-        func receipt(_ sequence: Int64) throws -> WhisperModelDescriptorReceipt {
+        func receipt(_ sequence: Int64, bytes: Data? = nil) throws -> WhisperModelDescriptorReceipt {
             let descriptor = WhisperModelDistributionDescriptor(schemaVersion: 1, componentID: "whisper-ggml-model",
                 modelID: "tiny", title: "Tiny", releaseSequence: sequence, modelVersion: "v\(sequence)",
-                byteCount: 20, sha256: String(repeating: "a", count: 64),
+                byteCount: Int64(bytes?.count ?? 20),
+                sha256: bytes.map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() } ?? String(repeating: "a", count: 64),
                 downloadURL: URL(string: "https://example.com/model.bin")!)
             let data = try descriptor.canonicalData()
             return try trust.verify(data, signature: key.signature(for: data))
         }
         var stateURL: URL { directory.appendingPathComponent("tiny.release-state.json") }
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    @Test("Signed installation, update and rollback retain verified bytes across restart")
+    func verifiedInstallationLifecycle() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let firstBytes = Data("first model".utf8)
+        let secondBytes = Data("second model".utf8)
+        let firstReceipt = try fixture.receipt(1, bytes: firstBytes)
+        let secondReceipt = try fixture.receipt(2, bytes: secondBytes)
+        let store = try fixture.store()
+        #expect(try await store.installedURL() == nil)
+        try firstBytes.write(to: source)
+        let first = try await store.install(firstReceipt, from: source, expectedGeneration: nil)
+        let firstURL = try #require(await store.installedURL())
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        try secondBytes.write(to: source)
+        let second = try await store.install(secondReceipt, from: source, expectedGeneration: first.generation)
+        let restarted = try fixture.store()
+        let secondURL = try #require(await restarted.installedURL())
+        #expect(firstURL != secondURL)
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        let rolledBack = try await restarted.rollBackInstalled(expectedGeneration: second.generation)
+        #expect(try await restarted.installedURL() == firstURL)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.replayedRelease) {
+            try await restarted.install(secondReceipt, from: source, expectedGeneration: rolledBack.generation)
+        }
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.unavailableRollback) {
+            try await restarted.rollBackInstalled(expectedGeneration: rolledBack.generation)
+        }
+    }
+
+    @Test("A newly signed release can reuse verified identical content without replacing it")
+    func identicalContentReleaseAndStaleInstall() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let bytes = Data("identical content".utf8)
+        let source = fixture.directory.appendingPathComponent("download")
+        try bytes.write(to: source)
+        let store = try fixture.store()
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let originalURL = try #require(await store.installedURL())
+        let before = try FileManager.default.attributesOfItem(atPath: originalURL.path)[.systemFileNumber] as? NSNumber
+        let next = try await store.install(fixture.receipt(2, bytes: bytes), from: source, expectedGeneration: first.generation)
+        #expect(try await store.installedURL() == originalURL)
+        #expect(try FileManager.default.attributesOfItem(atPath: originalURL.path)[.systemFileNumber] as? NSNumber == before)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.install(fixture.receipt(3, bytes: bytes), from: source, expectedGeneration: first.generation)
+        }
+        #expect(try await store.load()?.generation == next.generation)
+        try Data("different content".utf8).write(to: originalURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.installedURL()
+        }
+    }
+
+    @Test("Bad downloaded bytes leave generation, current bytes and rollback intact and allow retry")
+    func invalidInstallationPreservesRelease() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let bytes = Data("model one".utf8)
+        let nextBytes = Data("model two".utf8)
+        let store = try fixture.store()
+        try bytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let before = try Data(contentsOf: fixture.stateURL)
+        let next = try fixture.receipt(2, bytes: nextBytes)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.install(next, from: source, expectedGeneration: first.generation)
+        }
+        #expect(try Data(contentsOf: fixture.stateURL) == before)
+        #expect(try await store.load()?.generation == first.generation)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path).filter { $0.hasSuffix(".model-staging") }.isEmpty)
+        try nextBytes.write(to: source)
+        _ = try await store.install(next, from: source, expectedGeneration: first.generation)
+    }
+
+    @Test("Cancellation after staging preserves ledger and bytes, cleans staging, and permits retry")
+    func cancelledInstallationPreservesRelease() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let firstBytes = Data("model one".utf8)
+        let nextBytes = Data("model two".utf8)
+        let store = try fixture.store()
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let current = try #require(await store.installedURL())
+        let before = try Data(contentsOf: fixture.stateURL)
+        try nextBytes.write(to: source)
+        let next = try fixture.receipt(2, bytes: nextBytes)
+        let cancellingStore = try WhisperModelDistributionStateStore(directory: fixture.directory,
+            modelID: "tiny", trust: fixture.trust, installationCheckpoint: {
+                // The hook runs only after the complete staged file exists. Cancel the
+                // actual installing task so normal cancellation checks and cleanup run.
+                withUnsafeCurrentTask { $0?.cancel() }
+            })
+        let installation = Task {
+            try await cancellingStore.install(next, from: source, expectedGeneration: first.generation)
+        }
+        await #expect(throws: CancellationError.self) { try await installation.value }
+        #expect(try Data(contentsOf: fixture.stateURL) == before)
+        #expect(try Data(contentsOf: current) == firstBytes)
+        #expect(try await store.load()?.generation == first.generation)
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path)
+        #expect(!names.contains { $0.hasSuffix(".model-staging") })
+        #expect(!names.contains("ggml-tiny-\(next.descriptor.sha256).bin"))
+        let retried = try await store.install(next, from: source, expectedGeneration: first.generation)
+        #expect(retried.release.current.descriptor.releaseSequence == 2)
+        let installed = try #require(await store.installedURL())
+        #expect(try Data(contentsOf: installed) == nextBytes)
+    }
+
+    @Test("Missing or tampered rollback bytes cannot change durable release authority")
+    func invalidRollbackPreservesRelease() async throws {
+        for remove in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.cleanUp() }
+            let source = fixture.directory.appendingPathComponent("download")
+            let store = try fixture.store()
+            let bytes = Data("model one".utf8)
+            try bytes.write(to: source)
+            let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+            let retained = try #require(await store.installedURL())
+            let nextBytes = Data("model two".utf8)
+            try nextBytes.write(to: source)
+            let second = try await store.install(fixture.receipt(2, bytes: nextBytes), from: source, expectedGeneration: first.generation)
+            let before = try Data(contentsOf: fixture.stateURL)
+            if remove { try FileManager.default.removeItem(at: retained) }
+            else { try Data("tampered!".utf8).write(to: retained) }
+            await #expect(throws: (any Error).self) {
+                try await store.rollBackInstalled(expectedGeneration: second.generation)
+            }
+            #expect(try Data(contentsOf: fixture.stateURL) == before)
+            #expect(try await store.load()?.generation == second.generation)
+            let current = try #require(await store.installedURL())
+            #expect(try Data(contentsOf: current) == nextBytes)
+        }
+    }
+
+    @Test("Authorization alone and replaced model symlinks never qualify as installed bytes")
+    func installedLookupRequiresBytes() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let bytes = Data("model one".utf8)
+        let receipt = try fixture.receipt(1, bytes: bytes)
+        let store = try fixture.store()
+        _ = try await store.accept(receipt, expectedGeneration: nil)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.installedURL()
+        }
+        let source = fixture.directory.appendingPathComponent("download")
+        try bytes.write(to: source)
+        let target = fixture.directory.appendingPathComponent("ggml-tiny-\(receipt.descriptor.sha256).bin")
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.installedURL()
+        }
+        #expect(try Data(contentsOf: source) == bytes)
     }
 
     @Test("Restart preserves descriptor identity, rollback consumption and signed high-water floor")

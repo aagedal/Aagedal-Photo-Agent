@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -13,7 +14,7 @@ nonisolated private func whisperReleaseFlock(_ descriptor: Int32, _ operation: I
 /// fallback that could silently lower the accepted release floor.
 actor WhisperModelDistributionStateStore {
     enum StoreError: Error, Equatable {
-        case staleGeneration, invalidState, unsafeStorage, storageBusy
+        case staleGeneration, invalidState, unsafeStorage, storageBusy, invalidModelBytes
     }
 
     struct Snapshot: Sendable {
@@ -33,11 +34,13 @@ actor WhisperModelDistributionStateStore {
     private let directoryInode: ino_t
     private let modelID: String
     private let trust: WhisperModelDistributionTrust
+    private let installationCheckpoint: @Sendable () throws -> Void
     nonisolated let filesystemQueue = DispatchSerialQueue(
         label: "com.aagedal.photo-agent.whisper-release-state", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
 
-    init(directory: URL, modelID: String, trust: WhisperModelDistributionTrust) throws {
+    init(directory: URL, modelID: String, trust: WhisperModelDistributionTrust,
+         installationCheckpoint: @escaping @Sendable () throws -> Void = {}) throws {
         guard !modelID.isEmpty, modelID.utf8.count <= 64,
               modelID.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else {
             throw StoreError.invalidState
@@ -58,6 +61,7 @@ actor WhisperModelDistributionStateStore {
         self.directoryInode = info.st_ino
         self.modelID = modelID
         self.trust = trust
+        self.installationCheckpoint = installationCheckpoint
     }
 
     func load() async throws -> Snapshot? {
@@ -78,6 +82,113 @@ actor WhisperModelDistributionStateStore {
         try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
             try await self.transition(receipt: nil, expectedGeneration: expectedGeneration)
         }
+    }
+
+    /// Copies caller-staged bytes into a content-addressed sibling and commits release
+    /// authority last. An interrupted commit can leave an unreferenced model, but never
+    /// an accepted release whose bytes were not verified and synchronized first.
+    func install(_ receipt: WhisperModelDescriptorReceipt, from source: URL,
+                 expectedGeneration: UUID?) async throws -> Snapshot {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.installBytes(receipt, from: source, expectedGeneration: expectedGeneration)
+        }
+    }
+
+    func rollBackInstalled(expectedGeneration: UUID) async throws -> Snapshot {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.transition(receipt: nil, expectedGeneration: expectedGeneration, requireInstalled: true)
+        }
+    }
+
+    /// Rechecks bytes on every lookup; a ledger alone never establishes installation.
+    /// The returned path is not a retained read capability. Consumers must still use
+    /// the transcription runner's artifact admission when opening it later.
+    func installedURL() async throws -> URL? {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.readInstalledURL()
+        }
+    }
+
+    private func modelFilename(_ receipt: WhisperModelDescriptorReceipt) -> String {
+        "ggml-\(modelID)-\(receipt.descriptor.sha256).bin"
+    }
+
+    private func readInstalledURL() throws -> URL? {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (_, state, _) = try read(directoryFD: fd) else { return nil }
+        try verifyModel(state.current, directoryFD: fd)
+        try validateDirectoryIdentity()
+        return directory.appendingPathComponent(modelFilename(state.current))
+    }
+
+    private func verifyModel(_ receipt: WhisperModelDescriptorReceipt, directoryFD: Int32, filename: String? = nil) throws {
+        let name = filename ?? modelFilename(receipt)
+        let fd = openat(directoryFD, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw StoreError.unsafeStorage }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_uid == geteuid(), before.st_nlink == 1,
+              before.st_mode & 0o077 == 0 else { throw StoreError.unsafeStorage }
+        guard before.st_size == receipt.descriptor.byteCount else { throw StoreError.invalidModelBytes }
+        var hash = SHA256()
+        var count: Int64 = 0
+        while let bytes = try handle.read(upToCount: 1_048_576), !bytes.isEmpty {
+            try Task.checkCancellation()
+            count += Int64(bytes.count)
+            guard count <= receipt.descriptor.byteCount else { throw StoreError.invalidModelBytes }
+            hash.update(data: bytes)
+        }
+        guard count == receipt.descriptor.byteCount,
+              hash.finalize().map({ String(format: "%02x", $0) }).joined() == receipt.descriptor.sha256 else {
+            throw StoreError.invalidModelBytes
+        }
+        var after = stat()
+        var named = stat()
+        guard fstat(fd, &after) == 0, fstatat(directoryFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size, after.st_nlink == 1,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              named.st_dev == after.st_dev, named.st_ino == after.st_ino else { throw StoreError.unsafeStorage }
+        // The content file must be durable before its ledger can be made durable.
+        guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try Task.checkCancellation()
+    }
+
+    private func installBytes(_ receipt: WhisperModelDescriptorReceipt, from source: URL,
+                              expectedGeneration: UUID?) throws -> Snapshot {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        let existing = try read(directoryFD: fd)
+        guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        guard receipt.descriptor.modelID == modelID else { throw WhisperModelDistributionTrust.TrustError.wrongModel }
+        _ = try existing.map { try trust.updating($0.1, to: receipt) } ?? trust.initialState(receipt)
+        try Task.checkCancellation()
+        guard source.isFileURL, !source.path.contains("\0") else { throw StoreError.unsafeStorage }
+        let temporary = ".\(UUID().uuidString).model-staging"
+        defer { unlinkat(fd, temporary, 0) }
+        try WhisperDownloadedFileStaging.copy(source, to: temporary, in: fd,
+            byteCount: receipt.descriptor.byteCount, checkCancellation: { try Task.checkCancellation() })
+        // Deterministic cancellation coverage after staging, before content publication.
+        try installationCheckpoint()
+        try Task.checkCancellation()
+        try verifyModel(receipt, directoryFD: fd, filename: temporary)
+        try validateDirectoryIdentity()
+        // Publish without replacing any retained release. A same-content release can
+        // reuse an existing sibling, but it must pass verification below.
+        let name = modelFilename(receipt)
+        if renameatx_np(fd, temporary, fd, name, UInt32(RENAME_EXCL)) != 0, errno != EEXIST {
+            throw StoreError.unsafeStorage
+        }
+        // Persist the content filename before publishing a ledger that references it.
+        guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
+                              directoryFD: fd, requireInstalled: true)
     }
 
     private var filename: String { "\(modelID).release-state.json" }
@@ -190,9 +301,16 @@ actor WhisperModelDistributionStateStore {
         return (document, state, highWater)
     }
 
-    private func transition(receipt: WhisperModelDescriptorReceipt?, expectedGeneration: UUID?) throws -> Snapshot {
+    private func transition(receipt: WhisperModelDescriptorReceipt?, expectedGeneration: UUID?,
+                            requireInstalled: Bool = false) throws -> Snapshot {
         let fd = try openTransaction()
         defer { closeTransaction(fd) }
+        return try transition(receipt: receipt, expectedGeneration: expectedGeneration,
+                              directoryFD: fd, requireInstalled: requireInstalled)
+    }
+
+    private func transition(receipt: WhisperModelDescriptorReceipt?, expectedGeneration: UUID?,
+                            directoryFD fd: Int32, requireInstalled: Bool) throws -> Snapshot {
         let existing = try read(directoryFD: fd)
         guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
         let next: WhisperModelReleaseState
@@ -206,6 +324,8 @@ actor WhisperModelDistributionStateStore {
             next = try trust.rollingBack(existing.1)
             highWater = existing.2
         }
+        if requireInstalled { try verifyModel(next.current, directoryFD: fd) }
+        try Task.checkCancellation()
         let document = Document(schemaVersion: 1, generation: UUID(), modelID: modelID,
                                 record: WhisperModelReleaseRecord(state: next, highWater: highWater))
         let data = try JSONEncoder().encode(document)
