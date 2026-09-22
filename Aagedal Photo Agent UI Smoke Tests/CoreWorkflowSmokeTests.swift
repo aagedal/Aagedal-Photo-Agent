@@ -157,6 +157,68 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationResolvesInterruptedUnchangedXMPStaging() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+            xmpStagingInterruption: true)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let original = try Data(contentsOf: photo)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        input.click()
+        input.typeText(try XCTUnwrap(manifest["planID"]))
+        app.buttons["automation.inspectPatchPlan"].click()
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
+        acknowledgement.click()
+        app.buttons["automation.approveXMPCandidate"].click()
+        let publish = app.buttons["automation.publishApprovedXMP"]
+        XCTAssertTrue(publish.waitForExistence(timeout: 8))
+        publish.click()
+        XCTAssertTrue(app.staticTexts["automation.patchDraftStatus"].waitForExistence(timeout: 12))
+        app.buttons["Clear Review"].click()
+        let inspect = app.buttons["automation.inspectRecovery"]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        inspect.click()
+        let resolve = app.buttons["automation.resolveUnchangedRecovery"]
+        XCTAssertTrue(resolve.waitForExistence(timeout: 8))
+        XCTAssertTrue(resolve.isEnabled)
+        resolve.click()
+        let status = app.staticTexts["automation.recoveryStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        let expected = "Unchanged staging resolved. No photo or metadata files were changed. Recovery material remains retained until the next publication is staged."
+        XCTAssertTrue(status.label == expected || status.value as? String == expected)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        let journal = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
+        let receipt = try Data(contentsOf: journal)
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receipt) as? [String: Any])
+        XCTAssertEqual(envelope["version"] as? Int, 5)
+        inspect.click()
+        let empty = "No unresolved XMP publication staging is retained."
+        let emptyStatus = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            status.exists && (status.label == empty || status.value as? String == empty)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [emptyStatus], timeout: 8), .completed)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        XCTAssertEqual(try Data(contentsOf: journal), receipt)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+    }
+
+    @MainActor
     func testAutomationXMPPublicationPersistsAndRecordsVerifiedOutcome() throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
@@ -1191,7 +1253,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
         patchReviewFolder: URL? = nil,
-        operationRecovery: Bool = false
+        operationRecovery: Bool = false,
+        xmpStagingInterruption: Bool = false
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -1218,6 +1281,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-template-root", templateRoot)
         append("--ui-test-patch-review-folder", patchReviewFolder)
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
+        if xmpStagingInterruption { app.launchArguments.append("--ui-test-xmp-staging-interruption") }
         app.launch()
         reopenMainWindowIfNeeded()
     }

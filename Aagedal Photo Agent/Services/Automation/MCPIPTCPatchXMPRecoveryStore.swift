@@ -22,6 +22,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         let id: UUID
         let planID: String
         let targetPath: String
+        var sourcePath: String? = nil
         let binding: Binding
         let original: Data?
         let candidate: Data
@@ -66,16 +67,17 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
 
     @discardableResult
     func stage(id: UUID, planID: String, targetPath: String, binding: Binding, original: Data?, candidate: Data,
-               appSidecarRecovery: AppSidecarRecovery? = nil, publicationApprovalID: UUID? = nil) throws -> Material {
+               appSidecarRecovery: AppSidecarRecovery? = nil, publicationApprovalID: UUID? = nil,
+               sourcePath: String? = nil) throws -> Material {
         try Task.checkCancellation()
-        let proposed = Material(id: id, planID: planID, targetPath: targetPath, binding: binding,
+        let proposed = Material(id: id, planID: planID, targetPath: targetPath, sourcePath: sourcePath, binding: binding,
             original: original, candidate: candidate, appSidecarRecovery: appSidecarRecovery,
             publicationApprovalID: publicationApprovalID)
         try validate(proposed)
         return try persistence.transaction { existing in
             if let existing {
                 let record = try decodeRecord(existing)
-                if !record.verified {
+                if !record.resolved {
                     guard record.material == proposed else { throw Failure.occupied }
                     return (record.material, existing)
                 }
@@ -97,7 +99,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     func load() throws -> Material? {
         try persistence.transaction(readOnly: true) { bytes in
             let record = try bytes.map(decodeRecord)
-            return (record?.verified == true ? nil : record?.material, bytes ?? Data())
+            return (record?.resolved == true ? nil : record?.material, bytes ?? Data())
         }
     }
 
@@ -126,7 +128,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         try persistence.transaction { bytes in
             guard let bytes else { throw Failure.verification }
             let record = try decodeRecord(bytes)
-            guard !record.verified, record.material == expected,
+            guard !record.resolved, record.material == expected,
                   expected.appSidecarRecovery?.candidate != nil else { throw Failure.verification }
             try verify()
             let encoder = JSONEncoder()
@@ -136,25 +138,68 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         }
     }
 
-    private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool) {
+    /// Records a native decision that the exact original carrier generations remain present.
+    /// This is not successful publication: candidates are retained as evidence in a separate
+    /// disposition type. Verification runs while the unresolved journal is locked.
+    func recordUnchanged(_ expected: Material, verify: () throws -> Void) throws {
+        try persistence.transaction { bytes in
+            guard let bytes else { throw Failure.verification }
+            let record = try decodeRecord(bytes)
+            guard !record.resolved, record.material == expected,
+                  expected.appSidecarRecovery != nil else { throw Failure.verification }
+            try verify()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.withoutEscapingSlashes]
+            let payload = try encoder.encode(UnchangedDisposition(material: expected))
+            return ((), try encoder.encode(Envelope(version: 5, payload: payload, sha256: Self.digest(payload))))
+        }
+    }
+
+    struct UnchangedDisposition: Codable, Sendable, Equatable {
+        let material: Material
+        private enum CodingKeys: String, CodingKey { case material = "unchangedMaterial" }
+    }
+
+    func loadUnchangedDisposition() throws -> UnchangedDisposition? {
+        try persistence.transaction(readOnly: true) { bytes in
+            let record = try bytes.map(decodeRecord)
+            return (record?.unchanged == true ? record.map { UnchangedDisposition(material: $0.material) } : nil,
+                bytes ?? Data())
+        }
+    }
+
+    private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool, unchanged: Bool, resolved: Bool) {
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
-            guard [1, 2, 3, 4].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
+            guard [1, 2, 3, 4, 5].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
                 throw Failure.corruptJournal
             }
-            let material = envelope.version == 4
-                ? try JSONDecoder().decode(VerifiedDisposition.self, from: envelope.payload).material
-                : try JSONDecoder().decode(Material.self, from: envelope.payload)
+            let material: Material
+            if envelope.version == 5 {
+                material = try JSONDecoder().decode(UnchangedDisposition.self, from: envelope.payload).material
+            } else if envelope.version == 4 {
+                material = try JSONDecoder().decode(VerifiedDisposition.self, from: envelope.payload).material
+            } else {
+                material = try JSONDecoder().decode(Material.self, from: envelope.payload)
+            }
             guard (envelope.version >= 2) == (material.appSidecarRecovery != nil),
-                  (envelope.version >= 3) == (material.appSidecarRecovery?.candidate != nil) else {
+                  (envelope.version == 5 || (envelope.version >= 3) == (material.appSidecarRecovery?.candidate != nil)) else {
                 throw Failure.corruptJournal
             }
             try validate(material)
-            return (material, envelope.version == 4)
+            return (material, envelope.version == 4, envelope.version == 5, envelope.version >= 4)
         } catch { throw Failure.corruptJournal }
     }
 
     private func validate(_ material: Material) throws {
+        if let sourcePath = material.sourcePath {
+            let parts = sourcePath.split(separator: "/", omittingEmptySubsequences: false)
+            guard sourcePath.hasPrefix("/"), sourcePath.utf8.count <= 4096,
+                  !sourcePath.contains("\0"), !parts.dropFirst().contains(""),
+                  !parts.contains("."), !parts.contains(".."),
+                  URL(fileURLWithPath: sourcePath).deletingPathExtension().appendingPathExtension("xmp").path == material.targetPath
+            else { throw Failure.invalidArguments }
+        }
         let components = material.targetPath.split(separator: "/", omittingEmptySubsequences: false)
         let revisions = [material.binding.sourceRevision, material.binding.xmpSidecarRevision, material.binding.appSidecarRevision]
         guard revisions.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 }),

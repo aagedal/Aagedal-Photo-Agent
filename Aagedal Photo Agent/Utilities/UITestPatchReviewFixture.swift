@@ -15,6 +15,13 @@ enum UITestPatchReviewFixture {
         try currentService.get()
     }
 
+    static func currentRecoveryServiceForModel() throws -> AutomationPatchReviewService? {
+        guard UITestLaunchConfiguration.current.isEnabled else { return nil }
+        if let service = try currentService.get() { return service }
+        return AutomationPatchReviewService(recoveryDirectory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("isolated-xmp-recovery-\(UUID().uuidString)"))
+    }
+
     static func operationRegistryForHistory(configuration: UITestLaunchConfiguration = .current) throws -> AutomationOperationRegistry? {
         guard configuration.isEnabled else { return nil }
         if !configuration.patchReviewRequested {
@@ -116,7 +123,12 @@ enum UITestPatchReviewFixture {
                 try Data(record.id.uuidString.lowercased().utf8).write(
                     to: folder.appendingPathComponent("recovery-operation-id.txt"), options: .atomic)
             }
-            return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry, recoveryDirectory: operationFolder)
+            var hooks = MCPIPTCPatchXMPPublicationAdmissionService.Hooks()
+            if configuration.xmpStagingInterruptionRequested {
+                hooks.afterRecovery = { throw Failure.invalidPlan }
+            }
+            return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry,
+                recoveryDirectory: operationFolder, publicationHooks: hooks)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

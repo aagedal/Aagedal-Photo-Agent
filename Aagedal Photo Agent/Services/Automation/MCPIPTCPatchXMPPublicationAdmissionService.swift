@@ -146,7 +146,8 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
             targetPath: targetPath, binding: .init(sourceRevision: snapshot.sourceRevision,
                 xmpSidecarRevision: snapshot.xmpSidecarRevision, appSidecarRevision: snapshot.appSidecarRevision,
                 authorizationRevision: authorizationRevision), original: snapshot.xmpBytes, candidate: candidate,
-            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: appCandidate), publicationApprovalID: approval.id)
+            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: appCandidate), publicationApprovalID: approval.id,
+            sourcePath: photo.path)
         try hooks.afterRecovery()
         try await context.checkCancellation()
         // No await follows these final checks. Same-byte inode changes, revoked/regranted

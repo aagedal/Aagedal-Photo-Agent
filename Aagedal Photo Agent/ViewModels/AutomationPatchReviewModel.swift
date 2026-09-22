@@ -83,7 +83,7 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record
 }
 
-actor AutomationPatchReviewService: AutomationPatchReviewServing {
+actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationRecoveryServing {
     nonisolated let filesystemQueue = DispatchSerialQueue(
         label: "com.aagedal.photo-agent.automation-patch-review", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
@@ -119,6 +119,20 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing {
         var review = try AutomationPatchReview(binding.preview)
         review.approvalReview = binding
         return review
+    }
+
+    func inspectRecovery(photoPath: String?) throws -> MCPIPTCPatchXMPRecoveryService.Review? {
+        try Task.checkCancellation()
+        let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
+        return try MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+            .inspect(photoPath: photoPath)
+    }
+
+    func resolveUnchangedRecovery(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
+        try Task.checkCancellation()
+        let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
+        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+            .resolveUnchanged(review)
     }
 
     func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
