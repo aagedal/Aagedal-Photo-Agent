@@ -4,6 +4,9 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
+@_silgen_name("flock")
+nonisolated private func testWhisperReleaseFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
 @Suite("Durable Whisper release authorization")
 struct WhisperModelDistributionStateStoreTests {
     private struct Fixture {
@@ -91,6 +94,117 @@ struct WhisperModelDistributionStateStoreTests {
         }
         #expect(outcomes.filter { $0 }.count == 1)
         #expect(try await firstStore.load()?.release.highestAcceptedSequence == 2)
+    }
+
+    @Test("An independent process excludes reads, updates and rollback, then publishes a newer generation")
+    func processContentionAndStaleGeneration() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let other = try fixture.store()
+        let first = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let original = try Data(contentsOf: fixture.stateURL)
+        let second = try await store.accept(fixture.receipt(2), expectedGeneration: first.generation)
+        let pending = fixture.directory.appendingPathComponent("pending-release.json")
+        try FileManager.default.moveItem(at: fixture.stateURL, to: pending)
+        try original.write(to: fixture.stateURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fixture.stateURL.path)
+
+        // macOS's system Perl is only a test fixture. Its flock is independent of the
+        // app's actor and process-local admission, and publishes genuine signed state.
+        let helper = Process()
+        let input = Pipe()
+        let output = Pipe()
+        helper.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        helper.arguments = ["-e", """
+            use strict; use warnings; use Fcntl qw(:DEFAULT :flock);
+            sysopen(my $lock, $ARGV[0], O_RDONLY) or die "open: $!";
+            flock($lock, LOCK_EX | LOCK_NB) or die "lock: $!";
+            $| = 1; print "R";
+            sysread(STDIN, my $command, 1) == 1 or exit 0;
+            rename($ARGV[1], $ARGV[2]) or die "rename: $!";
+            flock($lock, LOCK_UN) or die "unlock: $!";
+            print "D";
+            """, fixture.directory.path, pending.path, fixture.stateURL.path]
+        helper.standardInput = input
+        helper.standardOutput = output
+        try helper.run()
+        defer {
+            try? input.fileHandleForWriting.close()
+            if helper.isRunning { helper.terminate() }
+        }
+        try awaitMarker("R", from: output.fileHandleForReading)
+        for retained in [store, other] {
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.storageBusy) {
+                try await retained.load()
+            }
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.storageBusy) {
+                try await retained.accept(fixture.receipt(3), expectedGeneration: first.generation)
+            }
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.storageBusy) {
+                try await retained.rollBack(expectedGeneration: first.generation)
+            }
+        }
+        #expect(try Data(contentsOf: fixture.stateURL) == original)
+        try input.fileHandleForWriting.write(contentsOf: Data("C".utf8))
+        try awaitMarker("D", from: output.fileHandleForReading)
+        let loaded = try #require(await other.load())
+        #expect(loaded.generation == second.generation)
+        #expect(loaded.release.highestAcceptedSequence == 2)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.accept(fixture.receipt(3), expectedGeneration: first.generation)
+        }
+        let rollback = try await store.rollBack(expectedGeneration: second.generation)
+        #expect(rollback.release.highestAcceptedSequence == 2)
+        #expect(rollback.release.current.descriptor.releaseSequence == 1)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await other.rollBack(expectedGeneration: second.generation)
+        }
+    }
+
+    @Test("A held directory lock refuses first acceptance and failures release transaction locks")
+    func firstAcceptanceContentionAndFailureCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let fd = open(fixture.directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        try #require(fd >= 0)
+        defer { _ = testWhisperReleaseFlock(fd, LOCK_UN); close(fd) }
+        try #require(testWhisperReleaseFlock(fd, LOCK_EX | LOCK_NB) == 0)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.storageBusy) {
+            try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.stateURL.path))
+        try #require(testWhisperReleaseFlock(fd, LOCK_UN) == 0)
+        _ = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        try Data("broken".utf8).write(to: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.load()
+        }
+        // Failed authentication/read must not retain an OS lock and starve another process.
+        try #require(testWhisperReleaseFlock(fd, LOCK_EX | LOCK_NB) == 0)
+        try #require(testWhisperReleaseFlock(fd, LOCK_UN) == 0)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await store.accept(fixture.receipt(2), expectedGeneration: nil)
+        }
+        try #require(testWhisperReleaseFlock(fd, LOCK_EX | LOCK_NB) == 0)
+    }
+
+    private func awaitMarker(_ expected: String, from handle: FileHandle) throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 100)
+            if ready == 0 { continue }
+            if ready < 0, errno == EINTR { continue }
+            try #require(ready == 1 && descriptor.revents & Int16(POLLIN) != 0,
+                         "Lock helper exited without publishing its marker")
+            let marker = try handle.read(upToCount: 1)
+            try #require(marker == Data(expected.utf8))
+            return
+        }
+        Issue.record("Lock helper did not respond within five seconds")
+        throw WhisperModelDistributionStateStore.StoreError.storageBusy
     }
 
     @Test("Corrupt and future state cannot reset the floor or fall back to an older backup")

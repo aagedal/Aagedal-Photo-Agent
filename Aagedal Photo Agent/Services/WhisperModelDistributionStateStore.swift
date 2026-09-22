@@ -1,16 +1,19 @@
 import Darwin
 import Foundation
 
+@_silgen_name("flock")
+nonisolated private func whisperReleaseFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
 /// Durable release authorization, NOT proof that model bytes have been installed.
-/// All instances in this process serialize read/compare/replace through storage admission.
-/// This is NOT cross-process compare-and-swap: another process can race a transition.
-/// A multi-process installer must add a shared filesystem lock before using this ledger.
+/// Cooperating processes hold an exclusive lock on the verified directory throughout
+/// read/compare/replace. Contention fails promptly, and callers must reload before retrying.
+/// The directory lock covers every model ledger in that directory and is never unlinked.
 /// The caller supplies a private app-owned directory. External deletion/restoration of the
 /// entire ledger is outside this local replay protection; there is deliberately no backup
 /// fallback that could silently lower the accepted release floor.
 actor WhisperModelDistributionStateStore {
     enum StoreError: Error, Equatable {
-        case staleGeneration, invalidState, unsafeStorage
+        case staleGeneration, invalidState, unsafeStorage, storageBusy
     }
 
     struct Snapshot: Sendable {
@@ -116,14 +119,45 @@ actor WhisperModelDistributionStateStore {
     }
 
     private func readSnapshot() throws -> Snapshot? {
-        let fd = try openDirectory()
-        defer { close(fd) }
-        guard let (document, state, _) = try read(directoryFD: fd) else { return nil }
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        let loaded = try read(directoryFD: fd)
+        try validateDirectoryIdentity()
+        guard let (document, state, _) = loaded else { return nil }
         return Snapshot(generation: document.generation, release: state)
     }
 
+    /// Lock the directory itself so an exchanged lock-file name cannot divide writers
+    /// between different locks. No actor suspension is allowed while this fd is held.
+    private func openTransaction() throws -> Int32 {
+        let fd = try openDirectory()
+        do {
+            while whisperReleaseFlock(fd, LOCK_EX | LOCK_NB) != 0 {
+                if errno == EINTR { continue }
+                if errno == EWOULDBLOCK || errno == EAGAIN { throw StoreError.storageBusy }
+                throw StoreError.unsafeStorage
+            }
+            try validateDirectoryIdentity()
+            return fd
+        } catch {
+            closeTransaction(fd)
+            throw error
+        }
+    }
+
+    private func closeTransaction(_ fd: Int32) {
+        _ = whisperReleaseFlock(fd, LOCK_UN)
+        close(fd)
+    }
+
+    private func validateDirectoryIdentity() throws {
+        // Repeat the complete no-follow walk, including the retained device/inode check.
+        let fresh = try openDirectory()
+        close(fresh)
+    }
+
     private func read(directoryFD: Int32) throws -> (Document, WhisperModelReleaseState, WhisperModelDescriptorReceipt)? {
-        let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
             throw StoreError.unsafeStorage
@@ -135,6 +169,19 @@ actor WhisperModelDistributionStateStore {
               info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0,
               info.st_size > 0, info.st_size <= 100_000 else { throw StoreError.unsafeStorage }
         let data = try handle.read(upToCount: 100_001) ?? Data()
+        var after = stat()
+        var named = stat()
+        guard fstat(fd, &after) == 0,
+              fstatat(directoryFD, filename, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              info.st_dev == after.st_dev, info.st_ino == after.st_ino,
+              info.st_size == after.st_size,
+              info.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              info.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              info.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              info.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              named.st_dev == after.st_dev, named.st_ino == after.st_ino else {
+            throw StoreError.unsafeStorage
+        }
         guard data.count == info.st_size,
               let document = try? JSONDecoder().decode(Document.self, from: data),
               document.schemaVersion == 1, document.modelID == modelID else { throw StoreError.invalidState }
@@ -144,8 +191,8 @@ actor WhisperModelDistributionStateStore {
     }
 
     private func transition(receipt: WhisperModelDescriptorReceipt?, expectedGeneration: UUID?) throws -> Snapshot {
-        let fd = try openDirectory()
-        defer { close(fd) }
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
         let existing = try read(directoryFD: fd)
         guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
         let next: WhisperModelReleaseState
@@ -163,7 +210,7 @@ actor WhisperModelDistributionStateStore {
                                 record: WhisperModelReleaseRecord(state: next, highWater: highWater))
         let data = try JSONEncoder().encode(document)
         let temporary = ".\(filename).\(UUID().uuidString).staging"
-        let stagedFD = openat(fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        let stagedFD = openat(fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard stagedFD >= 0 else { throw StoreError.unsafeStorage }
         let handle = FileHandle(fileDescriptor: stagedFD, closeOnDealloc: true)
         defer {
@@ -173,10 +220,12 @@ actor WhisperModelDistributionStateStore {
         try handle.write(contentsOf: data)
         try handle.synchronize()
         try handle.close()
+        try validateDirectoryIdentity()
         guard renameat(fd, temporary, fd, filename) == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         guard fsync(fd) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        try validateDirectoryIdentity()
         return Snapshot(generation: document.generation, release: next)
     }
 }
