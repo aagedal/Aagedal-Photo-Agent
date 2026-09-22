@@ -1641,6 +1641,14 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 97 continuation (2026-09-22):** Reviewed native XMP publication now retains exact installed
+carrier generations across incomplete and verified dispositions; recovery inspection reports this
+evidence. Full restoration remains open. Template previews resolve bounded acyclic scalar field
+chains and report transitive sources, while template-modified sources and other context remain
+refused. Internal signed-model recovery restores missing current bytes without changing the retained
+ledger, rollback or replay floor. Production descriptors/integration remain open. No Phase 5A gate
+is newly complete; see [cycle 97 evidence](release/cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md).
+
 **Cycle 83 continuation (2026-09-20):** Native plan review now supports explicit exact-plan
 approval and revocation, with consent-time source/authority revalidation and cancellation of
 superseded requests. Consent remains internal to the review session and writes no metadata.

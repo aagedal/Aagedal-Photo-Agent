@@ -62,9 +62,9 @@ These are material product and evidence boundaries, not a list of unfinished int
   automatic restoration after partial publication is not implemented.
   Completed recovery material lasts only until the next publication is staged; it is not permanent
   undo history. Original photo bytes are unchanged by this sidecar-only workflow.
-- Template previews support filename, bounded request-order sequence variables and retained literal
-  scalar `{field:key}` references whose sources are unchanged by the template. Approved Keywords,
-  recursive/other context variables and shared production template/face-scan/transcription executors remain open.
+- Template previews support filename, bounded request-order sequence variables and retained acyclic
+  scalar `{field:key}` chains whose sources are unchanged by the template. Approved Keywords,
+  other context variables and shared production template/face-scan/transcription executors remain open.
 
 ## Metadata and delivery interoperability
 

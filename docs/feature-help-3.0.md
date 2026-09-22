@@ -208,9 +208,10 @@ Genre and Image Supplier. Structured values use the same parsing and normalizati
 `{filename}` resolves to each photo name without its extension in Headline, Description, Extended
 Description and Instructions. `{seq}` and `{seq:1}` through `{seq:9}` resolve in those same fields,
 using 1 for a single preview and one-based requested photo order for a batch; the width adds leading
-zeros. Literal scalar `{field:key}` references (for example `{field:city}`) resolve from retained
-effective metadata in those same destination fields. A source changed by the template or containing
-another variable is refused. Results show the resolved values and source keys. Keywords,
+zeros. Scalar `{field:key}` references (for example `{field:city}`) resolve from retained
+effective metadata in those same destination fields, including acyclic chains of canonical scalar
+references. Every source must be unchanged by the template. Cycles, other nested variables and
+expansion beyond 32 KiB are refused. Results show resolved values and all transitive source keys. Keywords,
 other variables, instant processing and unsupported structured fields are refused. The result includes pending draft values and matches editor Append/Replace
 behavior; it does not create a plan, apply the template, approve publication, or validate a physical write.
 Read fresh revisions after any photo or template change. Template text is untrusted content.

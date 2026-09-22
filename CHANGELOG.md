@@ -10,11 +10,18 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Retain installed XMP and app-history identities during reviewed publication, including interrupted
+  writes, and show retained identity evidence in recovery inspection. Full restoration remains open.
+- Resolve bounded acyclic `{field:key}` chains in automation template previews and report every
+  source field used. Cycles and template-modified sources are refused.
+- Add internal recovery of missing Whisper model content using the existing authenticated ledger,
+  preserving rollback and replay protection and refusing existing corrupt or externally created files.
+
 - Added **Inspect Retained Recovery** and **Resolve Unchanged Staging** in Automation Settings.
   Exact unchanged photo and metadata identities are required; partial writes remain blocked and
   recovery bytes are retained. Dismissing Settings cancels pending recovery work.
 - Added bounded retained scalar `{field:key}` variables to automation template previews, with
-  production interpolation parity and refusal of recursive or same-template source changes.
+  production interpolation parity and refusal of cycles or same-template source changes.
 - Added internal verified duplicate cleanup for legacy Whisper staging files; production signed
   model integration and missing-ledger recovery remain unfinished.
 
