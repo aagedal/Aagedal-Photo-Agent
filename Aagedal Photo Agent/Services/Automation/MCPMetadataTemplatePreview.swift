@@ -15,7 +15,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, and source-type fields only. Variables, instant processing, keywords, and structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. Variables, instant processing, keywords, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -26,10 +26,12 @@ nonisolated enum MCPMetadataTemplatePreview {
     // Template editor keys differ from the persisted editorial keys exposed by metadata reads.
     static let editorialKeys = ["creator": "creators", "organisationShownName": "organisationsShownNames",
                                 "organisationShownCode": "organisationsShownCodes", "sceneCode": "sceneCodes",
-                                "subjectCode": "subjectCodes"]
+                                "subjectCode": "subjectCodes", "mediaTopic": "mediaTopics",
+                                "genre": "genres", "imageSupplier": "imageSuppliers"]
     static let supportedFields = MCPIPTCPatchPreparation.scalarFields.union([
         "personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode",
         "webStatementOfRights", "digitalImageGUID", "dateCreated", "countryCode", "digitalSourceType", "urgency",
+        "mediaTopic", "genre", "imageSupplier",
     ])
     static let argumentKeys: Set<String> = ["templateID", "templateRevision", "mode", "path",
                                           "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"]
@@ -105,19 +107,48 @@ nonisolated enum MCPMetadataTemplatePreview {
                   let id = field["id"]?.stringValue, UUID(uuidString: id) != nil,
                   let key = field["fieldKey"]?.stringValue, supportedFields.contains(key),
                   let value = field["templateValue"]?.stringValue, value.utf8.count <= 32_768,
-                  !value.contains("{"), !value.contains("}"), !value.contains("(number)"), !value.contains("\0") else {
+                  isLiteralValue(value, for: key) else {
                 throw Failure.unsupportedTemplate
-            }
-            // Creator transport may encode text via JSON escapes; inspect decoded entries too.
-            if key == "creator" {
-                guard IPTCMetadata.creators(fromTransportValue: value).allSatisfy({
-                    !$0.contains("{") && !$0.contains("}") && !$0.contains("(number)") && !$0.contains("\0")
-                }) else { throw Failure.unsupportedTemplate }
             }
             // ContentView builds the same dictionary: the last field with a given key wins.
             result[key] = value
         }
         return result
+    }
+
+    /// JSON punctuation is permitted in structured transport, but every decoded string is
+    /// still literal. Inspect even ignored keys/values so escaped placeholders cannot cross
+    /// this boundary and acquire variable-processing semantics in a later implementation.
+    private static func isLiteralValue(_ value: String, for key: String) -> Bool {
+        func literal(_ text: String) -> Bool {
+            !text.contains("{") && !text.contains("}") && !text.contains("(number)") && !text.contains("\0")
+        }
+        if ["mediaTopic", "genre", "imageSupplier"].contains(key),
+           (try? JSONDecoder().decode(MCPJSONValue.self, from: Data(value.utf8))) != nil {
+            // Scan the transport's string tokens, not a decoded dictionary: duplicate
+            // object keys may discard an earlier value that still contains a variable.
+            // The complete JSON decode above establishes syntax; decoding each quoted
+            // token below also exposes Unicode escapes in every key and value.
+            let bytes = Array(value.utf8)
+            var index = 0
+            while index < bytes.count {
+                guard bytes[index] == 0x22 else { index += 1; continue }
+                let start = index
+                index += 1
+                while index < bytes.count {
+                    if bytes[index] == 0x5C { index += 2; continue }
+                    if bytes[index] == 0x22 { break }
+                    index += 1
+                }
+                guard index < bytes.count,
+                      let text = try? JSONDecoder().decode(String.self, from: Data(bytes[start...index])),
+                      literal(text) else { return false }
+                index += 1
+            }
+            return true
+        }
+        guard literal(value) else { return false }
+        return key != "creator" || IPTCMetadata.creators(fromTransportValue: value).allSatisfy(literal)
     }
 
     static func preview(request: Request, templateFields: [String: String], metadata: MCPJSONValue) throws -> MCPJSONValue {
@@ -127,9 +158,38 @@ nonisolated enum MCPMetadataTemplatePreview {
         let changes = try templateFields.keys.sorted().map { key -> MCPJSONValue in
             let editorialKey = editorialKeys[key] ?? key
             guard supportedFields.contains(key), let before = fields[editorialKey], let value = templateFields[key],
-                  !value.contains("{"), !value.contains("}"), !value.contains("(number)"), !value.contains("\0") else { throw Failure.invalidArguments }
+                  value.utf8.count <= 32_768, isLiteralValue(value, for: key) else { throw Failure.invalidArguments }
             let after: MCPJSONValue
-            if ["personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode"].contains(key) {
+            if ["mediaTopic", "genre", "imageSupplier"].contains(key) {
+                guard case .array = before else { throw Failure.invalidArguments }
+                let beforeData = try JSONEncoder().encode(before)
+                let afterData: Data
+                if key == "imageSupplier" {
+                    guard let existing = try? JSONDecoder().decode([EditorialImageSupplier].self, from: beforeData) else {
+                        throw Failure.invalidArguments
+                    }
+                    if let incoming = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
+                        let combined = request.mode == "append"
+                            ? EditorialImageSupplier.normalizedValues(existing + incoming) : incoming
+                        afterData = try JSONEncoder().encode(combined)
+                    } else {
+                        // Invalid supplier transport is ignored by applyTemplateFields.
+                        afterData = beforeData
+                    }
+                } else {
+                    guard let existing = try? JSONDecoder().decode([IPTCControlledVocabularyTerm].self, from: beforeData) else {
+                        throw Failure.invalidArguments
+                    }
+                    let incoming = IPTCControlledVocabularyTerm.terms(fromTemplateValue: value) {
+                        key == "mediaTopic" ? IPTCControlledVocabularyTerm.mediaTopic(metadataValue: $0)
+                            : IPTCControlledVocabularyTerm.genre(metadataValue: $0)
+                    }
+                    let combined = request.mode == "append"
+                        ? IPTCControlledVocabularyTerm.normalizedValues(existing + incoming) : incoming
+                    afterData = try JSONEncoder().encode(combined)
+                }
+                after = try JSONDecoder().decode(MCPJSONValue.self, from: afterData)
+            } else if ["personShown", "creator", "organisationShownName", "organisationShownCode", "sceneCode", "subjectCode"].contains(key) {
                 guard case .array(let current) = before, current.allSatisfy({ $0.stringValue != nil }) else {
                     throw Failure.invalidArguments
                 }

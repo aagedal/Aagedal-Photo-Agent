@@ -107,9 +107,87 @@ struct MCPMetadataTemplatePreviewTests {
         }
     }
 
+    @Test("Structured literals preserve production pairing, term identity and malformed-input behavior", arguments: ["append", "replace"])
+    @MainActor func structuredEditorSemantics(mode: String) throws {
+        let variants: [[String: String]] = [
+            ["mediaTopic": #"[{"cvId":"urn:custom:vocabulary","cvTermId":"urn:topic:existing","cvTermName":"Replacement name"},{"termIdentifier":"urn:topic:new","name":"New; topic","refinedAbout":"urn:detail:new"},{"termIdentifier":"urn:topic:new","name":"Duplicate"}]"#,
+             "genre": #"[{"termIdentifier":"urn:genre:new","name":"Feature, long-form"}]"#,
+             "imageSupplier": #"[{"identifier":" agency,001 ","name":"Agency, Inc."},{"identifier":"agency,001","name":"Agency, Inc."},{"identifier":"agency,001","name":"Other label"},{"name":" Name only "},{}]"#],
+            ["mediaTopic": "01000000; medtop:02000000,invalid,01000000",
+             "genre": "genre:Feature;https://cv.iptc.org/newscodes/genre/News,invalid genre",
+             "imageSupplier": "Invalid, flattened supplier"],
+            ["mediaTopic": "", "genre": "", "imageSupplier": ""],
+            ["mediaTopic": "[]", "genre": "[]", "imageSupplier": "[]"],
+            ["mediaTopic": #"[{"termIdentifier":false}]"#, "genre": #"[{"termIdentifier":false}]"#,
+             "imageSupplier": #"[{"identifier":false}]"#],
+        ]
+        func protocolFields(_ metadata: IPTCMetadata) throws -> [String: MCPJSONValue] {
+            let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata)) as? [String: Any])
+            return try #require(MCPEditorialFieldCatalog.read(from: ["metadata": object]))
+        }
+        for values in variants {
+            let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+            model.editingMetadata.mediaTopics = [IPTCControlledVocabularyTerm(
+                vocabularyIdentifier: "urn:custom:vocabulary", termIdentifier: "urn:topic:existing", name: "Original name")]
+            model.editingMetadata.genres = [IPTCControlledVocabularyTerm(termIdentifier: "urn:genre:existing")]
+            model.editingMetadata.imageSuppliers = [EditorialImageSupplier(identifier: "agency,001", name: "Agency, Inc.")]
+            let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+            var record = request.revisions
+            record["fields"] = .object(try protocolFields(model.editingMetadata))
+            record["hasXMPConflict"] = .bool(false)
+            let decoded = try MCPMetadataTemplatePreview.templateFields(template(values.map { ($0.key, $0.value) }))
+            let result = try MCPMetadataTemplatePreview.preview(request: request, templateFields: decoded, metadata: .object(record))
+            model.applyTemplateFields(values, append: mode == "append")
+            let expected = try protocolFields(model.editingMetadata)
+            guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+            #expect(changes.count == 3)
+            for change in changes {
+                let item = try #require(change.objectValue)
+                let key = try #require(item["field"]?.stringValue)
+                let templateKey = try #require(item["templateField"]?.stringValue)
+                #expect(item["after"] == expected[key], "Structured editor mismatch for \(key), mode \(mode)")
+                #expect(item["templateValue"] == values[templateKey].map(MCPJSONValue.string))
+                #expect(item["changed"] == .bool(item["before"] != item["after"]))
+            }
+        }
+    }
+
+    @Test("Structured JSON escapes cannot smuggle variable or NUL text into either preview entry point")
+    func rejectsStructuredVariables() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments())
+        var record = request.revisions
+        record["fields"] = .object(["mediaTopics": .array([]), "genres": .array([]), "imageSuppliers": .array([])])
+        record["hasXMPConflict"] = .bool(false)
+        for key in ["mediaTopic", "genre", "imageSupplier"] {
+            for value in [#"[{"name":"\u007bfilename\u007d"}]"#, #"[{"name":"\u0000"}]"#,
+                          #"[{"name":"\u0028number\u0029"}]"#, #"[{"unknown":{"nested":"{initials}"}}]"#,
+                          #"[{"\u007bfilename\u007d":"literal"}]"#,
+                          #"[{"name":"{filename}","name":"Literal","termIdentifier":"urn:topic:test"}]"#,
+                          #"[{"name":"Literal","name":"{filename}","termIdentifier":"urn:topic:test"}]"#,
+                          #"[{"name":"\u007bfilename\u007d","name":"Literal","termIdentifier":"urn:topic:test"}]"#,
+                          #"[{"name":"Literal","name":"\u007bfilename\u007d","termIdentifier":"urn:topic:test"}]"#,
+                          #"[{"name":"\u0000","name":"Literal","termIdentifier":"urn:topic:test"}]"#,
+                          #"[{"name":"Literal","name":"\u0000","termIdentifier":"urn:topic:test"}]"#,
+                          "{voiceMemoTranscript}"] {
+                #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                    try MCPMetadataTemplatePreview.templateFields(template([(key, value)]))
+                }
+                #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+                    try MCPMetadataTemplatePreview.preview(request: request, templateFields: [key: value], metadata: .object(record))
+                }
+            }
+        }
+        // Escaped quotes/backslashes cannot terminate the lexical scan early; genuine
+        // literal duplicate keys and Unicode still retain production decoder semantics.
+        for key in ["mediaTopic", "genre", "imageSupplier"] {
+            let value = #"[{"name":"Quoted \"text\", path \\ folder, \u00e9","name":"Literal","termIdentifier":"urn:topic:test"}]"#
+            #expect(try MCPMetadataTemplatePreview.templateFields(template([(key, value)]))[key] == value)
+        }
+    }
+
     @Test("Unsupported context-dependent templates fail closed")
     func rejectsUnsupported() throws {
-        for (key, value) in [("keywords", "news"), ("imageSupplier", "Byline"), ("unknown", "value"),
+        for (key, value) in [("keywords", "news"), ("creatorContactInfo", "Byline"), ("unknown", "value"),
                              ("title", "{filename}"), ("title", "(number)"), ("title", "{unknown}"), ("title", "{initials}"),
                              ("title", "{voiceMemoTranscript}"), ("title", "{field:credit}"),
                              ("creator", "{persons}"), ("creator", #"["\u007bfilename\u007d"]"#), ("dateCreated", "{date}"), ("title", "\0")] {
@@ -165,7 +243,8 @@ struct MCPMetadataTemplatePreviewTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let templates = root.appendingPathComponent("Templates")
         try FileManager.default.createDirectory(at: templates, withIntermediateDirectories: false)
-        let data = try template([("title", "New")])
+        let supplierValue = #"[{"identifier":"agency,001","name":"Agency, Inc."}]"#
+        let data = try template([("title", "New"), ("imageSupplier", supplierValue)])
         let object = try #require(JSONDecoder().decode(MCPJSONValue.self, from: data).objectValue)
         let id = try #require(object["id"]?.stringValue)
         let templateURL = templates.appendingPathComponent(id + ".json")
@@ -198,7 +277,10 @@ struct MCPMetadataTemplatePreviewTests {
         #expect(result.objectValue?["isError"] == .bool(false))
         let preview = try #require(result.objectValue?["structuredContent"]?.objectValue)
         #expect(preview["templateRevision"] == revision)
-        #expect(preview["changes"] == .array([.object(["field": .string("title"), "before": .string("Embedded"),
+        #expect(preview["changes"] == .array([.object([
+            "field": .string("imageSuppliers"), "templateField": .string("imageSupplier"), "before": .array([]),
+            "after": .array([.object(["identifier": .string("agency,001"), "name": .string("Agency, Inc.")])]),
+            "templateValue": .string(supplierValue), "changed": .bool(true)]), .object(["field": .string("title"), "before": .string("Embedded"),
             "after": .string("Embedded New"), "templateValue": .string("New"), "changed": .bool(true)])]))
         #expect(try Data(contentsOf: photo) == bytes as Data)
         #expect(try Data(contentsOf: templateURL) == data)
