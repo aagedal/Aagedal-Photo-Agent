@@ -232,6 +232,33 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(try Data(contentsOf: fixture.journal) == corrupt)
     }
 
+    @Test("Restoration progress is monotonic and cannot be relabeled as publication or completion", arguments: [4, 5, 6, 8])
+    func restorationProgressVersion(version: Int) throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        let installed = MCPIPTCPatchXMPRecoveryStore.InstalledCarriers(xmpRevision: "installed-xmp", appRevision: nil)
+        try fixture.store.recordInstalled(material, installed: installed, verify: {})
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordRestored(material, restored: .init(xmpRevision: "restored", appRevision: "app"), complete: true, verify: {})
+        }
+        try fixture.store.recordRestored(material, restored: .init(xmpRevision: "restored", appRevision: nil), verify: {})
+        let retained = try Data(contentsOf: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordRestored(material, restored: .init(xmpRevision: "different", appRevision: nil), verify: {})
+        }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try fixture.store.recordInstalled(material, installed: installed, verify: {})
+        }
+        #expect(try Data(contentsOf: fixture.journal) == retained)
+        var envelope = try #require(JSONSerialization.jsonObject(with: retained) as? [String: Any])
+        envelope["version"] = version
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadRecoveryState() }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadRestoredDisposition() }
+    }
+
     @Test("Directory durability failure refuses publication and retry syncs existing ancestors")
     func directorySyncFailure() throws {
         let fixture = try Fixture()
@@ -305,9 +332,104 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
                 appSidecarRevision: snapshot.appSidecarRevision,
                 authorizationRevision: try #require(try fixture.facade.authorizationStore.load().authorizationRevision)),
             original: snapshot.xmpBytes, candidate: Data("candidate".utf8),
-            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: Data("history".utf8)),
+            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: Data(#"{"sourceFile":"photo.jpg","schemaVersion":1,"pendingChanges":false}"#.utf8)),
             publicationApprovalID: UUID(), sourcePath: legacy ? nil : snapshot.target.url.path)
         return (store, material)
+    }
+
+    private func partiallyPublished(_ fixture: Fixture, installApp: Bool) throws
+        -> (MCPIPTCPatchXMPRecoveryStore, MCPIPTCPatchXMPRecoveryStore.Material) {
+        let (store, material) = try staged(fixture)
+        let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        defer { lease.release() }
+        let original = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+        try fixture.facade.installXMPSidecar(data: material.candidate, expected: original, reservation: lease,
+            afterInstall: { after in
+                try store.recordInstalled(material, installed: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil), verify: {})
+            })
+        if installApp {
+            let current = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+            try fixture.facade.installPendingDraft(data: try #require(material.appSidecarRecovery?.candidate), expected: current,
+                reservation: lease, afterInstall: { after in
+                    try store.recordInstalled(material, installed: .init(xmpRevision: after.xmpSidecarRevision,
+                        appRevision: after.appSidecarRevision), verify: {})
+                })
+        }
+        return (store, material)
+    }
+
+    @Test("Explicit internal restoration returns exact originals and records a separate disposition",
+        arguments: [false, true], [false, true])
+    func restoresPartialPublication(originalsPresent: Bool, installApp: Bool) async throws {
+        let fixture = try Fixture(pending: originalsPresent, existingXMP: originalsPresent)
+        let original = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let (store, material) = try partiallyPublished(fixture, installApp: installApp)
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        #expect(!review.canResolveUnchanged)
+        try await service.restorePartialPublication(review)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceRevision == original.sourceRevision)
+        #expect(after.xmpBytes == original.xmpBytes)
+        #expect(after.appSidecarBytes == original.appSidecarBytes)
+        #expect(try store.load() == nil)
+        #expect(try store.loadRestoredDisposition() == material)
+        #expect(try store.loadVerifiedDisposition() == nil)
+        #expect(try store.loadUnchangedDisposition() == nil)
+        await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
+    }
+
+    @Test("Restoration resumes from a durable XMP receipt and blocks publication receipt replay")
+    func resumesRestoration() async throws {
+        let fixture = try Fixture(pending: true)
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        let installed = try #require(try store.loadInstalledCarriers())
+        let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        let current = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+        try fixture.facade.installXMPSidecar(data: try #require(material.original), expected: current, reservation: lease,
+            afterInstall: { after in
+                try store.recordRestored(material, restored: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil), verify: {})
+            })
+        lease.release()
+        #expect(throws: (any Error).self) { try store.recordInstalled(material, installed: installed, verify: {}) }
+        #expect(throws: (any Error).self) { try store.recordVerified(material, verify: {}) }
+        let reopened = MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture))
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: reopened, facade: fixture.facade)
+        let restoredXMP = try #require(try reopened.loadRecoveryState()?.restored?.xmpRevision)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        #expect(try reopened.loadRestoredDisposition() == material)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.xmpSidecarRevision == restoredXMP)
+    }
+
+    @Test("Restoration interrupted before its durable receipt remains blocked")
+    func unreceiptedRestoration() throws {
+        let fixture = try Fixture()
+        let (store, material) = try partiallyPublished(fixture, installApp: false)
+        let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        let current = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+        try fixture.facade.installXMPSidecar(data: try #require(material.original), expected: current, reservation: lease)
+        lease.release()
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(!review.canRestorePartialPublication)
+        #expect(!review.canResolveUnchanged)
+        #expect(try store.load() == material)
+    }
+
+    @Test("Restoration refuses external same-byte replacements after review")
+    func refusesStaleRestoration() async throws {
+        let fixture = try Fixture()
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        try material.candidate.write(to: URL(fileURLWithPath: material.targetPath), options: .atomic)
+        await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
+        #expect(try #require(try service.inspect()).canRestorePartialPublication == false)
+        #expect(try store.load() == material)
     }
 
     @Test("Unchanged resolution retains a distinct receipt and never reports publication", arguments: [false, true])
@@ -515,4 +637,137 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
         #expect(try store.load() == material)
     }
 
+}
+
+@Suite("Native restoration confirmation binding")
+@MainActor
+struct AutomationRecoveryModelTests {
+    private func review(_ fixture: MCPIPTCPatchXMPPreflightServiceTests.Fixture) throws -> MCPIPTCPatchXMPRecoveryService.Review {
+        let snapshot = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let canonical = try #require(realpath(fixture.root.path, nil))
+        defer { free(canonical) }
+        let store = MCPIPTCPatchXMPRecoveryStore(directory: URL(fileURLWithPath: String(cString: canonical)).appendingPathComponent("recovery"))
+        let material = try store.stage(id: UUID(), planID: fixture.planID,
+            targetPath: snapshot.target.url.deletingPathExtension().appendingPathExtension("xmp").path,
+            binding: .init(sourceRevision: snapshot.sourceRevision, xmpSidecarRevision: snapshot.xmpSidecarRevision,
+                appSidecarRevision: snapshot.appSidecarRevision,
+                authorizationRevision: try #require(try fixture.facade.authorizationStore.load().authorizationRevision)),
+            original: snapshot.xmpBytes, candidate: Data("candidate".utf8),
+            appSidecarRecovery: .init(original: snapshot.appSidecarBytes, candidate: Data("history".utf8)),
+            publicationApprovalID: UUID(), sourcePath: snapshot.target.url.path)
+        let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        defer { lease.release() }
+        let original = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+        try fixture.facade.installXMPSidecar(data: material.candidate, expected: original, reservation: lease,
+            afterInstall: { after in
+                try store.recordInstalled(material, installed: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil), verify: {})
+            })
+        lease.release()
+        return try #require(try MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade).inspect())
+    }
+
+    private actor Service: AutomationRecoveryServing {
+        let review: MCPIPTCPatchXMPRecoveryService.Review
+        var calls: [UUID] = []
+        var fails = false
+        var delays = false
+        var pending: CheckedContinuation<Void, Never>?
+        var wasCancelled = false
+        init(_ review: MCPIPTCPatchXMPRecoveryService.Review) { self.review = review }
+        func inspectRecovery(photoPath: String?) async throws -> MCPIPTCPatchXMPRecoveryService.Review? { review }
+        func resolveUnchangedRecovery(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {}
+        func configure(fails: Bool = false, delays: Bool = false) { self.fails = fails; self.delays = delays }
+        func restorePartialPublication(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
+            calls.append(review.materialID)
+            if delays { await withCheckedContinuation { pending = $0 } }
+            wasCancelled = Task.isCancelled
+            try Task.checkCancellation()
+            if fails { throw MCPIPTCPatchXMPRecoveryService.Failure.staleReview }
+        }
+        func resume() { pending?.resume(); pending = nil }
+        func started() -> Bool { pending != nil }
+    }
+
+    @Test("Restoration requires the current explicit confirmation and runs once")
+    func explicitConfirmation() async throws {
+        let fixture = try MCPIPTCPatchXMPPreflightServiceTests.Fixture()
+        let checked = try review(fixture)
+        let service = Service(checked)
+        let model = AutomationRecoveryModel(service: service)
+        await model.inspect()
+        await model.confirmRestoration(UUID())
+        #expect(await service.calls.isEmpty)
+        model.requestRestoration()
+        let cancelled = try #require(model.restorationConfirmation?.id)
+        model.cancelRestoration()
+        await model.confirmRestoration(cancelled)
+        #expect(await service.calls.isEmpty)
+        #expect(model.review != nil)
+        model.requestRestoration()
+        let accepted = try #require(model.restorationConfirmation?.id)
+        await model.confirmRestoration(accepted)
+        await model.confirmRestoration(accepted)
+        #expect(await service.calls == [checked.materialID])
+        #expect(model.review == nil)
+        #expect(model.restorationConfirmation == nil)
+        #expect(model.message?.hasPrefix("Original metadata restored.") == true)
+    }
+
+    @Test("Reinspection, path edits and clearing invalidate pending confirmation", arguments: ["inspect", "path", "clear"])
+    func invalidation(action: String) async throws {
+        let fixture = try MCPIPTCPatchXMPPreflightServiceTests.Fixture()
+        let service = Service(try review(fixture))
+        let model = AutomationRecoveryModel(service: service)
+        await model.inspect()
+        model.requestRestoration()
+        let old = try #require(model.restorationConfirmation?.id)
+        switch action {
+        case "inspect": await model.inspect()
+        case "path": model.legacyPhotoPath = "/different/photo.jpg"
+        default: model.clear()
+        }
+        #expect(model.restorationConfirmation == nil)
+        await model.confirmRestoration(old)
+        #expect(await service.calls.isEmpty)
+    }
+
+    @Test("Failed restoration discards consent and requires fresh inspection")
+    func staleFailure() async throws {
+        let fixture = try MCPIPTCPatchXMPPreflightServiceTests.Fixture()
+        let service = Service(try review(fixture))
+        await service.configure(fails: true)
+        let model = AutomationRecoveryModel(service: service)
+        await model.inspect()
+        model.requestRestoration()
+        let id = try #require(model.restorationConfirmation?.id)
+        await model.confirmRestoration(id)
+        #expect(model.review == nil)
+        #expect(model.restorationConfirmation == nil)
+        #expect(model.message?.contains("inspect retained recovery again") == true)
+        model.requestRestoration()
+        #expect(model.restorationConfirmation == nil)
+        await model.confirmRestoration(id)
+        #expect(await service.calls.count == 1)
+    }
+
+    @Test("Clearing in-flight restoration cancels work and ignores late completion")
+    func clearInFlight() async throws {
+        let fixture = try MCPIPTCPatchXMPPreflightServiceTests.Fixture()
+        let service = Service(try review(fixture))
+        await service.configure(delays: true)
+        let model = AutomationRecoveryModel(service: service)
+        await model.inspect()
+        model.requestRestoration()
+        let id = try #require(model.restorationConfirmation?.id)
+        let task = Task { await model.confirmRestoration(id) }
+        while !(await service.started()) { await Task.yield() }
+        model.clear()
+        await service.resume()
+        await task.value
+        #expect(await service.wasCancelled)
+        #expect(model.review == nil)
+        #expect(model.restorationConfirmation == nil)
+        #expect(model.message == nil)
+        #expect(!model.isLoading)
+    }
 }

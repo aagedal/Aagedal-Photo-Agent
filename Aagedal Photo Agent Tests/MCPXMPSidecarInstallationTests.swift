@@ -141,4 +141,81 @@ struct MCPXMPSidecarInstallationTests {
         #expect(try Data(contentsOf: outside) == original)
         try fixture.assertNoStaging()
     }
+    private var appCandidate: Data {
+        Data(#"{"sourceFile":"frame.jpg","schemaVersion":1,"pendingChanges":false}"#.utf8)
+    }
+
+    @Test("Recovery removal returns an originally absent carrier to absence", arguments: [false, true])
+    func removesOriginallyAbsentCarrier(app: Bool) throws {
+        let fixture = try Fixture()
+        let authority = try #require(try fixture.authority.load().authorizationRevision)
+        if app {
+            try fixture.facade.installPendingDraft(data: appCandidate, expected: fixture.snapshot, reservation: fixture.reservation)
+        } else { try fixture.install() }
+        let installed = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: fixture.reservation) { $0 }
+        try fixture.facade.removeOriginallyAbsentCarrier(app ? .appHistory : .xmp, original: fixture.snapshot,
+            candidate: app ? appCandidate : fixture.candidate,
+            installedRevision: app ? installed.appSidecarRevision : installed.xmpSidecarRevision, authorizationRevision: authority,
+            expected: installed, reservation: fixture.reservation, afterRemoval: { after in
+                #expect(after.sourceRevision == fixture.snapshot.sourceRevision)
+                #expect(after.xmpSidecarRevision == fixture.snapshot.xmpSidecarRevision)
+                #expect(after.appSidecarRevision == fixture.snapshot.appSidecarRevision)
+            })
+        #expect(try Data(contentsOf: fixture.photo) == fixture.snapshot.sourceBytes)
+    }
+
+    @Test("Recovery removal refuses same-byte generation replacement", arguments: [false, true])
+    func removalRefusesReplacement(app: Bool) throws {
+        let fixture = try Fixture()
+        let authority = try #require(try fixture.authority.load().authorizationRevision)
+        let destination: URL
+        let candidate = app ? appCandidate : fixture.candidate
+        if app {
+            destination = try fixture.facade.installPendingDraft(data: candidate, expected: fixture.snapshot, reservation: fixture.reservation)
+        } else { destination = try fixture.install() }
+        let installed = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: fixture.reservation) { $0 }
+        #expect(throws: (any Error).self) {
+            try fixture.facade.removeOriginallyAbsentCarrier(app ? .appHistory : .xmp, original: fixture.snapshot,
+                candidate: candidate, installedRevision: app ? installed.appSidecarRevision : installed.xmpSidecarRevision, authorizationRevision: authority,
+                expected: installed, reservation: fixture.reservation,
+                beforeRemoval: { try candidate.write(to: destination, options: .atomic) },
+                afterRemoval: { _ in Issue.record("Replacement must not be removed") })
+        }
+        #expect(try Data(contentsOf: destination) == candidate)
+    }
+
+    @Test("Recovery removal rechecks source, authorization and reservation", arguments: [0, 1, 2])
+    func removalRefusesChangedAuthority(change: Int) throws {
+        let fixture = try Fixture()
+        let authority = try #require(try fixture.authority.load().authorizationRevision)
+        try fixture.install()
+        let installed = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: fixture.reservation) { $0 }
+        #expect(throws: (any Error).self) {
+            try fixture.facade.removeOriginallyAbsentCarrier(.xmp, original: fixture.snapshot,
+                candidate: fixture.candidate, installedRevision: installed.xmpSidecarRevision, authorizationRevision: authority,
+                expected: installed, reservation: fixture.reservation, beforeRemoval: {
+                    switch change {
+                    case 0: try fixture.snapshot.sourceBytes.write(to: fixture.photo, options: .atomic)
+                    case 1: try fixture.authority.setEnabled(false)
+                    default: fixture.reservation.release()
+                    }
+                }, afterRemoval: { _ in Issue.record("Changed authority must refuse removal") })
+        }
+        #expect(try Data(contentsOf: fixture.xmp) == fixture.candidate)
+    }
+
+    @Test("Recovery removal refuses carriers that originally existed")
+    func removalRefusesPresentOriginal() throws {
+        let fixture = try Fixture(existing: true)
+        let authority = try #require(try fixture.authority.load().authorizationRevision)
+        try fixture.install()
+        let installed = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: fixture.reservation) { $0 }
+        #expect(throws: (any Error).self) {
+            try fixture.facade.removeOriginallyAbsentCarrier(.xmp, original: fixture.snapshot,
+                candidate: fixture.candidate, installedRevision: installed.xmpSidecarRevision, authorizationRevision: authority,
+                expected: installed, reservation: fixture.reservation, afterRemoval: { _ in })
+        }
+        #expect(try Data(contentsOf: fixture.xmp) == fixture.candidate)
+    }
+
 }

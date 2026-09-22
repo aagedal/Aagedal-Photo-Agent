@@ -47,6 +47,42 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         let appRevision: String?
     }
 
+    struct RestoredCarriers: Codable, Sendable, Equatable {
+        let xmpRevision: String
+        let appRevision: String?
+    }
+
+    private struct RestorationProgress: Codable {
+        let material: Material
+        let installed: InstalledCarriers
+        let restored: RestoredCarriers
+        private enum CodingKeys: String, CodingKey { case material = "restorationMaterial", installed, restored }
+    }
+
+    /// Progress is committed only after a rooted mutation verified its exact generation.
+    /// An interruption before this receipt remains unresolved rather than trusting bytes alone.
+    func recordRestored(_ expected: Material, restored: RestoredCarriers,
+                        complete: Bool = false, verify: () throws -> Void) throws {
+        try persistence.transaction { bytes in
+            guard let bytes else { throw Failure.verification }
+            let record = try decodeRecord(bytes)
+            guard !record.resolved, record.material == expected, let installed = record.installed,
+                  !restored.xmpRevision.isEmpty, restored.xmpRevision.utf8.count <= 1024,
+                  restored.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true,
+                  complete == (restored.appRevision != nil) else { throw Failure.verification }
+            if let previous = record.restored {
+                guard previous.xmpRevision == restored.xmpRevision,
+                      previous.appRevision == nil || previous == restored else { throw Failure.verification }
+            } else {
+                guard restored.appRevision == nil else { throw Failure.verification }
+            }
+            try verify()
+            let encoder = JSONEncoder()
+            let payload = try encoder.encode(RestorationProgress(material: expected, installed: installed, restored: restored))
+            return ((), try encoder.encode(Envelope(version: complete ? 8 : 7, payload: payload, sha256: Self.digest(payload))))
+        }
+    }
+
     private struct PublicationProgress: Codable {
         let material: Material
         let installed: InstalledCarriers
@@ -73,7 +109,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         try persistence.transaction { bytes in
             guard let bytes else { throw Failure.verification }
             let record = try decodeRecord(bytes)
-            guard !record.resolved, record.material == expected,
+            guard !record.resolved, record.restored == nil, record.material == expected,
                   expected.appSidecarRecovery?.candidate != nil,
                   !installed.xmpRevision.isEmpty, installed.xmpRevision.utf8.count <= 1024,
                   installed.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true,
@@ -149,10 +185,10 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         }
     }
 
-    func loadRecoveryState() throws -> (material: Material, installed: InstalledCarriers?)? {
+    func loadRecoveryState() throws -> (material: Material, installed: InstalledCarriers?, restored: RestoredCarriers?)? {
         try persistence.transaction(readOnly: true) { bytes in
             let record = try bytes.map(decodeRecord)
-            let state = record.flatMap { $0.resolved ? nil : (material: $0.material, installed: $0.installed) }
+            let state = record.flatMap { $0.resolved ? nil : (material: $0.material, installed: $0.installed, restored: $0.restored) }
             return (state, bytes ?? Data())
         }
     }
@@ -175,6 +211,14 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         }
     }
 
+    /// Successful restoration is a separate disposition, never publication success.
+    func loadRestoredDisposition() throws -> Material? {
+        try persistence.transaction(readOnly: true) { bytes in
+            let record = try bytes.map(decodeRecord)
+            return (record?.resolved == true && record?.restored != nil ? record?.material : nil, bytes ?? Data())
+        }
+    }
+
     /// Called only in the retained rooted carrier transaction. The verifier must recheck
     /// identities, authorization and both installed candidates while the journal lock is held.
     /// Failed verification leaves the exact unresolved journal untouched.
@@ -182,7 +226,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         try persistence.transaction { bytes in
             guard let bytes else { throw Failure.verification }
             let record = try decodeRecord(bytes)
-            guard !record.resolved, record.material == expected,
+            guard !record.resolved, record.restored == nil, record.material == expected,
                   expected.appSidecarRecovery?.candidate != nil else { throw Failure.verification }
             try verify()
             let encoder = JSONEncoder()
@@ -222,15 +266,22 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         }
     }
 
-    private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool, unchanged: Bool, resolved: Bool, installed: InstalledCarriers?) {
+    private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool, unchanged: Bool, resolved: Bool, installed: InstalledCarriers?, restored: RestoredCarriers?) {
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
-            guard [1, 2, 3, 4, 5, 6].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
+            guard [1, 2, 3, 4, 5, 6, 7, 8].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
                 throw Failure.corruptJournal
             }
             let material: Material
             var installed: InstalledCarriers?
-            if envelope.version == 6 {
+            var restored: RestoredCarriers?
+            if envelope.version >= 7 {
+                let progress = try JSONDecoder().decode(RestorationProgress.self, from: envelope.payload)
+                material = progress.material; installed = progress.installed; restored = progress.restored
+                guard !progress.restored.xmpRevision.isEmpty, progress.restored.xmpRevision.utf8.count <= 1024,
+                      progress.restored.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true,
+                      (envelope.version == 8) == (progress.restored.appRevision != nil) else { throw Failure.corruptJournal }
+            } else if envelope.version == 6 {
                 let progress = try JSONDecoder().decode(PublicationProgress.self, from: envelope.payload)
                 material = progress.material
                 installed = progress.installed
@@ -255,7 +306,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
                       installed.appRevision != material.binding.appSidecarRevision else { throw Failure.corruptJournal }
             }
             return (material, envelope.version == 4, envelope.version == 5,
-                envelope.version == 4 || envelope.version == 5, installed)
+                envelope.version == 4 || envelope.version == 5 || envelope.version == 8, installed, restored)
         } catch { throw Failure.corruptJournal }
     }
 

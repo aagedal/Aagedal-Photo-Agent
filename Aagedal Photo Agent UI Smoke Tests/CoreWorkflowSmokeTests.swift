@@ -263,6 +263,94 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationRestoresInterruptedXMPAfterExplicitConfirmation() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false)
+    }
+
+    @MainActor
+    func testAutomationRestorationRefusesReplacedXMPAfterInspection() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: true)
+    }
+
+    @MainActor
+    private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool) throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+            xmpPublicationInterruption: true)
+        app.typeKey(",", modifierFlags: .command)
+        let automation = app.staticTexts["Automation"]
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let original = try Data(contentsOf: photo)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        input.click()
+        input.typeText(try XCTUnwrap(manifest["planID"]))
+        app.buttons["automation.inspectPatchPlan"].click()
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
+        acknowledgement.click()
+        app.buttons["automation.approveXMPCandidate"].click()
+        let publish = app.buttons["automation.publishApprovedXMP"]
+        XCTAssertTrue(publish.waitForExistence(timeout: 8))
+        publish.click()
+        XCTAssertTrue(app.staticTexts["automation.patchDraftStatus"].waitForExistence(timeout: 12))
+        let published = try Data(contentsOf: xmp)
+        XCTAssertFalse(published.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        app.buttons["Clear Review"].click()
+        let inspect = app.buttons["automation.inspectRecovery"]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        inspect.click()
+        let restore = app.buttons["automation.restoreOriginalMetadata"]
+        XCTAssertTrue(restore.waitForExistence(timeout: 8))
+        XCTAssertTrue(restore.isEnabled)
+        let journal = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
+        let staged = try Data(contentsOf: journal)
+        restore.click()
+        let confirmation = app.sheets.firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].click()
+        XCTAssertEqual(try Data(contentsOf: xmp), published)
+        XCTAssertEqual(try Data(contentsOf: journal), staged)
+        restore.click()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        if replaceAfterInspection { try published.write(to: xmp, options: .atomic) }
+        confirmation.buttons["Restore Original Metadata"].click()
+        let status = app.staticTexts["automation.recoveryStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 12))
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        if replaceAfterInspection {
+            XCTAssertEqual(try Data(contentsOf: journal), staged)
+            XCTAssertEqual(try Data(contentsOf: xmp), published)
+            inspect.click()
+            XCTAssertTrue(restore.waitForExistence(timeout: 8))
+            XCTAssertFalse(restore.isEnabled)
+        } else {
+            XCTAssertTrue(status.label.hasPrefix("Original metadata restored.") ||
+                (status.value as? String)?.hasPrefix("Original metadata restored.") == true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: journal)) as? [String: Any])
+            XCTAssertEqual(envelope["version"] as? Int, 8)
+        }
+        let finalJournal = try Data(contentsOf: journal)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        XCTAssertEqual(try Data(contentsOf: journal), finalJournal)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertEqual(FileManager.default.fileExists(atPath: xmp.path), replaceAfterInspection)
+    }
+
+    @MainActor
     func testAutomationXMPPublicationPersistsAndRecordsVerifiedOutcome() throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
@@ -1298,7 +1386,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionProvider: String = "appleSpeech",
         patchReviewFolder: URL? = nil,
         operationRecovery: Bool = false,
-        xmpStagingInterruption: Bool = false
+        xmpStagingInterruption: Bool = false,
+        xmpPublicationInterruption: Bool = false
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -1326,6 +1415,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-patch-review-folder", patchReviewFolder)
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
         if xmpStagingInterruption { app.launchArguments.append("--ui-test-xmp-staging-interruption") }
+        if xmpPublicationInterruption { app.launchArguments.append("--ui-test-xmp-publication-interruption") }
         app.launch()
         reopenMainWindowIfNeeded()
     }

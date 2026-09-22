@@ -30,6 +30,7 @@ struct UITestLaunchConfiguration {
     let patchReviewRequested: Bool
     let operationRecoveryRequested: Bool
     let xmpStagingInterruptionRequested: Bool
+    let xmpPublicationInterruptionRequested: Bool
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -54,6 +55,7 @@ struct UITestLaunchConfiguration {
         whisperDefaultsSuite = isEnabled ? value(after: "--ui-test-whisper-defaults-suite") : nil
         operationRecoveryRequested = isEnabled && arguments.contains("--ui-test-operation-recovery")
         xmpStagingInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-staging-interruption")
+        xmpPublicationInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-publication-interruption")
         patchReviewRequested = isEnabled && arguments.contains("--ui-test-patch-review-folder")
         patchReviewFolderURL = isEnabled
             ? value(after: "--ui-test-patch-review-folder").map { URL(fileURLWithPath: $0) }

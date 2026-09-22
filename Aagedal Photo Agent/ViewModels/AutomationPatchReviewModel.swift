@@ -135,6 +135,13 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
             .resolveUnchanged(review)
     }
 
+    func restorePartialPublication(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
+        try Task.checkCancellation()
+        let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
+        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+            .restorePartialPublication(review)
+    }
+
     func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
         try await MCPIPTCPatchXMPPreflightService(plans: plans, facade: facade).inspect(planID: planID)
     }
