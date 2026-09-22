@@ -136,16 +136,32 @@ actor WhisperModelDistributionStateStore {
     /// Existing corrupt or unsafe content is refused rather than overwritten.
     func restoreMissingCurrentModel(from source: URL, expectedGeneration: UUID) async throws -> URL {
         try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
-            try await self.restoreMissingBytes(from: source, expectedGeneration: expectedGeneration)
+            try await self.restoreMissingBytes(from: source, expectedGeneration: expectedGeneration, rollback: false)
         }
     }
 
-    private func restoreMissingBytes(from source: URL, expectedGeneration: UUID) throws -> URL {
+    /// Repairs the retained rollback candidate without selecting it or consuming rollback.
+    /// The caller must still explicitly request rollBackInstalled after restoration.
+    func restoreMissingRollbackModel(from source: URL, expectedGeneration: UUID) async throws -> URL {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.restoreMissingBytes(from: source, expectedGeneration: expectedGeneration, rollback: true)
+        }
+    }
+
+    private func restoreMissingBytes(from source: URL, expectedGeneration: UUID, rollback: Bool) throws -> URL {
         let fd = try openTransaction()
         defer { closeTransaction(fd) }
         guard let (document, state, _) = try read(directoryFD: fd),
               document.generation == expectedGeneration else { throw StoreError.staleGeneration }
-        let receipt = state.current
+        let receipt: WhisperModelDescriptorReceipt
+        if rollback {
+            guard let candidate = state.rollbackCandidate else {
+                throw WhisperModelDistributionTrust.TrustError.unavailableRollback
+            }
+            receipt = candidate
+        } else {
+            receipt = state.current
+        }
         let name = modelFilename(receipt)
         var existing = stat()
         if fstatat(fd, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {

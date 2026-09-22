@@ -39,6 +39,75 @@ struct WhisperModelDistributionStateStoreTests {
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
     }
 
+    @Test("Missing rollback bytes restore without selecting or consuming the retained release")
+    func restoreMissingRollbackCandidate() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let firstBytes = Data("first release".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let candidateURL = try #require(await store.installedURL())
+        let secondBytes = Data("second release".utf8)
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source, expectedGeneration: first.generation)
+        let currentURL = try #require(await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try FileManager.default.removeItem(at: candidateURL)
+        try firstBytes.write(to: source)
+        let reopened = try fixture.store()
+        #expect(try await reopened.restoreMissingRollbackModel(from: source, expectedGeneration: second.generation) == candidateURL)
+        #expect(try Data(contentsOf: candidateURL) == firstBytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await reopened.installedURL() == currentURL)
+        try FileManager.default.removeItem(at: source)
+        #expect(try await reopened.restoreMissingRollbackModel(from: source, expectedGeneration: second.generation) == candidateURL)
+        let rolledBack = try await reopened.rollBackInstalled(expectedGeneration: second.generation)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        #expect(try await reopened.installedURL() == candidateURL)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.unavailableRollback) {
+            try await reopened.restoreMissingRollbackModel(from: source, expectedGeneration: rolledBack.generation)
+        }
+    }
+
+    @Test("Rollback restoration rejects absent candidates, stale generations and incorrect bytes")
+    func restoreMissingRollbackRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let bytes = Data("first".utf8)
+        try bytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let candidateURL = try #require(await store.installedURL())
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.unavailableRollback) {
+            try await store.restoreMissingRollbackModel(from: source, expectedGeneration: first.generation)
+        }
+        let second = try await store.accept(fixture.receipt(2), expectedGeneration: first.generation)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try FileManager.default.removeItem(at: candidateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.restoreMissingRollbackModel(from: source, expectedGeneration: first.generation)
+        }
+        try Data("wrong".utf8).write(to: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.restoreMissingRollbackModel(from: source, expectedGeneration: second.generation)
+        }
+        #expect(!FileManager.default.fileExists(atPath: candidateURL.path))
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path).allSatisfy { !$0.hasSuffix(".model-staging") })
+        // Corrupt existing content remains untouched even when correct source bytes return.
+        try Data("wrong".utf8).write(to: candidateURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: candidateURL.path)
+        try bytes.write(to: source)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.restoreMissingRollbackModel(from: source, expectedGeneration: second.generation)
+        }
+        #expect(try Data(contentsOf: candidateURL) == Data("wrong".utf8))
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+    }
+
     @Test("Missing current bytes restore after rollback without changing durable authority")
     func restoreMissingCurrentAfterRollback() async throws {
         let fixture = try Fixture()
