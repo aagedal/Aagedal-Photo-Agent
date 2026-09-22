@@ -73,6 +73,63 @@ struct MCPMetadataTemplatePreviewTests {
         }
     }
 
+    @Test("Retained GPS coordinates match production interpolation and stay read only", arguments: ["append", "replace"])
+    func coordinateVariables(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        let raw = "GPS {gps}; latitude {latitude}; longitude {longitude}; again {gps}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .string("Before"),
+            "latitude": .number(59.9123456), "longitude": .number(-10.7523126)])
+        var metadata = IPTCMetadata()
+        metadata.latitude = 59.9123456
+        metadata.longitude = -10.7523126
+        let resolved = PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        let change = try #require(changes.first?.objectValue)
+        #expect(change["resolvedTemplateValue"] == .string(resolved))
+        #expect(change["resolvedVariables"] == .array([.string("gps"), .string("latitude"), .string("longitude")]))
+        #expect(change["after"] == .string(mode == "append" ? "Before " + resolved : resolved))
+        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-coordinate") == true)
+        #expect(result.objectValue?["commitAvailable"] == .bool(false))
+
+        record["fields"] = .object(["title": .null, "latitude": .number(59.0), "longitude": .null])
+        let missing = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let missingChanges) = missing.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        #expect(missingChanges.first?.objectValue?["resolvedTemplateValue"] ==
+                .string("GPS ; latitude 59.000000; longitude ; again "))
+    }
+
+    @Test("GPS preview rejects malformed retained coordinates and unsupported interpolation")
+    func coordinateRefusals() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        for malformed in [MCPJSONValue.string("59"), .bool(true), .array([]), .number(.infinity)] {
+            record["fields"] = .object(["title": .null, "latitude": malformed, "longitude": .number(10)])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": "{gps}"], metadata: .object(record))
+            }
+        }
+        for raw in ["{gps:city}", "{gps:country}", "{latitude} {date}"] {
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+            }
+        }
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.templateFields(template([("credit", "{gps}")]))
+        }
+    }
+
     @Test("Contextual list shorthands refuse changed, malformed, and second-order sources")
     func contextualListRefusals() throws {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
@@ -101,7 +158,7 @@ struct MCPMetadataTemplatePreviewTests {
             try MCPMetadataTemplatePreview.preview(request: request,
                 templateFields: ["title": "{keywords}{keywords}"], metadata: .object(record))
         }
-        for raw in ["{persons} {initials}", "{keywords} {gps}", "{Persons}"] {
+        for raw in ["{persons} {initials}", "{keywords} {gps:city}", "{Persons}"] {
             #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
                 try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
             }

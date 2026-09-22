@@ -17,7 +17,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. {filename}, {persons}, {keywords}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keyword template fields, and other structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. {filename}, {persons}, {keywords}, {gps}, {latitude}, {longitude}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keyword template fields, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -53,6 +53,7 @@ nonisolated enum MCPMetadataTemplatePreview {
     static var allFieldVariableSources: Set<String> { fieldVariableSources.union(listFieldVariableSources) }
     static var fieldTokens: [String] { allFieldVariableSources.sorted().map { "{field:\($0)}" } }
     static let sequenceTokens = ["{seq}"] + (1...9).map { "{seq:\($0)}" }
+    static let coordinateTokens = ["{gps}", "{latitude}", "{longitude}"]
     static let argumentKeys: Set<String> = ["templateID", "templateRevision", "mode", "path",
                                           "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"]
 
@@ -137,7 +138,7 @@ nonisolated enum MCPMetadataTemplatePreview {
     }
 
     private static func isSupportedValue(_ value: String, for key: String) -> Bool {
-        let tokens = ["{filename}", "{persons}", "{keywords}"] + sequenceTokens + fieldTokens
+        let tokens = ["{filename}", "{persons}", "{keywords}"] + coordinateTokens + sequenceTokens + fieldTokens
         let candidate = filenameVariableFields.contains(key)
             ? tokens.reduce(value) { $0.replacingOccurrences(of: $1, with: "") } : value
         return isLiteralValue(candidate, for: key)
@@ -211,6 +212,16 @@ nonisolated enum MCPMetadataTemplatePreview {
             strings.append(string)
         }
         return strings.joined(separator: ", ")
+    }
+
+    private static func coordinate(_ source: String, fields: [String: MCPJSONValue]) throws -> String {
+        guard let captured = fields[source] else { throw Failure.invalidArguments }
+        switch captured {
+        case .null: return ""
+        case .integer(let value): return String(format: "%.6f", Double(value))
+        case .number(let value) where value.isFinite: return String(format: "%.6f", value)
+        default: throw Failure.invalidArguments
+        }
     }
 
     /// Resolve canonical field references in retained scalar and string-list values. Memoization
@@ -291,6 +302,16 @@ nonisolated enum MCPMetadataTemplatePreview {
                 let text = try contextualList(field, fields: fields, templateFields: templateFields)
                 value = try replacingBounded("{\(source)}", in: value, with: text)
             }
+            let usedCoordinateTokens = coordinateTokens.filter { templateValue.contains($0) }
+            if !usedCoordinateTokens.isEmpty {
+                let latitude = try coordinate("latitude", fields: fields)
+                let longitude = try coordinate("longitude", fields: fields)
+                let gps = latitude.isEmpty || longitude.isEmpty ? "" : "\(latitude), \(longitude)"
+                for (token, text) in [("{gps}", gps), ("{latitude}", latitude), ("{longitude}", longitude)]
+                    where usedCoordinateTokens.contains(token) {
+                    value = try replacingBounded(token, in: value, with: text)
+                }
+            }
             let directFieldSources = allFieldVariableSources.sorted().filter { templateValue.contains("{field:\($0)}") }
             var fieldCache: [String: (value: String, sources: Set<String>)] = [:]
             var fieldDependencies: Set<String> = []
@@ -308,7 +329,7 @@ nonisolated enum MCPMetadataTemplatePreview {
                 value = value.replacingOccurrences(of: token, with: String(format: "%0\(width)d", sequenceIndex))
             }
             guard value.utf8.count <= 32_768 else { throw Failure.outputLimit }
-            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
+            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedCoordinateTokens.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
                 guard isLiteralValue(value, for: key) else { throw Failure.unsupportedTemplate }
             }
             let after: MCPJSONValue
@@ -388,11 +409,12 @@ nonisolated enum MCPMetadataTemplatePreview {
             }
             var change: [String: MCPJSONValue] = ["field": .string(editorialKey), "before": before, "after": after,
                 "templateValue": .string(templateValue), "changed": .bool(before != after)]
-            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
+            if templateValue.contains("{filename}") || !usedContextualLists.isEmpty || !usedCoordinateTokens.isEmpty || !usedSequenceTokens.isEmpty || !usedFieldSources.isEmpty {
                 change["resolvedTemplateValue"] = .string(value)
                 change["resolvedVariables"] = .array(
                     (templateValue.contains("{filename}") ? [.string("filename")] : [])
                     + usedContextualLists.map(MCPJSONValue.string)
+                    + usedCoordinateTokens.map { .string(String($0.dropFirst().dropLast())) }
                     + (usedSequenceTokens.isEmpty ? [] : [.string("seq")])
                     + usedFieldSources.map { .string("field:\($0)") })
                 if !usedSequenceTokens.isEmpty { change["sequenceIndex"] = .integer(Int64(sequenceIndex)) }
@@ -413,18 +435,21 @@ nonisolated enum MCPMetadataTemplatePreview {
         result["commitAvailable"] = .bool(false)
         let resolvesFilename = templateFields.values.contains { $0.contains("{filename}") }
         let resolvesContextualLists = templateFields.values.contains { $0.contains("{persons}") || $0.contains("{keywords}") }
+        let resolvesCoordinates = templateFields.values.contains { value in coordinateTokens.contains { value.contains($0) } }
         let resolvesSequence = templateFields.values.contains { value in sequenceTokens.contains { value.contains($0) } }
         let resolvesFields = templateFields.values.contains { value in fieldTokens.contains { value.contains($0) } }
         result["valueSemantics"] = .string(resolvesFields
             ? "retained-field-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
             : resolvesContextualLists
             ? "retained-list-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
+            : resolvesCoordinates
+            ? "retained-coordinate-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
             : resolvesSequence
             ? "request-order-sequence-and-snapshot-template-editor-values; no-physical-write-or-publication-validation"
             : resolvesFilename
             ? "snapshot-filename-and-literal-template-editor-values; no-physical-write-or-publication-validation"
             : "literal-template-editor-values; no-physical-write-or-publication-validation")
-        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename, person/keyword list, and acyclic recursive scalar/list field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
+        result["warnings"] = .array([.string("Read-only preview of current effective metadata, including pending drafts. Supported filename, person/keyword list, GPS coordinate, and acyclic recursive scalar/list field variables use the retained photo; sequence variables use explicit request order. No plan, approval, or write is created.")])
         let output = MCPJSONValue.object(result)
         guard try JSONEncoder().encode(output).count <= MCPServerConstants.maximumToolResultBytes else { throw Failure.outputLimit }
         return output
