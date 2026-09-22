@@ -103,6 +103,19 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Completes an interrupted install when its content-addressed model was
+    /// published but the previous authenticated ledger is still current. The
+    /// caller supplies the signed receipt again; no staged source is needed.
+    /// A missing ledger is deliberately refused because model bytes cannot
+    /// reconstruct the accepted release floor after a ledger was lost.
+    func completeInterruptedInstallation(_ receipt: WhisperModelDescriptorReceipt,
+                                         expectedGeneration: UUID) async throws -> Snapshot {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.transition(receipt: receipt, expectedGeneration: expectedGeneration,
+                                      requireInstalled: true)
+        }
+    }
+
     /// Rechecks bytes on every lookup; a ledger alone never establishes installation.
     /// The returned path is not a retained read capability. Consumers must still use
     /// the transcription runner's artifact admission when opening it later.

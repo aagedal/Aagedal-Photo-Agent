@@ -349,6 +349,74 @@ struct WhisperModelDistributionStateStoreTests {
         _ = try await restarted.install(thirdReceipt, from: source, expectedGeneration: rolledBack.generation)
     }
 
+    @Test("Published model can complete an interrupted install without its download source")
+    func completeInterruptedInstallation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.directory.appendingPathComponent("download")
+        let store = try fixture.store()
+        let firstBytes = Data("first".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let nextBytes = Data("next".utf8)
+        let nextReceipt = try fixture.receipt(2, bytes: nextBytes)
+        try nextBytes.write(to: source)
+        let interrupted = try WhisperModelDistributionStateStore(directory: fixture.directory,
+            modelID: "tiny", trust: fixture.trust, publicationCheckpoint: { throw CancellationError() })
+        await #expect(throws: CancellationError.self) {
+            try await interrupted.install(nextReceipt, from: source, expectedGeneration: first.generation)
+        }
+        try FileManager.default.removeItem(at: source)
+        let oldLedger = try Data(contentsOf: fixture.stateURL)
+        let reopened = try fixture.store()
+        let recovered = try await reopened.completeInterruptedInstallation(nextReceipt, expectedGeneration: first.generation)
+        #expect(recovered.release.current.descriptor.releaseSequence == 2)
+        #expect(recovered.release.rollbackCandidate?.descriptor.releaseSequence == 1)
+        #expect(try await reopened.installedURL() == fixture.directory.appendingPathComponent("ggml-tiny-\(nextReceipt.descriptor.sha256).bin"))
+        #expect(try Data(contentsOf: fixture.stateURL) != oldLedger)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await reopened.completeInterruptedInstallation(nextReceipt, expectedGeneration: first.generation)
+        }
+        let rolledBack = try await reopened.rollBackInstalled(expectedGeneration: recovered.generation)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.replayedRelease) {
+            try await reopened.completeInterruptedInstallation(nextReceipt, expectedGeneration: rolledBack.generation)
+        }
+    }
+
+    @Test("Interrupted install completion refuses absent or altered content and missing authority")
+    func completeInterruptedInstallationRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("release".utf8)
+        let receipt = try fixture.receipt(2, bytes: bytes)
+        let model = fixture.directory.appendingPathComponent("ggml-tiny-\(receipt.descriptor.sha256).bin")
+        try bytes.write(to: model)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: model.path)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.completeInterruptedInstallation(receipt, expectedGeneration: UUID())
+        }
+        let first = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try Data("altered".utf8).write(to: model)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await store.completeInterruptedInstallation(receipt, expectedGeneration: first.generation)
+        }
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        try FileManager.default.removeItem(at: model)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.completeInterruptedInstallation(receipt, expectedGeneration: first.generation)
+        }
+        try bytes.write(to: model)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: model.path)
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.completeInterruptedInstallation(receipt, expectedGeneration: first.generation)
+        }
+        #expect(try Data(contentsOf: model) == bytes)
+    }
+
     @Test("Cleanup authenticates authority and preflights unsafe candidates before deleting")
     func cleanupFailsClosed() async throws {
         let fixture = try Fixture()
