@@ -158,6 +158,23 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
     @MainActor
     func testAutomationResolvesInterruptedUnchangedXMPStaging() throws {
+        try exerciseInterruptedXMPStaging(conflict: nil)
+    }
+
+    @MainActor
+    func testAutomationRecoveryRefusesPhotoReplacementAfterInspection() throws {
+        try exerciseInterruptedXMPStaging(conflict: .photoReplacement)
+    }
+
+    @MainActor
+    func testAutomationRecoveryPreservesExternalXMPAfterInspection() throws {
+        try exerciseInterruptedXMPStaging(conflict: .externalXMP)
+    }
+
+    private enum RecoveryConflict { case photoReplacement, externalXMP }
+
+    @MainActor
+    private func exerciseInterruptedXMPStaging(conflict: RecoveryConflict?) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
             xmpStagingInterruption: true)
@@ -194,15 +211,42 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let resolve = app.buttons["automation.resolveUnchangedRecovery"]
         XCTAssertTrue(resolve.waitForExistence(timeout: 8))
         XCTAssertTrue(resolve.isEnabled)
+        let journal = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
+        let stagedJournal = try Data(contentsOf: journal)
+        let externalXMP = Data("<?xml version=\"1.0\"?><external>Keep this peer edit</external>".utf8)
+        if let conflict {
+            switch conflict {
+            case .photoReplacement: try original.write(to: photo, options: .atomic)
+            case .externalXMP: try externalXMP.write(to: xmp, options: .withoutOverwriting)
+            }
+        }
         resolve.click()
         let status = app.staticTexts["automation.recoveryStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 8))
+        if let conflict {
+            let refusal = "Staging could not be resolved."
+            XCTAssertTrue(status.label.hasPrefix(refusal) || (status.value as? String)?.hasPrefix(refusal) == true)
+            XCTAssertEqual(try Data(contentsOf: journal), stagedJournal)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            if conflict == .externalXMP { XCTAssertEqual(try Data(contentsOf: xmp), externalXMP) }
+            else { XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path)) }
+            inspect.click()
+            XCTAssertTrue(resolve.waitForExistence(timeout: 8))
+            XCTAssertFalse(resolve.isEnabled)
+            XCTAssertEqual(try Data(contentsOf: journal), stagedJournal)
+            app.terminate()
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+            XCTAssertEqual(try Data(contentsOf: journal), stagedJournal)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            if conflict == .externalXMP { XCTAssertEqual(try Data(contentsOf: xmp), externalXMP) }
+            return
+        }
         let expected = "Unchanged staging resolved. No photo or metadata files were changed. Recovery material remains retained until the next publication is staged."
         XCTAssertTrue(status.label == expected || status.value as? String == expected)
         XCTAssertEqual(try Data(contentsOf: photo), original)
         XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
-        let journal = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
         let receipt = try Data(contentsOf: journal)
         let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receipt) as? [String: Any])
         XCTAssertEqual(envelope["version"] as? Int, 5)
