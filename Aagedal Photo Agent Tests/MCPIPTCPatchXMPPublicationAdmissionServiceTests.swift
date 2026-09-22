@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
-@Suite("Native durable XMP publication admission without installation")
+@Suite("Durable XMP publication admission and internal installation")
 struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
     private typealias Fixture = MCPIPTCPatchXMPPreflightServiceTests.Fixture
     private typealias Service = MCPIPTCPatchXMPPublicationAdmissionService

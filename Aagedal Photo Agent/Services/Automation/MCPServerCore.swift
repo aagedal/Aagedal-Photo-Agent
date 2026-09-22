@@ -713,7 +713,9 @@ nonisolated struct MCPAutomationFacade: Sendable {
         guard Darwin.renameat(destinationDirectory, temporaryName, destinationDirectory,
             destinationName) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
         temporaryExists = false
-        guard Darwin.fsync(destinationDirectory) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        guard Darwin.fsync(destinationDirectory) == 0,
+              // Persist the parent entry too when .photo_metadata was created on first use.
+              Darwin.fsync(directory.descriptor) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
         try directory.requireSameAncestors()
         try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
             in: directory.descriptor, descriptor: destinationDirectory)

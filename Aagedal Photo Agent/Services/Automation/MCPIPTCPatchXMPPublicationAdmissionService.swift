@@ -238,7 +238,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                     let saved = try decoder.decode(MetadataSidecar.self, from: appCandidate)
                     let actual = try MCPMetadataSnapshotReader.read(final).resolution.metadata
                     guard !saved.pendingChanges,
-                          IPTCMetadataVerificationField.writableFields.allSatisfy({
+                          IPTCMetadataVerificationField.allCases.allSatisfy({
                               IPTCMetadataVerifier.canonicalValue(for: $0, in: saved.metadata)
                                 == IPTCMetadataVerifier.canonicalValue(for: $0, in: actual)
                           }) else { throw Failure.verification }
