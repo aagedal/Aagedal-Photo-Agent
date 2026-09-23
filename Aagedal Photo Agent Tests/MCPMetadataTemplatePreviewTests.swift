@@ -18,6 +18,66 @@ struct MCPMetadataTemplatePreviewTests {
         }, processInstantly: instantly))
     }
 
+    @Test("Retained metadata dates match production interpolation", arguments: ["append", "replace"])
+    func metadataDateVariables(mode: String) throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
+        let raw = "Created {dateCreated}; captured {dateCaptured}; again {dateCreated}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .string("Before"), "dateCreated": .string("2024-03-15"),
+            "captureDate": .string("2023:12:31 14:30:45")])
+        var metadata = IPTCMetadata()
+        metadata.dateCreated = "2024-03-15"
+        metadata.captureDate = "2023:12:31 14:30:45"
+        let expected = PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else { Issue.record("Missing changes"); return }
+        let change = try #require(changes.first?.objectValue)
+        #expect(change["resolvedTemplateValue"] == .string(expected))
+        #expect(change["resolvedVariables"] == .array([.string("dateCreated"), .string("dateCaptured")]))
+        #expect(change["after"] == .string(mode == "append" ? "Before " + expected : expected))
+        #expect(result.objectValue?["valueSemantics"]?.stringValue?.hasPrefix("retained-date") == true)
+        record["fields"] = .object(["title": .null, "dateCreated": .null, "captureDate": .string("not a date")])
+        let missing = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let missingChanges) = missing.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        #expect(missingChanges.first?.objectValue?["resolvedTemplateValue"] == .string("Created ; captured ; again "))
+    }
+
+    @Test("Metadata date variables refuse changed, malformed, and second-order sources")
+    func metadataDateVariableRefusals() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .null, "dateCreated": .string("2024-03-15"), "captureDate": .null])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{dateCreated}", "dateCreated": "2025-01-01"], metadata: .object(record))
+        }
+        for token in ["{seq}", "{field:title}", "{date}", "brace}", "\0"] {
+            record["fields"] = .object(["title": .null, "dateCreated": .string(token), "captureDate": .null])
+            #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+                try MCPMetadataTemplatePreview.preview(request: request,
+                    templateFields: ["title": "{dateCreated}"], metadata: .object(record))
+            }
+        }
+        record["fields"] = .object(["title": .null, "dateCreated": .integer(2024), "captureDate": .null])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": "{dateCreated}"], metadata: .object(record))
+        }
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.templateFields(template([("title", "{dateCreated:yyyy-MM-dd}")]))
+        }
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.templateFields(template([("credit", "{dateCaptured}")]))
+        }
+    }
+
     @Test("Retained people and keyword shorthands match production interpolation", arguments: ["append", "replace"])
     func contextualListVariables(mode: String) throws {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
