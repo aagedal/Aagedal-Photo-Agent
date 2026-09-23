@@ -31,6 +31,7 @@ final class AnalysisRunner {
     private(set) var runs: [AnalysisAnalyzerRun] = []
 
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var runIDs: [String: UUID] = [:]
     @ObservationIgnored private var generation = 0
     @ObservationIgnored var onPersistableRunChanged: ((AnalysisAnalyzerRun) -> Void)?
 
@@ -46,6 +47,7 @@ final class AnalysisRunner {
         generation += 1
         tasks.values.forEach { $0.cancel() }
         tasks.removeAll()
+        runIDs.removeAll()
         runs = existingRuns
     }
 
@@ -70,6 +72,8 @@ final class AnalysisRunner {
         }
 
         tasks[analyzer.identifier]?.cancel()
+        let runID = UUID()
+        runIDs[analyzer.identifier] = runID
         let run = AnalysisAnalyzerRun(
             analyzerID: analyzer.identifier,
             analyzerVersion: analyzer.version,
@@ -86,7 +90,9 @@ final class AnalysisRunner {
 
         let expectedGeneration = generation
         tasks[analyzer.identifier] = Task { [weak self] in
-            guard let self, generation == expectedGeneration else { return }
+            guard let self,
+                  generation == expectedGeneration,
+                  runIDs[analyzer.identifier] == runID else { return }
             var current = run
             current.status = .running
             current.startedAt = Date()
@@ -97,7 +103,9 @@ final class AnalysisRunner {
                     context: context,
                     parameters: parameters
                 ) { [weak self] value in
-                    guard let self, generation == expectedGeneration else { return }
+                    guard let self,
+                          generation == expectedGeneration,
+                          runIDs[analyzer.identifier] == runID else { return }
                     updateProgress(
                         analyzerID: analyzer.identifier,
                         cacheKey: cacheKey,
@@ -105,7 +113,8 @@ final class AnalysisRunner {
                     )
                 }
                 try Task.checkCancellation()
-                guard generation == expectedGeneration else { return }
+                guard generation == expectedGeneration,
+                      runIDs[analyzer.identifier] == runID else { return }
                 current.status = .completed
                 current.progress = 1
                 current.completedAt = Date()
@@ -113,13 +122,15 @@ final class AnalysisRunner {
                 current.errorMessage = nil
                 upsert(current, persist: true)
             } catch is CancellationError {
-                guard generation == expectedGeneration else { return }
+                guard generation == expectedGeneration,
+                      runIDs[analyzer.identifier] == runID else { return }
                 current.status = .cancelled
                 current.completedAt = Date()
                 current.errorMessage = nil
                 upsert(current, persist: true)
             } catch {
-                guard generation == expectedGeneration else { return }
+                guard generation == expectedGeneration,
+                      runIDs[analyzer.identifier] == runID else { return }
                 current.status = .failed
                 current.completedAt = Date()
                 current.errorMessage = error.localizedDescription.isEmpty
@@ -127,7 +138,10 @@ final class AnalysisRunner {
                     : error.localizedDescription
                 upsert(current, persist: true)
             }
-            tasks[analyzer.identifier] = nil
+            if runIDs[analyzer.identifier] == runID {
+                tasks[analyzer.identifier] = nil
+                runIDs[analyzer.identifier] = nil
+            }
         }
     }
 

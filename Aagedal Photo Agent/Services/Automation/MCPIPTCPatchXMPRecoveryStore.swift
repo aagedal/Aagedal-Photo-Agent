@@ -221,13 +221,16 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
 
     /// Called only in the retained rooted carrier transaction. The verifier must recheck
     /// identities, authorization and both installed candidates while the journal lock is held.
+    /// Both rooted install receipts must already be durable; a permissive verifier cannot
+    /// turn interrupted staging or partial publication into a completion receipt.
     /// Failed verification leaves the exact unresolved journal untouched.
     func recordVerified(_ expected: Material, verify: () throws -> Void) throws {
         try persistence.transaction { bytes in
             guard let bytes else { throw Failure.verification }
             let record = try decodeRecord(bytes)
             guard !record.resolved, record.restored == nil, record.material == expected,
-                  expected.appSidecarRecovery?.candidate != nil else { throw Failure.verification }
+                  expected.appSidecarRecovery?.candidate != nil,
+                  record.installed?.appRevision != nil else { throw Failure.verification }
             try verify()
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]

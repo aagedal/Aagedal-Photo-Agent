@@ -133,6 +133,42 @@ struct MCPMetadataTemplatePreviewTests {
         }
     }
 
+    @Test("Retained urgency field reference matches production and refuses changed authority")
+    func retainedUrgencyFieldReference() throws {
+        let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
+        let raw = "Priority {field:urgency}"
+        let values = try MCPMetadataTemplatePreview.templateFields(template([("title", raw)]))
+        var record = request.revisions
+        record["hasXMPConflict"] = .bool(false)
+        record["fields"] = .object(["title": .null, "urgency": .integer(5)])
+        var metadata = IPTCMetadata()
+        metadata.urgency = 5
+        let result = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let changes) = result.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        #expect(changes.first?.objectValue?["resolvedTemplateValue"] ==
+                .string(PresetVariableInterpolator().resolve(raw, existingMetadata: metadata)))
+        #expect(changes.first?.objectValue?["resolvedVariables"] == .array([.string("field:urgency")]))
+        #expect(throws: MCPMetadataTemplatePreview.Failure.unsupportedTemplate) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: ["title": raw, "urgency": "3"], metadata: .object(record))
+        }
+        record["fields"] = .object(["title": .null, "urgency": .string("5")])
+        #expect(throws: MCPMetadataTemplatePreview.Failure.invalidArguments) {
+            try MCPMetadataTemplatePreview.preview(request: request,
+                templateFields: values, metadata: .object(record))
+        }
+        record["fields"] = .object(["title": .null, "urgency": .null])
+        let empty = try MCPMetadataTemplatePreview.preview(request: request,
+            templateFields: values, metadata: .object(record))
+        guard case .array(let emptyChanges) = empty.objectValue?["changes"] else {
+            Issue.record("Missing changes"); return
+        }
+        #expect(emptyChanges.first?.objectValue?["resolvedTemplateValue"] == .string("Priority "))
+    }
+
     @Test("Retained GPS coordinates match production interpolation and stay read only", arguments: ["append", "replace"])
     func coordinateVariables(mode: String) throws {
         let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: mode))
@@ -416,11 +452,14 @@ struct MCPMetadataTemplatePreviewTests {
             let target = source == "title" ? "description" : "title"
             let request = try MCPMetadataTemplatePreview.Request(arguments: arguments(mode: "replace"))
             let scalar = source == "dateCreated" ? "2026-09-22" : source == "countryCode" ? "NOR" : "Literal Å value"
-            let fieldData = try JSONEncoder().encode([source: scalar])
+            let fieldData = source == "urgency"
+                ? Data(#"{"urgency":5}"#.utf8)
+                : try JSONEncoder().encode([source: scalar])
             let metadata = try JSONDecoder().decode(IPTCMetadata.self, from: fieldData)
             var record = request.revisions
             record["hasXMPConflict"] = .bool(false)
-            record["fields"] = .object([source: .string(scalar), target: .null])
+            record["fields"] = .object([source: source == "urgency" ? .integer(5) : .string(scalar),
+                                        target: .null])
             let raw = "{field:\(source)}"
             let result = try MCPMetadataTemplatePreview.preview(request: request,
                 templateFields: [target: raw], metadata: .object(record))

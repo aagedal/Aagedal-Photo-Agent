@@ -2839,6 +2839,33 @@ struct AnalysisCaseTests {
         }
         #expect(counter.count == 2)
     }
+
+    @Test("superseded analyzer cannot replace or cancel the current run")
+    func runnerSupersededRunIsolation() async throws {
+        let fixture = try AnalysisFixture(contents: "overlapping source")
+        defer { fixture.remove() }
+        let revision = try await SourceImageRevision.capture(at: fixture.fileURL)
+        let context = AnalysisAnalyzerContext(sourceURL: fixture.fileURL, sourceRevision: revision)
+        let gate = AnalysisRunGate()
+        let analyzer = GatedAnalysisAnalyzer(gate: gate)
+        let runner = AnalysisRunner()
+
+        runner.start(analyzer, context: context, parameters: ["run": "first"])
+        try await waitForAnalysisState { gate.hasWaitingRun("first") }
+        runner.start(analyzer, context: context, parameters: ["run": "second"])
+        try await waitForAnalysisState { gate.hasWaitingRun("second") }
+
+        // The first analyzer ignores cancellation until explicitly released. Its cancelled
+        // completion must not publish over the second run or discard its cancellation handle.
+        gate.release("first")
+        try await waitForAnalysisState { gate.didFinishRun("first") }
+        #expect(runner.runs.first?.status == .running)
+        #expect(runner.runs.first?.progress == 0.5)
+
+        runner.cancel(analyzerID: analyzer.identifier)
+        gate.release("second")
+        try await waitForAnalysisState { runner.runs.first?.status == .cancelled }
+    }
 }
 
 private func makeSourceFacts(
@@ -2955,6 +2982,45 @@ private struct SuspendedAnalysisAnalyzer: AnalysisAnalyzer {
     ) async throws -> AnalysisAnalyzerOutput {
         progress(0.5)
         try await Task.sleep(for: .seconds(30))
+        return AnalysisAnalyzerOutput()
+    }
+}
+
+@MainActor
+private final class AnalysisRunGate {
+    private var continuations: [String: CheckedContinuation<Void, Never>] = [:]
+    private var finished: Set<String> = []
+
+    func wait(_ name: String) async {
+        await withCheckedContinuation { continuation in
+            continuations[name] = continuation
+        }
+        finished.insert(name)
+    }
+
+    func hasWaitingRun(_ name: String) -> Bool { continuations[name] != nil }
+    func didFinishRun(_ name: String) -> Bool { finished.contains(name) }
+
+    func release(_ name: String) {
+        continuations.removeValue(forKey: name)?.resume()
+    }
+}
+
+private struct GatedAnalysisAnalyzer: AnalysisAnalyzer {
+    let identifier = "test-gated"
+    let version = 1
+    let displayName = "Gated test analyzer"
+    let cost = AnalysisAnalyzerCost.fast
+    let sourceRepresentation = AnalysisInputRepresentation.originalBytes
+    let gate: AnalysisRunGate
+
+    func analyze(
+        context: AnalysisAnalyzerContext,
+        parameters: [String: String],
+        progress: @MainActor @Sendable (Double) -> Void
+    ) async throws -> AnalysisAnalyzerOutput {
+        progress(0.5)
+        await gate.wait(parameters["run"] ?? "unknown")
         return AnalysisAnalyzerOutput()
     }
 }

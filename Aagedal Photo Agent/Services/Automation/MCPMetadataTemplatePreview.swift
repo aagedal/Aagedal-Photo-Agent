@@ -17,7 +17,7 @@ nonisolated enum MCPMetadataTemplatePreview {
             switch self {
             case .invalidArguments: "Template preview requires an exact template UUID/revision, explicit photo revisions, and append or replace mode."
             case .staleTemplate: "The template UUID or revision changed. Discover templates again."
-            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. {filename}, {persons}, {keywords}, {gps}, {latitude}, {longitude}, {dateCreated}, {dateCaptured}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keyword template fields, and other structured fields require Photo Agent."
+            case .unsupportedTemplate: "Preview supports literal descriptive, creator, organisation, scene/subject, date, country, source-type, Media Topic/Genre, and Image Supplier fields only. {filename}, {persons}, {keywords}, {gps}, {latitude}, {longitude}, {dateCreated}, {dateCaptured}, {seq}, and {seq:1} through {seq:9} in title, description, extendedDescription and instructions are resolved. Recursive scalar, urgency, and canonical list {field:key} references are also supported when every source is unchanged by the template and the reference graph is acyclic. Other variables, instant processing, keyword template fields, and other structured fields require Photo Agent."
             case .staleRevision: "Photo metadata changed. Read its revisions again."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing a template."
             case .outputLimit: "The template preview exceeds the output limit."
@@ -37,12 +37,12 @@ nonisolated enum MCPMetadataTemplatePreview {
     ])
     static let filenameVariableFields: Set<String> = ["title", "description", "extendedDescription", "instructions"]
     // Exact canonical keys only. Formatting-dependent fields and aliases remain outside
-    // this subset; all these values have identical string semantics in the interpolator.
+    // this subset; scalar text matches the interpolator, and urgency uses its decimal Int form.
     static let fieldVariableSources: Set<String> = [
         "title", "description", "extendedDescription", "creatorJobTitle", "descriptionWriter",
         "credit", "copyright", "rightsUsageTerms", "webStatementOfRights", "digitalImageGUID",
         "imageSupplierImageID", "jobId", "dateCreated", "city", "sublocation", "provinceState",
-        "country", "countryCode", "event", "instructions", "source",
+        "country", "countryCode", "event", "instructions", "source", "urgency",
     ]
     // Canonical template keys map to the effective metadata's persisted array keys.
     // A reference to retained keywords is read-only. Authoring a keywords template
@@ -291,6 +291,14 @@ nonisolated enum MCPMetadataTemplatePreview {
                 strings.append(string)
             }
             text = strings.joined(separator: ", ")
+        } else if source == "urgency" {
+            switch captured {
+            case .null: text = ""
+            case .integer(let number):
+                guard let integer = Int(exactly: number) else { throw Failure.invalidArguments }
+                text = String(integer)
+            default: throw Failure.invalidArguments
+            }
         } else {
             guard captured == .null || captured.stringValue != nil else { throw Failure.invalidArguments }
             text = captured.stringValue ?? ""

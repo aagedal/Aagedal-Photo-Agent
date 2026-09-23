@@ -95,6 +95,10 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
             binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
             appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        try fixture.store.recordInstalled(material,
+            installed: .init(xmpRevision: "installed-xmp", appRevision: nil), verify: {})
+        try fixture.store.recordInstalled(material,
+            installed: .init(xmpRevision: "installed-xmp", appRevision: "installed-app"), verify: {})
         try fixture.store.recordVerified(material, verify: {})
         #expect(try fixture.store.load() == nil)
         #expect(try fixture.store.loadVerifiedDisposition()?.material == material)
@@ -129,6 +133,27 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(try fixture.store.load() == material)
         #expect(try fixture.store.loadVerifiedDisposition() == nil)
         #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.occupied) { try fixture.stage() }
+    }
+
+    @Test("Unreceipted or XMP-only publication cannot become verified completion")
+    func incompletePublicationCannotComplete() throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        for installedXMP in [false, true] {
+            if installedXMP {
+                try fixture.store.recordInstalled(material,
+                    installed: .init(xmpRevision: "installed-xmp", appRevision: nil), verify: {})
+            }
+            let before = try Data(contentsOf: fixture.journal)
+            #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+                try fixture.store.recordVerified(material, verify: {})
+            }
+            #expect(try Data(contentsOf: fixture.journal) == before)
+            #expect(try fixture.store.load() == material)
+            #expect(try fixture.store.loadVerifiedDisposition() == nil)
+        }
     }
 
     @Test("Changing an unchanged receipt version cannot claim verified publication")
