@@ -278,7 +278,15 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
-    private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool, originalCarriersPresent: Bool) throws {
+    func testAutomationRestorationRefusesReplacedHistoryAfterInspection() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false,
+            originalCarriersPresent: true, replaceHistoryAfterInspection: true)
+    }
+
+    @MainActor
+    private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool,
+                                                       originalCarriersPresent: Bool,
+                                                       replaceHistoryAfterInspection: Bool = false) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
             xmpPublicationInterruption: true, existingRecoveryCarriers: originalCarriersPresent)
@@ -336,12 +344,15 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         restore.click()
         XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
         if replaceAfterInspection { try published.write(to: xmp, options: .atomic) }
+        if replaceHistoryAfterInspection, let originalHistory {
+            try originalHistory.write(to: history, options: .atomic)
+        }
         confirmation.buttons["Restore Original Metadata"].click()
         let status = app.staticTexts["automation.recoveryStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 12))
         XCTAssertEqual(try Data(contentsOf: photo), original)
         XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
-        if replaceAfterInspection {
+        if replaceAfterInspection || replaceHistoryAfterInspection {
             XCTAssertEqual(try Data(contentsOf: journal), staged)
             XCTAssertEqual(try Data(contentsOf: xmp), published)
             inspect.click()
@@ -359,7 +370,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
         XCTAssertEqual(try Data(contentsOf: journal), finalJournal)
         XCTAssertEqual(try Data(contentsOf: photo), original)
-        XCTAssertEqual(try? Data(contentsOf: xmp), replaceAfterInspection ? published : originalXMP)
+        XCTAssertEqual(try? Data(contentsOf: xmp),
+            replaceAfterInspection || replaceHistoryAfterInspection ? published : originalXMP)
         XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
     }
 
