@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 98: native restoration, list fields and rollback content](release/cycle-98-native-restoration-list-fields-rollback-content-2026-09-22.md) adds explicitly confirmed partial-publication restoration with durable progress, retained scalar/list template references, missing rollback-model content recovery and conservative operation completion. Unreceipted recovery, production executors and production signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 101: retained date previews, signed Whisper lifecycle and history recovery](release/cycle-101-date-whisper-history-recovery-2026-09-23.md) adds read-only retained date variables, an internal verified model lifecycle and native same-byte history replacement refusal. Unreceipted recovery, production executors and production signed-model integration remain open.
 
 ## Portfolio
 
