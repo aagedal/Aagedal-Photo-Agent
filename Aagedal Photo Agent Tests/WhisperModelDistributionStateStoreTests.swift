@@ -9,6 +9,11 @@ nonisolated private func testWhisperReleaseFlock(_ descriptor: Int32, _ operatio
 
 @Suite("Durable Whisper release authorization")
 struct WhisperModelDistributionStateStoreTests {
+    private actor TransferCount {
+        var value = 0
+        func increment() { value += 1 }
+    }
+
     private struct Fixture {
         let directory: URL
         let key = Curve25519.Signing.PrivateKey()
@@ -37,6 +42,63 @@ struct WhisperModelDistributionStateStoreTests {
         }
         var stateURL: URL { directory.appendingPathComponent("tiny.release-state.json") }
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    @Test("Signed lifecycle verifies before transfer and commits installed bytes with rollback")
+    func signedLifecycle() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let firstBytes = Data("signed first release".utf8)
+        let secondBytes = Data("signed second release".utf8)
+        let first = try fixture.receipt(1, bytes: firstBytes)
+        let second = try fixture.receipt(2, bytes: secondBytes)
+        let firstData = try first.descriptor.canonicalData()
+        let secondData = try second.descriptor.canonicalData()
+        let firstHash = first.descriptor.sha256
+        let count = TransferCount()
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"),
+            fetch: { model, destination, _ in
+                await count.increment()
+                try (model.sha256 == firstHash ? firstBytes : secondBytes).write(to: destination)
+            })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads,
+            store: try fixture.store())
+
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await lifecycle.install(descriptorData: firstData, signature: Data(repeating: 0, count: 64),
+                                        expectedGeneration: nil)
+        }
+        #expect(await count.value == 0)
+        let installedFirst = try await lifecycle.install(descriptorData: firstData,
+            signature: fixture.key.signature(for: firstData), expectedGeneration: nil)
+        let firstURL = try #require(try await lifecycle.installedURL())
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        #expect(await count.value == 1)
+
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.replayedRelease) {
+            try await lifecycle.install(descriptorData: firstData,
+                signature: fixture.key.signature(for: firstData), expectedGeneration: installedFirst.generation)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.install(descriptorData: secondData,
+                signature: fixture.key.signature(for: secondData), expectedGeneration: nil)
+        }
+        #expect(await count.value == 1)
+
+        let installedSecond = try await lifecycle.install(descriptorData: secondData,
+            signature: fixture.key.signature(for: secondData), expectedGeneration: installedFirst.generation)
+        let secondURL = try #require(try await lifecycle.installedURL())
+        #expect(secondURL != firstURL)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        #expect(await count.value == 2)
+        let rolledBack = try await lifecycle.rollBack(expectedGeneration: installedSecond.generation)
+        #expect(try await lifecycle.installedURL() == firstURL)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.replayedRelease) {
+            try await lifecycle.install(descriptorData: secondData,
+                signature: fixture.key.signature(for: secondData), expectedGeneration: rolledBack.generation)
+        }
+        #expect(await count.value == 2)
     }
 
     @Test("Missing rollback bytes restore without selecting or consuming the retained release")

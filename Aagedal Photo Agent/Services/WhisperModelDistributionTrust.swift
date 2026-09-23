@@ -198,3 +198,44 @@ nonisolated struct WhisperModelReleaseRecord: Codable, Sendable {
             highestAcceptedSequence: highWater.descriptor.releaseSequence), highWater)
     }
 }
+
+/// Connects a verified release to the existing bounded transfer and durable installer.
+/// The caller owns descriptor retrieval and supplies an isolated download cache; this
+/// type never treats a downloaded cache file as release authority.
+actor WhisperSignedModelLifecycle {
+    private let trust: WhisperModelDistributionTrust
+    private let downloads: WhisperModelDownloadService
+    private let store: WhisperModelDistributionStateStore
+
+    init(trust: WhisperModelDistributionTrust, downloads: WhisperModelDownloadService,
+         store: WhisperModelDistributionStateStore) {
+        self.trust = trust
+        self.downloads = downloads
+        self.store = store
+    }
+
+    func install(descriptorData: Data, signature: Data, expectedGeneration: UUID?,
+                 progress: @escaping WhisperModelDownloadService.Progress = { _ in }) async throws -> WhisperModelDistributionStateStore.Snapshot {
+        let receipt = try trust.verify(descriptorData, signature: signature)
+        // Reject stale/replayed proposals before a potentially large network transfer.
+        let current = try await store.load()
+        guard current?.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        if let current {
+            _ = try trust.updating(current.release, to: receipt)
+        } else {
+            _ = try trust.initialState(receipt)
+        }
+        let source = try await downloads.download(receipt.downloadableModel, progress: progress)
+        // The store rechecks its generation, signature, byte count and hash under its
+        // own transaction lock before committing the release record.
+        return try await store.install(receipt, from: source, expectedGeneration: expectedGeneration)
+    }
+
+    func installedURL() async throws -> URL? { try await store.installedURL() }
+
+    func rollBack(expectedGeneration: UUID) async throws -> WhisperModelDistributionStateStore.Snapshot {
+        try await store.rollBackInstalled(expectedGeneration: expectedGeneration)
+    }
+}
