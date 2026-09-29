@@ -149,6 +149,28 @@ nonisolated struct MCPFileIdentity: Codable, Equatable, Sendable {
     let inode: UInt64
 }
 
+/// Stable across rename; ctime is deliberately excluded because rename changes it.
+nonisolated struct MCPPreparedXMPIdentity: Codable, Equatable, Sendable {
+    let file: MCPFileIdentity
+    let size: Int64
+    let modificationSeconds: Int64
+    let modificationNanoseconds: Int64
+
+    init(file: MCPFileIdentity, size: Int64, modificationSeconds: Int64, modificationNanoseconds: Int64) {
+        self.file = file
+        self.size = size
+        self.modificationSeconds = modificationSeconds
+        self.modificationNanoseconds = modificationNanoseconds
+    }
+
+    init(_ item: stat) {
+        file = MCPFileIdentity(device: UInt64(item.st_dev), inode: UInt64(item.st_ino))
+        size = item.st_size
+        modificationSeconds = Int64(item.st_mtimespec.tv_sec)
+        modificationNanoseconds = Int64(item.st_mtimespec.tv_nsec)
+    }
+}
+
 nonisolated struct MCPAuthorizedRoot: Codable, Identifiable, Equatable, Sendable {
     let id: UUID
     let displayName: String
@@ -546,6 +568,7 @@ nonisolated struct MCPPhotoCarrierSnapshot: Sendable {
     let sourceRevision: String
     let xmpSidecarRevision: String
     let appSidecarRevision: String
+    var preparedXMPIdentity: MCPPreparedXMPIdentity? = nil
 }
 
 /// Value-only entry point shared by the app and the bundled helper. A read owns the same
@@ -627,7 +650,8 @@ nonisolated struct MCPAutomationFacade: Sendable {
             sourceModificationDate: evidence.sourceModificationDate,
             xmpModificationDate: evidence.xmpModificationDate,
             sourceRevision: evidence.source, xmpSidecarRevision: evidence.xmpSidecar,
-            appSidecarRevision: evidence.appSidecar
+            appSidecarRevision: evidence.appSidecar,
+            preparedXMPIdentity: evidence.preparedXMPIdentity
         )
     }
 
@@ -748,6 +772,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
                            reservation: MCPProcessReservationLease,
                            restoringEmptyOriginal: Bool = false,
                            beforeInstall: @Sendable () throws -> Void = {},
+                           beforeMutation: @Sendable (MCPPreparedXMPIdentity) throws -> Void = { _ in },
                              afterInstall: (@Sendable (MCPPhotoCarrierSnapshot) throws -> Void)? = nil) throws -> URL {
         guard (!data.isEmpty || restoringEmptyOriginal), data.count <= 8_388_608,
               reservation.coversPhoto(expected.target.url) else {
@@ -820,6 +845,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
             }
         }
         guard readback == data else { throw MCPAutomationReadError.photoChanged }
+        try validate()
+        // Rename changes ctime, so retain stable device/inode identity before it. Rooted
+        // recovery later checks that same inode along with exact bytes and live revisions.
+        try beforeMutation(MCPPreparedXMPIdentity(opened))
         try validate()
         guard Darwin.renameat(directory.descriptor, temporaryName, directory.descriptor,
             destination.lastPathComponent) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
@@ -1341,6 +1370,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let appDraftFields: [String: MCPJSONValue]?
     let sourceBytes: Data?
     let xmpBytes: Data?
+    let preparedXMPIdentity: MCPPreparedXMPIdentity?
     let appSidecarBytes: Data?
     let sourceModificationDate: Date
     let xmpModificationDate: Date?
@@ -1442,6 +1472,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             appDraftFields: draftFields,
             sourceBytes: source.bytes,
             xmpBytes: xmpToken.bytes,
+            preparedXMPIdentity: xmpToken.identity.map(MCPPreparedXMPIdentity.init),
             appSidecarBytes: appSidecarBytes,
             sourceModificationDate: modificationDate(sourceIdentity),
             xmpModificationDate: xmpToken.identity.map(modificationDate)

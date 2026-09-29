@@ -208,6 +208,11 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                             guard try recovery.load() == material,
                                   material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                             else { throw Failure.verification }
+                        }, beforeMutation: { identity in
+                            try recovery.recordPreparedXMP(material, xmpIdentity: identity) {
+                                guard material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                                else { throw Failure.verification }
+                            }
                         }, afterInstall: { installed in
                             try recovery.recordInstalled(material,
                                 installed: .init(xmpRevision: installed.xmpSidecarRevision, appRevision: nil)) {

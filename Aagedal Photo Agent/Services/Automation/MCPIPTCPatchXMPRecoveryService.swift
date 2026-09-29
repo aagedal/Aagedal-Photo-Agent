@@ -18,6 +18,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         let photoPath: String
         let materialID: UUID
         let installedCarriers: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?
+        fileprivate let preparedXMP: MCPPreparedXMPIdentity?
         let canRestorePartialPublication: Bool
         let canResolveUnchanged: Bool
         fileprivate let restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?
@@ -42,14 +43,23 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         guard snapshot.target.url.deletingPathExtension().appendingPathExtension("xmp").path == material.targetPath,
               let currentState = try recovery.loadRecoveryState(),
               currentState.material == material, currentState.installed == state.installed,
-              currentState.restored == state.restored else { throw Failure.staleReview }
+              currentState.restored == state.restored,
+              currentState.preparedXMP == state.preparedXMP else { throw Failure.staleReview }
         let unchanged = try state.installed == nil && matchesOriginal(snapshot, material: material)
-        let restorable = try matchesRestorable(snapshot, material: material, installed: state.installed, restored: state.restored)
+        let preparedMatches = state.installed == nil && state.preparedXMP != nil
+            && state.preparedXMP == snapshot.preparedXMPIdentity
+            && snapshot.xmpBytes == material.candidate
+            && snapshot.xmpSidecarRevision != material.binding.xmpSidecarRevision
+        let effectiveInstalled = state.installed ?? (preparedMatches
+            ? .init(xmpRevision: snapshot.xmpSidecarRevision, appRevision: nil) : nil)
+        let restorable = try matchesRestorable(snapshot, material: material,
+            installed: effectiveInstalled, restored: state.restored)
         let identityMessage = state.installed.map {
             $0.appRevision == nil ? " Installed XMP identity is retained." : " Installed XMP and app history identities are retained."
         } ?? ""
         return Review(photoPath: snapshot.target.url.path, materialID: material.id,
-            installedCarriers: state.installed, canRestorePartialPublication: restorable,
+            installedCarriers: state.installed, preparedXMP: state.preparedXMP,
+            canRestorePartialPublication: restorable,
             canResolveUnchanged: unchanged, restored: state.restored,
             message: unchanged
                 ? "The original photo, XMP and app history are unchanged. Resolve abandoned staging to allow a new publication review."
@@ -99,11 +109,11 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
     }
 
     /// Internal native-consent boundary. No MCP tool or automatic retry invokes restoration.
-    /// Receipt-complete steps can resume after reopening. A mutation interrupted before its
-    /// receipt cannot be distinguished from external replacement and remains blocked.
+    /// Receipt-complete steps can resume after reopening. A pre-receipt XMP mutation can
+    /// resume only when its prepared inode generation matches the rooted live carrier.
     @MetadataSidecarFilesystemActor
     func restorePartialPublication(_ review: Review) async throws {
-        guard review.canRestorePartialPublication, let installed = review.installedCarriers,
+        guard review.canRestorePartialPublication,
               let app = review.material.appSidecarRecovery else { throw Failure.unresolvedChanges }
         try Task.checkCancellation()
         let cancellation = Cancellation()
@@ -115,8 +125,33 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                 try cancellation.checking {
                     try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
                     guard let state = try recovery.loadRecoveryState(), state.material == review.material,
-                          state.installed == installed, state.restored == review.restored else { throw Failure.staleReview }
+                          state.installed == review.installedCarriers,
+                          state.preparedXMP == review.preparedXMP,
+                          state.restored == review.restored else { throw Failure.staleReview }
                     var current = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                    let installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers
+                    if let receipt = state.installed {
+                        installed = receipt
+                    } else if let prepared = state.preparedXMP {
+                        installed = .init(xmpRevision: current.xmpSidecarRevision, appRevision: nil)
+                        guard current.target == review.snapshot.target,
+                              current.sourceRevision == state.material.binding.sourceRevision,
+                              current.preparedXMPIdentity == prepared,
+                              current.xmpSidecarRevision != state.material.binding.xmpSidecarRevision,
+                              current.xmpBytes == state.material.candidate,
+                              current.appSidecarRevision == state.material.binding.appSidecarRevision,
+                              current.appSidecarBytes == app.original else { throw Failure.staleReview }
+                        let preparedSnapshot = current
+                        try recovery.recordInstalled(state.material, installed: installed) {
+                            try requireAuthority(state.material)
+                            let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                            guard fresh.sourceRevision == preparedSnapshot.sourceRevision,
+                                  fresh.xmpSidecarRevision == preparedSnapshot.xmpSidecarRevision,
+                                  fresh.appSidecarRevision == preparedSnapshot.appSidecarRevision,
+                                  fresh.xmpBytes == preparedSnapshot.xmpBytes,
+                                  fresh.appSidecarBytes == preparedSnapshot.appSidecarBytes else { throw Failure.staleReview }
+                        }
+                    } else { throw Failure.staleReview }
                     guard current.target == review.snapshot.target,
                           current.sourceRevision == review.snapshot.sourceRevision,
                           current.xmpSidecarRevision == review.snapshot.xmpSidecarRevision,
