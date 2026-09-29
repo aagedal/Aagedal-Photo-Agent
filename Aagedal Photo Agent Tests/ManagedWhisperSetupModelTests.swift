@@ -15,6 +15,11 @@ struct ManagedWhisperSetupModelTests {
         func removed() { removals += 1 }
     }
 
+    private actor AdmissionAttempts {
+        private(set) var count = 0
+        func next() -> Int { count += 1; return count }
+    }
+
     private actor Gate {
         var started = false
         var pauses = 0
@@ -175,6 +180,35 @@ struct ManagedWhisperSetupModelTests {
         #expect(setup.isInstalled && !setup.isReady && !setup.isRefreshing)
         #expect(setup.errorMessage != nil)
         #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+    }
+
+    @Test("Retrying setup admits an installed model without downloading it again")
+    func retryInstalledAdmission() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let admission = FFmpegWhisperArtifactAdmissionService()
+        let receipt = try await admission.admitCustom(
+            executableURL: root.appendingPathComponent("ffmpeg"),
+            modelURL: root.appendingPathComponent("model"))
+        let attempts = AdmissionAttempts()
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in receipt.model.url },
+            download: { _, _ in await calls.downloaded(); throw URLError(.unsupportedURL) },
+            remove: { _ in },
+            admit: { _, _ in
+                if await attempts.next() == 1 { throw URLError(.cannotOpenFile) }
+                return receipt
+            })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: operations)
+        await setup.refresh()
+        #expect(setup.isInstalled && !setup.isReady && setup.errorMessage != nil)
+        await setup.refresh()
+        #expect(setup.isInstalled && setup.isReady && setup.errorMessage == nil)
+        #expect(await attempts.count == 2)
+        #expect(await calls.downloads == 0)
     }
 
     @Test("Successful admission gates readiness and snapshots exact provenance; removal revokes readiness")

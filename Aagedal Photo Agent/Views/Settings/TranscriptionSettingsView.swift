@@ -95,7 +95,11 @@ struct TranscriptionSettingsView: View {
                         .accessibilityIdentifier("settings.transcription.whisper.ready")
                 } else {
                     Button(managedWhisper.isInstalled ? "Retry Setup" : "Download Model") {
-                        managedWhisper.downloadSelectedModel()
+                        if managedWhisper.isInstalled {
+                            Task { await managedWhisper.refresh() }
+                        } else {
+                            managedWhisper.downloadSelectedModel()
+                        }
                     }
                     .accessibilityIdentifier("settings.transcription.whisper.download")
                 }
