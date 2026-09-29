@@ -1,15 +1,20 @@
 # 3.0 coordinator state
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-09-23
-**Latest implementation state:** [Cycle 102](cycle-102-recovery-urgency-analysis-2026-09-23.md) requires both XMP installed-carrier receipts before verified completion, adds retained urgency template previews, and isolates superseded Analysis runs. The signed integrated 3,438-test suite passes. Production model signing/Settings integration, pre-receipt XMP recovery, executors and broad release gates remain open.
-**Latest native evidence:** Cycle 101 passes same-byte app-history replacement refusal after recovery inspection, including relaunch persistence. Cycle 100 passes explicit existing-carrier restoration. Cycle 102 adds focused and integrated automated evidence but no new native UI case. Broader native interruption and accessibility cases remain open.
-**Implementation commits:** Cycle 102 implementation and verification are recorded in its dated report; commit identity follows in Git history. The prior unsigned Release candidate passes model omission and ZIP payload verification; no new release candidate was built this cycle.
-**Cycle baseline:** `4779741`, initially clean. No whole release-readiness gate is newly closed.
+**Updated:** 2026-09-29
+**Latest implementation state:** [Cycle 103](cycle-103-prepared-xmp-keyword-whisper-2026-09-29.md) authenticates an XMP rename interrupted before its first installed receipt for explicit native restoration, captures consistent Approved Keywords policy per operation, and retries installed Whisper setup without a download. The serial integrated 3,445-test suite passes. Other pre-receipt mutation steps, production executors, production model signing and broad release gates remain open.
+**Latest native evidence:** Cycle 101 passes same-byte app-history replacement refusal after recovery inspection, including relaunch persistence. Cycle 100 passes explicit existing-carrier restoration. Cycle 103 adds focused and integrated automated recovery evidence but no new native UI case. Broader native interruption and accessibility cases remain open.
+**Implementation commits:** `8b63ca9`, `e807942`, and `46db355`. The prior unsigned Release candidate passes model omission and ZIP payload verification; no new release candidate was built this cycle.
+**Cycle baseline:** `bb15db2`, initially clean. No whole release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 103 interrupted XMP recovery, keyword policy and Whisper setup retry](cycle-103-prepared-xmp-keyword-whisper-2026-09-29.md)
+records three bounded changes, 30 passing recovery/keyword tests, 12 passing Whisper setup tests,
+repository validation and 3,445 passing serial integrated tests. App-history pre-receipt
+recovery, exact MCP keyword authority and wider release gates remain open.
 
 [Cycle 102 recovery receipts, urgency previews and Analysis run isolation](cycle-102-recovery-urgency-analysis-2026-09-23.md)
 records three bounded implementation changes, passing focused checks, repository validation and
@@ -36,8 +41,8 @@ progress/completion, canonical list field references and authenticated rollback-
 Restoration refuses external identity changes and missing receipt evidence; production model and
 workflow integration remain open.
 
-Ordered next implementation actions: unreceipted recovery policy and broader native
-restoration cases, then the guarded helper commit boundary; authoritative Approved Keywords and
+Ordered next implementation actions: remaining unreceipted recovery policy and broader native
+restoration cases, then the guarded helper commit boundary; exact-source authoritative Approved Keywords and
 shared face-scan/template/transcription executors; production signed Whisper descriptors,
 Settings/Caption integration and authenticated missing-ledger/partial-orphan recovery. External interoperability,
 real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user

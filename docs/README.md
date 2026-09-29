@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-22
+**Last reviewed:** 2026-09-29
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 102: recovery receipts, urgency previews and Analysis run isolation](release/cycle-102-recovery-urgency-analysis-2026-09-23.md) requires both installed-carrier receipts for verified publication, resolves retained urgency in read-only previews, and prevents superseded Analysis runs from replacing current state. Pre-receipt recovery, production executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 103: interrupted XMP recovery, keyword policy and Whisper setup retry](release/cycle-103-prepared-xmp-keyword-whisper-2026-09-29.md) authenticates a prepared XMP generation for explicit native restoration, captures consistent Approved Keywords policy per operation, and rechecks installed Whisper files on Retry Setup. The serial 3,445-test suite passes. Other pre-receipt recovery, production executors and signed-model integration remain open.
 
 ## Portfolio
 
