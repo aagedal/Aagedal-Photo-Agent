@@ -26,7 +26,7 @@ nonisolated enum ApprovedListField: String, CaseIterable, Sendable {
     var lastRefreshedKey: String   { "approvedList.\(rawValue).lastRefreshed" }
 }
 
-enum ApprovedListMode: String, CaseIterable, Identifiable {
+enum ApprovedListMode: String, CaseIterable, Identifiable, Sendable {
     case suggest
     case warn
     case strict
@@ -60,10 +60,75 @@ struct ApprovedListSuggestion: Hashable, Identifiable {
     var id: String { canonical }
 }
 
-enum KeywordValidation {
+enum KeywordValidation: Equatable, Sendable {
     case accept
     case acceptCanonical(String)
     case reject(reason: String)
+}
+
+/// Immutable approval rules for one operation. Callers that process values after
+/// asynchronous work can retain this value instead of consulting changing UI state.
+/// The first spelling in the managed list wins, matching the editor's cache.
+struct ApprovedKeywordPolicy: Sendable {
+    let enabled: Bool
+    let mode: ApprovedListMode
+    let allowStructuredBypass: Bool
+    let canonicalByNormalized: [String: String]
+
+    init(enabled: Bool, mode: ApprovedListMode, allowStructuredBypass: Bool, entries: [String]) {
+        var canonical: [String: String] = [:]
+        for entry in entries {
+            let normalized = Self.normalize(entry)
+            if !normalized.isEmpty, canonical[normalized] == nil {
+                canonical[normalized] = entry
+            }
+        }
+        self.init(enabled: enabled, mode: mode, allowStructuredBypass: allowStructuredBypass,
+            canonicalByNormalized: canonical)
+    }
+
+    fileprivate init(enabled: Bool, mode: ApprovedListMode, allowStructuredBypass: Bool,
+                     canonicalByNormalized: [String: String]) {
+        self.enabled = enabled
+        self.mode = mode
+        self.allowStructuredBypass = allowStructuredBypass
+        self.canonicalByNormalized = canonicalByNormalized
+    }
+
+    var isActive: Bool { enabled && !canonicalByNormalized.isEmpty }
+    var isStrict: Bool { isActive && mode == .strict }
+
+    func validate(_ value: String, source: KeywordSource = .user) -> KeywordValidation {
+        guard isActive else { return .accept }
+        if source == .structuredTree, allowStructuredBypass { return .accept }
+        if let canonical = canonicalByNormalized[Self.normalize(value)] {
+            return .acceptCanonical(canonical)
+        }
+        return isStrict ? .reject(reason: "Not in approved list") : .accept
+    }
+
+    func validateBulk(_ values: [String], source: KeywordSource = .user) -> (accepted: [String], rejected: [String]) {
+        var accepted: [String] = []
+        var rejected: [String] = []
+        var seenAccepted = Set<String>()
+        for value in values {
+            switch validate(value, source: source) {
+            case .accept:
+                if seenAccepted.insert(Self.normalize(value)).inserted { accepted.append(value) }
+            case .acceptCanonical(let canonical):
+                if seenAccepted.insert(Self.normalize(canonical)).inserted { accepted.append(canonical) }
+            case .reject:
+                rejected.append(value)
+            }
+        }
+        return (accepted, rejected)
+    }
+
+    static func normalize(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
 }
 
 @Observable
@@ -379,6 +444,14 @@ final class ApprovedListService {
         return cache[field]?.ordered ?? []
     }
 
+    /// Capture policy and canonical values together for a single operation.
+    func policy(for field: ApprovedListField) -> ApprovedKeywordPolicy {
+        _ = version
+        return ApprovedKeywordPolicy(enabled: isEnabled(field), mode: mode(for: field),
+            allowStructuredBypass: allowStructuredBypass(field),
+            canonicalByNormalized: cache[field]?.canonicalByNormalized ?? [:])
+    }
+
     /// Validate a single value against the configured policy for `field`.
     /// Returns `.accept` when the list is inactive, `.acceptCanonical(canonical)` when
     /// the value is in the list (any mode), or `.reject` in Strict mode for non-approved.
@@ -387,40 +460,14 @@ final class ApprovedListService {
     /// `.structuredTree` and the per-field "allow structured bypass" toggle is
     /// on, the result is forced to `.accept`.
     func validate(_ value: String, in field: ApprovedListField, source: KeywordSource = .user) -> KeywordValidation {
-        guard isActive(for: field) else { return .accept }
-        if source == .structuredTree, allowStructuredBypass(field) {
-            return .accept
-        }
-        if let canonical = canonicalCasing(of: value, in: field) {
-            return .acceptCanonical(canonical)
-        }
-        return mode(for: field) == .strict
-            ? .reject(reason: "Not in approved list")
-            : .accept
+        policy(for: field).validate(value, source: source)
     }
 
     /// Validate many values in one pass. `accepted` is canonicalised and deduped
     /// (case-/diacritic-insensitive); `rejected` preserves the input casing for
     /// user-facing messages. Both arrays follow input order.
     func validateBulk(_ values: [String], in field: ApprovedListField, source: KeywordSource = .user) -> (accepted: [String], rejected: [String]) {
-        var accepted: [String] = []
-        var rejected: [String] = []
-        var seenAccepted = Set<String>()
-        for value in values {
-            switch validate(value, in: field, source: source) {
-            case .accept:
-                if seenAccepted.insert(Self.normalize(value)).inserted {
-                    accepted.append(value)
-                }
-            case .acceptCanonical(let canonical):
-                if seenAccepted.insert(Self.normalize(canonical)).inserted {
-                    accepted.append(canonical)
-                }
-            case .reject:
-                rejected.append(value)
-            }
-        }
-        return (accepted, rejected)
+        policy(for: field).validateBulk(values, source: source)
     }
 
     /// Static helper so the same scoring is used for Quick List fallback (caller passes the array).
@@ -543,8 +590,6 @@ final class ApprovedListService {
     }
 
     private static func normalize(_ s: String) -> String {
-        s.trimmingCharacters(in: .whitespacesAndNewlines)
-            .precomposedStringWithCanonicalMapping
-            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+        ApprovedKeywordPolicy.normalize(s)
     }
 }

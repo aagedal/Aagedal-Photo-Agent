@@ -701,6 +701,40 @@ private nonisolated final class ApprovedListCacheLoadAccessProbe: @unchecked Sen
 @Suite("ApprovedListService.validate / validateBulk")
 struct ApprovedListValidationTests {
 
+    @Test("Captured approval policy keeps list and setting decisions stable")
+    func capturedPolicyIsImmutable() async throws {
+        let service = makeIsolatedApprovedListService()
+        try await service.saveEntries(["Berlin", "BERLIN", "Paris"], for: .keywords)
+        service.setEnabled(true, for: .keywords)
+        service.setMode(.strict, for: .keywords)
+        service.setAllowStructuredBypass(false, for: .keywords)
+
+        let captured = service.policy(for: .keywords)
+        #expect(captured.isStrict)
+        #expect(captured.canonicalByNormalized == ["berlin": "Berlin", "paris": "Paris"])
+        #expect(captured.validateBulk(["berlin", "Tokyo", "BERLIN"], source: .template).accepted == ["Berlin"])
+        #expect(captured.validateBulk(["berlin", "Tokyo", "BERLIN"], source: .template).rejected == ["Tokyo"])
+
+        try await service.saveEntries(["Tokyo"], for: .keywords)
+        service.setMode(.warn, for: .keywords)
+        service.setAllowStructuredBypass(true, for: .keywords)
+        #expect(captured.validate("Tokyo", source: .structuredTree) == .reject(reason: "Not in approved list"))
+        #expect(service.policy(for: .keywords).validate("Tokyo", source: .template) == .acceptCanonical("Tokyo"))
+    }
+
+    @Test("Captured policy preserves inactive and structured bypass behavior")
+    func capturedPolicyInactiveAndBypass() {
+        let inactive = ApprovedKeywordPolicy(enabled: true, mode: .strict,
+            allowStructuredBypass: false, entries: [])
+        #expect(!inactive.isActive)
+        #expect(inactive.validate("Tokyo") == .accept)
+
+        let bypass = ApprovedKeywordPolicy(enabled: true, mode: .strict,
+            allowStructuredBypass: true, entries: ["Berlin"])
+        #expect(bypass.validate("Tokyo", source: .structuredTree) == .accept)
+        #expect(bypass.validate("Tokyo", source: .template) == .reject(reason: "Not in approved list"))
+    }
+
     private func tempList(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("approved-validate-\(UUID().uuidString)")

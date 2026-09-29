@@ -13,18 +13,15 @@ struct VariableMetadataOptions: Sendable {
 
     static func capture() -> Self {
         let lists = ApprovedListService.shared
-        let active = lists.isActive(for: .keywords)
-        var canonical: [String: String] = [:]
-        if active {
-            for entry in lists.allEntries(for: .keywords) { canonical[normalizedKeyword(entry)] = entry }
-        }
+        let keywordPolicy = lists.policy(for: .keywords)
         return .init(ordinaryMode: .current(forC2PA: false, isRaw: false),
             credentialMode: .current(forC2PA: true, isRaw: false),
             rawMode: .current(forC2PA: false, isRaw: true),
             credentialRawMode: .current(forC2PA: true, isRaw: true),
             initials: UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? "",
             addJobIDToKeywords: UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
-            approvedKeywords: canonical, strictKeywords: active && lists.mode(for: .keywords) == .strict)
+            approvedKeywords: keywordPolicy.isActive ? keywordPolicy.canonicalByNormalized : [:],
+            strictKeywords: keywordPolicy.isStrict)
     }
 
     func mode(hasC2PA: Bool, imageURL: URL) -> MetadataWriteMode {
@@ -33,8 +30,7 @@ struct VariableMetadataOptions: Sendable {
     }
 
     static func normalizedKeyword(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
+        ApprovedKeywordPolicy.normalize(value)
     }
 }
 
