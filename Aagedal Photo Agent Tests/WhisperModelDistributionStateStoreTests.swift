@@ -14,6 +14,11 @@ struct WhisperModelDistributionStateStoreTests {
         func increment() { value += 1 }
     }
 
+    private actor RecoveryTransfers {
+        var models: [WhisperDownloadableModel] = []
+        func record(_ model: WhisperDownloadableModel) { models.append(model) }
+    }
+
     private struct Fixture {
         let directory: URL
         let key = Curve25519.Signing.PrivateKey()
@@ -99,6 +104,178 @@ struct WhisperModelDistributionStateStoreTests {
                 signature: fixture.key.signature(for: secondData), expectedGeneration: rolledBack.generation)
         }
         #expect(await count.value == 2)
+    }
+
+    @Test("Signed lifecycle repairs exact retained bytes without changing release authority", arguments: [false, true])
+    func signedLifecycleRecovery(rollback: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let firstBytes = Data("retained first release".utf8)
+        let secondBytes = Data("current second release".utf8)
+        let firstReceipt = try fixture.receipt(1, bytes: firstBytes)
+        let secondReceipt = try fixture.receipt(2, bytes: secondBytes)
+        try firstBytes.write(to: source)
+        let first = try await store.install(firstReceipt, from: source, expectedGeneration: nil)
+        let priorURL = try #require(await store.installedURL())
+        try secondBytes.write(to: source)
+        let second = try await store.install(secondReceipt, from: source, expectedGeneration: first.generation)
+        let currentURL = try #require(await store.installedURL())
+        let target = rollback ? priorURL : currentURL
+        let selectedReceipt = rollback ? firstReceipt : secondReceipt
+        let bytes = rollback ? firstBytes : secondBytes
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try FileManager.default.removeItem(at: target)
+        let transfers = RecoveryTransfers()
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("recovery-cache"),
+            fetch: { model, destination, progress in
+                await transfers.record(model)
+                try bytes.write(to: destination)
+                progress(0.9)
+            })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: try fixture.store())
+        let restored = rollback
+            ? try await lifecycle.restoreRollbackModel(expectedGeneration: second.generation)
+            : try await lifecycle.restoreCurrentModel(expectedGeneration: second.generation)
+        #expect(restored == target)
+        #expect(try Data(contentsOf: target) == bytes)
+        #expect(await transfers.models == [selectedReceipt.downloadableModel])
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await lifecycle.installedURL() == currentURL)
+        #expect(try await store.load()?.release.highestAcceptedSequence == 2)
+        // Once repaired, a repeated explicit request needs neither the cache nor a transfer.
+        try FileManager.default.removeItem(at: fixture.directory.appendingPathComponent("recovery-cache"))
+        _ = rollback
+            ? try await lifecycle.restoreRollbackModel(expectedGeneration: second.generation)
+            : try await lifecycle.restoreCurrentModel(expectedGeneration: second.generation)
+        #expect(await transfers.models.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("recovery-cache").path))
+        if rollback {
+            let rolledBack = try await lifecycle.rollBack(expectedGeneration: second.generation)
+            #expect(rolledBack.release.highestAcceptedSequence == 2)
+            #expect(try await lifecycle.installedURL() == priorURL)
+            // Repairing after an explicit rollback must keep its higher replay floor.
+            try FileManager.default.removeItem(at: priorURL)
+            #expect(try await lifecycle.restoreCurrentModel(expectedGeneration: rolledBack.generation) == priorURL)
+            #expect(await transfers.models == [firstReceipt.downloadableModel, firstReceipt.downloadableModel])
+            #expect(try await store.load()?.release.highestAcceptedSequence == 2)
+            #expect(try await store.load()?.release.rollbackCandidate == nil)
+        }
+    }
+
+    @Test("Signed lifecycle refuses stale, missing, corrupt or unavailable authority before transfer")
+    func signedLifecycleRecoveryAuthorityRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let count = TransferCount()
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"),
+            fetch: { _, _, _ in await count.increment(); throw URLError(.notConnectedToInternet) })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.restoreCurrentModel(expectedGeneration: UUID())
+        }
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.restoreCurrentModel(expectedGeneration: UUID())
+        }
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.unavailableRollback) {
+            try await lifecycle.restoreRollbackModel(expectedGeneration: initial.generation)
+        }
+        let otherKey = Curve25519.Signing.PrivateKey()
+        let otherLifecycle = WhisperSignedModelLifecycle(
+            trust: try WhisperModelDistributionTrust(publicKey: otherKey.publicKey.rawRepresentation), downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await otherLifecycle.restoreCurrentModel(expectedGeneration: initial.generation)
+        }
+        try Data("corrupt ledger".utf8).write(to: fixture.stateURL)
+        await #expect(throws: (any Error).self) {
+            try await lifecycle.restoreCurrentModel(expectedGeneration: initial.generation)
+        }
+        #expect(await count.value == 0)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("cache").path))
+    }
+
+    @Test("Signed lifecycle refuses existing corrupt model bytes before downloading")
+    func signedLifecycleRecoveryCorruptContent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let bytes = Data("signed model bytes".utf8)
+        try bytes.write(to: source)
+        let initial = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let target = try #require(await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let corrupt = Data("corrupt model".utf8)
+        try corrupt.write(to: target)
+        let count = TransferCount()
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"),
+            fetch: { _, _, _ in await count.increment(); throw URLError(.notConnectedToInternet) })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidModelBytes) {
+            try await lifecycle.restoreCurrentModel(expectedGeneration: initial.generation)
+        }
+        #expect(await count.value == 0)
+        #expect(try Data(contentsOf: target) == corrupt)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+    }
+
+    @Test("Release changes during recovery download refuse stale publication", arguments: [false, true])
+    func signedLifecycleRecoveryConcurrentRelease(rollback: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let bytes = Data("first retained bytes".utf8)
+        let secondBytes = Data("second retained bytes".utf8)
+        try bytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let priorURL = try #require(await store.installedURL())
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source, expectedGeneration: first.generation)
+        let currentURL = try #require(await store.installedURL())
+        let target = rollback ? priorURL : currentURL
+        try FileManager.default.removeItem(at: target)
+        let next = try fixture.receipt(3)
+        let recoveryBytes = rollback ? bytes : secondBytes
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"),
+            fetch: { _, destination, _ in
+                // Deterministically publish a competing generation while transfer is suspended.
+                _ = try await store.accept(next, expectedGeneration: second.generation)
+                try recoveryBytes.write(to: destination)
+            })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            if rollback { return try await lifecycle.restoreRollbackModel(expectedGeneration: second.generation) }
+            return try await lifecycle.restoreCurrentModel(expectedGeneration: second.generation)
+        }
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(try await store.load()?.release.current.descriptor.releaseSequence == 3)
+        #expect(try await store.load()?.release.highestAcceptedSequence == 3)
+    }
+
+    @Test("Cancelled recovery transfer leaves retained authority and missing content untouched")
+    func signedLifecycleRecoveryCancellation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let bytes = Data("retained signed bytes".utf8)
+        let receipt = try fixture.receipt(1, bytes: bytes)
+        let initial = try await store.accept(receipt, expectedGeneration: nil)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let cache = fixture.directory.appendingPathComponent("cache")
+        let downloads = WhisperModelDownloadService(directory: cache, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        let restoration = Task { try await lifecycle.restoreCurrentModel(expectedGeneration: initial.generation) }
+        await #expect(throws: CancellationError.self) { try await restoration.value }
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await store.retainedModelURL(expectedGeneration: initial.generation, rollback: false) == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
     }
 
     @Test("Missing rollback bytes restore without selecting or consuming the retained release")

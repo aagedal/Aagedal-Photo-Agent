@@ -136,6 +136,42 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Generation-bound repair inspection. Only an absent file returns nil; corrupt
+    /// or unsafe retained bytes are refused without changing them or the ledger.
+    func retainedModelURL(expectedGeneration: UUID, rollback: Bool) async throws -> URL? {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.readRetainedModelURL(expectedGeneration: expectedGeneration, rollback: rollback)
+        }
+    }
+
+    private func readRetainedModelURL(expectedGeneration: UUID, rollback: Bool) throws -> URL? {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, _) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        let receipt: WhisperModelDescriptorReceipt
+        if rollback {
+            guard let candidate = state.rollbackCandidate else {
+                throw WhisperModelDistributionTrust.TrustError.unavailableRollback
+            }
+            receipt = candidate
+        } else {
+            receipt = state.current
+        }
+        let name = modelFilename(receipt)
+        var info = stat()
+        if fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+            guard errno == ENOENT else { throw StoreError.unsafeStorage }
+            try validateDirectoryIdentity()
+            try Task.checkCancellation()
+            return nil
+        }
+        try verifyModel(receipt, directoryFD: fd)
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+        return directory.appendingPathComponent(name)
+    }
+
     /// Explicit maintenance after relaunch. Authenticated authority is required before
     /// deleting anything; absent/corrupt ledgers must be recovered separately. All
     /// candidates are checked before mutation, and retries tolerate a partial sweep.

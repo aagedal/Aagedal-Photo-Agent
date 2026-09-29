@@ -235,6 +235,50 @@ actor WhisperSignedModelLifecycle {
 
     func installedURL() async throws -> URL? { try await store.installedURL() }
 
+    /// Explicit repair uses retained signed authority, never a server's latest release
+    /// or the compiled catalog. It preserves the ledger and does not select rollback.
+    func restoreCurrentModel(expectedGeneration: UUID,
+                             progress: @escaping WhisperModelDownloadService.Progress = { _ in }) async throws -> URL {
+        try await restoreModel(expectedGeneration: expectedGeneration, rollback: false, progress: progress)
+    }
+
+    func restoreRollbackModel(expectedGeneration: UUID,
+                              progress: @escaping WhisperModelDownloadService.Progress = { _ in }) async throws -> URL {
+        try await restoreModel(expectedGeneration: expectedGeneration, rollback: true, progress: progress)
+    }
+
+    private func restoreModel(expectedGeneration: UUID, rollback: Bool,
+                              progress: @escaping WhisperModelDownloadService.Progress) async throws -> URL {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        let receipt: WhisperModelDescriptorReceipt
+        if rollback {
+            guard let retained = snapshot.release.rollbackCandidate else {
+                throw WhisperModelDistributionTrust.TrustError.unavailableRollback
+            }
+            receipt = retained
+        } else {
+            receipt = snapshot.release.current
+        }
+        // A mismatched injected store cannot authorize a transfer under this lifecycle.
+        _ = try trust.verify(receipt.descriptorData, signature: receipt.signature)
+        // Existing verified bytes need no transfer; corrupt or redirected content must
+        // be refused before network work rather than treated as a missing download.
+        if let installed = try await store.retainedModelURL(expectedGeneration: expectedGeneration, rollback: rollback) {
+            return installed
+        }
+        let source = try await downloads.download(receipt.downloadableModel, progress: progress)
+        try Task.checkCancellation()
+        // The download suspends this actor. The store rechecks generation under its
+        // transaction lock before publication, including concurrent update/rollback.
+        if rollback {
+            return try await store.restoreMissingRollbackModel(from: source, expectedGeneration: expectedGeneration)
+        }
+        return try await store.restoreMissingCurrentModel(from: source, expectedGeneration: expectedGeneration)
+    }
+
     func rollBack(expectedGeneration: UUID) async throws -> WhisperModelDistributionStateStore.Snapshot {
         try await store.rollBackInstalled(expectedGeneration: expectedGeneration)
     }
