@@ -150,8 +150,11 @@ These are read-only plans: no commit endpoint is available, actual write support
 publication approval are not yet verified, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
 
-A client can queue a native review with `request_iptc_patch_review`, supplying a new lowercase
-UUID `requestID`, the retained `planID`, and purpose `pendingDraft` or `xmpPublication`. Open
+First call `get_native_review_request_capacity` to obtain the durable `requestEpoch`. This explicit
+coordination call may initialize or migrate private request storage; it changes no photos and grants
+no consent. A client can then queue a native review with `request_iptc_patch_review`, supplying that
+unchanged epoch, a new lowercase UUID `requestID`, the retained `planID`, and purpose `pendingDraft`
+or `xmpPublication`. Open
 **Settings → Automation → Proofreading Plan Review → Show Client Review Requests**, then
 **Refresh Review Requests** and **Inspect Requested Plan**. This rechecks the current plan and
 clears any earlier approval. Review and explicitly approve the requested action; requests do not
@@ -164,11 +167,20 @@ Cancellation is a request; wait for the recorded outcome before assuming work st
 operation ID and a matching operation snapshot when retained. `operationStatus` reports
 `available`, `confirmation-unavailable`, or `not-linked`; `operation` is null when no matching operation record can
 be confirmed. Recovery resolution remains separate from the original publication outcome.
-`get_operation_status` also exposes this evidence. Retry with the same request ID and identical plan/purpose
-to retrieve status after helper restart. `cancel_native_review_request` cancels an awaiting request
+`get_operation_status` also exposes this evidence. Retry with the original request epoch, request ID
+and identical plan/purpose to retrieve status after helper restart. Supply the original epoch to
+`get_native_review_request` and `cancel_native_review_request` too; omit it only for retained legacy
+epochless requests. `cancel_native_review_request` cancels an awaiting request
 or requests cooperative cancellation of linked work. An unknown admission cannot be replayed;
 inspect operation history and recovery before preparing another request. The archive retains up to
-256 requests without automatic eviction, including cancelled requests.
+256 requests without automatic eviction, including cancelled requests. In the client request section,
+choose **Review request capacity**, then **Remove cancelled review requests** and confirm to remove
+only requests cancelled before admission. Cleanup clears current native review consent and atomically
+rotates the epoch. Active, admitted, linked and uncertain requests retain their original handles and
+evidence. Retired requests cannot be retried; clients must never silently submit them under a new
+epoch. A separate new intent needs a new request ID and the current epoch. Retained retries keep
+their original epoch even after cleanup. If a full archive has no pre-admission cancelled requests that can be removed, it
+remains full; linked-terminal cleanup is not available yet.
 
 To inspect a plan in Photo Agent, open **Settings → Automation → Proofreading Plan Review**,
 paste its exact `planID`, and choose **Inspect Plan**. The app rechecks the current authorization

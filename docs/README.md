@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 109: native review outcomes and cancellation](release/cycle-109-native-review-outcomes-cancellation-2026-09-30.md) adds matching linked operation/recovery evidence to Settings and helper status. Refresh and cancellation remain available during native execution; unavailable history preserves cancellation intent without claiming completion. Exact authorization rechecks protect intent and forwarding. Final verification passes 129 focused tests, four native draft/XMP workflows across two selections, 3,557 serial integrated tests and repository checks. Authenticated IPC/helper commits, versioned request capacity recovery, iCloud authority, broader executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 110: native review capacity and request epochs](release/cycle-110-native-review-capacity-epochs-2026-09-30.md) adds explicit cancelled-before-admission cleanup with atomic epoch rotation. Stale helper/native handles cannot replay or mutate recreated UUIDs; retained active, linked and uncertain records keep their original epochs and evidence. Final verification passes 3,572 serial integrated tests, three native consent/publication/cleanup/relaunch workflows, the 22-tool helper probe and repository checks. Linked-terminal retirement, physical crash/archive-loss qualification, authenticated IPC/helper commits, iCloud authority, broader executors and signed-model integration remain open.
 
 ## Portfolio
 

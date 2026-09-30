@@ -1649,6 +1649,17 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 110 continuation (2026-09-30):** Schema-2 native review request epochs now allow
+explicit confirmed cleanup of requests cancelled before admission. Atomic rotation refuses stale
+helper submissions and stale cancellation/admission/uncertainty handles, including reused UUIDs;
+retained requests keep their original epochs. Passive reads preserve legacy bytes and new intents
+require a current epoch; cleanup clears native consent and preserves all admitted/linked/uncertain
+records and operation evidence. Final verification passes 3,572 integrated tests, three actual
+native consent/publication/cleanup/relaunch workflows and the 22-tool helper probe. Linked-terminal
+retirement, physical crash/archive-loss qualification, authenticated IPC/helper commits and broader
+executors remain open; no whole Phase 5A checkbox closes. See
+[cycle 110 evidence](release/cycle-110-native-review-capacity-epochs-2026-09-30.md).
+
 **Cycle 109 continuation (2026-09-30):** Settings and helper request status now project
 matching retained operation outcomes and separate recovery resolution. A linked request alone
 never implies success; missing/unverifiable history remains unconfirmed. Request refresh and

@@ -131,10 +131,13 @@ This is separate from the unapproved AI-origin analyzer described above.
   completion. A cancellation request may race successful completion; the recorded outcome wins.
   Resolved recovery is separate evidence and cannot turn an uncertain publication into success.
   Interrupted admission without a linked operation has unknown
-  disposition and cannot be replayed. The private request archive has a permanent 256-record
-  capacity limit without automatic eviction or a request-removal UI; capacity recovery and broader
-  crash/cloud qualification remain unfinished. Authenticated IPC and direct helper commits remain
-  under implementation.
+  disposition and cannot be replayed. The private request archive retains at most 256 records without
+  automatic eviction. Explicit native cleanup removes only requests cancelled before admission and
+  rotates a durable epoch, refusing stale submissions and handles. Retained requests keep their
+  original epochs; clients must never silently resubmit retired intents under a new epoch. Linked
+  terminal records, missing history, active work and unresolved recovery cannot be removed through
+  this cleanup. Physical crash/link-loss, archive deletion/rollback and broader cloud qualification
+  remain unfinished. Authenticated IPC and direct helper commits remain under implementation.
 - Local MCP automation is off by default, uses a bundled STDIO helper, and opens no network listener.
   Only explicitly selected, unchanged folder roots are eligible. The current implementation exposes
   read-only capability/photo-input-format/root/path-admission, revision, owned-draft and effective editorial
