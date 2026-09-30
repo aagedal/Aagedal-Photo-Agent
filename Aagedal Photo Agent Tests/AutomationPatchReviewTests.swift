@@ -70,6 +70,17 @@ struct AutomationPatchReviewTests {
         private var pendingCapacityRecovery: CheckedContinuation<MCPNativeReviewRequestStore.CapacityRecoveryResult, Never>?
         private var capacityRecoveryResult: MCPNativeReviewRequestStore.CapacityRecoveryResult?
         var hasPendingCapacityRecovery: Bool { pendingCapacityRecovery != nil }
+        private var holdsNextRequestRefresh = false
+        private var pendingRequestRefresh: CheckedContinuation<[MCPNativeReviewRequestStore.Record], Never>?
+        private var requestRefreshResult: [MCPNativeReviewRequestStore.Record] = []
+        var hasPendingRequestRefresh: Bool { pendingRequestRefresh != nil }
+
+        func holdNextRequestRefresh() { holdsNextRequestRefresh = true }
+        func finishRequestRefresh() {
+            let continuation = pendingRequestRefresh
+            pendingRequestRefresh = nil
+            continuation?.resume(returning: requestRefreshResult)
+        }
 
         init(_ underlying: AutomationPatchReviewService, holdsCapacityRecovery: Bool = false) {
             self.underlying = underlying
@@ -77,7 +88,11 @@ struct AutomationPatchReviewTests {
         }
 
         func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] {
-            try await underlying.nativeReviewRequests()
+            let records = try await underlying.nativeReviewRequests()
+            guard holdsNextRequestRefresh else { return records }
+            holdsNextRequestRefresh = false
+            requestRefreshResult = records
+            return await withCheckedContinuation { pendingRequestRefresh = $0 }
         }
 
         func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot {
@@ -1163,19 +1178,66 @@ struct AutomationPatchReviewTests {
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
     }
 
-    @Test("Unavailable operation history retains finished requests and preserves cancelled cleanup") @MainActor
-    func unavailableFinishedCapacityHistory() async throws {
+    @Test("Native capacity requires the exact retained recovery receipt and preserves resolved evidence", arguments: [false, true])
+    func resolvedRecoveryCapacityService(separateDirectory: Bool) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let directory = separateDirectory ? fixture.root.appendingPathComponent("recovery") : registry.storageDirectory
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: directory)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, recoveryDirectory: separateDirectory ? directory : nil, nativeRequests: requests)
+        let linked = try linkedFinishedRequest(fixture: fixture, requests: requests, registry: registry,
+            outcome: .recoveryRequired, purpose: .xmpPublication)
+        let operationID = try #require(linked.operationID)
+        let material = try recovery.stage(id: operationID, planID: fixture.planID,
+            targetPath: fixture.photo.deletingPathExtension().appendingPathExtension("xmp").path,
+            binding: .init(sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app", authorizationRevision: UUID()),
+            original: nil, candidate: Data("candidate".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("app candidate".utf8)), publicationApprovalID: UUID())
+        #expect(try await service.nativeReviewCapacity().confirmedTerminalCount == 0)
+        try recovery.recordUnchanged(material) {}
+        // A completion journal without its durable operation-history handoff grants no eligibility.
+        #expect(try await service.nativeReviewCapacity().confirmedTerminalCount == 0)
+        try recovery.reconcileHistoryDisposition { _ = try registry.recordRecoveryResolution($0) }
+        let history = try registry.records()
+        let operationBytes = try Data(contentsOf: registry.storageDirectory.appendingPathComponent("operations.json"))
+        let recoveryArchive = directory.appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let recoveryBytes = try Data(contentsOf: recoveryArchive)
+        let capacity = try await service.nativeReviewCapacity()
+        #expect(capacity.confirmedTerminalCount == 1)
+        let result = try await service.recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: capacity.epoch)
+        #expect(result.retiredCount == 1 && result.epoch != capacity.epoch)
+        #expect(try requests.records().isEmpty)
+        #expect(try registry.records() == history)
+        #expect(try Data(contentsOf: registry.storageDirectory.appendingPathComponent("operations.json")) == operationBytes)
+        #expect(try Data(contentsOf: recoveryArchive) == recoveryBytes)
+        #expect(history.first?.outcome == .recoveryRequired && history.first?.recoveryResolution?.disposition == .unchanged)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Unavailable operation or recovery history retains finished requests and preserves cancelled cleanup", arguments: [false, true]) @MainActor
+    func unavailableFinishedCapacityHistory(corruptRecovery: Bool) async throws {
         let fixture = try Fixture()
         let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
         let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
         let linked = try linkedFinishedRequest(fixture: fixture, requests: requests, registry: registry)
         let cancelled = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
         _ = try requests.cancel(cancelled.requestID)
-        let operationArchive = registry.storageDirectory.appendingPathComponent("operations.json")
+        let recoveryDirectory = fixture.root.appendingPathComponent("recovery")
+        if corruptRecovery {
+            _ = try MCPIPTCPatchXMPRecoveryStore(directory: recoveryDirectory).stage(
+                id: try #require(linked.operationID), planID: fixture.planID, targetPath: fixture.photo.path + ".xmp",
+                binding: .init(sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app", authorizationRevision: UUID()),
+                original: nil, candidate: Data("candidate".utf8))
+        }
+        let operationArchive = corruptRecovery
+            ? recoveryDirectory.appendingPathComponent("iptc-xmp-recovery/operations.json")
+            : registry.storageDirectory.appendingPathComponent("operations.json")
         let corrupted = Data("unverified history".utf8)
         try corrupted.write(to: operationArchive)
         let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
-            operationRegistry: registry, nativeRequests: requests)
+            operationRegistry: registry, recoveryDirectory: recoveryDirectory, nativeRequests: requests)
         let model = AutomationPatchReviewModel(service: service)
         model.inspectNativeRequestCapacity()
         try await waitUntil { !model.isInspectingNativeRequestCapacity }
@@ -1274,6 +1336,41 @@ struct AutomationPatchReviewTests {
         #expect(model.nativeRequestCapacityMessage?.hasPrefix("Cleanup could not be confirmed.") == true)
         #expect(model.nativeRequests.map(\.requestID) == [request.requestID])
         #expect(try requests.inspect(request.requestID) == request)
+        #expect(model.review == nil && !model.isApproved && !model.isXMPPublicationApproved)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Confirmed cleanup survives a read-only request refresh and rejects its late publication", arguments: [false, true]) @MainActor
+    func cleanupDuringEvidenceRefresh(finished: Bool) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let linked = try linkedFinishedRequest(fixture: fixture, requests: requests, registry: registry)
+        let cancelled = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(cancelled.requestID)
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, operationRegistry: registry, nativeRequests: requests))
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequestCapacity()
+        try await waitUntil { !model.isInspectingNativeRequestCapacity }
+        let epoch = try #require(model.nativeRequestCapacity?.epoch)
+        await service.holdNextRequestRefresh()
+        model.refreshNativeRequestEvidence()
+        try await waitUntil { await service.hasPendingRequestRefresh }
+        #expect(model.isRefreshingNativeRequests)
+        #expect(!model.canRecoverCancelledNativeReviewCapacity && !model.canRecoverConfirmedTerminalNativeReviewCapacity)
+        if finished { model.recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: epoch) }
+        else { model.recoverCancelledNativeReviewCapacity(expectedEpoch: epoch) }
+        let accepted = model.isRecoveringNativeRequestCapacity
+        #expect(accepted)
+        await service.finishRequestRefresh()
+        guard accepted else { return }
+        try await waitUntil { !model.isBusyWithNativeRequestCapacity && !model.isRefreshingNativeRequests }
+        let retainedID = finished ? cancelled.requestID : linked.requestID
+        #expect(try requests.records().map(\.requestID) == [retainedID])
+        #expect(model.nativeRequests.map(\.requestID) == [retainedID])
+        #expect(model.nativeRequestCapacity?.epoch != epoch)
+        #expect(model.nativeRequestCapacityMessage?.hasPrefix("Removed 1") == true)
         #expect(model.review == nil && !model.isApproved && !model.isXMPPublicationApproved)
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
     }

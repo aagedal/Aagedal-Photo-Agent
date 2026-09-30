@@ -134,12 +134,16 @@ This is separate from the unapproved AI-origin analyzer described above.
   disposition and cannot be replayed. The private request archive retains at most 256 records without
   automatic eviction. Separate confirmed native actions remove requests cancelled before admission,
   or linked requests with exact matching terminal verified/failed/cancelled/stale operation evidence.
-  Kind and timing must match; operation and recovery history remains retained. Cleanup rotates a
+  XMP recovery/uncertain outcomes additionally require an exact retained completed restoration or
+  unchanged-staging receipt matching the operation, plan, digest, disposition and current request timing.
+  Only the current retained recovery journal can qualify; replaced or removed journals leave historical
+  requests retained even if their operation keeps a recovery digest. Original outcomes, operation and
+  recovery history remain retained. Cleanup rotates a
   durable epoch, refusing stale submissions and handles. Retained requests keep their original epochs;
   clients must never silently resubmit retired intents under a new epoch. Missing or mismatched history,
-  active work, uncertain admissions and all recovery outcomes (including separately resolved recovery)
+  active work, uncertain admissions, uncertain drafts and unresolved/incomplete recovery
   cannot be removed through these actions. A request cancellation recorded after its terminal operation
-  evidence conservatively prevents finished cleanup. Physical crash/link-loss, archive deletion/rollback and broader cloud qualification
+  evidence or exact recovery resolution conservatively prevents finished cleanup. Physical crash/link-loss, archive deletion/rollback and broader cloud qualification
   remain unfinished. Authenticated IPC and direct helper commits remain under implementation.
 - Local MCP automation is off by default, uses a bundled STDIO helper, and opens no network listener.
   Only explicitly selected, unchanged folder roots are eligible. The current implementation exposes

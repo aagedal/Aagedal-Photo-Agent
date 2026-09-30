@@ -1656,8 +1656,19 @@ rotation; operation and recovery evidence remains unchanged. Every recovery outc
 even after separate restoration. Unavailable history leaves finished eligibility explicitly unavailable
 and preserves cancelled-only cleanup. Both dialogs bind the inspected epoch and cleanup clears consent.
 See [cycle 111 evidence](release/cycle-111-finished-review-request-retirement-2026-09-30.md).
-No whole Phase 5A checkbox closes; authenticated IPC/helper commits, recovery-qualified retirement,
-physical crash/archive-loss evidence and broader executors remain open.
+
+**Cycle 112 continuation (2026-09-30):** Finished request retirement now also admits an XMP
+recovery/partial-uncertain outcome only when its operation resolution matches the exact retained
+completed restoration or unchanged-staging journal. Plan, operation, digest, disposition and timing
+are rechecked while holding recovery, operation and request locks in that order. Missing/replaced
+receipts, unfinished recovery, uncertain drafts and later request cancellation remain retained.
+Cleanup preserves all original outcomes and operation/recovery bytes, rotates the epoch and grants
+no consent. Confirmed cleanup cancels an in-flight read-only evidence refresh rather than silently
+refusing the action, while retaining captured-epoch and live service revalidation. This bounded
+maintenance extension does not close a Phase 5A or release gate.
+See [cycle 112 evidence](release/cycle-112-recovery-qualified-request-retirement-2026-09-30.md).
+No whole Phase 5A checkbox closes; authenticated IPC/helper commits, physical crash/archive-loss
+evidence and broader executors remain open.
 
 **Cycle 110 continuation (2026-09-30):** Schema-2 native review request epochs now allow
 explicit confirmed cleanup of requests cancelled before admission. Atomic rotation refuses stale

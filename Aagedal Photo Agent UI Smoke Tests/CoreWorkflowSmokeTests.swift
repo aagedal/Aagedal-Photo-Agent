@@ -241,6 +241,137 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testResolvedXMPReviewCleanupRequiresExactRecoveryAndPreservesEvidenceAcrossRelaunch() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+            appPublicationReceiptInterruption: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.textFields["automation.patchPlanID"].waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let requestID = try XCTUnwrap(manifest["xmpRequestID"])
+        let retainedID = try XCTUnwrap(manifest["draftRequestID"])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let photoBytes = try Data(contentsOf: photo)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        let requestsURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
+        let operationsURL = fixtureRoot.appendingPathComponent("patch-operations/operations.json")
+        let journal = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        let inspect = app.buttons["automation.inspectRequestedPlan." + requestID]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        inspect.click()
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
+        acknowledgement.click()
+        app.buttons["automation.approveXMPCandidate"].click()
+        let publish = app.buttons["automation.publishApprovedXMP"]
+        XCTAssertTrue(publish.waitForExistence(timeout: 8))
+        publish.click()
+        XCTAssertTrue(app.staticTexts["automation.patchDraftStatus"].waitForExistence(timeout: 12))
+        app.buttons["Clear Review"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        let unresolved = try XCTUnwrap(try retainedOperationObjects().first)
+        XCTAssertEqual(unresolved["outcome"] as? String, "recoveryRequired")
+        XCTAssertNil(unresolved["recoveryResolution"])
+        let requestBytes = try Data(contentsOf: requestsURL)
+        let requestEnvelope = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBytes) as? [String: Any])
+        let requestPayload = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(requestEnvelope["payload"] as? String)))
+        let requestArchive = try XCTUnwrap(JSONSerialization.jsonObject(with: requestPayload) as? [String: Any])
+        let requestRecords = try XCTUnwrap(requestArchive["records"] as? [[String: Any]])
+        let linkedRequest = try XCTUnwrap(requestRecords.first { $0["requestID"] as? String == requestID })
+        XCTAssertEqual(linkedRequest["state"] as? String, "linked")
+        XCTAssertEqual((linkedRequest["operationID"] as? String)?.lowercased(),
+            (unresolved["id"] as? String)?.lowercased())
+        let operationBytes = try Data(contentsOf: operationsURL)
+        let unresolvedJournal = try Data(contentsOf: journal)
+        let publishedXMP = try Data(contentsOf: xmp)
+        let publishedHistory = try Data(contentsOf: history)
+
+        // A completed publication receipt is missing. Capacity inspection must keep
+        // the linked request until native recovery records the exact disposition.
+        app.buttons["automation.inspectReviewRequestCapacity"].click()
+        let capacity = app.staticTexts["automation.reviewRequestCapacity"]
+        XCTAssertTrue(capacity.waitForExistence(timeout: 8))
+        let cleanup = app.buttons["automation.removeFinishedReviewRequests"]
+        XCTAssertTrue(cleanup.waitForExistence(timeout: 8))
+        XCTAssertFalse(cleanup.isEnabled)
+        XCTAssertTrue((capacity.label + ((capacity.value as? String) ?? "")).contains("Confirmed finished: 0"))
+        XCTAssertEqual(try Data(contentsOf: requestsURL), requestBytes)
+        XCTAssertEqual(try Data(contentsOf: operationsURL), operationBytes)
+        XCTAssertEqual(try Data(contentsOf: journal), unresolvedJournal)
+        XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
+        XCTAssertEqual(try Data(contentsOf: xmp), publishedXMP)
+        XCTAssertEqual(try Data(contentsOf: history), publishedHistory)
+
+        let inspectRecovery = app.buttons["automation.inspectRecovery"]
+        XCTAssertTrue(inspectRecovery.waitForExistence(timeout: 8))
+        inspectRecovery.click()
+        let restore = app.buttons["automation.restoreOriginalMetadata"]
+        XCTAssertTrue(restore.waitForExistence(timeout: 8))
+        XCTAssertTrue(restore.isEnabled)
+        restore.click()
+        let confirmation = app.sheets.firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Restore Original Metadata"].click()
+        let status = app.staticTexts["automation.recoveryStatus"]
+        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            status.exists && (status.label.hasPrefix("Original metadata restored.") ||
+                (status.value as? String)?.hasPrefix("Original metadata restored.") == true)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [recovered], timeout: 12), .completed)
+        let resolved = try XCTUnwrap(try retainedOperationObjects().first)
+        XCTAssertEqual(resolved["id"] as? String, unresolved["id"] as? String)
+        XCTAssertEqual(resolved["outcome"] as? String, "recoveryRequired")
+        let resolution = try XCTUnwrap(resolved["recoveryResolution"] as? [String: Any])
+        XCTAssertEqual(resolution["disposition"] as? String, "restored")
+        let receipt = try Data(contentsOf: journal)
+        let receiptDigest = SHA256.hash(data: receipt).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(resolution["receiptSHA256"] as? String, receiptDigest)
+        let receiptEnvelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receipt) as? [String: Any])
+        let receiptPayload = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(receiptEnvelope["payload"] as? String)))
+        let receiptRecord = try XCTUnwrap(JSONSerialization.jsonObject(with: receiptPayload) as? [String: Any])
+        let material = try XCTUnwrap(receiptRecord["restorationMaterial"] as? [String: Any])
+        XCTAssertEqual((material["id"] as? String)?.lowercased(),
+            (linkedRequest["operationID"] as? String)?.lowercased())
+        XCTAssertEqual(material["planID"] as? String, linkedRequest["planID"] as? String)
+        XCTAssertEqual(try Data(contentsOf: requestsURL), requestBytes)
+        XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+
+        try exerciseFinishedReviewCleanup(requestID: requestID, retainedID: retainedID, photo: photo)
+        let retainedRequests = try Data(contentsOf: requestsURL)
+        let retainedOperations = try Data(contentsOf: operationsURL)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+            resumePatchRecovery: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.showReviewRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        XCTAssertTrue(app.buttons["automation.inspectRequestedPlan." + retainedID].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.staticTexts["automation.reviewRequestOperationStatus." + requestID].exists)
+        // Exact archive bytes also preserve the rotated epoch and the other request's
+        // original epoch. Relaunch must not rewrite operation or recovery evidence.
+        XCTAssertEqual(try Data(contentsOf: requestsURL), retainedRequests)
+        XCTAssertEqual(try Data(contentsOf: operationsURL), retainedOperations)
+        XCTAssertEqual(try Data(contentsOf: journal), receipt)
+        XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+    }
+
+    @MainActor
     func testNativeClientXMPRequestCancellationRevokesReviewedCandidate() throws {
         try exerciseNativeClientXMPRequest(cancelAfterDryRun: true)
     }
@@ -355,6 +486,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     private func exerciseFinishedReviewCleanup(requestID: String, retainedID: String, photo: URL) throws {
         let archiveURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
         let operationURL = fixtureRoot.appendingPathComponent("patch-operations/operations.json")
+        let recoveryURL = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
         let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
         let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
         func archive() throws -> [String: Any] {
@@ -370,22 +502,43 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let retained = try XCTUnwrap(records.first { $0["requestID"] as? String == retainedID }) as NSDictionary
         let photoBytes = try Data(contentsOf: photo)
         let operationBytes = try Data(contentsOf: operationURL)
+        let recoveryBytes = try? Data(contentsOf: recoveryURL)
         let xmpBytes = try? Data(contentsOf: xmp)
         let historyBytes = try? Data(contentsOf: history)
         app.buttons["automation.inspectReviewRequestCapacity"].click()
         XCTAssertTrue(app.staticTexts["automation.reviewRequestCapacity"].waitForExistence(timeout: 8))
         let remove = app.buttons["automation.removeFinishedReviewRequests"]
         XCTAssertTrue(remove.waitForExistence(timeout: 8))
-        XCTAssertTrue(remove.isEnabled)
+        let eligible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            remove.exists && remove.isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [eligible], timeout: 8), .completed)
         let requestBytes = try Data(contentsOf: archiveURL)
         remove.click()
         let dialog = app.sheets.firstMatch
         XCTAssertTrue(dialog.waitForExistence(timeout: 5))
         dialog.buttons["Cancel"].click()
+        let cancelledDialogDismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !dialog.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelledDialogDismissed], timeout: 5), .completed)
         XCTAssertEqual(try Data(contentsOf: archiveURL), requestBytes)
+        XCTAssertEqual(try Data(contentsOf: operationURL), operationBytes)
+        XCTAssertEqual(try? Data(contentsOf: recoveryURL), recoveryBytes)
+        XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
+        XCTAssertEqual(try? Data(contentsOf: xmp), xmpBytes)
+        XCTAssertEqual(try? Data(contentsOf: history), historyBytes)
+        let readyToReopen = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            remove.exists && remove.isEnabled && remove.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [readyToReopen], timeout: 5), .completed)
         remove.click()
         XCTAssertTrue(dialog.waitForExistence(timeout: 5))
         dialog.buttons["Remove finished review requests"].click()
+        let confirmedDialogDismissed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !dialog.exists
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmedDialogDismissed], timeout: 5), .completed)
         let message = app.staticTexts["automation.reviewRequestCapacityMessage"]
         XCTAssertTrue(message.waitForExistence(timeout: 8))
         XCTAssertTrue((message.label + ((message.value as? String) ?? "")).contains("Removed 1"))
@@ -396,6 +549,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertFalse(remaining.contains { $0["requestID"] as? String == requestID })
         XCTAssertEqual(try XCTUnwrap(remaining.first { $0["requestID"] as? String == retainedID }) as NSDictionary, retained)
         XCTAssertEqual(try Data(contentsOf: operationURL), operationBytes)
+        XCTAssertEqual(try? Data(contentsOf: recoveryURL), recoveryBytes)
         XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
         XCTAssertEqual(try? Data(contentsOf: xmp), xmpBytes)
         XCTAssertEqual(try? Data(contentsOf: history), historyBytes)

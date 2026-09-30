@@ -138,7 +138,9 @@ the support table and validation records.
   at most 256 requests without automatic eviction. Settings can explicitly remove requests cancelled
   before admission, or separately remove linked requests whose exact retained operation confirms a
   finished outcome, and rotate the epoch. Cleanup preserves operation and recovery history. Active,
-  admitted, uncertain, missing-history and recovery-outcome requests remain retained. Removed intents
+  admitted, uncertain and missing-history requests remain retained. An uncertain XMP operation is
+  eligible only with an exact matching retained receipt for completed restoration or unchanged staging;
+  missing, replaced or incomplete recovery evidence keeps the request retained. Removed intents
   cannot be retried; clients must never silently resubmit them under a
   new epoch. Retained requests keep their original epochs. Settings can explicitly apply an approved
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo

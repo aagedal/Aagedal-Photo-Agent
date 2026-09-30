@@ -1951,7 +1951,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         [
             definition(
                 name: "get_native_review_request_capacity",
-                description: "Initialize or migrate private native review coordination storage and return its current requestEpoch and bounded capacity. Requires Enable local automation. This may write coordination storage, grants no consent and changes no photos. Before creating a new review intent, get this epoch and supply it unchanged with a new lowercase canonical UUID requestID. Retries must retain their original epoch; never silently resubmit retired intent under a new epoch. Explicit cleanup is available only in the native app and preserves active, linked and uncertain requests.",
+                description: "Initialize or migrate private native review coordination storage and return its current requestEpoch and bounded capacity. Requires Enable local automation. This may write coordination storage, grants no consent and changes no photos. Before creating a new review intent, get this epoch and supply it unchanged with a new lowercase canonical UUID requestID. Retries must retain their original epoch; never silently resubmit retired intent under a new epoch. Explicit cleanup is available only in the native app. Active work, uncertain admissions and incomplete recovery remain retained; exact finished or retained resolved-recovery evidence can qualify linked requests. Operation and recovery history is preserved.",
                 properties: [:], required: [], readOnly: false
             ),
             definition(

@@ -311,7 +311,7 @@ struct MCPNativeReviewRequestStoreTests {
                                     purpose: .xmpPublication, outcome: outcome)
         }
         #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
-        // Recovery receipts do not widen this bounded request-maintenance policy.
+        // A registry marker without the exact retained recovery journal is insufficient.
         try replaceArchive(at: operationRoot) { archive in
             var records = archive["records"] as! [[String: Any]]
             for index in records.indices where ["partialUncertain", "recoveryRequired"].contains(records[index]["outcome"] as? String ?? "") {
@@ -351,6 +351,302 @@ struct MCPNativeReviewRequestStoreTests {
         }
         #expect(try Data(contentsOf: requestFile) == requestBytes)
         #expect(try Data(contentsOf: operationFile) == operationBytes)
+    }
+
+    @Test("Exact retained recovery releases linked publication capacity while preserving original outcomes and all evidence",
+          arguments: [AutomationOperationRegistry.Outcome.recoveryRequired, .partialUncertain], [false, true])
+    func resolvedRecoveryRetirement(outcome: AutomationOperationRegistry.Outcome, restored: Bool) throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 3)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        let operation = try terminalFixture(store: store, registry: registry, id: id, epoch: epoch,
+                                            purpose: .xmpPublication, outcome: outcome)
+        if outcome == .partialUncertain {
+            // Cancellation can leave uncertainty; its resolved receipt qualifies equally.
+            try replaceArchive(at: operationRoot) { archive in
+                var records = archive["records"] as! [[String: Any]]
+                records[0]["state"] = "cancelled"
+                records[0]["cancellationRequestedAt"] = now.addingTimeInterval(2).timeIntervalSinceReferenceDate
+                archive["records"] = records
+            }
+        }
+        try recoveryFixture(recovery: recovery, operationID: operation.id, restored: restored)
+        try recovery.reconcileHistoryDisposition {
+            try registry.recordRecoveryResolution($0, now: now.addingTimeInterval(4))
+        }
+        let awaiting = try store.request(requestID: UUID(), requestEpoch: epoch, planID: planID,
+                                         purpose: .pendingDraft, now: now)
+        let unknownID = UUID()
+        _ = try store.request(requestID: unknownID, requestEpoch: epoch, planID: planID,
+                              purpose: .xmpPublication, now: now)
+        _ = try store.admit(unknownID, requestEpoch: epoch, now: now)
+        let unknown = try store.cancel(unknownID, requestEpoch: epoch, now: now)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let recoveryFile = operationRoot.appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        let recoveryBytes = try Data(contentsOf: recoveryFile)
+        let operationRecords = try registry.records()
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
+        #expect(try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery).confirmedTerminalCount == 1)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.capacity) {
+            try store.request(requestID: UUID(), requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        }
+        let result = try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+        #expect(result.retiredCount == 1)
+        #expect(result.epoch != epoch)
+        #expect(try store.records() == [awaiting, unknown])
+        #expect(try registry.records() == operationRecords)
+        #expect(try registry.inspect(operation.id).outcome == outcome)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try Data(contentsOf: recoveryFile) == recoveryBytes)
+        let requestBytes = try Data(contentsOf: requestFile)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: .xmpPublication, now: now)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: id, planID: planID, purpose: .xmpPublication, now: now)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        let reopened = MCPNativeReviewRequestStore(storageDirectory: root)
+        let reopenedRegistry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let reopenedRecovery = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        #expect(try reopened.terminalCapacitySnapshot(registry: reopenedRegistry, recoveryStore: reopenedRecovery).epoch == result.epoch)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.unknownRequest) { try reopened.inspect(id) }
+        #expect(try reopened.records() == [awaiting, unknown])
+        _ = try store.request(requestID: id, requestEpoch: result.epoch, planID: planID,
+                              purpose: .xmpPublication, now: now.addingTimeInterval(5))
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.admit(id, requestEpoch: epoch, now: now.addingTimeInterval(6))
+        }
+    }
+
+    @Test("Resolved recovery requires exact ID, plan, digest, disposition and current request evidence",
+          arguments: ["id", "plan", "digest", "disposition", "olderResolution", "lateCancellation", "markerMissing", "unresolved"])
+    func recoveryEvidenceRefusals(mismatch: String) throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        let operation = try terminalFixture(store: store, registry: registry, id: id, epoch: epoch,
+                                            purpose: .xmpPublication, outcome: .recoveryRequired)
+        try recoveryFixture(recovery: recovery, operationID: mismatch == "id" ? UUID() : operation.id,
+                            plan: mismatch == "plan" ? UUID().uuidString.lowercased() : nil)
+        try recovery.reconcileHistoryDisposition {
+            try registry.recordRecoveryResolution($0, now: now.addingTimeInterval(4))
+        }
+        if ["digest", "disposition", "olderResolution"].contains(mismatch) {
+            try replaceArchive(at: operationRoot) { archive in
+                var records = archive["records"] as! [[String: Any]]
+                var resolution = records[0]["recoveryResolution"] as! [String: Any]
+                if mismatch == "digest" { resolution["receiptSHA256"] = String(repeating: "a", count: 64) }
+                if mismatch == "disposition" { resolution["disposition"] = "restored" }
+                if mismatch == "olderResolution" { resolution["resolvedAt"] = now.addingTimeInterval(1).timeIntervalSinceReferenceDate }
+                records[0]["recoveryResolution"] = resolution
+                archive["records"] = records
+            }
+        }
+        if mismatch == "lateCancellation" {
+            _ = try store.cancel(id, requestEpoch: epoch, now: now.addingTimeInterval(5))
+            // An unrelated operation timestamp must not make the older resolution current.
+            try replaceArchive(at: operationRoot) { archive in
+                var records = archive["records"] as! [[String: Any]]
+                records[0]["updatedAt"] = now.addingTimeInterval(6).timeIntervalSinceReferenceDate
+                archive["records"] = records
+            }
+        }
+        if mismatch == "markerMissing" {
+            try replaceArchive(at: operationRoot) { archive in
+                var records = archive["records"] as! [[String: Any]]
+                records[0].removeValue(forKey: "recoveryResolution")
+                archive["records"] = records
+            }
+        }
+        if mismatch == "unresolved" {
+            // A later journal cannot substitute for the exact separately resolved operation.
+            _ = try recovery.stage(id: UUID(), planID: planID, targetPath: "/private/tmp/photo.xmp",
+                binding: .init(sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app", authorizationRevision: UUID()),
+                original: Data("original".utf8), candidate: Data("candidate".utf8))
+        }
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        let recoveryFile = operationRoot.appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let recoveryBytes = try Data(contentsOf: recoveryFile)
+        #expect(try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery).confirmedTerminalCount == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try Data(contentsOf: recoveryFile) == recoveryBytes)
+        #expect(try store.capacitySnapshot().epoch == epoch)
+    }
+
+    @Test("Recovery cleanup reloads retained journals and refuses loss, replacement, corruption and lock contention",
+          arguments: ["missing", "replaced", "corrupt", "insecure", "contended"])
+    func recoveryJournalRevalidation(change: String) throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        let competitor = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        let operation = try terminalFixture(store: store, registry: registry, id: id, epoch: epoch,
+                                            purpose: .xmpPublication, outcome: .partialUncertain)
+        try recoveryFixture(recovery: recovery, operationID: operation.id)
+        try recovery.reconcileHistoryDisposition {
+            try registry.recordRecoveryResolution($0, now: now.addingTimeInterval(4))
+        }
+        #expect(try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery).confirmedTerminalCount == 1)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        let recoveryFile = operationRoot.appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let recoveryBytes = try Data(contentsOf: recoveryFile)
+        switch change {
+        case "missing": try FileManager.default.removeItem(at: recoveryFile)
+        case "replaced": try recoveryFixture(recovery: competitor, operationID: UUID())
+        case "corrupt": try Data("broken".utf8).write(to: recoveryFile)
+        case "insecure": #expect(chmod(recoveryFile.path, 0o644) == 0)
+        default: break
+        }
+        if change == "contended" {
+            try recovery.withLockedHistoryDisposition { receipt in
+                #expect(receipt?.operationID == operation.id)
+                #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                    try store.terminalCapacitySnapshot(registry: registry, recoveryStore: competitor)
+                }
+                #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                    try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: competitor)
+                }
+                #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+                    try recoveryFixture(recovery: competitor, operationID: UUID())
+                }
+            }
+        } else if change == "corrupt" || change == "insecure" {
+            let expected: MCPNativeReviewRequestStore.Failure = change == "corrupt" ? .invalidStorage : .storageUnavailable
+            #expect(throws: expected) {
+                try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery)
+            }
+            #expect(throws: expected) {
+                try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+            }
+        } else {
+            #expect(try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery).confirmedTerminalCount == 0)
+            #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+                try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+            }
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try store.capacitySnapshot().epoch == epoch)
+        if change == "missing" {
+            #expect(!FileManager.default.fileExists(atPath: recoveryFile.path))
+        } else if change == "corrupt" {
+            #expect(try Data(contentsOf: recoveryFile) == Data("broken".utf8))
+        } else if change != "replaced" {
+            #expect(try Data(contentsOf: recoveryFile) == recoveryBytes)
+        }
+        // Restoring the retained evidence makes the same explicit cleanup available again.
+        if change == "insecure" { #expect(chmod(recoveryFile.path, 0o600) == 0) }
+        try recoveryBytes.write(to: recoveryFile)
+        #expect(chmod(recoveryFile.path, 0o600) == 0)
+        #expect(try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery).retiredCount == 1)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try Data(contentsOf: recoveryFile) == recoveryBytes)
+    }
+
+    @Test("Publication verification and incomplete restoration never substitute for a resolved recovery journal", arguments: [false, true])
+    func onlyResolvedRecoveryJournals(verified: Bool) throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let operation = try terminalFixture(store: store, registry: registry, id: UUID(), epoch: epoch,
+                                            purpose: .xmpPublication, outcome: .recoveryRequired)
+        try recoveryFixture(recovery: recovery, operationID: operation.id, restored: true,
+                            complete: false, verified: verified)
+        let recoveryFile = operationRoot.appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let recoveryBytes = try Data(contentsOf: recoveryFile)
+        // Even a syntactically valid marker with this journal's exact digest cannot
+        // upgrade publication verification or partial restoration to recovery resolution.
+        try replaceArchive(at: operationRoot) { archive in
+            var records = archive["records"] as! [[String: Any]]
+            records[0]["updatedAt"] = now.addingTimeInterval(4).timeIntervalSinceReferenceDate
+            records[0]["recoveryResolution"] = ["disposition": "restored",
+                "receiptSHA256": SHA256.hash(data: recoveryBytes).map { String(format: "%02x", $0) }.joined(),
+                "resolvedAt": now.addingTimeInterval(4).timeIntervalSinceReferenceDate]
+            archive["records"] = records
+        }
+        #expect(try recovery.withLockedHistoryDisposition { $0 == nil })
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        #expect(try store.terminalCapacitySnapshot(registry: registry, recoveryStore: recovery).confirmedTerminalCount == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry, recoveryStore: recovery)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try Data(contentsOf: recoveryFile) == recoveryBytes)
+    }
+
+    private func recoveryFixture(recovery: MCPIPTCPatchXMPRecoveryStore, operationID: UUID,
+                                 plan: String? = nil, restored: Bool = false,
+                                 complete: Bool = true, verified: Bool = false) throws {
+        let material = try recovery.stage(id: operationID, planID: plan ?? planID, targetPath: "/private/tmp/photo.xmp",
+            binding: .init(sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app", authorizationRevision: UUID()),
+            original: Data("original".utf8), candidate: Data("candidate".utf8),
+            appSidecarRecovery: .init(original: Data("app-original".utf8), candidate: Data("app-candidate".utf8)),
+            publicationApprovalID: UUID())
+        if restored {
+            try recovery.recordInstalled(material, installed: .init(xmpRevision: "installed-xmp", appRevision: nil)) {}
+            try recovery.recordInstalled(material, installed: .init(xmpRevision: "installed-xmp", appRevision: "installed-app")) {}
+            if verified {
+                try recovery.recordVerified(material) {}
+            } else {
+                try recovery.recordRestored(material, restored: .init(xmpRevision: "restored-xmp", appRevision: nil)) {}
+                if complete {
+                    try recovery.recordRestored(material, restored: .init(xmpRevision: "restored-xmp", appRevision: "restored-app"), complete: true) {}
+                }
+            }
+        } else {
+            try recovery.recordUnchanged(material) {}
+        }
     }
 
     @Test("Cleanup revalidates removed history and later linked cancellation instead of trusting an earlier count")

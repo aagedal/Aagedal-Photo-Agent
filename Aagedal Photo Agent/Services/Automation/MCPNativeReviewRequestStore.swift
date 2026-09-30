@@ -203,33 +203,67 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
     }
 
     /// Counts only exact linked operations whose confirmed terminal evidence is at
-    /// least as recent as the request. History remains locked through this snapshot.
+    /// least as recent as the request. Resolved uncertainty additionally requires the
+    /// exact retained recovery receipt. History remains locked through this snapshot.
     /// Like capacitySnapshot(), this durably initializes or migrates the request epoch.
-    func terminalCapacitySnapshot(registry: AutomationOperationRegistry) throws -> CapacitySnapshot {
-        try withLockedOperations(registry) { operations in
+    func terminalCapacitySnapshot(registry: AutomationOperationRegistry,
+                                  recoveryStore: MCPIPTCPatchXMPRecoveryStore? = nil) throws -> CapacitySnapshot {
+        try withLockedEvidence(registry, recoveryStore: recoveryStore) { operations, receipt in
             try archiveTransaction { archive in
                 CapacitySnapshot(epoch: archive.currentEpoch!, retainedCount: archive.records.count,
                     maximumRecords: maximumRecords,
                     cancelledBeforeAdmissionCount: archive.records.filter(Self.canRetire).count,
-                    confirmedTerminalCount: archive.records.filter { Self.canRetireConfirmedTerminal($0, operations: operations) }.count)
+                    confirmedTerminalCount: archive.records.filter {
+                        Self.canRetireConfirmedTerminal($0, operations: operations, receipt: receipt)
+                    }.count)
             }
         }
     }
 
     /// Explicit native maintenance, never eviction. Reload and revalidate while holding
-    /// operation history before request storage, so history cannot be removed between
+    /// recovery, operation history and request storage in that order, so evidence cannot be removed between
     /// checking evidence and retiring requests. Operation and recovery archives are untouched.
     func recoverConfirmedTerminalCapacity(expectedEpoch: UUID,
-                                           registry: AutomationOperationRegistry) throws -> CapacityRecoveryResult {
-        try withLockedOperations(registry) { operations in
+                                           registry: AutomationOperationRegistry,
+                                           recoveryStore: MCPIPTCPatchXMPRecoveryStore? = nil) throws -> CapacityRecoveryResult {
+        try withLockedEvidence(registry, recoveryStore: recoveryStore) { operations, receipt in
             try archiveTransaction { archive in
                 guard archive.currentEpoch == expectedEpoch else { throw Failure.staleEpoch }
-                let retiredCount = archive.records.filter { Self.canRetireConfirmedTerminal($0, operations: operations) }.count
+                let retiredCount = archive.records.filter {
+                    Self.canRetireConfirmedTerminal($0, operations: operations, receipt: receipt)
+                }.count
                 guard retiredCount > 0 else { throw Failure.invalidTransition }
-                archive.records.removeAll { Self.canRetireConfirmedTerminal($0, operations: operations) }
+                archive.records.removeAll { Self.canRetireConfirmedTerminal($0, operations: operations, receipt: receipt) }
                 archive.currentEpoch = UUID()
                 archive.legacyCreationAllowed = false
                 return CapacityRecoveryResult(epoch: archive.currentEpoch!, retiredCount: retiredCount)
+            }
+        }
+    }
+
+    /// Match native recovery reconciliation's recovery-before-operation lock order.
+    /// All callbacks are synchronous and keep evidence locked through request retirement.
+    private func withLockedEvidence<T>(_ registry: AutomationOperationRegistry,
+                                       recoveryStore: MCPIPTCPatchXMPRecoveryStore?,
+                                       _ body: ([AutomationOperationRegistry.Record],
+                                                MCPIPTCPatchXMPRecoveryStore.HistoryDisposition?) throws -> T) throws -> T {
+        guard let recoveryStore else {
+            return try withLockedOperations(registry) { try body($0, nil) }
+        }
+        do {
+            return try recoveryStore.withLockedHistoryDisposition { receipt in
+                try withLockedOperations(registry) { try body($0, receipt) }
+            }
+        } catch let failure as MCPIPTCPatchXMPRecoveryStore.Failure {
+            switch failure {
+            case .corruptJournal, .verification: throw Failure.invalidStorage
+            default: throw Failure.storageUnavailable
+            }
+        } catch let failure as AutomationOperationRegistry.Failure {
+            switch failure {
+            case .invalidStorage: throw Failure.invalidStorage
+            case .capacity: throw Failure.capacity
+            default: throw Failure.storageUnavailable
             }
         }
     }
@@ -247,15 +281,24 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
     }
 
     private static func canRetireConfirmedTerminal(_ request: Record,
-                                                   operations: [AutomationOperationRegistry.Record]) -> Bool {
+                                                   operations: [AutomationOperationRegistry.Record],
+                                                   receipt: MCPIPTCPatchXMPRecoveryStore.HistoryDisposition?) -> Bool {
         guard request.state == .linked, let admittedAt = request.admittedAt,
               let operationID = request.operationID,
               let operation = operations.first(where: { $0.id == operationID }),
               operation.kind == (request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch),
-              operation.isTerminal, [.verified, .failed, .cancelled, .stale].contains(operation.outcome),
+              operation.isTerminal,
               operation.createdAt >= admittedAt, operation.updatedAt >= request.updatedAt else { return false }
-        // Recovery-resolved uncertainty remains out of scope: canRemove is intentionally
-        // broader than proof that a linked request has a confirmed original outcome.
+        if [.verified, .failed, .cancelled, .stale].contains(operation.outcome) { return true }
+        guard request.purpose == .xmpPublication,
+              [.recoveryRequired, .partialUncertain].contains(operation.outcome),
+              let resolution = operation.recoveryResolution, let receipt,
+              receipt.operationID == operation.id, receipt.planID == request.planID,
+              receipt.receiptSHA256 == resolution.receiptSHA256,
+              receipt.resolution.rawValue == resolution.disposition.rawValue,
+              resolution.resolvedAt >= request.updatedAt else { return false }
+        // The original uncertain outcome and exact recovery archive remain retained.
+        // A resolution marker alone, or later unrelated operation updates, are insufficient.
         return true
     }
 

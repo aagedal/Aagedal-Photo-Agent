@@ -215,25 +215,38 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
 
     struct HistoryDisposition: Sendable {
         let operationID: UUID
+        let planID: String
         let resolution: HistoryResolution
         let receiptSHA256: String
-        fileprivate init(operationID: UUID, resolution: HistoryResolution, receiptSHA256: String) {
-            self.operationID = operationID; self.resolution = resolution; self.receiptSHA256 = receiptSHA256
+        fileprivate init(operationID: UUID, planID: String, resolution: HistoryResolution, receiptSHA256: String) {
+            self.operationID = operationID; self.planID = planID
+            self.resolution = resolution; self.receiptSHA256 = receiptSHA256
         }
     }
 
     /// The registry write occurs under the recovery lock, binding it to this exact resolved
     /// receipt before another operation can replace the retained journal.
     func reconcileHistoryDisposition(_ body: (HistoryDisposition) throws -> Void) throws {
+        try withLockedHistoryDisposition { receipt in
+            if let receipt { try body(receipt) }
+        }
+    }
+
+    /// Read-only evidence access, including missing and unresolved journals. Keep the
+    /// recovery lock through the callback so receipt replacement cannot race maintenance.
+    /// Nested maintenance must acquire recovery, operation, then request locks, and must
+    /// never reenter this store or launch work that outlives this synchronous callback.
+    func withLockedHistoryDisposition<T>(_ body: (HistoryDisposition?) throws -> T) throws -> T {
         try persistence.transaction(readOnly: true) { bytes in
+            var receipt: HistoryDisposition?
             if let bytes {
                 let record = try decodeRecord(bytes)
                 if record.resolved, record.unchanged || record.restored != nil {
-                    try body(.init(operationID: record.material.id, resolution: record.unchanged ? .unchanged : .restored,
-                        receiptSHA256: Self.digest(bytes)))
+                    receipt = .init(operationID: record.material.id, planID: record.material.planID,
+                        resolution: record.unchanged ? .unchanged : .restored, receiptSHA256: Self.digest(bytes))
                 }
             }
-            return ((), bytes ?? Data())
+            return (try body(receipt), bytes ?? Data())
         }
     }
 

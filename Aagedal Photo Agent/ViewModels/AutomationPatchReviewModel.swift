@@ -198,7 +198,9 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
             throw MCPIPTCPatchPlanStore.Failure.authorityChanged
         }
         do {
-            return try requests.terminalCapacitySnapshot(registry: registry())
+            let operations = try registry()
+            return try requests.terminalCapacitySnapshot(registry: operations,
+                recoveryStore: .init(directory: recoveryDirectory ?? operations.storageDirectory))
         } catch {
             // Finished eligibility needs verified operation history. Unavailable history
             // must not block the separate cancelled-before-admission maintenance path.
@@ -232,7 +234,8 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         guard try facade.authorizationStore.load() == authorization else {
             throw MCPIPTCPatchPlanStore.Failure.authorityChanged
         }
-        return try requests.recoverConfirmedTerminalCapacity(expectedEpoch: expectedEpoch, registry: operations)
+        return try requests.recoverConfirmedTerminalCapacity(expectedEpoch: expectedEpoch, registry: operations,
+            recoveryStore: .init(directory: recoveryDirectory ?? operations.storageDirectory))
     }
 
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] {
@@ -955,7 +958,10 @@ final class AutomationPatchReviewModel {
 
     /// Called only after native confirmation. Cleanup never admits work or grants consent.
     func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID? = nil) {
-        guard canRecoverCancelledNativeReviewCapacity, let snapshot = nativeRequestCapacity,
+        // A read-only poll may start while the confirmation is open. The captured
+        // epoch and service revalidation govern cleanup; clear() cancels that poll.
+        guard !isBusyWithNativeRequestCapacity, !isApplying, let snapshot = nativeRequestCapacity,
+              snapshot.cancelledBeforeAdmissionCount > 0,
               expectedEpoch == nil || expectedEpoch == snapshot.epoch else { return }
         clear()
         isRecoveringNativeRequestCapacity = true
@@ -981,7 +987,8 @@ final class AutomationPatchReviewModel {
 
     /// The epoch is captured when presenting native confirmation, never rebound on acceptance.
     func recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: UUID) {
-        guard canRecoverConfirmedTerminalNativeReviewCapacity, let snapshot = nativeRequestCapacity,
+        guard !isBusyWithNativeRequestCapacity, !isApplying, let snapshot = nativeRequestCapacity,
+              (snapshot.confirmedTerminalCount ?? 0) > 0,
               expectedEpoch == snapshot.epoch else { return }
         clear()
         isRecoveringNativeRequestCapacity = true

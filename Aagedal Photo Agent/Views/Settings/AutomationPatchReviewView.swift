@@ -52,7 +52,7 @@ struct AutomationPatchReviewView: View {
                     }
                     .disabled(!model.canRecoverConfirmedTerminalNativeReviewCapacity)
                     .accessibilityIdentifier("automation.removeFinishedReviewRequests")
-                    Text("Removes only requests linked to matching, current terminal operation evidence recording verified, failed, cancelled or stale outcomes. Missing, mismatched or outdated history, active work and every recovery or uncertain outcome remain retained, including resolved recovery. Operation and recovery history stays available. Removal proves no successful execution, grants no consent and changes no photo metadata.")
+                    Text("Removes requests linked to matching, current finished operation evidence. An XMP recovery or uncertain outcome is eligible only when its operation records an exact matching retained receipt for completed restoration or unchanged staging. Missing, mismatched or outdated evidence, active work, unresolved or incomplete recovery and uncertain draft outcomes remain retained. Operation and recovery history stays available with the original outcome. Removal does not establish successful publication, grants no consent and changes no photo metadata.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let message = model.nativeRequestCapacityMessage {
@@ -150,7 +150,7 @@ struct AutomationPatchReviewView: View {
                 finishedRequestCleanupEpoch = nil
             }
         } message: {
-            Text("Only requests with exact matching and current finished operation evidence will be removed. Recovery and uncertain outcomes remain retained, including resolved recovery. Operation and recovery history stays available. Removal does not establish success. Removed requests cannot be retried; new requests need a new request ID and current epoch. Retained requests keep their original epoch. Current reviews and approvals will be cleared. This grants no consent and changes no photo metadata.")
+            Text("Only requests with exact matching, current finished operation evidence will be removed. XMP recovery or uncertain outcomes also need an exact matching retained receipt for completed restoration or unchanged staging. Missing or replaced receipts, unresolved or incomplete recovery and uncertain draft outcomes remain retained. Operation and recovery history stays available with the original outcome; removal does not establish successful publication. Removed requests cannot be retried; new requests need a new request ID and current epoch. Retained requests keep their original epoch. Current reviews and approvals will be cleared. This grants no consent and changes no photo metadata.")
         }
         .onDisappear { model.clear() }
     }

@@ -180,8 +180,12 @@ rotates the epoch. Alternatively, choose **Remove finished review requests** and
 linked requests with exactly matching retained terminal outcomes of verified, failed, cancelled or
 stale. A failed or stale outcome does not mean metadata was published. Operation kind and timing must
 match the request; missing, mismatched or older evidence cannot permit removal. Operation and recovery
-history remains available. Requests with any recovery outcome remain retained, even after separate
-restoration; active, admitted and uncertain requests also remain retained. Both confirmations bind
+history remains available. An XMP request with a recovery or uncertain outcome is also eligible when
+its operation records the exact retained receipt for completed restoration or unchanged staging,
+with matching plan, operation, disposition, digest and timing. The original outcome remains unchanged;
+cleanup does not establish successful publication. Missing or replaced receipts, unresolved or incomplete
+recovery, uncertain draft outcomes, active work and uncertain admissions remain retained. Only the
+current retained recovery journal can qualify; a historical digest alone is insufficient. Both confirmations bind
 the capacity epoch you reviewed and clear current native consent. Retired requests cannot be retried;
 clients must never silently submit them under a new epoch. A separate new intent needs a new request
 ID and the current epoch. Retained retries keep their original epoch even after cleanup. If a full
