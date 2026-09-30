@@ -67,6 +67,17 @@ enum UITestPatchReviewFixture {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { throw Failure.invalidFolder }
+        // Explicit recovery relaunch reuses this disposable fixture's exact authorization.
+        // New launches must not mint replacement authority for the interrupted operation.
+        let savedAuthority = folder.appendingPathComponent("patch-recovery-authorization.json")
+        if configuration.resumePatchRecoveryRequested {
+            let box = ConfigurationBox()
+            box.write(try Data(contentsOf: savedAuthority))
+            let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
+            guard try authority.load().isEnabled else { throw Failure.invalidFolder }
+            return AutomationPatchReviewService(facade: .init(authorizationStore: authority),
+                recoveryDirectory: folder.appendingPathComponent("patch-operations"))
+        }
         let root = folder.appendingPathComponent("patch-review-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         do {
@@ -109,6 +120,8 @@ enum UITestPatchReviewFixture {
             let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
             try authority.addRoot(root)
             try authority.setEnabled(true)
+            guard let authorizationBytes = box.read() else { throw Failure.invalidFolder }
+            try authorizationBytes.write(to: savedAuthority, options: .atomic)
             let facade = MCPAutomationFacade(authorizationStore: authority)
             let plans = MCPIPTCPatchPlanStore()
             guard let metadata = try MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue else {
@@ -149,8 +162,14 @@ enum UITestPatchReviewFixture {
             if configuration.appPublicationReceiptInterruptionRequested {
                 hooks.beforeAppReceipt = { throw Failure.invalidPlan }
             }
+            var recoveryHooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+            if configuration.removalReceiptInterruptionCarrier == "xmp" {
+                recoveryHooks.beforeXMPReceipt = { throw Failure.invalidPlan }
+            } else if configuration.removalReceiptInterruptionCarrier == "app" {
+                recoveryHooks.beforeAppReceipt = { throw Failure.invalidPlan }
+            }
             return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry,
-                recoveryDirectory: operationFolder, publicationHooks: hooks)
+                recoveryDirectory: operationFolder, publicationHooks: hooks, recoveryHooks: recoveryHooks)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

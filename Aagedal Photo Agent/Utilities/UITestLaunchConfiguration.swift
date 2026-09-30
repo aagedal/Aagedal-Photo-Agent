@@ -33,6 +33,8 @@ struct UITestLaunchConfiguration {
     let xmpPublicationInterruptionRequested: Bool
     let appPublicationReceiptInterruptionRequested: Bool
     let existingRecoveryCarriersRequested: Bool
+    let removalReceiptInterruptionCarrier: String?
+    let resumePatchRecoveryRequested: Bool
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -59,6 +61,9 @@ struct UITestLaunchConfiguration {
         xmpStagingInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-staging-interruption")
         xmpPublicationInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-publication-interruption")
         appPublicationReceiptInterruptionRequested = isEnabled && arguments.contains("--ui-test-app-publication-receipt-interruption")
+        removalReceiptInterruptionCarrier = isEnabled
+            ? value(after: "--ui-test-removal-receipt-interruption").flatMap { ["xmp", "app"].contains($0) ? $0 : nil } : nil
+        resumePatchRecoveryRequested = isEnabled && arguments.contains("--ui-test-resume-patch-recovery")
         existingRecoveryCarriersRequested = isEnabled && arguments.contains("--ui-test-existing-recovery-carriers")
         patchReviewRequested = isEnabled && arguments.contains("--ui-test-patch-review-folder")
         patchReviewFolderURL = isEnabled

@@ -93,13 +93,15 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     private let facade: MCPAutomationFacade
     private let plans: MCPIPTCPatchPlanStore
     private let recoveryDirectory: URL?
+    private let recoveryHooks: MCPIPTCPatchXMPRecoveryService.Hooks
     private let publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks
     private let operationRegistry: AutomationOperationRegistry?
     private var executionCoordinator: AutomationOperationExecutionCoordinator?
 
     init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init(),
          operationRegistry: AutomationOperationRegistry? = nil, recoveryDirectory: URL? = nil,
-         publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks = .init()) {
+         publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks = .init(),
+         recoveryHooks: MCPIPTCPatchXMPRecoveryService.Hooks = .init()) {
         let plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
             FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
                 "Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans", isDirectory: true))
@@ -107,6 +109,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         self.operationRegistry = operationRegistry
         self.recoveryDirectory = recoveryDirectory
         self.publicationHooks = publicationHooks
+        self.recoveryHooks = recoveryHooks
         self.approvals = MCPIPTCPatchApprovalStore(plans: plans)
         self.publicationApprovals = MCPIPTCPatchXMPPublicationApprovalStore(plans: plans)
         self.facade = facade
@@ -124,14 +127,14 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     func inspectRecovery(photoPath: String?) throws -> MCPIPTCPatchXMPRecoveryService.Review? {
         try Task.checkCancellation()
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
-        return try MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+        return try MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade, hooks: recoveryHooks)
             .inspect(photoPath: photoPath)
     }
 
     func resolveUnchangedRecovery(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
         try Task.checkCancellation()
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
-        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade, hooks: recoveryHooks)
             .resolveUnchanged(review)
         do { try await reconcileRecoveryHistory(directory: directory) }
         catch { throw AutomationRecoveryHistoryFailure.unchangedResolutionRecorded }
@@ -140,7 +143,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     func restorePartialPublication(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
         try Task.checkCancellation()
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
-        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
+        try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade, hooks: recoveryHooks)
             .restorePartialPublication(review)
         do { try await reconcileRecoveryHistory(directory: directory) }
         catch { throw AutomationRecoveryHistoryFailure.restorationRecorded }

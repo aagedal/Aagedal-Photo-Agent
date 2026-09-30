@@ -65,4 +65,17 @@ struct UITestLaunchConfigurationTests {
         ])
         #expect(configuration.workflow == .voiceMemoVariableBatch)
     }
+    @Test("Removal interruptions and recovery relaunch require the UI-testing gate")
+    func recoveryInterruptionIsGated() {
+        let flags = ["--ui-test-removal-receipt-interruption", "app", "--ui-test-resume-patch-recovery"]
+        let production = UITestLaunchConfiguration(arguments: flags)
+        #expect(production.removalReceiptInterruptionCarrier == nil)
+        #expect(!production.resumePatchRecoveryRequested)
+        let enabled = UITestLaunchConfiguration(arguments: ["--ui-testing"] + flags)
+        #expect(enabled.removalReceiptInterruptionCarrier == "app")
+        #expect(enabled.resumePatchRecoveryRequested)
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing", "--ui-test-removal-receipt-interruption", "foreign"])
+            .removalReceiptInterruptionCarrier == nil)
+    }
+
 }

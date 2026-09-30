@@ -292,15 +292,29 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationResumesAbsentXMPRemovalAfterRelaunch() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false,
+            originalCarriersPresent: false, appReceiptInterruption: true, removalInterruption: "xmp")
+    }
+
+    @MainActor
+    func testAutomationResumesAbsentHistoryRemovalAfterRelaunch() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false,
+            originalCarriersPresent: false, appReceiptInterruption: true, removalInterruption: "app")
+    }
+
+    @MainActor
     private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool,
                                                        originalCarriersPresent: Bool,
                                                        replaceHistoryAfterInspection: Bool = false,
-                                                       appReceiptInterruption: Bool = false) throws {
+                                                       appReceiptInterruption: Bool = false,
+                                                       removalInterruption: String? = nil) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
             xmpPublicationInterruption: !appReceiptInterruption,
             appPublicationReceiptInterruption: appReceiptInterruption,
-            existingRecoveryCarriers: originalCarriersPresent)
+            existingRecoveryCarriers: originalCarriersPresent,
+            removalReceiptInterruption: removalInterruption)
         app.typeKey(",", modifierFlags: .command)
         let automation = app.staticTexts["Automation"]
         XCTAssertTrue(automation.waitForExistence(timeout: 8))
@@ -365,6 +379,76 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         confirmation.buttons["Restore Original Metadata"].click()
         let status = app.staticTexts["automation.recoveryStatus"]
         XCTAssertTrue(status.waitForExistence(timeout: 12))
+        if let removalInterruption {
+            XCTAssertTrue(status.label.hasPrefix("Restoration could not be completed.") ||
+                (status.value as? String)?.hasPrefix("Restoration could not be completed.") == true)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            if removalInterruption == "app" {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            }
+            let interruptedJournal = try Data(contentsOf: journal)
+            XCTAssertNotEqual(interruptedJournal, staged)
+            let witnessParent = removalInterruption == "xmp" ? photo.deletingLastPathComponent() : history.deletingLastPathComponent()
+            let witnesses = try FileManager.default.contentsOfDirectory(at: witnessParent, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasPrefix(".photo-agent-recovery-") && $0.pathExtension == "removed" }
+            XCTAssertEqual(witnesses.count, 1)
+            let witness = try XCTUnwrap(witnesses.first)
+            let witnessBytes = try Data(contentsOf: witness)
+            XCTAssertFalse(witnessBytes.isEmpty)
+            app.terminate()
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+                resumePatchRecovery: true)
+            XCTAssertEqual(try Data(contentsOf: journal), interruptedJournal)
+            XCTAssertEqual(try Data(contentsOf: witness), witnessBytes)
+            app.typeKey(",", modifierFlags: .command)
+            XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+            app.staticTexts["Automation"].click()
+            let retryInspect = app.buttons["automation.inspectRecovery"]
+            XCTAssertTrue(retryInspect.waitForExistence(timeout: 8))
+            retryInspect.click()
+            let retryRestore = app.buttons["automation.restoreOriginalMetadata"]
+            XCTAssertTrue(retryRestore.waitForExistence(timeout: 8))
+            XCTAssertTrue(retryRestore.isEnabled)
+            retryRestore.click()
+            let retryConfirmation = app.sheets.firstMatch
+            XCTAssertTrue(retryConfirmation.waitForExistence(timeout: 5))
+            retryConfirmation.buttons["Cancel"].click()
+            XCTAssertEqual(try Data(contentsOf: journal), interruptedJournal)
+            XCTAssertEqual(try Data(contentsOf: witness), witnessBytes)
+            retryRestore.click()
+            XCTAssertTrue(retryConfirmation.waitForExistence(timeout: 5))
+            retryConfirmation.buttons["Restore Original Metadata"].click()
+            let retryStatus = app.staticTexts["automation.recoveryStatus"]
+            let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                retryStatus.exists && (retryStatus.label.hasPrefix("Original metadata restored.") ||
+                    (retryStatus.value as? String)?.hasPrefix("Original metadata restored.") == true)
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 12), .completed)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: witness.path))
+            for parent in [photo.deletingLastPathComponent(), history.deletingLastPathComponent()] {
+                let residualWitnesses = try FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)
+                    .filter { $0.lastPathComponent.hasPrefix(".photo-agent-recovery-") && $0.pathExtension == "removed" }
+                XCTAssertTrue(residualWitnesses.isEmpty)
+            }
+            let receipt = try Data(contentsOf: journal)
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receipt) as? [String: Any])
+            XCTAssertEqual(envelope["version"] as? Int, 8)
+            try verifyResolvedPublicationHistoryCanBeRemoved(journal: journal,
+                originalOutcome: "recoveryRequired", resolution: "Original metadata restored")
+            app.terminate()
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
+                resumePatchRecovery: true)
+            XCTAssertEqual(try Data(contentsOf: journal), receipt)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            XCTAssertTrue(try retainedOperationObjects().isEmpty)
+            return
+        }
         XCTAssertEqual(try Data(contentsOf: photo), original)
         XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
         if replaceAfterInspection || replaceHistoryAfterInspection {
@@ -1496,7 +1580,9 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         xmpStagingInterruption: Bool = false,
         xmpPublicationInterruption: Bool = false,
         appPublicationReceiptInterruption: Bool = false,
-        existingRecoveryCarriers: Bool = false
+        existingRecoveryCarriers: Bool = false,
+        removalReceiptInterruption: String? = nil,
+        resumePatchRecovery: Bool = false
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -1527,6 +1613,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         if xmpPublicationInterruption { app.launchArguments.append("--ui-test-xmp-publication-interruption") }
         if appPublicationReceiptInterruption { app.launchArguments.append("--ui-test-app-publication-receipt-interruption") }
         if existingRecoveryCarriers { app.launchArguments.append("--ui-test-existing-recovery-carriers") }
+        if let removalReceiptInterruption { app.launchArguments += ["--ui-test-removal-receipt-interruption", removalReceiptInterruption] }
+        if resumePatchRecovery { app.launchArguments.append("--ui-test-resume-patch-recovery") }
         app.launch()
         reopenMainWindowIfNeeded()
     }
