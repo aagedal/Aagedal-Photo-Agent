@@ -1425,6 +1425,14 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 116 continuation (2026-09-30):** `prepare_voice_transcription` and
+`get_voice_transcription_plan` add immutable, expiring previews for ordered explicit photo sets.
+Exact source, metadata, persisted relationship and WAV evidence plus requested provider options
+are retained under whole-batch reservations and revalidated on retrieval. Preparation writes only
+private coordination storage; no consent, readiness, inference, draft, approval or metadata write
+authority follows from a plan. Native review handoff, authenticated invocation and real-provider
+qualification remain open. See [cycle 116 evidence](release/cycle-116-transcription-batch-previews-2026-09-30.md).
+
 **Cycle 115 continuation (2026-09-30):** Read-only `get_photo_voice_memo` adds rooted admission
 of one saved adjacent photo/WAV relationship. Anchored, bounded reads capture independent relationship
 and audio revisions under the photo reservation and revalidate carriers, ancestors and authorization
