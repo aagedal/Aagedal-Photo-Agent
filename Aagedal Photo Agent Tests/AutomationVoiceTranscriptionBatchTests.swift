@@ -104,6 +104,31 @@ struct AutomationVoiceTranscriptionBatchTests {
     private var photos: [URL] { ["first", "second", "third"].map { URL(fileURLWithPath: "/fixture/\($0).JPG") } }
     private var provider: AutomationVoiceTranscriptionBatchService.Provider { .apple(Locale(identifier: "en-US")) }
 
+    @Test("Native preparation creates no history or drafts and retains exact ordered targets")
+    func prepareWithoutEffects() async throws {
+        let f = try Fixture()
+        let prepared = try await f.service.prepare(imageURLs: photos)
+        #expect(prepared.imageURLs == photos)
+        #expect(try f.registry.records().isEmpty)
+        #expect(await f.io.generated.isEmpty)
+        #expect(await f.io.saved.isEmpty)
+        let record = try await f.service.submit(prepared: prepared, provider: provider)
+        #expect(try await f.service.waitForCompletion(record.id).outcome == .verified)
+    }
+
+    @Test("Drift after native preview refuses the complete set before enqueue or inference")
+    func changedConsentSnapshot() async throws {
+        let f = try Fixture()
+        let prepared = try await f.service.prepare(imageURLs: photos)
+        await f.io.configure(drift: photos[1])
+        await #expect(throws: AutomationVoiceTranscriptionBatchService.Failure.sourceChanged) {
+            try await f.service.submit(prepared: prepared, provider: provider)
+        }
+        #expect(try f.registry.records().isEmpty)
+        #expect(await f.io.generated.isEmpty)
+        #expect(await f.io.saved.isEmpty)
+    }
+
     @Test("Ordered batch saves only editable drafts and survives registry reload", arguments: [false, true])
     func successfulBatch(roundedDates: Bool) async throws {
         let f = try Fixture()

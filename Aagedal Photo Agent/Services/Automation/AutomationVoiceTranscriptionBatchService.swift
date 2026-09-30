@@ -17,6 +17,13 @@ actor AutomationVoiceTranscriptionBatchService {
         let memoRevision: SourceImageRevision
     }
 
+    /// Session-only consent evidence. This contains exact source and WAV identities,
+    /// never durable helper authority. Only preparation can create this snapshot.
+    nonisolated struct PreparedBatch: Sendable {
+        fileprivate let inputs: [Input]
+        var imageURLs: [URL] { inputs.map(\.imageURL) }
+    }
+
     nonisolated struct Dependencies: Sendable {
         let capture: @Sendable (URL) async throws -> Input
         let generate: @Sendable (URL, Provider) async throws -> VoiceMemoTranscriptDraft
@@ -47,6 +54,13 @@ actor AutomationVoiceTranscriptionBatchService {
     /// Capture the entire ordered set before durable admission. Missing relationships or
     /// duplicate sidecar ownership reject admission without running inference or saving.
     func submit(imageURLs: [URL], provider: Provider) async throws -> AutomationOperationRegistry.Record {
+        let prepared = try await prepare(imageURLs: imageURLs)
+        return try await enqueue(prepared.inputs, provider: provider)
+    }
+
+    /// Read-only preparation for native confirmation: no operation record, inference
+    /// or draft is created. Keep the returned value until explicit consent.
+    func prepare(imageURLs: [URL]) async throws -> PreparedBatch {
         try Task.checkCancellation()
         guard !imageURLs.isEmpty, imageURLs.count <= Self.maximumPhotos,
               imageURLs.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }) else { throw Failure.invalidPhotos }
@@ -63,6 +77,23 @@ actor AutomationVoiceTranscriptionBatchService {
             inputs.append(input)
         }
         try Task.checkCancellation()
+        return PreparedBatch(inputs: inputs)
+    }
+
+    /// Revalidate the entire consented set before any operation can run. A changed
+    /// photo, WAV or relationship requires a fresh preview and fresh consent.
+    func submit(prepared: PreparedBatch, provider: Provider) async throws -> AutomationOperationRegistry.Record {
+        for input in prepared.inputs {
+            try Task.checkCancellation()
+            guard Self.matches(input, try await dependencies.capture(input.imageURL)) else {
+                throw Failure.sourceChanged
+            }
+        }
+        try Task.checkCancellation()
+        return try await enqueue(prepared.inputs, provider: provider)
+    }
+
+    private func enqueue(_ inputs: [Input], provider: Provider) async throws -> AutomationOperationRegistry.Record {
         let retained = inputs
         let registry = registry, dependencies = dependencies
         let owner = await coordinator.ownerID

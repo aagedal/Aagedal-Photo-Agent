@@ -432,6 +432,38 @@ struct CaptionVoiceMemoTranscriptionTests {
     private let memoURL = URL(fileURLWithPath: "/caption/transcription.wav")
     private let locale = Locale(identifier: "en-US")
 
+    @Test("Batch completion refresh cannot replace a local review or navigate to an old photo")
+    @MainActor
+    func guardedBatchRefresh() async throws {
+        let found = association, stable = revision(hash: String(repeating: "a", count: 64))
+        let storage = VoiceMemoTranscriptStorageProbe()
+        let gate = VoiceMemoBatchRefreshGate()
+        let service = VoiceMemoTranscriptionService(runtime: runtime(status: .installed, transcript: "Local generated words"),
+            lookup: { _ in .available(found) }, captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await gate.waitIfEnabled(); return await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) }, startAccess: { _ in false })
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        var saved = try await service.transcribe(imageURL: imageURL, locale: locale)
+        saved.reviewedText = "Saved batch words"
+        _ = try await service.approve(saved)
+        await gate.enable()
+        let refresh = Task { await model.refreshPersistedDraftIfEmpty(for: imageURL) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.entered), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await gate.entered)
+        await model.load(nil)
+        await gate.release()
+        await refresh.value
+        #expect(model.draft == nil)
+        await model.load(imageURL)
+        #expect(model.draft?.reviewedText == "Saved batch words")
+        await model.transcribe()
+        model.updateReviewedText("Unsaved local human review")
+        await model.refreshPersistedDraftIfEmpty(for: imageURL)
+        #expect(model.draft?.reviewedText == "Unsaved local human review")
+    }
+
     @Test("availability distinguishes installed and download-required language assets")
     func availabilityStates() async {
         let installed = service(status: .installed)
@@ -1122,6 +1154,18 @@ struct CaptionVoiceMemoTranscriptionTests {
             sha256: hash,
             hashCompletedAt: .distantPast
         )
+    }
+}
+
+private actor VoiceMemoBatchRefreshGate {
+    private var enabled = false
+    private(set) var entered = false
+    func enable() { enabled = true }
+    func release() { enabled = false }
+    func waitIfEnabled() async {
+        guard enabled else { return }
+        entered = true
+        while enabled { try? await Task.sleep(for: .milliseconds(10)) }
     }
 }
 

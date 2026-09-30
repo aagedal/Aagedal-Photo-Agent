@@ -4,6 +4,16 @@ import Testing
 
 @Suite("UI test launch configuration")
 struct UITestLaunchConfigurationTests {
+    @Test("Synthetic batch recognition requires the explicit UI gate and a closed mode")
+    func batchTranscriptionIsGated() {
+        let flags = ["--ui-test-transcription-batch-mode", "success"]
+        #expect(UITestLaunchConfiguration(arguments: flags).transcriptionBatchMode == nil)
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing"] + flags).transcriptionBatchMode == "success")
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing", "--ui-test-transcription-batch-mode", "arbitrary"])
+            .transcriptionBatchMode == nil)
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing", "--ui-test-workflow", "voice-memo-transcription-batch"])
+            .workflow == .voiceMemoTranscriptionBatch)
+    }
     @Test("Known People workflow and disposable root require the UI-testing gate")
     func knownPeopleWorkflowIsGated() {
         let root = "/private/tmp/Aagedal Known People UI Test"

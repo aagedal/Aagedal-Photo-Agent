@@ -1446,7 +1446,7 @@ struct ContentView: View {
         if workflow == .openFolder || workflow == .recoveryError { return }
         guard !browserViewModel.visibleImages.isEmpty else { return }
 
-        let selection = workflow == .batchRename || workflow == .voiceMemoVariableBatch
+        let selection = workflow == .batchRename || workflow == .voiceMemoVariableBatch || workflow == .voiceMemoTranscriptionBatch
             ? Array(browserViewModel.visibleImages.prefix(2))
             : Array(browserViewModel.visibleImages.prefix(1))
         let selectedURLs = Set(selection.map(\.url))
@@ -1454,7 +1454,7 @@ struct ContentView: View {
         metadataViewModel.loadMetadata(for: selection, folderURL: folderURL)
 
         switch workflow {
-        case .caption:
+        case .caption, .voiceMemoTranscriptionBatch:
             openCaptionWorkspace()
         case .voiceMemoVariableBatch:
             break

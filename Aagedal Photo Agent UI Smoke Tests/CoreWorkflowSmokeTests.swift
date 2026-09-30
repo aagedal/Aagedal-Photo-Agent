@@ -71,6 +71,135 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeTranscriptionBatchConsentDraftRefreshAndRelaunch() throws {
+        let fixture = try makeVoiceMemoBatch(authorities: [.missing, .missing])
+        let originals = try fixture.items.map { item in
+            (try Data(contentsOf: item.imageURL), try Data(contentsOf: item.memoURL),
+             try Data(contentsOf: item.relationshipURL), try Data(contentsOf: item.sidecarURL))
+        }
+        launch(workflow: "voice-memo-transcription-batch", folder: fixture.folder, transcriptionBatchMode: "success")
+        let prepare = app.buttons["caption.voiceMemo.batch.prepare"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 15))
+        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: prepare)
+        wait(for: [ready], timeout: 10)
+        prepare.click()
+        let confirm = app.buttons["caption.voiceMemo.batch.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        XCTAssertFalse(confirm.isEnabled)
+        for index in fixture.items.indices {
+            let target = app.staticTexts["caption.voiceMemo.batch.target.\(index)"]
+            XCTAssertTrue(visibleText(target).contains(fixture.items[index].imageURL.lastPathComponent))
+            XCTAssertEqual(try Data(contentsOf: fixture.items[index].sidecarURL), originals[index].3)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.folder.appendingPathComponent("batch-operations/operations.json").path))
+        app.buttons["caption.voiceMemo.batch.cancelConfirmation"].click()
+        for index in fixture.items.indices { XCTAssertEqual(try Data(contentsOf: fixture.items[index].sidecarURL), originals[index].3) }
+        prepare.click()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
+        XCTAssertTrue(confirm.isEnabled)
+        confirm.click()
+        let close = app.buttons["caption.voiceMemo.batch.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 20))
+        for index in fixture.items.indices {
+            XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.\(index)"]).contains("Draft saved"))
+            let item = fixture.items[index]
+            let text = "Synthetic batch transcript \(item.memoURL.lastPathComponent)"
+            XCTAssertTrue(waitForTranscript(text, approved: false, at: item.sidecarURL))
+            XCTAssertEqual(try Data(contentsOf: item.imageURL), originals[index].0)
+            XCTAssertEqual(try Data(contentsOf: item.memoURL), originals[index].1)
+            XCTAssertEqual(try Data(contentsOf: item.relationshipURL), originals[index].2)
+            let graph = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: item.sidecarURL)) as? [String: Any])
+            let metadata = try XCTUnwrap(graph["metadata"] as? [String: Any])
+            XCTAssertEqual(metadata["title"] as? String, "Existing headline \(index + 1)")
+            XCTAssertEqual(metadata["description"] as? String, "Existing description \(index + 1)")
+        }
+        let savedBytes = try fixture.items.map { try Data(contentsOf: $0.sidecarURL) }
+        close.click()
+        let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 10))
+        XCTAssertEqual(draft.value as? String, "Synthetic batch transcript voice-batch-1.WAV")
+        XCTAssertTrue(app.buttons["caption.voiceMemo.approveTranscript"].isEnabled)
+        XCTAssertFalse(prepare.isEnabled)
+        app.terminate()
+        launch(workflow: "caption", folder: fixture.folder, transcriptionBatchMode: "success")
+        let relaunchedDraft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+        XCTAssertTrue(relaunchedDraft.waitForExistence(timeout: 15))
+        XCTAssertEqual(relaunchedDraft.value as? String, "Synthetic batch transcript voice-batch-1.WAV")
+        for index in fixture.items.indices { XCTAssertEqual(try Data(contentsOf: fixture.items[index].sidecarURL), savedBytes[index]) }
+    }
+
+    @MainActor
+    func testNativeTranscriptionBatchCancellationRetainsSavedPrefix() throws {
+        let fixture = try makeVoiceMemoBatch(authorities: [.missing, .missing])
+        let secondOriginal = try Data(contentsOf: fixture.items[1].sidecarURL)
+        launch(workflow: "voice-memo-transcription-batch", folder: fixture.folder, transcriptionBatchMode: "blockSecond")
+        let prepare = app.buttons["caption.voiceMemo.batch.prepare"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 15))
+        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: prepare)
+        wait(for: [ready], timeout: 10)
+        prepare.click()
+        let confirm = app.buttons["caption.voiceMemo.batch.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
+        confirm.click()
+        let active = fixture.folder.appendingPathComponent("batch-second-active.txt")
+        let recognition = expectation(for: NSPredicate { _, _ in
+            FileManager.default.fileExists(atPath: active.path)
+        }, evaluatedWith: nil)
+        wait(for: [recognition], timeout: 15)
+        let cancel = app.buttons["caption.voiceMemo.batch.cancel"]
+        XCTAssertTrue(cancel.isEnabled)
+        cancel.click()
+        XCTAssertTrue(app.buttons["caption.voiceMemo.batch.close"].waitForExistence(timeout: 15))
+        let summary = app.descendants(matching: .any)["caption.voiceMemo.batch.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        let terminalSummary = expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Batch cancelled", "Batch cancelled"), evaluatedWith: summary)
+        wait(for: [terminalSummary], timeout: 10)
+        XCTAssertTrue(visibleText(summary).contains("Batch cancelled"), "Observed summary: \(visibleText(summary))")
+        XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.0"]).contains("Draft saved"))
+        XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.1"]).contains("Cancelled"))
+        XCTAssertTrue(waitForTranscript("Synthetic batch transcript voice-batch-1.WAV", approved: false, at: fixture.items[0].sidecarURL))
+        XCTAssertEqual(try Data(contentsOf: fixture.items[1].sidecarURL), secondOriginal)
+        app.buttons["caption.voiceMemo.batch.close"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testNativeTranscriptionBatchRefusesUnavailableProviderAndChangedWAV() throws {
+        let fixture = try makeVoiceMemoBatch(authorities: [.missing, .missing])
+        let sidecars = try fixture.items.map { try Data(contentsOf: $0.sidecarURL) }
+        launch(workflow: "voice-memo-transcription-batch", folder: fixture.folder,
+               transcriptionProvider: "customWhisper", transcriptionBatchMode: "success")
+        var prepare = app.buttons["caption.voiceMemo.batch.prepare"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 15))
+        let ready = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: prepare)
+        wait(for: [ready], timeout: 10)
+        prepare.click()
+        XCTAssertTrue(app.staticTexts["caption.voiceMemo.batch.error"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["caption.voiceMemo.batch.confirm"].exists)
+        app.terminate()
+        launch(workflow: "voice-memo-transcription-batch", folder: fixture.folder, transcriptionBatchMode: "success")
+        prepare = app.buttons["caption.voiceMemo.batch.prepare"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 15))
+        let appleReady = expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: prepare)
+        wait(for: [appleReady], timeout: 10)
+        prepare.click()
+        let confirm = app.buttons["caption.voiceMemo.batch.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        var changed = try Data(contentsOf: fixture.items[1].memoURL)
+        changed.append(1)
+        try changed.write(to: fixture.items[1].memoURL, options: .atomic)
+        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
+        confirm.click()
+        XCTAssertTrue(app.staticTexts["caption.voiceMemo.batch.sheet.error"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["caption.voiceMemo.batch.close"].waitForExistence(timeout: 10))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.folder.appendingPathComponent("batch-operations/operations.json").path))
+        for index in fixture.items.indices { XCTAssertEqual(try Data(contentsOf: fixture.items[index].sidecarURL), sidecars[index]) }
+    }
+
+    @MainActor
     func testAutomationPatchReviewRefusesInvalidPlanWithoutChangingPhotos() throws {
         let photos = try makePhotoFolder(count: 1)
         let image = photos.appendingPathComponent("smoke-1.jpg")
@@ -2253,6 +2382,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    private func visibleText(_ element: XCUIElement) -> String {
+        element.label + " " + (element.value as? String ?? "")
+    }
+
+    @MainActor
     private func launch(
         workflow: String,
         folder: URL? = nil,
@@ -2271,7 +2405,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         appPublicationReceiptInterruption: Bool = false,
         existingRecoveryCarriers: Bool = false,
         removalReceiptInterruption: String? = nil,
-        resumePatchRecovery: Bool = false
+        resumePatchRecovery: Bool = false,
+        transcriptionBatchMode: String? = nil
     ) {
         app = XCUIApplication()
         app.launchArguments = [
@@ -2305,6 +2440,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         if existingRecoveryCarriers { app.launchArguments.append("--ui-test-existing-recovery-carriers") }
         if let removalReceiptInterruption { app.launchArguments += ["--ui-test-removal-receipt-interruption", removalReceiptInterruption] }
         if resumePatchRecovery { app.launchArguments.append("--ui-test-resume-patch-recovery") }
+        if let transcriptionBatchMode { app.launchArguments += ["--ui-test-transcription-batch-mode", transcriptionBatchMode] }
         app.launch()
         reopenMainWindowIfNeeded()
     }

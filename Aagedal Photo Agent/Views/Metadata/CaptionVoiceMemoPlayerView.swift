@@ -4,11 +4,18 @@ import UniformTypeIdentifiers
 /// Playback is explicit and separate from Caption's metadata editing/flush path.
 struct CaptionVoiceMemoPlayerView: View {
     let imageURL: URL?
+    let batchImageURLs: [URL]
+    let isMetadataReviewOrSaveBusy: Bool
     let openTranscriptionSettings: () -> Void
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
     @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
-    @State private var transcriptModel = CaptionVoiceMemoTranscriptModel()
+    @State private var transcriptModel = CaptionVoiceMemoTranscriptModel(
+        service: UITestVoiceTranscriptionBatchFixture.currentTranscriptService()
+            ?? VoiceMemoTranscriptionService()
+    )
+    @State private var batchModel = CaptionVoiceMemoBatchTranscriptionModel()
+    @State private var isShowingBatchTranscription = false
     @State private var whisperSetup = FFmpegWhisperSetupModel.shared
     @State private var managedWhisper = ManagedWhisperSetupModel.shared
     @State private var refreshID = UUID()
@@ -39,7 +46,7 @@ struct CaptionVoiceMemoPlayerView: View {
                 .labelStyle(.iconOnly)
                 .help("Reload the saved voice-memo relationship for this photo")
                 .accessibilityIdentifier("caption.voiceMemo.refresh")
-                .disabled(imageURL == nil)
+                .disabled(imageURL == nil || isBatchPresentationActive)
             }
             switch model.state {
             case .idle, .loading:
@@ -51,7 +58,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         reassociationImageURL = imageURL
                         isSelectingRelationshipFolder = true
                     }
-                    .disabled(reassociationModel.isWorking || imageURL == nil)
+                    .disabled(reassociationModel.isWorking || imageURL == nil || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.findRelationship")
                 }
             case .missing(let filename):
@@ -63,7 +70,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         recoveryImageURL = imageURL
                         isSelectingRecoveryMemo = true
                     }
-                    .disabled(recoveryModel.isWorking || imageURL == nil)
+                    .disabled(recoveryModel.isWorking || imageURL == nil || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.recover")
                 }
             case .unavailable(let message):
@@ -111,6 +118,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     .foregroundStyle(reassociationModel.errorMessage == nil ? .orange : .red)
                     .textSelection(.enabled)
             }
+            batchTranscriptionPanel
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -128,6 +136,21 @@ struct CaptionVoiceMemoPlayerView: View {
             if whisperSetup.choice == .whisper { await managedWhisper.refresh() }
         }
         .task(id: isPlaying) { await model.pollWhilePlaying() }
+        .sheet(isPresented: $isShowingBatchTranscription) {
+            CaptionVoiceMemoBatchTranscriptionView(
+                model: batchModel,
+                reviewOrSaveBusy: isBatchReviewOrSaveBusy,
+                providerBusy: whisperSetup.isTranscribing,
+                onClose: { isShowingBatchTranscription = false }
+            )
+        }
+        .onChange(of: batchModel.completionToken) { _, _ in
+            // A saved batch draft may be loaded only when there is no local review to lose.
+            guard let imageURL, batchModel.savedDraftImageURLs.contains(imageURL.standardizedFileURL),
+                  transcriptModel.draft == nil, !transcriptModel.isSavingReview,
+                  !transcriptModel.isTranscribing, !transcriptModel.isDownloading else { return }
+            Task { await transcriptModel.refreshPersistedDraftIfEmpty(for: imageURL) }
+        }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,
             allowedContentTypes: [UTType(filenameExtension: "wav") ?? .audio],
@@ -206,6 +229,10 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryModel.cancel()
             reassociationModel.cancel()
             transcriptModel.cancel(resetDraft: true)
+            batchModel.dismissConfirmation()
+            if batchModel.isRunning {
+                Task { await batchModel.requestCancellation() }
+            }
             recoveryImageURL = nil
             reassociationImageURL = nil
         }
@@ -243,6 +270,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         }
                     }
                     .frame(maxWidth: 220)
+                    .disabled(whisperSetup.isTranscribing || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.transcriptionLanguage")
                 }
                 Spacer(minLength: 0)
@@ -255,7 +283,7 @@ struct CaptionVoiceMemoPlayerView: View {
                             await transcriptModel.transcribe()
                         }
                     }
-                    .disabled(whisperSetup.isTranscribing || transcriptModel.isTranscribing || transcriptModel.isSavingReview)
+                    .disabled(whisperSetup.isTranscribing || transcriptModel.isTranscribing || transcriptModel.isSavingReview || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.transcribe")
                 case .needsDownload:
                     Button("Download Language", systemImage: "arrow.down.circle") {
@@ -265,7 +293,7 @@ struct CaptionVoiceMemoPlayerView: View {
                             await transcriptModel.downloadLanguage()
                         }
                     }
-                    .disabled(whisperSetup.isTranscribing || transcriptModel.isDownloading)
+                    .disabled(whisperSetup.isTranscribing || transcriptModel.isDownloading || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.downloadLanguage")
                 case .reservationLimitReached:
                     Menu("Release Speech Language", systemImage: "externaldrive.badge.minus") {
@@ -278,6 +306,7 @@ struct CaptionVoiceMemoPlayerView: View {
                         }
                     }
                     .help("Apple on-device speech has no free language reservation for this app")
+                    .disabled(whisperSetup.isTranscribing || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.releaseLanguage")
                 case .downloading:
                     Text("Language downloading…").foregroundStyle(.secondary)
@@ -331,7 +360,7 @@ struct CaptionVoiceMemoPlayerView: View {
             ))
             .font(.body)
             .frame(minHeight: 70, maxHeight: 130)
-            .disabled(transcriptModel.isSavingReview)
+            .disabled(transcriptModel.isSavingReview || isBatchPresentationActive)
             .overlay {
                 RoundedRectangle(cornerRadius: 5)
                     .stroke(.separator, lineWidth: 1)
@@ -355,6 +384,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     Task { await transcriptModel.approve() }
                 }
                 .disabled(draft.isApproved || transcriptModel.isSavingReview
+                          || isBatchPresentationActive
                           || draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("caption.voiceMemo.approveTranscript")
             }
@@ -367,6 +397,93 @@ struct CaptionVoiceMemoPlayerView: View {
     private var isWhisperReady: Bool {
         whisperSetup.choice == .whisper ? managedWhisper.isReady
             : whisperSetup.isReady && whisperSetup.executionConsent
+    }
+
+    private var isBatchPresentationActive: Bool {
+        batchModel.isChecking || batchModel.isRunning || batchModel.snapshot != nil
+    }
+
+    private var isBatchReviewOrSaveBusy: Bool {
+        isMetadataReviewOrSaveBusy || recoveryModel.isWorking || reassociationModel.isWorking
+            || transcriptModel.isChecking || transcriptModel.isTranscribing
+            || transcriptModel.isDownloading || transcriptModel.isSavingReview
+            || transcriptModel.draft != nil
+    }
+
+    private var batchProvider: AutomationVoiceTranscriptionBatchService.Provider? {
+        switch whisperSetup.choice {
+        case .appleSpeech:
+            guard transcriptModel.availability?.status == .installed else { return nil }
+            return .apple(Locale(identifier: transcriptModel.selectedLocaleIdentifier))
+        case .whisper:
+            guard whisperSetup.isLanguageValid,
+                  let provider = managedWhisper.provider(language: whisperSetup.language,
+                    useGPU: whisperSetup.useGPU, translate: whisperSetup.translate) else { return nil }
+            return .whisper(provider)
+        case .customWhisper:
+            guard whisperSetup.isLanguageValid, let provider = whisperSetup.provider() else { return nil }
+            return .whisper(provider)
+        }
+    }
+
+    private var batchLanguageTitle: String {
+        if whisperSetup.choice == .appleSpeech {
+            return Locale.current.localizedString(forIdentifier: transcriptModel.selectedLocaleIdentifier)
+                ?? transcriptModel.selectedLocaleIdentifier
+        }
+        let language = whisperSetup.language == "auto" ? "Automatic language detection" : whisperSetup.language
+        return language + (whisperSetup.translate ? " · Translate into English" : " · Original language")
+    }
+
+    private var batchTranscriptionPanel: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Divider()
+            HStack(spacing: 8) {
+                Button("Transcribe Selected…", systemImage: "waveform.badge.plus") {
+                    // All values are captured before awaiting preparation or showing consent.
+                    let urls = batchImageURLs
+                    let provider = batchProvider
+                    let providerTitle = whisperSetup.choice.title
+                    let languageTitle = batchLanguageTitle
+                    let reviewBusy = isBatchReviewOrSaveBusy
+                    let providerBusy = whisperSetup.isTranscribing
+                    Task {
+                        await batchModel.prepare(imageURLs: urls, provider: provider,
+                            providerTitle: providerTitle, languageTitle: languageTitle,
+                            reviewOrSaveBusy: reviewBusy, providerBusy: providerBusy)
+                        if batchModel.snapshot != nil { isShowingBatchTranscription = true }
+                    }
+                }
+                .disabled(!(1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(batchImageURLs.count)
+                          || isBatchReviewOrSaveBusy || whisperSetup.isTranscribing || isBatchPresentationActive)
+                .accessibilityIdentifier("caption.voiceMemo.batch.prepare")
+                if batchModel.isChecking { ProgressView().controlSize(.small) }
+                if batchModel.record != nil {
+                    Button(batchModel.isRunning ? "View Batch Progress…" : "View Batch Results…") {
+                        isShowingBatchTranscription = true
+                    }
+                    .accessibilityIdentifier("caption.voiceMemo.batch.results")
+                }
+                Spacer(minLength: 0)
+            }
+            Text("\(batchImageURLs.count) photos selected when Caption opened. Batch limit: 8.")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("caption.voiceMemo.batch.scope")
+            if batchImageURLs.isEmpty || batchImageURLs.count > AutomationVoiceTranscriptionBatchService.maximumPhotos {
+                Text("Select 1–8 photos in Browser, then reopen Caption to transcribe their voice memos.")
+                    .foregroundStyle(.secondary)
+            } else if transcriptModel.draft != nil {
+                Text("The current transcript review is kept. Open a photo without a transcript draft to prepare a batch.")
+                    .foregroundStyle(.secondary)
+            } else if isBatchReviewOrSaveBusy {
+                Text("Finish the current review or save before preparing a batch.")
+                    .foregroundStyle(.secondary)
+            }
+            if let error = batchModel.errorMessage {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                    .accessibilityIdentifier("caption.voiceMemo.batch.error")
+            }
+        }
     }
 
     private var whisperPanel: some View {
@@ -382,6 +499,7 @@ struct CaptionVoiceMemoPlayerView: View {
                 }
             }
             .disabled(whisperSetup.isTranscribing || !isWhisperReady || !whisperSetup.isLanguageValid
+                      || isBatchPresentationActive
                       || transcriptModel.isTranscribing || transcriptModel.isChecking || transcriptModel.isSavingReview)
             .accessibilityIdentifier("caption.voiceMemo.transcribe")
             if !isWhisperReady {

@@ -11,6 +11,7 @@ struct UITestLaunchConfiguration {
         case importPreflight = "import-preflight"
         case caption
         case voiceMemoVariableBatch = "voice-memo-variable-batch"
+        case voiceMemoTranscriptionBatch = "voice-memo-transcription-batch"
         case batchRename = "batch-rename"
         case deadline
         case recoveryError = "recovery-error"
@@ -36,6 +37,7 @@ struct UITestLaunchConfiguration {
     let existingRecoveryCarriersRequested: Bool
     let removalReceiptInterruptionCarrier: String?
     let resumePatchRecoveryRequested: Bool
+    let transcriptionBatchMode: String?
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
 
@@ -47,6 +49,9 @@ struct UITestLaunchConfiguration {
         }
 
         isEnabled = arguments.contains("--ui-testing")
+        transcriptionBatchMode = isEnabled
+            ? value(after: "--ui-test-transcription-batch-mode").flatMap { ["success", "blockSecond"].contains($0) ? $0 : nil }
+            : nil
         workflow = value(after: "--ui-test-workflow").flatMap(Workflow.init(rawValue:))
         folderURL = value(after: "--ui-test-folder").map { URL(fileURLWithPath: $0) }
         sourceURL = value(after: "--ui-test-source").map { URL(fileURLWithPath: $0) }

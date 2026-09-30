@@ -232,6 +232,7 @@
 		C10800000000000000000202 /* MCPNativeReviewRequestProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */; };
 		D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */; };
 		D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */; };
+		D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -500,6 +501,7 @@
 		C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestProtocolTests.swift; sourceTree = "<group>"; };
 		D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionBatchTests.swift; sourceTree = "<group>"; };
 		D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationBatchProgressTests.swift; sourceTree = "<group>"; };
+		D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoBatchTranscriptionModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -591,6 +593,7 @@
 				C82000000000000000000201 /* AutomationPatchReviewTests.swift */,
 				C82000000000000000000101 /* AutomationOperationRegistryTests.swift */,
 				D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */,
+				D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */,
 				D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */,
 				C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */,
 				C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */,
@@ -1034,6 +1037,7 @@
 				C82000000000000000000202 /* AutomationPatchReviewTests.swift in Sources */,
 				C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */,
 				D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */,
+				D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */,
 				D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */,
 				C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */,
 				C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */,

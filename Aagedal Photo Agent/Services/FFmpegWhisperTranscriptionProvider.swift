@@ -46,7 +46,9 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
         self.run = run
     }
 
-    func transcribe(audio: FFmpegWhisperJobInput) async throws -> Result {
+    /// Revalidate explicit session admission without starting inference or installing assets.
+    /// Native batch confirmation uses this before showing consent and again before enqueue.
+    func validateReadiness() async throws {
         try Task.checkCancellation()
         guard configuration.timeoutSeconds.isFinite, configuration.timeoutSeconds > 0,
               configuration.timeoutSeconds <= 3600 else { throw FFmpegWhisperJobError.invalidRequest }
@@ -55,6 +57,10 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
             segments: [.init(start: 0, end: 0, text: "")]).validate()
         try await authorizeArtifacts(configuration)
         try Task.checkCancellation()
+    }
+
+    func transcribe(audio: FFmpegWhisperJobInput) async throws -> Result {
+        try await validateReadiness()
         let request = FFmpegWhisperJobRequest(
             executable: configuration.executable, audio: audio, model: configuration.model,
             language: configuration.language, useGPU: configuration.useGPU,

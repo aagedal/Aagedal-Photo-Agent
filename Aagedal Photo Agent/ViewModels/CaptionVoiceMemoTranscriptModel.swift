@@ -71,6 +71,25 @@ final class CaptionVoiceMemoTranscriptModel {
         await load(imageURL)
     }
 
+    /// Batch completion can arrive after navigation or a local edit. Refresh only an
+    /// empty, idle review for the same photo, without cancelling any current work.
+    func refreshPersistedDraftIfEmpty(for requestedURL: URL) async {
+        let requestedURL = requestedURL.standardizedFileURL
+        guard imageURL == requestedURL, draft == nil, !isChecking, !isDownloading,
+              !isTranscribing, !isSavingReview else { return }
+        let requestedGeneration = generation
+        do {
+            let saved = try await service.loadPersistedDraft(imageURL: requestedURL)
+            guard !Task.isCancelled, generation == requestedGeneration, imageURL == requestedURL,
+                  draft == nil, !isChecking, !isDownloading, !isTranscribing, !isSavingReview else { return }
+            draft = saved
+        } catch is CancellationError { }
+        catch {
+            guard generation == requestedGeneration, imageURL == requestedURL, draft == nil else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func downloadLanguage() async {
         guard !isDownloading, !isTranscribing else { return }
         startOperation()

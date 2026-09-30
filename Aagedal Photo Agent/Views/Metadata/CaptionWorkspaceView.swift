@@ -20,6 +20,8 @@ struct CaptionWorkspaceView: View {
     let onClose: () -> Void
 
     @State private var session: CaptionSession
+    /// Browser selection is captured before Caption narrows editing to the current photo.
+    @State private var batchTranscriptionImageURLs: [URL]
     @State private var preview: NSImage?
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
@@ -111,6 +113,9 @@ struct CaptionWorkspaceView: View {
         let images = browserViewModel.visibleImages.filter(\.isImageFile)
         let urls = images.map(\.url)
         let selected = browserViewModel.selectedImageIDs
+        _batchTranscriptionImageURLs = State(initialValue: images.filter {
+            selected.contains($0.url)
+        }.map(\.url))
         let focused = browserViewModel.lastClickedImageURL
             .flatMap { selected.contains($0) ? $0 : nil }
             ?? selected.first
@@ -675,7 +680,14 @@ struct CaptionWorkspaceView: View {
             }
 
             Divider()
-            CaptionVoiceMemoPlayerView(imageURL: session.currentURL) {
+            CaptionVoiceMemoPlayerView(
+                imageURL: session.currentURL,
+                batchImageURLs: batchTranscriptionImageURLs,
+                isMetadataReviewOrSaveBusy: metadataViewModel.isSaving
+                    || session.isTransitioning || isCurrentPhotoUnderReview
+                    || conflictReview != nil || pendingReviewPhoto != nil
+                    || isConflictRecoveryBusy
+            ) {
                 settingsViewModel.requestedDestination = .transcription
                 openSettings()
             }

@@ -24,6 +24,22 @@ struct FFmpegWhisperTranscriptionProviderTests {
               hashCompletedAt: .distantPast)
     }
 
+    @Test("Readiness validates admitted artifacts without invoking inference")
+    func readOnlyReadiness() async throws {
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in }, run: { _ in
+                Issue.record("Readiness must never invoke the runner")
+                throw VoiceMemoTranscriptionError.recognitionFailed
+            })
+        try await provider.validateReadiness()
+        let revoked = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in throw VoiceMemoTranscriptionError.unavailable }, run: { _ in
+                Issue.record("Revoked readiness must never invoke the runner")
+                throw VoiceMemoTranscriptionError.recognitionFailed
+            })
+        await #expect(throws: VoiceMemoTranscriptionError.unavailable) { try await revoked.validateReadiness() }
+    }
+
     @Test("authorized runner evidence reaches an unapproved draft and survives record roundtrip", arguments: [false, true])
     func draftAndPersistence(translates: Bool) async throws {
         let association = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
