@@ -619,8 +619,35 @@ struct MCPKeywordSettingsHistoryTests {
                 syncs += 1
                 return syncs != failingBoundary
             })
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == (failingBoundary == 1 ? nil : "strict"))
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+    }
+
+    @Test("A failed pending synchronization never changes an existing setting")
+    func initialSynchronizationRefusesMutation() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        let ready = try configuration(defaults)
+        var syncs = 0
+        MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults,
+            synchronize: { _ in syncs += 1; return false })
+        #expect(syncs == 1)
         #expect(defaults.string(forKey: "approvedList.keywords.mode") == "strict")
         #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        #expect(try configuration(defaults).settingsGeneration != ready.settingsGeneration)
+    }
+
+    @Test("Explicit valid setting changes repair malformed settings after synchronized revocation")
+    func malformedSettingRepair() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("unsupported", forKey: "approvedList.keywords.mode")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        #expect(try configuration(defaults).mode == "strict")
+        #expect(try configuration(defaults).settingsGeneration != "legacy-untracked")
     }
 
     @Test("Malformed envelopes and direct unbound setting changes fail closed")

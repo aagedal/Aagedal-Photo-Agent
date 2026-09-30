@@ -593,17 +593,18 @@ nonisolated enum MCPKeywordSettingsHistory {
                 // Malformed old settings may be repaired one key at a time. A sentinel
                 // remains unavailable until a fully valid transition completes.
                 defaults.set(Data(), forKey: historyKey)
-                _ = sync(defaults)
-                return false
+                // A synchronized invalid sentinel revokes old authority and permits an
+                // explicit setting repair; malformed ready evidence never succeeds.
+                return sync(defaults) && pending
             }
             defaults.set(data, forKey: historyKey)
             return sync(defaults)
         }
-        let pendingSynchronized = retain(pending: true)
+        guard retain(pending: true) else { return }
         do { try checkpoint?() } catch { return }
         defaults.set(value, forKey: key)
         let settingsSynchronized = sync(defaults)
-        guard pendingSynchronized, settingsSynchronized else { return }
+        guard settingsSynchronized else { return }
         if !retain(pending: false) { _ = retain(pending: true) }
     }
 }
