@@ -121,6 +121,17 @@ metadata records fail as a whole. Face scan, template application, transcription
 exposed. Returned paths and metadata values can be
 sensitive and are subject to the connected client's privacy and retention policy.
 
+Call `get_photo_voice_memo` with one absolute photo `path` to inspect its saved adjacent WAV
+relationship. It returns revision evidence for the photo, relationship and audio, with the WAV
+length. An adjacent WAV without a saved relationship is not discovered automatically. Unsafe,
+missing, unsupported, stale or oversized inputs are refused; automation limits are 1 MiB for the
+relationship record and 256 MiB each for audio and photo bytes.
+This inspection does not return audio
+or transcript content, verify audio decoding, check provider readiness, or start transcription.
+It requires a relationship bound to the current photo filename; recover renamed relationships in
+the app first. Historical recovery identities are reported separately from the captured current
+revisions; an ordinary photo edit can change the historical comparison.
+
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not
 mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.

@@ -130,8 +130,11 @@ This is separate from the unapproved AI-origin analyzer described above.
   Caption now launches a captured Browser selection through explicit provider/language consent.
   Every target must have a supported WAV relationship, and targets sharing a metadata sidecar
   cannot be included together. Preparation refuses any existing saved transcript, and active/unsaved current reviews block launch. Source/WAV drift
-  after confirmation refuses admission. Rooted helper audio admission and authenticated IPC remain
-  unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
+  after confirmation refuses admission. Read-only rooted helper inspection now captures a saved
+  adjacent WAV relationship and exact revisions, with bounded hashing and final drift checks.
+  It refuses stale filenames and audio exceeding 256 MiB, reports historical content matches
+  separately, and does not establish WAV decoding
+  or provider readiness. Authenticated IPC remains unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
   integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
   remain release gates.
   Durable per-photo history retains numbered outcomes, without source paths or text; it does not

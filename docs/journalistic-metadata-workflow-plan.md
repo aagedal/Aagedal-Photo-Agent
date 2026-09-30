@@ -1425,6 +1425,14 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 115 continuation (2026-09-30):** Read-only `get_photo_voice_memo` adds rooted admission
+of one saved adjacent photo/WAV relationship. Anchored, bounded reads capture independent relationship
+and audio revisions under the photo reservation and revalidate carriers, ancestors and authorization
+before returning. Historical recovery-content comparisons stay separate from current revisions.
+No audio decoding, provider readiness, inference, draft creation or helper execution authority is
+granted. Authenticated invocation, real providers and the broader batch-transcription criterion
+remain open. See [cycle 115 evidence](release/cycle-115-rooted-voice-memo-admission-2026-09-30.md).
+
 **Cycle 114 continuation (2026-09-30):** Caption connects the shared batch executor to a captured
 1–8-photo Browser selection, read-only source/WAV preparation, explicit provider/language consent
 and ordered native results. Final admission revalidates every consented input, readiness and saved

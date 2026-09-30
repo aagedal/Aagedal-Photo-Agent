@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added read-only automation inspection of saved photo/WAV relationships with rooted file
+  admission and exact revision evidence. Audio decoding, provider readiness and helper
+  transcription invocation remain unavailable.
+
 - Transcribe a captured selection of up to eight voice memos from Caption after explicit
   provider/language consent. Ordered results distinguish saved, unapproved drafts from failed,
   cancelled or uncertain items; cancellation keeps drafts already saved. Changed inputs and
