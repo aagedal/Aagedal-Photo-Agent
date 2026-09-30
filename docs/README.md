@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 104: history recovery, keyword authority and signed Whisper repair](release/cycle-104-history-recovery-keyword-authority-whisper-2026-09-30.md) authenticates interrupted app-history publication and existing-carrier restoration, binds keyword patches to exact local list/settings authority with shared Strict/canonical rules, and repairs exact retained signed Whisper releases. Native restoration and relaunch persistence, 175 focused tests and all 3,467 serial integrated tests pass. Absent-carrier unlink recovery, history reconciliation, cloud keyword authority, production executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 105: removal witnesses and recovery history reconciliation](release/cycle-105-removal-witness-history-reconciliation-2026-09-30.md) authenticates interrupted originally absent-carrier restoration and reconciles completed recovery with separate truthful Operation History markers. All 176 focused tests, 3,481 serial integrated tests and both actual native UI workflows pass, including confirmed record removal and receipt persistence across relaunch. Guarded helper commits, broader recovery qualification, cloud keyword authority, production executors and signed-model integration remain open.
 
 ## Portfolio
 

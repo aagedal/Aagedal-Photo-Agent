@@ -60,8 +60,11 @@ These are material product and evidence boundaries, not a list of unfinished int
 - Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further
   publication. Unchanged pre-write staging can be explicitly resolved after exact identity checks;
   identified partial writes can be explicitly restored after confirmation. Restoration refuses external
-  changes, empty original carriers and missing installed/restored identity receipts. An interruption
-  after changing a file but before saving its receipt remains unresolved. No automatic restoration runs.
+  changes, empty original app-history files and missing identity evidence. An empty original XMP file
+  can be restored. A pre-receipt rename requires its exact retained generation; removal of an originally
+  absent carrier requires an exact hidden recovery witness with the retained parent identity. Missing
+  or replaced witnesses refuse restoration. Cleanup interruptions retain recovery until an explicitly
+  reviewed retry completes. No automatic restoration runs.
   Completed recovery material lasts only until the next publication is staged; it is not permanent
   undo history. Original photo bytes are unchanged by this sidecar-only workflow.
 - Template previews support filename, bounded request-order sequence variables and retained acyclic
@@ -143,7 +146,10 @@ This is separate from the unapproved AI-origin analyzer described above.
   still uses the normal metadata workflow. Opening or refreshing native Operation History uses
   retained process locks to mark abandoned new managed operations as recovery required. Live owners,
   legacy records and missing lock evidence are not inferred to have stopped. Recovery records remain
-  protected from removal; automatic replay/repair and broad interruption coverage remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
+  protected from removal until an exact restored/unchanged receipt for that operation is reconciled.
+  History preserves the original uncertain outcome and records recovery separately; resolved records
+  may be explicitly removed without deleting recovery evidence. Legacy/unrelated records are not
+  matched heuristically. Automatic replay/repair and broad interruption coverage remain unfinished. `get_operation_status` and `cancel_operation` expose these durable
   records with fresh automation authorization. Cancellation records a cooperative request. The native draft executor checks it before
   installation and verifies an already installed draft to completion. Other workflow executors
   remain unconnected. Per-owner lock files are retained to prevent lock identity reuse; pruning them

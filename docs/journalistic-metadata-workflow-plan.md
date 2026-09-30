@@ -1649,6 +1649,15 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 105 continuation (2026-09-30):** Originally absent-carrier restoration retains an
+exclusive rooted removal witness before mutation. Pre-receipt recovery requires its exact inode,
+bytes and parent identity, unchanged source/peer carriers and current authorization; absence alone
+is insufficient. Explicit retries complete retained cleanup before resolving the journal. Native
+Operation History reconciles exact restored/unchanged receipts into separate recovery markers,
+preserving the original publication outcome and permitting confirmed record removal. Owner locks
+and registry-level guards protect unresolved records. The guarded helper commit and broader release
+gates remain open; see [cycle 105 evidence](release/cycle-105-removal-witness-history-reconciliation-2026-09-30.md).
+
 **Cycle 104 continuation (2026-09-30):** Native recovery authenticates app-history publication
 and existing-carrier restoration interrupted before their first durable receipts, with prepared
 generation, exact bytes, rooted source/peer revisions and current authority. Native restoration

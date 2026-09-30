@@ -172,8 +172,11 @@ and app-history identities are still unchanged. It rechecks them and retains a s
 it changes no live metadata. When retained publication identities still match, **Restore Original Metadata…**
 offers a separate confirmation for the inspected photo. It restores the original XMP and app history,
 removes metadata files that were originally absent, and retains a restoration receipt. Deselect the
-photo in all editors first. External changes, missing identity receipts and empty original carriers
-remain blocked. If interrupted, inspect again; only steps with durable restoration receipts can resume.
+photo in all editors first. External changes, missing identity evidence and empty original app-history
+files remain blocked. An originally empty XMP file is recreated as an empty file. If interrupted,
+inspect again: restoration can resume from a durable receipt or an exact retained file generation.
+Removing an originally absent metadata file retains a hidden recovery copy until restoration and
+cleanup are verified; a missing file alone cannot prove that removal succeeded.
 Original photo bytes are unchanged by these sidecar-only actions.
 
 After approval, **Apply to Pending Draft** saves the exact reviewed changes into Photo Agent's
@@ -188,7 +191,11 @@ does not undo a verified draft. An uncertain result requires inspection before r
 
 Settings → Automation → **Operation History** lists retained outcomes and provides **Refresh**,
 **Request Cancellation**, and confirmed removal of completed records. Removing a record does not undo
-metadata changes or delete a pending draft. Records with uncertain effects remain protected.
+metadata changes or delete a pending draft. Records with uncertain effects remain protected until
+their exact restoration or unchanged-staging receipt is reconciled. History keeps the original
+publication outcome and shows the separate recovery result; restoration does not mark publication
+verified. Refresh retries this handoff after a crash or a history-storage failure. A resolved record
+can then be removed explicitly without deleting its retained recovery receipt.
 Opening or refreshing history checks process locks for new managed operations: if the owning process
 has stopped, unfinished work becomes **Recovery required**. Inspect the affected photo and pending
 metadata before retrying. No operation is automatically replayed or repaired; older records without
