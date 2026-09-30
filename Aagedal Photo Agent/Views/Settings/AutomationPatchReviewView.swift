@@ -4,6 +4,9 @@ struct AutomationPatchReviewView: View {
     @State private var model = AutomationPatchReviewModel()
     @State private var showsRequests = false
     @State private var confirmsRequestCleanup = false
+    @State private var confirmsFinishedRequestCleanup = false
+    @State private var cancelledRequestCleanupEpoch: UUID?
+    @State private var finishedRequestCleanupEpoch: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -27,13 +30,29 @@ struct AutomationPatchReviewView: View {
                     .accessibilityIdentifier("automation.inspectReviewRequestCapacity")
                 if model.isBusyWithNativeRequestCapacity { ProgressView().controlSize(.small) }
                 if let capacity = model.nativeRequestCapacity {
-                    Text("Retained requests: \(capacity.retainedCount) of \(capacity.maximumRecords). Cancelled before admission: \(capacity.cancelledBeforeAdmissionCount).")
+                    Text("Retained requests: \(capacity.retainedCount) of \(capacity.maximumRecords). Cancelled before admission: \(capacity.cancelledBeforeAdmissionCount). Confirmed finished: \(capacity.confirmedTerminalCount.map { String($0) } ?? "unavailable").")
                         .font(.caption)
                         .accessibilityIdentifier("automation.reviewRequestCapacity")
-                    Button("Remove cancelled review requests", role: .destructive) { confirmsRequestCleanup = true }
+                    Button("Remove cancelled review requests", role: .destructive) {
+                        cancelledRequestCleanupEpoch = capacity.epoch
+                        confirmsRequestCleanup = true
+                    }
                         .disabled(!model.canRecoverCancelledNativeReviewCapacity)
                         .accessibilityIdentifier("automation.removeCancelledReviewRequests")
                     Text("Removes only requests cancelled before admission. Active, admitted, uncertain and linked requests remain retained. Removed requests cannot be retried. New intents need a new request ID and current epoch; retained requests keep their original epoch. Cleanup grants no consent.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if capacity.confirmedTerminalCount == nil {
+                        Text("Finished request eligibility could not be checked. Refresh capacity after inspecting operation history. Requests cancelled before admission can still be removed separately.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("automation.finishedReviewRequestCapacityUnavailable")
+                    }
+                    Button("Remove finished review requests", role: .destructive) {
+                        finishedRequestCleanupEpoch = capacity.epoch
+                        confirmsFinishedRequestCleanup = true
+                    }
+                    .disabled(!model.canRecoverConfirmedTerminalNativeReviewCapacity)
+                    .accessibilityIdentifier("automation.removeFinishedReviewRequests")
+                    Text("Removes only requests linked to matching, current terminal operation evidence recording verified, failed, cancelled or stale outcomes. Missing, mismatched or outdated history, active work and every recovery or uncertain outcome remain retained, including resolved recovery. Operation and recovery history stays available. Removal proves no successful execution, grants no consent and changes no photo metadata.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let message = model.nativeRequestCapacityMessage {
@@ -118,9 +137,20 @@ struct AutomationPatchReviewView: View {
             }
         }
         .confirmationDialog("Remove cancelled review requests?", isPresented: $confirmsRequestCleanup) {
-            Button("Remove cancelled review requests", role: .destructive) { model.recoverCancelledNativeReviewCapacity() }
+            Button("Remove cancelled review requests", role: .destructive) {
+                if let epoch = cancelledRequestCleanupEpoch { model.recoverCancelledNativeReviewCapacity(expectedEpoch: epoch) }
+                cancelledRequestCleanupEpoch = nil
+            }
         } message: {
             Text("Only requests cancelled before admission will be removed. Retained operation and recovery evidence stays available. Retries of removed requests and new requests using the previous current epoch will be refused. Retained requests keep their original epoch. Current reviews and approvals will be cleared. This grants no consent and changes no photo metadata.")
+        }
+        .confirmationDialog("Remove finished review requests?", isPresented: $confirmsFinishedRequestCleanup) {
+            Button("Remove finished review requests", role: .destructive) {
+                if let epoch = finishedRequestCleanupEpoch { model.recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: epoch) }
+                finishedRequestCleanupEpoch = nil
+            }
+        } message: {
+            Text("Only requests with exact matching and current finished operation evidence will be removed. Recovery and uncertain outcomes remain retained, including resolved recovery. Operation and recovery history stays available. Removal does not establish success. Removed requests cannot be retried; new requests need a new request ID and current epoch. Retained requests keep their original epoch. Current reviews and approvals will be cleared. This grants no consent and changes no photo metadata.")
         }
         .onDisappear { model.clear() }
     }

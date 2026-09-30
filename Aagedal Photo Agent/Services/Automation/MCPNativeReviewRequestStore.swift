@@ -108,6 +108,17 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         let retainedCount: Int
         let maximumRecords: Int
         let cancelledBeforeAdmissionCount: Int
+        /// Nil means operation history was not consulted; zero means it was checked.
+        let confirmedTerminalCount: Int?
+
+        init(epoch: UUID, retainedCount: Int, maximumRecords: Int,
+             cancelledBeforeAdmissionCount: Int, confirmedTerminalCount: Int? = nil) {
+            self.epoch = epoch
+            self.retainedCount = retainedCount
+            self.maximumRecords = maximumRecords
+            self.cancelledBeforeAdmissionCount = cancelledBeforeAdmissionCount
+            self.confirmedTerminalCount = confirmedTerminalCount
+        }
     }
 
     struct CapacityRecoveryResult: Equatable, Sendable {
@@ -189,6 +200,63 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
                              maximumRecords: maximumRecords,
                              cancelledBeforeAdmissionCount: archive.records.filter(Self.canRetire).count)
         }
+    }
+
+    /// Counts only exact linked operations whose confirmed terminal evidence is at
+    /// least as recent as the request. History remains locked through this snapshot.
+    /// Like capacitySnapshot(), this durably initializes or migrates the request epoch.
+    func terminalCapacitySnapshot(registry: AutomationOperationRegistry) throws -> CapacitySnapshot {
+        try withLockedOperations(registry) { operations in
+            try archiveTransaction { archive in
+                CapacitySnapshot(epoch: archive.currentEpoch!, retainedCount: archive.records.count,
+                    maximumRecords: maximumRecords,
+                    cancelledBeforeAdmissionCount: archive.records.filter(Self.canRetire).count,
+                    confirmedTerminalCount: archive.records.filter { Self.canRetireConfirmedTerminal($0, operations: operations) }.count)
+            }
+        }
+    }
+
+    /// Explicit native maintenance, never eviction. Reload and revalidate while holding
+    /// operation history before request storage, so history cannot be removed between
+    /// checking evidence and retiring requests. Operation and recovery archives are untouched.
+    func recoverConfirmedTerminalCapacity(expectedEpoch: UUID,
+                                           registry: AutomationOperationRegistry) throws -> CapacityRecoveryResult {
+        try withLockedOperations(registry) { operations in
+            try archiveTransaction { archive in
+                guard archive.currentEpoch == expectedEpoch else { throw Failure.staleEpoch }
+                let retiredCount = archive.records.filter { Self.canRetireConfirmedTerminal($0, operations: operations) }.count
+                guard retiredCount > 0 else { throw Failure.invalidTransition }
+                archive.records.removeAll { Self.canRetireConfirmedTerminal($0, operations: operations) }
+                archive.currentEpoch = UUID()
+                archive.legacyCreationAllowed = false
+                return CapacityRecoveryResult(epoch: archive.currentEpoch!, retiredCount: retiredCount)
+            }
+        }
+    }
+
+    private func withLockedOperations<T>(_ registry: AutomationOperationRegistry,
+                                         _ body: ([AutomationOperationRegistry.Record]) throws -> T) throws -> T {
+        do { return try registry.withLockedRecords(body) }
+        catch let failure as AutomationOperationRegistry.Failure {
+            switch failure {
+            case .invalidStorage: throw Failure.invalidStorage
+            case .capacity: throw Failure.capacity
+            default: throw Failure.storageUnavailable
+            }
+        }
+    }
+
+    private static func canRetireConfirmedTerminal(_ request: Record,
+                                                   operations: [AutomationOperationRegistry.Record]) -> Bool {
+        guard request.state == .linked, let admittedAt = request.admittedAt,
+              let operationID = request.operationID,
+              let operation = operations.first(where: { $0.id == operationID }),
+              operation.kind == (request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch),
+              operation.isTerminal, [.verified, .failed, .cancelled, .stale].contains(operation.outcome),
+              operation.createdAt >= admittedAt, operation.updatedAt >= request.updatedAt else { return false }
+        // Recovery-resolved uncertainty remains out of scope: canRemove is intentionally
+        // broader than proof that a linked request has a confirmed original outcome.
+        return true
     }
 
     /// Recovery is explicit native maintenance. No admitted or linked evidence is retired.

@@ -209,6 +209,296 @@ struct MCPNativeReviewRequestStoreTests {
         }
     }
 
+    @Test("Confirmed terminal recovery retains operation bytes and all other request evidence while rotating replay protection")
+    func confirmedTerminalRecovery() throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 7)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        var retired: [UUID] = []
+        for outcome in [AutomationOperationRegistry.Outcome.verified, .failed, .cancelled, .stale] {
+            let id = UUID()
+            let legacy = outcome == .stale
+            let purpose: MCPNativeReviewRequestStore.Purpose = outcome == .failed ? .xmpPublication : .pendingDraft
+            _ = try terminalFixture(store: store, registry: registry, id: id, epoch: legacy ? nil : epoch,
+                                    purpose: purpose, outcome: outcome)
+            retired.append(id)
+        }
+        let awaiting = try store.request(requestID: UUID(), requestEpoch: epoch, planID: planID,
+                                         purpose: .pendingDraft, now: now)
+        let cancelledID = UUID()
+        _ = try store.request(requestID: cancelledID, requestEpoch: epoch, planID: planID,
+                              purpose: .pendingDraft, now: now)
+        let cancelled = try store.cancel(cancelledID, requestEpoch: epoch, now: now)
+        let uncertainID = UUID()
+        _ = try terminalFixture(store: store, registry: registry, id: uncertainID, epoch: epoch,
+                                purpose: .xmpPublication, outcome: .recoveryRequired)
+        let uncertain = try store.inspect(uncertainID)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        let operationRecords = try registry.records()
+        let snapshot = try store.terminalCapacitySnapshot(registry: registry)
+        #expect(snapshot.retainedCount == 7)
+        #expect(snapshot.confirmedTerminalCount == 4)
+        #expect(snapshot.cancelledBeforeAdmissionCount == 1)
+        #expect(try store.capacitySnapshot().confirmedTerminalCount == nil)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.capacity) {
+            try store.request(requestID: UUID(), requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        }
+        let result = try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+        #expect(result.retiredCount == 4)
+        #expect(result.epoch != epoch)
+        #expect(try store.records() == [awaiting, cancelled, uncertain])
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try registry.records() == operationRecords)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        for id in retired {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.unknownRequest) { try store.inspect(id) }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+            }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.request(requestID: id, planID: planID, purpose: .pendingDraft, now: now)
+            }
+        }
+        #expect(try store.request(requestID: awaiting.requestID, requestEpoch: epoch, planID: planID,
+                                  purpose: .pendingDraft, now: now) == awaiting)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: result.epoch, registry: registry)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try MCPNativeReviewRequestStore(storageDirectory: root).terminalCapacitySnapshot(registry: registry).epoch == result.epoch)
+        _ = try store.request(requestID: retired[0], requestEpoch: result.epoch, planID: planID,
+                              purpose: .pendingDraft, now: now.addingTimeInterval(10))
+        for stale in [epoch, nil] as [UUID?] {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.admit(retired[0], requestEpoch: stale, now: now.addingTimeInterval(11))
+            }
+        }
+    }
+
+    @Test("Missing, wrong-kind, old, live and uncertain operation histories cannot retire linked requests")
+    func terminalEvidenceRefusals() throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        for purpose in [MCPNativeReviewRequestStore.Purpose.pendingDraft, .xmpPublication] {
+            _ = try terminalFixture(store: store, registry: registry, id: UUID(), epoch: epoch,
+                                    purpose: purpose, outcome: .failed,
+                                    kind: purpose == .pendingDraft ? .iptcPatch : .iptcDraft)
+        }
+        for kind in [AutomationOperationRegistry.Kind.faceScan, .metadataTemplate, .developTemplate, .voiceTranscription] {
+            _ = try terminalFixture(store: store, registry: registry, id: UUID(), epoch: epoch,
+                                    purpose: .pendingDraft, outcome: .failed, kind: kind)
+        }
+        for outcome in [AutomationOperationRegistry.Outcome.partialUncertain, .recoveryRequired] {
+            _ = try terminalFixture(store: store, registry: registry, id: UUID(), epoch: epoch,
+                                    purpose: .xmpPublication, outcome: outcome)
+        }
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
+        // Recovery receipts do not widen this bounded request-maintenance policy.
+        try replaceArchive(at: operationRoot) { archive in
+            var records = archive["records"] as! [[String: Any]]
+            for index in records.indices where ["partialUncertain", "recoveryRequired"].contains(records[index]["outcome"] as? String ?? "") {
+                records[index]["recoveryResolution"] = ["disposition": "restored",
+                    "receiptSHA256": String(repeating: "a", count: 64), "resolvedAt": records[index]["updatedAt"]!]
+            }
+            archive["records"] = records
+        }
+        let early = try registry.enqueue(kind: .iptcDraft, ownerID: UUID(), now: now.addingTimeInterval(-1))
+        let earlyID = UUID()
+        _ = try store.request(requestID: earlyID, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.admit(earlyID, requestEpoch: epoch, now: now)
+        _ = try store.link(earlyID, operationID: early.id, now: now)
+        _ = try registry.finish(early.id, ownerID: early.ownerID, outcome: .failed, now: now.addingTimeInterval(3))
+        for state in [AutomationOperationRegistry.State.queued, .running] {
+            let id = UUID()
+            _ = try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+            _ = try store.admit(id, requestEpoch: epoch, now: now)
+            let operation = try registry.enqueue(kind: .iptcDraft, ownerID: UUID(), now: now)
+            _ = try store.link(id, operationID: operation.id, now: now)
+            if state == .running { _ = try registry.start(operation.id, ownerID: operation.ownerID, now: now) }
+        }
+        let missingID = UUID()
+        _ = try store.request(requestID: missingID, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.admit(missingID, requestEpoch: epoch, now: now)
+        _ = try store.link(missingID, operationID: UUID(), now: now)
+        let admittedID = UUID()
+        _ = try store.request(requestID: admittedID, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.admit(admittedID, requestEpoch: epoch, now: now)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+    }
+
+    @Test("Cleanup revalidates removed history and later linked cancellation instead of trusting an earlier count")
+    func terminalRecoveryRevalidatesEvidence() throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let competitor = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        let removed = try terminalFixture(store: store, registry: registry, id: id, epoch: epoch,
+                                          purpose: .pendingDraft, outcome: .failed)
+        let cancellationID = UUID()
+        _ = try terminalFixture(store: store, registry: registry, id: cancellationID, epoch: epoch,
+                                purpose: .pendingDraft, outcome: .verified)
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 2)
+        try competitor.removeTerminal(removed.id, ownerID: removed.ownerID)
+        let cancelled = try store.cancel(cancellationID, requestEpoch: epoch, now: now.addingTimeInterval(4))
+        let file = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: file)
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+        }
+        #expect(try Data(contentsOf: file) == bytes)
+        #expect(try store.inspect(cancellationID) == cancelled)
+        #expect(try store.capacitySnapshot().epoch == epoch)
+    }
+
+    @Test("Locked terminal evidence prevents concurrent history deletion and contention cannot rotate request epochs")
+    func lockedTerminalEvidence() throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let competitor = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        let operation = try terminalFixture(store: store, registry: registry, id: UUID(), epoch: epoch,
+                                            purpose: .pendingDraft, outcome: .verified)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        try registry.withLockedRecords { records in
+            #expect(records == [operation])
+            #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+                try competitor.removeTerminal(operation.id, ownerID: operation.ownerID)
+            }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                try store.terminalCapacitySnapshot(registry: competitor)
+            }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: competitor)
+            }
+        }
+        let requestHolder = AutomationOperationPersistence(directory: root, maximumBytes: 1_048_576)
+        try requestHolder.transaction(readOnly: true) { bytes in
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+            }
+            return ((), try #require(bytes))
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+        #expect(try store.capacitySnapshot().epoch == epoch)
+        #expect(try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry).retiredCount == 1)
+        #expect(try Data(contentsOf: operationFile) == operationBytes)
+    }
+
+    @Test("Unavailable or corrupt operation evidence fails closed without changing requests or disabling cancelled-only maintenance")
+    func invalidTerminalEvidenceStorage() throws {
+        let root = try directory()
+        let operationRoot = try directory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: operationRoot)
+        }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let registry = AutomationOperationRegistry(storageDirectory: operationRoot)
+        let epoch = try store.capacitySnapshot().epoch
+        #expect(try store.terminalCapacitySnapshot(registry: registry).confirmedTerminalCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: operationRoot.path))
+        let id = UUID()
+        _ = try terminalFixture(store: store, registry: registry, id: id, epoch: epoch,
+                                purpose: .pendingDraft, outcome: .verified)
+        let cancelledID = UUID()
+        _ = try store.request(requestID: cancelledID, requestEpoch: epoch, planID: planID,
+                              purpose: .pendingDraft, now: now)
+        _ = try store.cancel(cancelledID, requestEpoch: epoch, now: now)
+        let requestFile = root.appendingPathComponent("operations.json")
+        let requestBytes = try Data(contentsOf: requestFile)
+        let operationFile = operationRoot.appendingPathComponent("operations.json")
+        let operationBytes = try Data(contentsOf: operationFile)
+        try Data("broken".utf8).write(to: operationFile)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) {
+            try store.terminalCapacitySnapshot(registry: registry)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: epoch, registry: registry)
+        }
+        #expect(try Data(contentsOf: requestFile) == requestBytes)
+        #expect(try Data(contentsOf: operationFile) == Data("broken".utf8))
+        #expect(try store.capacitySnapshot().cancelledBeforeAdmissionCount == 1)
+        let recovered = try store.recoverCancelledCapacity(expectedEpoch: epoch)
+        #expect(recovered.retiredCount == 1)
+        #expect(try store.inspect(id).state == .linked)
+        try operationBytes.write(to: operationFile)
+        #expect(chmod(operationFile.path, 0o644) == 0)
+        let linkedBytes = try Data(contentsOf: requestFile)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+            try store.recoverConfirmedTerminalCapacity(expectedEpoch: recovered.epoch, registry: registry)
+        }
+        #expect(try Data(contentsOf: requestFile) == linkedBytes)
+        #expect(chmod(operationFile.path, 0o600) == 0)
+        #expect(try store.recoverConfirmedTerminalCapacity(expectedEpoch: recovered.epoch, registry: registry).retiredCount == 1)
+    }
+
+    private func terminalFixture(store: MCPNativeReviewRequestStore, registry: AutomationOperationRegistry,
+                                 id: UUID, epoch: UUID?, purpose: MCPNativeReviewRequestStore.Purpose,
+                                 outcome: AutomationOperationRegistry.Outcome,
+                                 kind: AutomationOperationRegistry.Kind? = nil) throws -> AutomationOperationRegistry.Record {
+        if let epoch {
+            _ = try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: purpose, now: now)
+        } else {
+            _ = try store.request(requestID: id, planID: planID, purpose: purpose, now: now)
+        }
+        _ = try store.admit(id, requestEpoch: epoch, now: now)
+        let operation = try registry.enqueue(kind: kind ?? (purpose == .pendingDraft ? .iptcDraft : .iptcPatch),
+                                              ownerID: UUID(), now: now.addingTimeInterval(1))
+        _ = try store.link(id, operationID: operation.id, now: now.addingTimeInterval(2))
+        if outcome == .cancelled {
+            _ = try registry.requestCancellation(operation.id, now: now.addingTimeInterval(2))
+            return try registry.acknowledgeCancellation(operation.id, ownerID: operation.ownerID,
+                                                         now: now.addingTimeInterval(3))
+        }
+        _ = try registry.start(operation.id, ownerID: operation.ownerID, now: now.addingTimeInterval(2))
+        return try registry.finish(operation.id, ownerID: operation.ownerID, outcome: outcome, now: now.addingTimeInterval(3))
+    }
+
     @Test("A retired UUID reused in a new epoch rejects stale and epochless admission or cancellation")
     func reusedRequestIDCannotAcceptStaleMutations() throws {
         let root = try directory()

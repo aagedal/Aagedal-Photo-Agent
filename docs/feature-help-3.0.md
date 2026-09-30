@@ -176,11 +176,17 @@ inspect operation history and recovery before preparing another request. The arc
 256 requests without automatic eviction, including cancelled requests. In the client request section,
 choose **Review request capacity**, then **Remove cancelled review requests** and confirm to remove
 only requests cancelled before admission. Cleanup clears current native review consent and atomically
-rotates the epoch. Active, admitted, linked and uncertain requests retain their original handles and
-evidence. Retired requests cannot be retried; clients must never silently submit them under a new
-epoch. A separate new intent needs a new request ID and the current epoch. Retained retries keep
-their original epoch even after cleanup. If a full archive has no pre-admission cancelled requests that can be removed, it
-remains full; linked-terminal cleanup is not available yet.
+rotates the epoch. Alternatively, choose **Remove finished review requests** and confirm to remove
+linked requests with exactly matching retained terminal outcomes of verified, failed, cancelled or
+stale. A failed or stale outcome does not mean metadata was published. Operation kind and timing must
+match the request; missing, mismatched or older evidence cannot permit removal. Operation and recovery
+history remains available. Requests with any recovery outcome remain retained, even after separate
+restoration; active, admitted and uncertain requests also remain retained. Both confirmations bind
+the capacity epoch you reviewed and clear current native consent. Retired requests cannot be retried;
+clients must never silently submit them under a new epoch. A separate new intent needs a new request
+ID and the current epoch. Retained retries keep their original epoch even after cleanup. If a full
+archive has no eligible cancelled or finished requests, it remains full. The helper's capacity tool
+reports pre-admission cancellation eligibility only; finished eligibility requires native inspection.
 
 To inspect a plan in Photo Agent, open **Settings → Automation → Proofreading Plan Review**,
 paste its exact `planID`, and choose **Inspect Plan**. The app rechecks the current authorization

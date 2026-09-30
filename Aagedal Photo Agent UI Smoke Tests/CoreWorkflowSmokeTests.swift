@@ -71,12 +71,17 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testFinishedDraftReviewCleanupPreservesOperationAndMetadataAcrossRelaunch() throws {
+        try exerciseNativeClientRequest(cancel: false, retireFinished: true)
+    }
+
+    @MainActor
     func testNativeClientRequestCancellationPreventsDraftMutation() throws {
         try exerciseNativeClientRequest(cancel: true)
     }
 
     @MainActor
-    private func exerciseNativeClientRequest(cancel: Bool) throws {
+    private func exerciseNativeClientRequest(cancel: Bool, retireFinished: Bool = false) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
         app.typeKey(",", modifierFlags: .command)
@@ -129,10 +134,28 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: photo), before)
         XCTAssertFalse(FileManager.default.fileExists(atPath: photo.deletingPathExtension().appendingPathExtension("xmp").path))
-        let retained = try retainedRequest() as NSDictionary
+        if retireFinished {
+            try exerciseFinishedReviewCleanup(requestID: requestID, retainedID: XCTUnwrap(manifest["xmpRequestID"]), photo: photo)
+        }
+        let retained = retireFinished ? nil : try retainedRequest() as NSDictionary
+        let requestBytes = try Data(contentsOf: requestsURL)
+        let operationBytes = try? Data(contentsOf: fixtureRoot.appendingPathComponent("patch-operations/operations.json"))
+        let historyBytes = try? Data(contentsOf: history)
         app.terminate()
-        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
-        XCTAssertEqual(try retainedRequest() as NSDictionary, retained)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot, resumePatchRecovery: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.showReviewRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        let retainedID = try XCTUnwrap(manifest["xmpRequestID"])
+        XCTAssertTrue(app.buttons["automation.inspectRequestedPlan." + retainedID].waitForExistence(timeout: 8))
+        if let retained { XCTAssertEqual(try retainedRequest() as NSDictionary, retained) }
+        if retireFinished { XCTAssertFalse(app.staticTexts["automation.reviewRequestOperationStatus." + requestID].exists) }
+        XCTAssertEqual(try Data(contentsOf: requestsURL), requestBytes)
+        XCTAssertEqual(try? Data(contentsOf: fixtureRoot.appendingPathComponent("patch-operations/operations.json")), operationBytes)
+        XCTAssertEqual(try? Data(contentsOf: history), historyBytes)
         XCTAssertEqual(try Data(contentsOf: photo), before)
     }
 
@@ -213,12 +236,17 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testFinishedXMPReviewCleanupPreservesOperationAndCarriersAcrossRelaunch() throws {
+        try exerciseNativeClientXMPRequest(cancelAfterDryRun: false, retireFinished: true)
+    }
+
+    @MainActor
     func testNativeClientXMPRequestCancellationRevokesReviewedCandidate() throws {
         try exerciseNativeClientXMPRequest(cancelAfterDryRun: true)
     }
 
     @MainActor
-    private func exerciseNativeClientXMPRequest(cancelAfterDryRun: Bool) throws {
+    private func exerciseNativeClientXMPRequest(cancelAfterDryRun: Bool, retireFinished: Bool = false) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
         app.typeKey(",", modifierFlags: .command)
@@ -284,6 +312,9 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertTrue((operationStatus.label + ((operationStatus.value as? String) ?? "")).lowercased().contains("verified"))
         }
         XCTAssertEqual(try Data(contentsOf: photo), original)
+        if retireFinished {
+            try exerciseFinishedReviewCleanup(requestID: requestID, retainedID: XCTUnwrap(manifest["draftRequestID"]), photo: photo)
+        }
         let requestsURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
         let requests = try Data(contentsOf: requestsURL)
         let operations = cancelAfterDryRun ? nil : try retainedOperationObjects() as NSArray
@@ -308,11 +339,69 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         app.buttons["automation.refreshReviewRequests"].click()
         if cancelAfterDryRun {
             XCTAssertTrue(app.staticTexts["Cancelled before admission."].waitForExistence(timeout: 8))
+        } else if retireFinished {
+            let retainedID = try XCTUnwrap(manifest["draftRequestID"])
+            XCTAssertTrue(app.buttons["automation.inspectRequestedPlan." + retainedID].waitForExistence(timeout: 8))
+            XCTAssertFalse(app.staticTexts["automation.reviewRequestOperationStatus." + requestID].exists)
+            XCTAssertEqual(try Data(contentsOf: requestsURL), requests)
         } else {
             let operationStatus = app.staticTexts["automation.reviewRequestOperationStatus." + requestID]
             XCTAssertTrue(operationStatus.waitForExistence(timeout: 8))
             XCTAssertTrue((operationStatus.label + ((operationStatus.value as? String) ?? "")).lowercased().contains("verified"))
         }
+    }
+
+    @MainActor
+    private func exerciseFinishedReviewCleanup(requestID: String, retainedID: String, photo: URL) throws {
+        let archiveURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
+        let operationURL = fixtureRoot.appendingPathComponent("patch-operations/operations.json")
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        func archive() throws -> [String: Any] {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archiveURL)) as? [String: Any])
+            let payload = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(envelope["payload"] as? String)))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        }
+        let original = try archive()
+        let records = try XCTUnwrap(original["records"] as? [[String: Any]])
+        let finished = try XCTUnwrap(records.first { $0["requestID"] as? String == requestID })
+        XCTAssertEqual(finished["state"] as? String, "linked")
+        XCTAssertNotNil(finished["operationID"] as? String)
+        let retained = try XCTUnwrap(records.first { $0["requestID"] as? String == retainedID }) as NSDictionary
+        let photoBytes = try Data(contentsOf: photo)
+        let operationBytes = try Data(contentsOf: operationURL)
+        let xmpBytes = try? Data(contentsOf: xmp)
+        let historyBytes = try? Data(contentsOf: history)
+        app.buttons["automation.inspectReviewRequestCapacity"].click()
+        XCTAssertTrue(app.staticTexts["automation.reviewRequestCapacity"].waitForExistence(timeout: 8))
+        let remove = app.buttons["automation.removeFinishedReviewRequests"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 8))
+        XCTAssertTrue(remove.isEnabled)
+        let requestBytes = try Data(contentsOf: archiveURL)
+        remove.click()
+        let dialog = app.sheets.firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+        dialog.buttons["Cancel"].click()
+        XCTAssertEqual(try Data(contentsOf: archiveURL), requestBytes)
+        remove.click()
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+        dialog.buttons["Remove finished review requests"].click()
+        let message = app.staticTexts["automation.reviewRequestCapacityMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        XCTAssertTrue((message.label + ((message.value as? String) ?? "")).contains("Removed 1"))
+        let after = try archive()
+        XCTAssertNotEqual(after["currentEpoch"] as? String, original["currentEpoch"] as? String)
+        XCTAssertEqual(after["legacyCreationAllowed"] as? Bool, false)
+        let remaining = try XCTUnwrap(after["records"] as? [[String: Any]])
+        XCTAssertFalse(remaining.contains { $0["requestID"] as? String == requestID })
+        XCTAssertEqual(try XCTUnwrap(remaining.first { $0["requestID"] as? String == retainedID }) as NSDictionary, retained)
+        XCTAssertEqual(try Data(contentsOf: operationURL), operationBytes)
+        XCTAssertEqual(try Data(contentsOf: photo), photoBytes)
+        XCTAssertEqual(try? Data(contentsOf: xmp), xmpBytes)
+        XCTAssertEqual(try? Data(contentsOf: history), historyBytes)
+        XCTAssertFalse(app.staticTexts["automation.selectedReviewRequest"].exists)
+        XCTAssertFalse(app.buttons["automation.applyPatchDraft"].exists)
+        XCTAssertFalse(app.buttons["automation.publishApprovedXMP"].exists)
     }
 
     @MainActor

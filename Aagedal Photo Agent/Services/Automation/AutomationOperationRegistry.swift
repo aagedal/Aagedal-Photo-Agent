@@ -93,6 +93,14 @@ nonisolated final class AutomationOperationRegistry: Sendable {
 
     func records() throws -> [Record] { try transaction(readOnly: true) { $0 } }
 
+    /// Read-only, synchronous evidence access. The operation archive lock remains held
+    /// until the callback returns, including any request-archive transaction it performs.
+    /// Always acquire operation history before native-review requests; callbacks must
+    /// never reenter this registry or launch work that outlives the callback.
+    func withLockedRecords<T>(_ body: ([Record]) throws -> T) throws -> T {
+        try transaction(readOnly: true) { records in try body(records) }
+    }
+
     func inspect(_ id: UUID) throws -> Record {
         try transaction(readOnly: true) { records in
             guard let record = records.first(where: { $0.id == id }) else { throw Failure.unknownOperation }

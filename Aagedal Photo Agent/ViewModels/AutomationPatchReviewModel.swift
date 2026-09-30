@@ -74,6 +74,7 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
     func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record]
     func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot
     func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult
+    func recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult
     func cancelNativeReviewRequest(_ id: UUID) async throws
     func cancelNativeReviewRequest(_ id: UUID, requestEpoch: UUID?) async throws
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record]
@@ -101,6 +102,9 @@ extension AutomationPatchReviewServing {
         throw MCPNativeReviewRequestStore.Failure.storageUnavailable
     }
     func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
+        throw MCPNativeReviewRequestStore.Failure.storageUnavailable
+    }
+    func recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
         throw MCPNativeReviewRequestStore.Failure.storageUnavailable
     }
     func cancelNativeReviewRequest(_ id: UUID, requestEpoch: UUID?) async throws {
@@ -193,7 +197,17 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         guard try facade.authorizationStore.load() == authorization else {
             throw MCPIPTCPatchPlanStore.Failure.authorityChanged
         }
-        return try requests.capacitySnapshot()
+        do {
+            return try requests.terminalCapacitySnapshot(registry: registry())
+        } catch {
+            // Finished eligibility needs verified operation history. Unavailable history
+            // must not block the separate cancelled-before-admission maintenance path.
+            try Task.checkCancellation()
+            guard try facade.authorizationStore.load() == authorization else {
+                throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+            }
+            return try requests.capacitySnapshot()
+        }
     }
 
     func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
@@ -206,6 +220,19 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
             throw MCPIPTCPatchPlanStore.Failure.authorityChanged
         }
         return try requests.recoverCancelledCapacity(expectedEpoch: expectedEpoch)
+    }
+
+    func recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
+        try Task.checkCancellation()
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        let requests = try requestStore()
+        let operations = try registry()
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load() == authorization else {
+            throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+        }
+        return try requests.recoverConfirmedTerminalCapacity(expectedEpoch: expectedEpoch, registry: operations)
     }
 
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] {
@@ -519,6 +546,10 @@ final class AutomationPatchReviewModel {
     }
     var canRecoverCancelledNativeReviewCapacity: Bool {
         (nativeRequestCapacity?.cancelledBeforeAdmissionCount ?? 0) > 0
+            && !isBusyWithNativeRequestCapacity && !isApplying && !isRefreshingNativeRequests
+    }
+    var canRecoverConfirmedTerminalNativeReviewCapacity: Bool {
+        (nativeRequestCapacity?.confirmedTerminalCount ?? 0) > 0
             && !isBusyWithNativeRequestCapacity && !isApplying && !isRefreshingNativeRequests
     }
     private(set) var message: String?
@@ -923,8 +954,9 @@ final class AutomationPatchReviewModel {
     }
 
     /// Called only after native confirmation. Cleanup never admits work or grants consent.
-    func recoverCancelledNativeReviewCapacity() {
-        guard canRecoverCancelledNativeReviewCapacity, let snapshot = nativeRequestCapacity else { return }
+    func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID? = nil) {
+        guard canRecoverCancelledNativeReviewCapacity, let snapshot = nativeRequestCapacity,
+              expectedEpoch == nil || expectedEpoch == snapshot.epoch else { return }
         clear()
         isRecoveringNativeRequestCapacity = true
         let expected = capacityGeneration
@@ -933,6 +965,32 @@ final class AutomationPatchReviewModel {
                 let result = try await service.recoverCancelledNativeReviewCapacity(expectedEpoch: snapshot.epoch)
                 guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
                 self.nativeRequestCapacityMessage = "Removed \(result.retiredCount) cancelled review request(s). Removed requests cannot be retried. New intents need a new request ID and current epoch; retained requests keep their original epoch. No consent was granted."
+                self.isRecoveringNativeRequestCapacity = false
+                self.capacityTask = nil
+                self.refreshNativeRequestEvidence()
+                self.inspectNativeRequestCapacityPreservingMessage()
+            } catch {
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacityMessage = "Cleanup could not be confirmed. Review request capacity again before retrying. " + error.localizedDescription
+                self.isRecoveringNativeRequestCapacity = false
+                self.capacityTask = nil
+                self.refreshNativeRequestEvidence()
+            }
+        }
+    }
+
+    /// The epoch is captured when presenting native confirmation, never rebound on acceptance.
+    func recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: UUID) {
+        guard canRecoverConfirmedTerminalNativeReviewCapacity, let snapshot = nativeRequestCapacity,
+              expectedEpoch == snapshot.epoch else { return }
+        clear()
+        isRecoveringNativeRequestCapacity = true
+        let expected = capacityGeneration
+        capacityTask = Task { [weak self, service] in
+            do {
+                let result = try await service.recoverConfirmedTerminalNativeReviewCapacity(expectedEpoch: expectedEpoch)
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacityMessage = "Removed \(result.retiredCount) finished review request(s). Operation and recovery history remains available. Removal does not establish successful execution. Removed requests cannot be retried; new intents need a new request ID and current epoch. No consent was granted and no photo metadata was changed."
                 self.isRecoveringNativeRequestCapacity = false
                 self.capacityTask = nil
                 self.refreshNativeRequestEvidence()

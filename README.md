@@ -136,8 +136,10 @@ the support table and validation records.
   epoch and request ID across helper restart;
   requests grant no consent and interrupted admission is never replayed. This private archive retains
   at most 256 requests without automatic eviction. Settings can explicitly remove requests cancelled
-  before admission and rotate the epoch. Active, admitted, linked and uncertain records remain
-  retained. Removed intents cannot be retried; clients must never silently resubmit them under a
+  before admission, or separately remove linked requests whose exact retained operation confirms a
+  finished outcome, and rotate the epoch. Cleanup preserves operation and recovery history. Active,
+  admitted, uncertain, missing-history and recovery-outcome requests remain retained. Removed intents
+  cannot be retried; clients must never silently resubmit them under a
   new epoch. Retained requests keep their original epochs. Settings can explicitly apply an approved
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo
   and XMP. Template application, face,
