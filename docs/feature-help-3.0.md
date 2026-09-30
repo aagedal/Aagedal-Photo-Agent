@@ -124,12 +124,18 @@ refused; use `clear` to remove a value explicitly.
 Keyword changes use the local Approved Keywords list and settings. Strict mode rejects
 unapproved values; accepted values use the same spelling and duplicate handling as the editor.
 The preview keeps your exact requested text. Changing the list or its settings requires a new
-preview and review. Keyword patches currently refuse lists routed through iCloud.
+preview and review. Changes made in the app invalidate old plans even if you change the setting
+back to its earlier value. Keyword patches currently refuse lists routed through iCloud.
 
 The schema-3 result shows production-normalized before/after values, exact `sourceValue` and
 `requestedValue`, each field's comparison rule, edited-field legacy IPTC byte-limit warnings, a content-bound
 preview ID, a `planID` and a five-minute expiry. Call `get_iptc_patch_plan` with only that `planID`
 to retrieve the same preview after authorization and photo/sidecar revisions are checked again.
+Call `inspect_iptc_patch_publication_requirements` with only the `planID` to inspect the exact
+XMP target, revision binding, pending-draft promotion consequences and required native review steps.
+This read-only inspection does not stage or verify an XMP candidate and does not grant consent or
+publish metadata. Its binding digest is comparison evidence, never an approval token.
+
 The bundled helper restores unexpired plans after restart from its private local PatchPlans archive.
 Expiry, edits or changed authorization require a fresh read and preparation. At most 64 live plans
 fit within an 8 MiB serialized-result budget. Expired records are removed on the next successful

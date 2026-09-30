@@ -133,10 +133,15 @@ This is separate from the unapproved AI-origin analyzer described above.
   against exact read revisions, with before/proposed values and IIM compatibility warnings. It
   binds keyword changes to the exact local Approved Keywords list and effective settings,
   enforcing the editor's Strict policy and canonical spelling at preparation and native mutation.
-  iCloud keyword-list authority is unsupported. Settings checks compare current values;
-  historical settings changes and cooperative list-writer reservation remain unfinished. It
+  iCloud keyword-list authority is unsupported. Settings checks bind current values and a persisted
+  generation from cooperating app writers; app changes away and back invalidate old plans. Legacy
+  settings without recorded history remain explicitly untracked. Raw preference edits/rollback,
+  cross-process durability qualification and cooperative list-writer reservation remain open. It
   retains an immutable local plan across helper restart for `get_iptc_patch_plan` to revalidate until its five-minute expiry. It does not
-  persist a committable plan. It captures production normalization and preservation preflight
+  persist a committable plan. `inspect_iptc_patch_publication_requirements` revalidates one retained
+  plan and reports its exact native binding, target and review requirements, without staging a
+  candidate, transporting consent, creating an operation/recovery record or granting write authority.
+  It captures production normalization and preservation preflight
   evidence but does not execute or verify physical writes. Settings supports explicit local
   exact-plan approval and revocation within the review session; this cannot authorize an MCP
   commit in the current build. A separate native **Apply to Pending Draft** action consumes

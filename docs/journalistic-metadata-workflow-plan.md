@@ -1649,6 +1649,16 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 106 continuation (2026-09-30):** Approved Keywords plans bind persisted cooperating
+app-writer settings generations, including changes away and back; pending, malformed or mismatched
+history refuses authority. Legacy history remains explicitly untracked. The read-only helper
+`inspect_iptc_patch_publication_requirements` revalidates exact plans and reports native XMP targets,
+bindings, consequences and required gates without staging candidates, transporting consent or
+granting writes. Two actual native workflows verify originally absent XMP/app-history removal
+interruption, relaunch, cancelled/confirmed explicit retry, witness cleanup and receipt/history
+persistence. Guarded helper commits, iCloud/list-writer authority and broader release gates remain
+open; see [cycle 106 evidence](release/cycle-106-keyword-history-publication-requirements-recovery-2026-09-30.md).
+
 **Cycle 105 continuation (2026-09-30):** Originally absent-carrier restoration retains an
 exclusive rooted removal witness before mutation. Pre-receipt recovery requires its exact inode,
 bytes and parent identity, unchanged source/peer carriers and current authorization; absence alone

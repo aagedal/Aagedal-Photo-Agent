@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 105: removal witnesses and recovery history reconciliation](release/cycle-105-removal-witness-history-reconciliation-2026-09-30.md) authenticates interrupted originally absent-carrier restoration and reconciles completed recovery with separate truthful Operation History markers. All 176 focused tests, 3,481 serial integrated tests and both actual native UI workflows pass, including confirmed record removal and receipt persistence across relaunch. Guarded helper commits, broader recovery qualification, cloud keyword authority, production executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 106: keyword history, publication requirements and removal recovery](release/cycle-106-keyword-history-publication-requirements-recovery-2026-09-30.md) binds keyword plans to cooperating settings history, adds read-only helper publication-requirement inspection and verifies originally absent XMP/app-history removal recovery across native relaunch. All 82 final affected focused tests, the earlier 128-test focused run, both native workflows, 3,498 final serial integrated tests and repository checks pass. Guarded helper commits, iCloud/list-writer authority, production executors and signed-model integration remain open.
 
 ## Portfolio
 

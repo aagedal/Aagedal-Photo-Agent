@@ -2,14 +2,23 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-30
-**Latest implementation state:** [Cycle 105](cycle-105-removal-witness-history-reconciliation-2026-09-30.md) authenticates interrupted originally absent-carrier restoration through exact rooted removal witnesses and reconciles completed recovery with separate truthful Operation History markers. All 176 focused tests, both actual native UI smoke tests and the final serial integrated 3,481-test suite pass. Guarded helper commits, broader recovery qualification, cloud keyword authority, production executors and production model signing/UI integration remain open.
-**Latest native evidence:** Cycle 105 passes unchanged staging and explicit restoration after app-history rename before its first receipt, including cancelled/confirmed history removal and byte-identical recovery receipt persistence across relaunch. The original publication outcome is preserved. Cycle 101 retains same-byte replacement refusal evidence. Broader native interruption and accessibility cases remain open.
-**Implementation commits:** `e25940b`. The prior unsigned Release candidate passes model omission and ZIP payload verification; no new release candidate was built this cycle.
-**Cycle baseline:** `9554fa8`, initially clean. No whole release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 106](cycle-106-keyword-history-publication-requirements-recovery-2026-09-30.md) binds keyword authority to persisted cooperating app-writer settings history, adds exact read-only helper publication-requirement inspection and qualifies originally absent XMP/app-history removal recovery across native relaunch. All 82 final affected focused tests, the earlier 128-test focused run, both native recovery workflows, 3,498 final serial integrated tests and repository checks pass. Guarded helper commits, iCloud/list-writer authority, production executors and signed-model production integration remain open.
+**Latest native evidence:** Cycle 106 verifies removal-witness interruption before restoration receipts for both absent XMP and app history, relaunch with exact disposable-fixture authorization, cancelled/confirmed retry, complete witness cleanup, truthful original history outcomes, explicit record removal and byte-identical receipt persistence. Broader interruption, cancellation, accessibility and real-volume cases remain open.
+**Implementation commits:** `a663846`, `da1959a`, `5bfe016` and `5e897d1`. No new Release candidate was built this cycle; the prior unsigned candidate's model omission and ZIP validation remain historical evidence.
+**Cycle baseline:** `4b1cb86`, initially clean. No whole release-readiness gate is newly closed.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 106 keyword history, publication requirements and removal recovery](cycle-106-keyword-history-publication-requirements-recovery-2026-09-30.md)
+records 82 final affected focused tests, the earlier 128-test focused run, two passing actual native UI recovery workflows, independent
+review, repository validation and an 18-tool bundled helper probe. The final serial integrated suite passes 3,498 tests / 356 suites with zero failures in 154.517 seconds.
+Settings generations detect cooperating app changes away and back; legacy history is explicitly
+untracked and raw preference rollback remains outside this evidence. Publication requirements are
+read-only comparison evidence; no helper consent transport, candidate staging or mutation authority
+is added. Native removal recovery passes relaunch, Cancel, explicit retry, cleanup and history/receipt
+persistence. The cycle 105 and earlier reports below retain their historical gate states.
 
 [Cycle 105 removal witnesses and recovery history reconciliation](cycle-105-removal-witness-history-reconciliation-2026-09-30.md)
 records 176 passing focused tests, 3,481 passing serial integrated tests, two passing actual
@@ -57,8 +66,8 @@ progress/completion, canonical list field references and authenticated rollback-
 Restoration refuses external identity changes and missing receipt evidence; production model and
 workflow integration remain open.
 
-Ordered next implementation actions: guarded helper commit boundary and broader native recovery cases;
-cloud keyword authority, historical settings revision and cooperative list-writer reservation;
+Ordered next implementation actions: authenticated native-consent/executor handoff for guarded helper commits
+and broader native recovery cases; cloud keyword authority and cooperative list-writer reservation;
 shared face-scan/template/transcription executors; production signed Whisper descriptors,
 Settings/Caption integration and authenticated missing-ledger/partial-orphan recovery. External interoperability,
 real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user
