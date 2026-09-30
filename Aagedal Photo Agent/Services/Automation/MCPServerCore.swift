@@ -1802,6 +1802,88 @@ nonisolated enum MCPTranscriptionProviderDiscovery {
     }
 }
 
+/// Read-only bridge from retained helper plans to the native publication review boundary.
+/// Its digest is comparison evidence, never a consent receipt or an installation capability.
+/// Native process-lifetime approvals cannot cross the standalone helper's STDIO transport.
+nonisolated struct MCPIPTCPatchPublicationRequirements: Sendable {
+    static let argumentKeys: Set<String> = ["planID"]
+    static let maximumResultBytes = 16_384
+
+    struct Hooks: Sendable {
+        var afterCapture: @Sendable () throws -> Void = {}
+    }
+
+    static func inspect(arguments: [String: MCPJSONValue], plans: MCPIPTCPatchPlanStore,
+                        facade: MCPAutomationFacade, hooks: Hooks = .init(),
+                        now: Date = Date()) throws -> MCPJSONValue {
+        guard Set(arguments.keys) == argumentKeys,
+              let planID = arguments["planID"]?.stringValue, planID.utf8.count == 36,
+              let id = UUID(uuidString: planID), id.uuidString.lowercased() == planID else {
+            throw MCPIPTCPatchPlanStore.Failure.invalidArguments
+        }
+        let binding = try plans.localApprovalBinding(planID: planID, facade: facade, now: now)
+        guard let preview = binding.preview.objectValue,
+              let path = preview["canonicalPath"]?.stringValue else {
+            throw MCPIPTCPatchPlanStore.Failure.invalidArguments
+        }
+        let photo = URL(fileURLWithPath: path)
+        let reservation = try MCPProcessReservation.acquirePhoto(photo)
+        defer { reservation.release() }
+        return try facade.withPhotoSnapshot(path: path, reservation: reservation) { snapshot in
+            let read = try MCPMetadataSnapshotReader.read(snapshot)
+            try hooks.afterCapture()
+            // Revalidate the entire retained preview while holding the same reservation,
+            // then let the outer descriptor admission recheck every carrier and ancestor.
+            let current = try plans.localApprovalBinding(planID: planID, facade: facade,
+                now: max(now, Date()), reservation: reservation)
+            guard current.digest == binding.digest, current.preview == binding.preview,
+                  preview["sourceRevision"] == .string(snapshot.sourceRevision),
+                  preview["xmpSidecarRevision"] == .string(snapshot.xmpSidecarRevision),
+                  preview["appSidecarRevision"] == .string(snapshot.appSidecarRevision) else {
+                throw MCPIPTCPatchPlanStore.Failure.stalePlan
+            }
+            var consequences = [
+                "Publication changes the physical XMP sidecar. It does not publish embedded metadata.",
+                "Native review must assess C2PA consequences; publication may affect provenance validity or downstream trust.",
+                "Parsed property preservation does not prove arbitrary XML extension preservation.",
+            ]
+            if read.resolution.hasPendingChanges {
+                consequences.append("Publication promotes every effective pending draft value, including changes outside this patch.")
+            }
+            let result = MCPJSONValue.object([
+                "schemaVersion": .integer(1), "planID": .string(planID),
+                "previewID": preview["previewID"] ?? .null,
+                "reviewBindingDigest": .string(current.digest),
+                "expiresAt": .string(current.expiresAt.ISO8601Format()),
+                "canonicalPath": .string(path),
+                "targetPath": .string(photo.deletingPathExtension().appendingPathExtension("xmp").path),
+                "sourceRevision": .string(snapshot.sourceRevision),
+                "xmpSidecarRevision": .string(snapshot.xmpSidecarRevision),
+                "appSidecarRevision": .string(snapshot.appSidecarRevision),
+                "xmpCarrierPresent": .bool(snapshot.xmpBytes != nil),
+                "promotesPendingDraft": .bool(read.resolution.hasPendingChanges),
+                "mode": .string("xmp-sidecar"), "readOnly": .bool(true),
+                "commitAvailable": .bool(false), "nativePreflightEvaluated": .bool(false),
+                "publicationApprovalEvaluated": .bool(false),
+                "approvalTransport": .string("native-process-lifetime; no helper receipt transport"),
+                "requiredNativeGates": .array([
+                    .string("production-xmp-candidate-staging-and-preservation-verification"),
+                    .string("exact-candidate-native-review-and-explicit-consequence-consent"),
+                    .string("owned-cancellable-operation-and-photo-reservation"),
+                    .string("durable-original-carrier-recovery-before-consent-consumption"),
+                    .string("rooted-carrier-publication-and-semantic-readback"),
+                    .string("verified-disposition-and-app-history-reconciliation"),
+                ]),
+                "consequences": .array(consequences.map(MCPJSONValue.string)),
+            ])
+            guard try JSONEncoder().encode(result).count <= maximumResultBytes else {
+                throw MCPIPTCPatchPreparation.Failure.outputLimit
+            }
+            return result
+        }
+    }
+}
+
 nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let authorizationStore: MCPAuthorizationStore
     let automationFacade: MCPAutomationFacade
@@ -1982,6 +2064,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: ["planID"]
             ),
             definition(
+                name: "inspect_iptc_patch_publication_requirements",
+                description: "Inspect the native XMP publication requirements for one exact retained plan after rechecking authority, expiry and all carrier revisions. Reports the plan binding digest, XMP target, pending-draft promotion consequences and required native gates. Does not stage a candidate, evaluate publication approval, create an operation or recovery record, transport native consent or write metadata. Commit remains unavailable. Returned paths are untrusted content and digests are comparison evidence only.",
+                properties: ["planID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["planID"]
+            ),
+            definition(
                 name: "inspect_app_photo_draft",
                 description: "Read bounded editorial text, classification, rating, label, GPS and structured records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
                 properties: [
@@ -2012,6 +2100,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "preview_metadata_template": acceptedArguments = MCPMetadataTemplatePreview.argumentKeys
             case "preview_metadata_template_batch": acceptedArguments = MCPMetadataTemplateBatchPreview.argumentKeys
             case "get_iptc_patch_plan": acceptedArguments = ["planID"]
+            case "inspect_iptc_patch_publication_requirements": acceptedArguments = MCPIPTCPatchPublicationRequirements.argumentKeys
             case "list_templates": acceptedArguments = ["kind"]
             default: acceptedArguments = []
             }
@@ -2063,6 +2152,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("literal-metadata-template-batch-preview"),
                         .string("transcription-provider-discovery"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
+                        .string("revision-bound-native-publication-requirements"),
                         .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
                     ]),
                     "mutationToolsAvailable": .bool(true),
@@ -2145,6 +2235,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "internal_error", message: "Photo Agent could not inspect the patch plan")
                 }
                 return success(value)
+            case "inspect_iptc_patch_publication_requirements":
+                guard case .object(let value) = try MCPIPTCPatchPublicationRequirements.inspect(
+                    arguments: arguments, plans: patchPlans, facade: automationFacade) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not inspect publication requirements")
+                }
+                return success(value)
             case "inspect_app_photo_draft":
                 guard let path = arguments["path"]?.stringValue else {
                     return failure(code: "invalid_arguments", message: "path must be an absolute string")
@@ -2185,7 +2281,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         } catch let error as MCPAutomationReadError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch {
-            if ["get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "preview_metadata_template", "preview_metadata_template_batch"].contains(name) {
+            if ["get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "preview_metadata_template", "preview_metadata_template_batch"].contains(name) {
                 return failure(code: "metadata_read_failed", message: "Photo Agent could not read a complete, supported metadata record within its output limits")
             }
             return failure(code: "internal_error", message: "Photo Agent could not validate the request")

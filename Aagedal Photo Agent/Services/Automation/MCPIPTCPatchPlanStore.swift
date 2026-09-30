@@ -154,7 +154,8 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     }
 
     /// Native review binds both the complete published preview and its captured local authority.
-    /// This is deliberately absent from the MCP tool surface and grants no write capability.
+    /// Helper requirements inspection exposes the digest only as comparison evidence;
+    /// neither the binding nor its digest grants native consent or write capability.
     func localApprovalBinding(planID: String, facade: MCPAutomationFacade, now: Date,
                               reservation: MCPProcessReservationLease? = nil) throws
         -> (preview: MCPJSONValue, digest: String, expiresAt: Date) {

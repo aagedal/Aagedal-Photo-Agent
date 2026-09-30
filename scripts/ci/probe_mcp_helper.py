@@ -142,12 +142,21 @@ def probe(executable):
         capabilities = connection.receive(10)["result"]["structuredContent"]
         require(capabilities["operationExecutorsConnected"] is False,
                 "Update probe when production executors are integrated")
+        require("inspect_iptc_patch_publication_requirements" in names,
+                "Missing native publication requirements inspection")
+        connection.send(request(11, "tools/call", {
+            "name": "inspect_iptc_patch_publication_requirements",
+            "arguments": {"planID": "not-a-uuid", "execute": True},
+        }))
+        requirements = connection.receive(11)["result"]
+        require(requirements["isError"] is True and requirements["structuredContent"]["code"] == "invalid_arguments",
+                "Publication requirements accepted unexpected execution arguments")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
                 "pipelinedRequests": True, "malformedInputRecovery": True,
                 "providerDiscovery": True, "providerArgumentRefusal": True,
-                "operationArgumentRefusal": True, "honestExecutorBoundary": True,
+                "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True, "honestExecutorBoundary": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()

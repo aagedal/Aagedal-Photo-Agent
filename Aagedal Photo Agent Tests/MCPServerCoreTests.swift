@@ -479,7 +479,7 @@ struct MCPServerCoreTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
             "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
-            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_app_photo_draft",
+            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
@@ -1773,5 +1773,135 @@ struct MCPServerCoreTests {
 
     private func json(_ data: Data) throws -> [String: Any] {
         try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+}
+
+@Suite("Helper exact-plan native publication requirements")
+struct MCPIPTCPatchPublicationRequirementsTests {
+    private typealias Fixture = MCPIPTCPatchXMPPreflightServiceTests.Fixture
+    private let name = "inspect_iptc_patch_publication_requirements"
+
+    @Test("Requirements are bounded revision evidence with no write or consent authority",
+          arguments: [false, true], [false, true])
+    func reportsRequirements(pending: Bool, existingXMP: Bool) throws {
+        let fixture = try Fixture(pending: pending, existingXMP: existingXMP)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
+                                      patchPlans: fixture.plans)
+        let result = tools.callTool(name: name, arguments: ["planID": .string(fixture.planID)])
+        #expect(result.objectValue?["isError"] == .bool(false))
+        let value = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        let binding = try fixture.plans.localApprovalBinding(planID: fixture.planID,
+            facade: fixture.facade, now: Date())
+        #expect(value["reviewBindingDigest"] == .string(binding.digest))
+        #expect(value["previewID"] == binding.preview.objectValue?["previewID"])
+        #expect(value["expiresAt"] == .string(binding.expiresAt.ISO8601Format()))
+        #expect(value["targetPath"] == .string(fixture.root.appendingPathComponent("photo.xmp").path))
+        #expect(value["sourceRevision"] == .string(before.sourceRevision))
+        #expect(value["xmpSidecarRevision"] == .string(before.xmpSidecarRevision))
+        #expect(value["appSidecarRevision"] == .string(before.appSidecarRevision))
+        #expect(value["promotesPendingDraft"] == .bool(pending))
+        #expect(value["xmpCarrierPresent"] == .bool(existingXMP))
+        #expect(value["commitAvailable"] == .bool(false))
+        #expect(value["nativePreflightEvaluated"] == .bool(false))
+        #expect(value["publicationApprovalEvaluated"] == .bool(false))
+        #expect(value["readOnly"] == .bool(true))
+        #expect(value["mode"] == .string("xmp-sidecar"))
+        #expect(Set(value.keys) == ["schemaVersion", "planID", "previewID", "reviewBindingDigest", "expiresAt",
+            "canonicalPath", "targetPath", "sourceRevision", "xmpSidecarRevision", "appSidecarRevision",
+            "xmpCarrierPresent", "promotesPendingDraft", "mode", "readOnly", "commitAvailable",
+            "nativePreflightEvaluated", "publicationApprovalEvaluated", "approvalTransport", "requiredNativeGates", "consequences"])
+        #expect(try JSONEncoder().encode(MCPJSONValue.object(value)).count <= MCPIPTCPatchPublicationRequirements.maximumResultBytes)
+        let encoded = String(decoding: try JSONEncoder().encode(MCPJSONValue.object(value)), as: UTF8.self)
+        #expect(encoded.contains("Pending unedited credit") == false)
+        #expect(encoded.contains("Publication promotes every effective pending draft value") == pending)
+        #expect(!encoded.contains("stagedSHA256"))
+        #expect(!encoded.contains("approvalID"))
+        #expect(!tools.supportsTool(named: "commit_iptc_patch"))
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(before.sourceBytes == after.sourceBytes)
+        #expect(before.xmpBytes == after.xmpBytes)
+        #expect(before.appSidecarBytes == after.appSidecarBytes)
+        #expect(before.sourceRevision == after.sourceRevision)
+        #expect(before.xmpSidecarRevision == after.xmpSidecarRevision)
+        #expect(before.appSidecarRevision == after.appSidecarRevision)
+    }
+
+    @Test("Discovery exposes only a read-only plan ID and refuses remote consent arguments")
+    func discoveryAndArguments() throws {
+        let fixture = try Fixture()
+        let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
+                                      patchPlans: fixture.plans)
+        let definition = try #require(tools.toolDefinitions(configuration: try fixture.facade.authorizationStore.load())
+            .first { $0.objectValue?["name"] == .string(name) }?.objectValue)
+        #expect(definition["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(definition["annotations"]?.objectValue?["idempotentHint"] == .bool(true))
+        #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+        #expect(Set(try #require(definition["inputSchema"]?.objectValue?["properties"]?.objectValue).keys) == ["planID"])
+        let bad: [[String: MCPJSONValue]] = [[:], ["planID": .null], ["planID": .integer(1)],
+            ["planID": .string("../photo.jpg")], ["planID": .string(fixture.planID.uppercased())],
+            ["planID": .string(fixture.planID), "approve": .bool(true)],
+            ["planID": .string(fixture.planID), "path": .string(fixture.photo.path)],
+            ["planID": .string(fixture.planID), "approvalID": .string(UUID().uuidString)],
+            ["planID": .string(fixture.planID), "sourceRevision": .string("replacement")]]
+        for arguments in bad {
+            #expect(tools.callTool(name: name, arguments: arguments).objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        #expect(tools.callTool(name: name, arguments: ["planID": .string(UUID().uuidString.lowercased())])
+            .objectValue?["structuredContent"]?.objectValue?["code"] == .string("unknown_patch_plan"))
+        try fixture.facade.authorizationStore.setEnabled(false)
+        #expect(tools.callTool(name: name, arguments: ["planID": .string(fixture.planID)])
+            .objectValue?["structuredContent"]?.objectValue?["code"] == .string("patch_plan_authority_changed"))
+    }
+
+    @Test("Same-byte source replacement during requirements inspection refuses the whole result")
+    func sourceIdentityRace() throws {
+        let fixture = try Fixture()
+        let photo = fixture.photo
+        let original = try Data(contentsOf: photo)
+        #expect(throws: (any Error).self) {
+            try MCPIPTCPatchPublicationRequirements.inspect(arguments: ["planID": .string(fixture.planID)],
+                plans: fixture.plans, facade: fixture.facade,
+                hooks: .init(afterCapture: { try original.write(to: photo, options: .atomic) }))
+        }
+    }
+
+    @Test("A replaced absent XMP carrier during inspection refuses the whole result")
+    func missingXMPRace() throws {
+        let fixture = try Fixture(existingXMP: false)
+        let xmp = fixture.photo.deletingPathExtension().appendingPathExtension("xmp")
+        #expect(throws: (any Error).self) {
+            try MCPIPTCPatchPublicationRequirements.inspect(arguments: ["planID": .string(fixture.planID)],
+                plans: fixture.plans, facade: fixture.facade,
+                hooks: .init(afterCapture: { try Data("<changed/>".utf8).write(to: xmp) }))
+        }
+    }
+
+    @Test("Revoke and regrant during inspection invalidates the retained native binding")
+    func authorizationRace() throws {
+        let fixture = try Fixture()
+        let authority = fixture.facade.authorizationStore
+        #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+            try MCPIPTCPatchPublicationRequirements.inspect(arguments: ["planID": .string(fixture.planID)],
+                plans: fixture.plans, facade: fixture.facade,
+                hooks: .init(afterCapture: { try authority.setEnabled(false); try authority.setEnabled(true) }))
+        }
+    }
+
+    @Test("An operation reservation and exact plan expiry both gate requirements inspection")
+    func busyAndExpiry() throws {
+        let fixture = try Fixture()
+        let reservation = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        #expect(throws: MCPProcessReservationError.busy) {
+            try MCPIPTCPatchPublicationRequirements.inspect(arguments: ["planID": .string(fixture.planID)],
+                plans: fixture.plans, facade: fixture.facade)
+        }
+        reservation.release()
+        let binding = try fixture.plans.localApprovalBinding(planID: fixture.planID,
+            facade: fixture.facade, now: Date())
+        #expect(throws: MCPIPTCPatchPlanStore.Failure.expiredPlan) {
+            try MCPIPTCPatchPublicationRequirements.inspect(arguments: ["planID": .string(fixture.planID)],
+                plans: fixture.plans, facade: fixture.facade, now: binding.expiresAt)
+        }
     }
 }
