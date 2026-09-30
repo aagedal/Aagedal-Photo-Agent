@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 108: durable native review request handoff](release/cycle-108-native-review-request-handoff-2026-09-30.md) adds intent-only helper requests with exact retries, cancellation and durable operation links. Settings requires explicit fresh review/approval; admission and linkage precede execution, and unknown admissions cannot replay. All 119 final focused tests, both native consent/cancellation/relaunch workflows, 3,547 serial integrated tests and repository checks pass. Authenticated IPC/helper commits, request capacity recovery, iCloud authority, broader executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 109: native review outcomes and cancellation](release/cycle-109-native-review-outcomes-cancellation-2026-09-30.md) adds matching linked operation/recovery evidence to Settings and helper status. Refresh and cancellation remain available during native execution; unavailable history preserves cancellation intent without claiming completion. Exact authorization rechecks protect intent and forwarding. Final verification passes 129 focused tests, four native draft/XMP workflows across two selections, 3,557 serial integrated tests and repository checks. Authenticated IPC/helper commits, versioned request capacity recovery, iCloud authority, broader executors and signed-model integration remain open.
 
 ## Portfolio
 

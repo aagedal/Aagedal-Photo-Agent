@@ -2,15 +2,26 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-30
-**Latest implementation state:** [Cycle 108](cycle-108-native-review-request-handoff-2026-09-30.md) adds durable intent-only helper requests to explicit native review and the existing consent/executor. Requests support exact retries, cancellation and operation linkage; admission precedes enqueue, and linking precedes execution. Unknown admissions cannot replay. Final focused tests pass 119 cases; both native request/approval/cancellation/relaunch workflows, 3,547 serial integrated tests and repository checks pass. Authenticated IPC/helper commits, request capacity recovery, iCloud authority, broader executors and production signed-model integration remain open.
-**Latest native evidence:** Cycle 108 verifies request selection grants no consent, explicit approval saves a verified pending draft and operation link, and pre-admission cancellation prevents draft creation. Both exact request records persist after relaunch with original JPEG bytes and absent XMP unchanged. Broader interruption, accessibility and real-volume cases remain open.
-**Implementation commits:** `a5b4618`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
-**Cycle baseline:** `7a41692`, initially clean. No whole release-readiness gate is newly closed.
-**Continuation chat:** `01a0f318-cf54-7da2-a515-ce0dad6ee53d`; the earlier coordinator chat below was inspected and inactive.
+**Latest implementation state:** [Cycle 109](cycle-109-native-review-outcomes-cancellation-2026-09-30.md) adds linked operation/recovery evidence and cancellation during native execution to Settings and helper status. Durable intent survives unavailable operation history without claiming stopped work; exact authorization rechecks protect intent and forwarding, and terminal outcomes survive late cancellation. Final verification passes 129 focused tests, four native draft/XMP workflows across two selections, 3,557 serial integrated tests and repository checks. Authenticated IPC/helper commits, versioned request capacity recovery, iCloud authority, broader executors and signed-model integration remain open.
+**Latest native evidence:** Cycle 109 observes four native workflows across two selections. Draft consent/cancellation cases pass; final XMP cases verify separate dry-run/approval/publication consent, exact persisted request/operation/photo/XMP/history after relaunch, and cancelled dry runs with no operation archive or metadata writes. Broader interruption, accessibility and real-volume cases remain open.
+**Implementation commits:** `ffe04d2`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
+**Cycle baseline:** `d72e8d3`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0f33f-a12b-71d2-ae0a-b5e8b2d34817`; the earlier coordinator chat below was inspected and inactive.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 109 native review outcomes and cancellation](cycle-109-native-review-outcomes-cancellation-2026-09-30.md) records 129 final
+focused tests, four native workflows across two selections, independent review, repository
+validation and a passing 21-tool helper probe. The serial integrated suite passes 3,557 tests /
+358 suites, zero failures in 160.495 seconds. Linked status projects actual outcomes and separate
+recovery receipts; missing or mismatched history remains unconfirmed. Independent evidence
+refresh permits cancellation during execution without losing reviewed request identity, including
+durable intent when forwarding is unavailable. Exact authorization rechecks and terminal outcome
+preservation pass regression coverage. Capacity recovery still needs a versioned epoch protocol;
+plain UUID record deletion permits replay. Twelve QoS diagnostics remain and no broader
+performance/release gate closes. Older cycles below retain their historical gate states.
 
 [Cycle 108 durable native review request handoff](cycle-108-native-review-request-handoff-2026-09-30.md)
 records 119 passing final focused tests, two passing native UI workflows, independent review,
@@ -90,7 +101,8 @@ Restoration refuses external identity changes and missing receipt evidence; prod
 workflow integration remain open.
 
 Ordered next implementation actions: authenticated IPC/guarded helper commits and broader native
-recovery; request archive capacity-recovery/removal protocol and physical crash/link-loss qualification;
+recovery; versioned request archive capacity recovery with epoch-bound identities and physical
+crash/link-loss qualification;
 iCloud keyword authority, arbitrary-destination export coverage and independent-process preference/
 power-loss qualification; shared face-scan/template/transcription executors; production signed Whisper
 descriptors, Settings/Caption integration and authenticated missing-ledger/partial-orphan recovery.

@@ -1649,6 +1649,17 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 109 continuation (2026-09-30):** Settings and helper request status now project
+matching retained operation outcomes and separate recovery resolution. A linked request alone
+never implies success; missing/unverifiable history remains unconfirmed. Request refresh and
+cancellation remain available during native execution, retaining exact review identity and durable
+cancellation fallback. Exact authorization is rechecked before intent mutation/forwarding, and
+late cancellation preserves terminal outcomes. Final verification passes 129 focused tests,
+four native draft/XMP consent/cancellation/relaunch workflows across two selections and 3,557
+integrated tests. Safe capacity recovery requires a versioned identity protocol and remains
+unimplemented; authenticated IPC/helper commits and broader executors remain open. No whole
+Phase 5A checkbox closes. See [cycle 109 evidence](release/cycle-109-native-review-outcomes-cancellation-2026-09-30.md).
+
 **Cycle 108 continuation (2026-09-30):** The helper can persist an intent-only native review
 request for an exact retained IPTC plan, inspect its durable status and request cancellation.
 Settings refresh/selection rechecks the plan and clears prior consent; explicit native approval
