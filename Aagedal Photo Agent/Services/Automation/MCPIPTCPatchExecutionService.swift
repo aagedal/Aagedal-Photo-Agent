@@ -104,7 +104,8 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
             try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
             _ = try approvals.validate(approval, facade: facade, reservation: reservation, consumeForDraft: true)
             saveMayHaveOccurred = true
-            sidecarURL = try facade.installPendingDraft(data: stagedBytes, expected: snapshot, reservation: reservation)
+            sidecarURL = try facade.installPendingDraft(data: stagedBytes, expected: snapshot, reservation: reservation,
+                beforeMutation: { _ in try plans.validateKeywordAuthorityForExecution(planID: approval.planID) })
             try hooks.afterSave()
             // Cancellation after install cannot skip verification or become a no-effects claim.
             let after = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }

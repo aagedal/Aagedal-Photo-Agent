@@ -52,6 +52,82 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         let appRevision: String?
     }
 
+    /// Exact staged generation for the next carrier mutation. Absence is deliberately
+    /// unsupported: a missing file cannot authenticate an interrupted unlink.
+    struct PreparedMutation: Codable, Sendable, Equatable {
+        enum Purpose: String, Codable, Sendable { case appPublication, xmpRestoration, appRestoration }
+        let purpose: Purpose
+        let identity: MCPPreparedXMPIdentity
+    }
+
+    private struct MutationProgress: Codable {
+        let material: Material
+        let installed: InstalledCarriers
+        let restored: RestoredCarriers?
+        let mutation: PreparedMutation
+    }
+
+    func recordPreparedMutation(_ expected: Material, mutation: PreparedMutation,
+                                verify: () throws -> Void) throws {
+        try persistence.transaction { bytes in
+            guard let bytes else { throw Failure.verification }
+            let record = try decodeRecord(bytes)
+            guard !record.resolved, record.material == expected, let installed = record.installed,
+                  record.preparedMutation == nil, record.preparedXMP == nil,
+                  validMutation(mutation, material: expected, installed: installed, restored: record.restored)
+            else { throw Failure.verification }
+            try verify()
+            let encoder = JSONEncoder()
+            let payload = try encoder.encode(MutationProgress(material: expected, installed: installed,
+                restored: record.restored, mutation: mutation))
+            return ((), try encoder.encode(Envelope(version: 10, payload: payload, sha256: Self.digest(payload))))
+        }
+    }
+
+    /// A staged inode that never reached its destination can be abandoned only after the
+    /// caller verifies the exact receipted carrier generations still remain rooted and live.
+    func discardUnrenamedMutation(_ expected: Material, verify: () throws -> Void) throws {
+        try persistence.transaction { bytes in
+            guard let bytes else { throw Failure.verification }
+            let record = try decodeRecord(bytes)
+            guard !record.resolved, record.material == expected, record.preparedMutation != nil,
+                  let installed = record.installed else { throw Failure.verification }
+            try verify()
+            let encoder = JSONEncoder()
+            let payload: Data
+            let version: Int
+            if let restored = record.restored {
+                guard restored.appRevision == nil else { throw Failure.verification }
+                version = 7
+                payload = try encoder.encode(RestorationProgress(material: expected, installed: installed, restored: restored))
+            } else {
+                version = 6
+                payload = try encoder.encode(PublicationProgress(material: expected, installed: installed))
+            }
+            return ((), try encoder.encode(Envelope(version: version, payload: payload, sha256: Self.digest(payload))))
+        }
+    }
+
+    private func validMutation(_ mutation: PreparedMutation, material: Material,
+                               installed: InstalledCarriers, restored: RestoredCarriers?) -> Bool {
+        let bytes: Data?
+        switch mutation.purpose {
+        case .appPublication:
+            guard installed.appRevision == nil, restored == nil else { return false }
+            bytes = material.appSidecarRecovery?.candidate
+        case .xmpRestoration:
+            guard restored == nil else { return false }
+            bytes = material.original
+        case .appRestoration:
+            guard installed.appRevision != nil, restored != nil, restored?.appRevision == nil else { return false }
+            bytes = material.appSidecarRecovery?.original
+        }
+        guard let bytes else { return false }
+        return mutation.identity.file.device != 0 && mutation.identity.file.inode != 0
+            && mutation.identity.size == Int64(bytes.count)
+            && (0..<1_000_000_000).contains(mutation.identity.modificationNanoseconds)
+    }
+
     private struct RestorationProgress: Codable {
         let material: Material
         let installed: InstalledCarriers
@@ -60,7 +136,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     }
 
     /// Progress is committed only after a rooted mutation verified its exact generation.
-    /// An interruption before this receipt remains unresolved rather than trusting bytes alone.
+    /// Interrupted renames require retained prepared identity, never bytes alone.
     func recordRestored(_ expected: Material, restored: RestoredCarriers,
                         complete: Bool = false, verify: () throws -> Void) throws {
         try persistence.transaction { bytes in
@@ -70,6 +146,10 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
                   !restored.xmpRevision.isEmpty, restored.xmpRevision.utf8.count <= 1024,
                   restored.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true,
                   complete == (restored.appRevision != nil) else { throw Failure.verification }
+            if let mutation = record.preparedMutation {
+                guard (mutation.purpose == .xmpRestoration && restored.appRevision == nil)
+                    || (mutation.purpose == .appRestoration && complete) else { throw Failure.verification }
+            }
             if let previous = record.restored {
                 guard previous.xmpRevision == restored.xmpRevision,
                       previous.appRevision == nil || previous == restored else { throw Failure.verification }
@@ -142,6 +222,9 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
                   installed.xmpRevision != expected.binding.xmpSidecarRevision,
                   installed.appRevision != expected.binding.appSidecarRevision else { throw Failure.verification }
             if record.preparedXMP != nil, installed.appRevision != nil { throw Failure.verification }
+            if let mutation = record.preparedMutation {
+                guard mutation.purpose == .appPublication, installed.appRevision != nil else { throw Failure.verification }
+            }
             if let previous = record.installed {
                 guard previous.xmpRevision == installed.xmpRevision,
                       previous.appRevision == nil || previous == installed else { throw Failure.verification }
@@ -213,11 +296,11 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     }
 
     func loadRecoveryState() throws -> (material: Material, installed: InstalledCarriers?,
-                                        restored: RestoredCarriers?, preparedXMP: MCPPreparedXMPIdentity?)? {
+                                        restored: RestoredCarriers?, preparedXMP: MCPPreparedXMPIdentity?, preparedMutation: PreparedMutation?)? {
         try persistence.transaction(readOnly: true) { bytes in
             let record = try bytes.map(decodeRecord)
             let state = record.flatMap { $0.resolved ? nil : (material: $0.material, installed: $0.installed,
-                restored: $0.restored, preparedXMP: $0.preparedXMP) }
+                restored: $0.restored, preparedXMP: $0.preparedXMP, preparedMutation: $0.preparedMutation) }
             return (state, bytes ?? Data())
         }
     }
@@ -257,7 +340,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
         try persistence.transaction { bytes in
             guard let bytes else { throw Failure.verification }
             let record = try decodeRecord(bytes)
-            guard !record.resolved, record.restored == nil, record.material == expected,
+            guard !record.resolved, record.restored == nil, record.preparedMutation == nil, record.material == expected,
                   expected.appSidecarRecovery?.candidate != nil,
                   record.installed?.appRevision != nil else { throw Failure.verification }
             try verify()
@@ -299,17 +382,24 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
     }
 
     private func decodeRecord(_ bytes: Data) throws -> (material: Material, verified: Bool, unchanged: Bool,
-        resolved: Bool, installed: InstalledCarriers?, restored: RestoredCarriers?, preparedXMP: MCPPreparedXMPIdentity?) {
+        resolved: Bool, installed: InstalledCarriers?, restored: RestoredCarriers?, preparedXMP: MCPPreparedXMPIdentity?, preparedMutation: PreparedMutation?) {
         do {
             let envelope = try JSONDecoder().decode(Envelope.self, from: bytes)
-            guard [1, 2, 3, 4, 5, 6, 7, 8, 9].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
+            guard [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(envelope.version), envelope.sha256 == Self.digest(envelope.payload) else {
                 throw Failure.corruptJournal
             }
             let material: Material
             var installed: InstalledCarriers?
             var restored: RestoredCarriers?
             var preparedXMP: MCPPreparedXMPIdentity?
-            if envelope.version == 9 {
+            var preparedMutation: PreparedMutation?
+            if envelope.version == 10 {
+                let progress = try JSONDecoder().decode(MutationProgress.self, from: envelope.payload)
+                material = progress.material; installed = progress.installed; restored = progress.restored
+                preparedMutation = progress.mutation
+                guard validMutation(progress.mutation, material: material, installed: progress.installed,
+                                    restored: progress.restored) else { throw Failure.corruptJournal }
+            } else if envelope.version == 9 {
                 let progress = try JSONDecoder().decode(PreparedPublication.self, from: envelope.payload)
                 material = progress.material; preparedXMP = progress.xmpIdentity
                 guard progress.xmpIdentity.file.device != 0, progress.xmpIdentity.file.inode != 0,
@@ -339,6 +429,11 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
                 throw Failure.corruptJournal
             }
             try validate(material)
+            if let restored {
+                guard installed != nil, !restored.xmpRevision.isEmpty, restored.xmpRevision.utf8.count <= 1024,
+                      restored.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true
+                else { throw Failure.corruptJournal }
+            }
             if let installed {
                 guard !installed.xmpRevision.isEmpty, installed.xmpRevision.utf8.count <= 1024,
                       installed.appRevision.map({ !$0.isEmpty && $0.utf8.count <= 1024 }) ?? true,
@@ -346,7 +441,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryStore: Sendable {
                       installed.appRevision != material.binding.appSidecarRevision else { throw Failure.corruptJournal }
             }
             return (material, envelope.version == 4, envelope.version == 5,
-                envelope.version == 4 || envelope.version == 5 || envelope.version == 8, installed, restored, preparedXMP)
+                envelope.version == 4 || envelope.version == 5 || envelope.version == 8, installed, restored, preparedXMP, preparedMutation)
         } catch { throw Failure.corruptJournal }
     }
 

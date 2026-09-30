@@ -33,6 +33,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         var afterRecovery: @Sendable () throws -> Void = {}
         var beforeDisposition: @Sendable () throws -> Void = {}
         var afterXMPInstall: @Sendable () throws -> Void = {}
+        var beforeAppReceipt: @Sendable () throws -> Void = {}
     }
 
     /// MetadataIOCoordinator executes its body in an unstructured task. Carry cancellation
@@ -213,6 +214,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                                 guard material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                                 else { throw Failure.verification }
                             }
+                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID)
                         }, afterInstall: { installed in
                             try recovery.recordInstalled(material,
                                 installed: .init(xmpRevision: installed.xmpSidecarRevision, appRevision: nil)) {
@@ -238,7 +240,15 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                             guard try recovery.load() == material,
                                   material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                             else { throw Failure.verification }
+                        }, beforeMutation: { identity in
+                            try recovery.recordPreparedMutation(material,
+                                mutation: .init(purpose: .appPublication, identity: identity)) {
+                                guard material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
+                                else { throw Failure.verification }
+                            }
+                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID)
                         }, afterInstall: { installed in
+                            try hooks.beforeAppReceipt()
                             try recovery.recordInstalled(material,
                                 installed: .init(xmpRevision: installed.xmpSidecarRevision,
                                     appRevision: installed.appSidecarRevision)) {

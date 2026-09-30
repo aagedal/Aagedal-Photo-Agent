@@ -146,6 +146,9 @@ enum UITestPatchReviewFixture {
             if configuration.xmpPublicationInterruptionRequested {
                 hooks.afterXMPInstall = { throw Failure.invalidPlan }
             }
+            if configuration.appPublicationReceiptInterruptionRequested {
+                hooks.beforeAppReceipt = { throw Failure.invalidPlan }
+            }
             return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry,
                 recoveryDirectory: operationFolder, publicationHooks: hooks)
         } catch {

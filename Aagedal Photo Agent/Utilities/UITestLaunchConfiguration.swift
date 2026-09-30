@@ -31,6 +31,7 @@ struct UITestLaunchConfiguration {
     let operationRecoveryRequested: Bool
     let xmpStagingInterruptionRequested: Bool
     let xmpPublicationInterruptionRequested: Bool
+    let appPublicationReceiptInterruptionRequested: Bool
     let existingRecoveryCarriersRequested: Bool
 
     static let current = Self(arguments: ProcessInfo.processInfo.arguments)
@@ -57,6 +58,7 @@ struct UITestLaunchConfiguration {
         operationRecoveryRequested = isEnabled && arguments.contains("--ui-test-operation-recovery")
         xmpStagingInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-staging-interruption")
         xmpPublicationInterruptionRequested = isEnabled && arguments.contains("--ui-test-xmp-publication-interruption")
+        appPublicationReceiptInterruptionRequested = isEnabled && arguments.contains("--ui-test-app-publication-receipt-interruption")
         existingRecoveryCarriersRequested = isEnabled && arguments.contains("--ui-test-existing-recovery-carriers")
         patchReviewRequested = isEnabled && arguments.contains("--ui-test-patch-review-folder")
         patchReviewFolderURL = isEnabled

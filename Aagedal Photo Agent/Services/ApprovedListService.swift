@@ -76,15 +76,9 @@ struct ApprovedKeywordPolicy: Sendable {
     let canonicalByNormalized: [String: String]
 
     init(enabled: Bool, mode: ApprovedListMode, allowStructuredBypass: Bool, entries: [String]) {
-        var canonical: [String: String] = [:]
-        for entry in entries {
-            let normalized = Self.normalize(entry)
-            if !normalized.isEmpty, canonical[normalized] == nil {
-                canonical[normalized] = entry
-            }
-        }
+        let values = ApprovedKeywordPolicyValues(enabled: enabled, strict: mode == .strict, entries: entries)
         self.init(enabled: enabled, mode: mode, allowStructuredBypass: allowStructuredBypass,
-            canonicalByNormalized: canonical)
+            canonicalByNormalized: values.canonicalByNormalized)
     }
 
     fileprivate init(enabled: Bool, mode: ApprovedListMode, allowStructuredBypass: Bool,
@@ -101,33 +95,20 @@ struct ApprovedKeywordPolicy: Sendable {
     func validate(_ value: String, source: KeywordSource = .user) -> KeywordValidation {
         guard isActive else { return .accept }
         if source == .structuredTree, allowStructuredBypass { return .accept }
-        if let canonical = canonicalByNormalized[Self.normalize(value)] {
-            return .acceptCanonical(canonical)
-        }
-        return isStrict ? .reject(reason: "Not in approved list") : .accept
+        let values = ApprovedKeywordPolicyValues(enabled: enabled, strict: mode == .strict,
+            canonicalByNormalized: canonicalByNormalized)
+        if let canonical = values.canonical(value) { return .acceptCanonical(canonical) }
+        return values.allows(value) ? .accept : .reject(reason: "Not in approved list")
     }
 
     func validateBulk(_ values: [String], source: KeywordSource = .user) -> (accepted: [String], rejected: [String]) {
-        var accepted: [String] = []
-        var rejected: [String] = []
-        var seenAccepted = Set<String>()
-        for value in values {
-            switch validate(value, source: source) {
-            case .accept:
-                if seenAccepted.insert(Self.normalize(value)).inserted { accepted.append(value) }
-            case .acceptCanonical(let canonical):
-                if seenAccepted.insert(Self.normalize(canonical)).inserted { accepted.append(canonical) }
-            case .reject:
-                rejected.append(value)
-            }
-        }
-        return (accepted, rejected)
+        let bypass = source == .structuredTree && allowStructuredBypass
+        return ApprovedKeywordPolicyValues(enabled: enabled && !bypass, strict: mode == .strict,
+            canonicalByNormalized: canonicalByNormalized).validateBulk(values)
     }
 
     static func normalize(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .precomposedStringWithCanonicalMapping
-            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+        ApprovedKeywordPolicyValues.normalize(value)
     }
 }
 

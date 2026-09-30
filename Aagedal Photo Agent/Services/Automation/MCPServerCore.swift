@@ -569,6 +569,7 @@ nonisolated struct MCPPhotoCarrierSnapshot: Sendable {
     let xmpSidecarRevision: String
     let appSidecarRevision: String
     var preparedXMPIdentity: MCPPreparedXMPIdentity? = nil
+    var preparedAppIdentity: MCPPreparedXMPIdentity? = nil
 }
 
 /// Value-only entry point shared by the app and the bundled helper. A read owns the same
@@ -651,7 +652,8 @@ nonisolated struct MCPAutomationFacade: Sendable {
             xmpModificationDate: evidence.xmpModificationDate,
             sourceRevision: evidence.source, xmpSidecarRevision: evidence.xmpSidecar,
             appSidecarRevision: evidence.appSidecar,
-            preparedXMPIdentity: evidence.preparedXMPIdentity
+            preparedXMPIdentity: evidence.preparedXMPIdentity,
+            preparedAppIdentity: evidence.preparedAppIdentity
         )
     }
 
@@ -662,6 +664,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
     func installPendingDraft(data: Data, expected: MCPPhotoCarrierSnapshot,
                              reservation: MCPProcessReservationLease,
                              beforeInstall: @Sendable () throws -> Void = {},
+                             beforeMutation: @Sendable (MCPPreparedXMPIdentity) throws -> Void = { _ in },
                              afterInstall: (@Sendable (MCPPhotoCarrierSnapshot) throws -> Void)? = nil) throws -> URL {
         guard !data.isEmpty, data.count <= 8_388_608,
               reservation.coversPhoto(expected.target.url) else {
@@ -676,6 +679,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         }
         let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
         func validate() throws {
+            guard reservation.coversPhoto(target.url) else { throw MCPAutomationReadError.unsafeCarrier }
             let current = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent,
                 in: directory, retainingBytes: false, onCaptureCheckpoint: {})
             guard current.source == expected.sourceRevision,
@@ -707,7 +711,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         let destinationName = !currentExists && expected.appSidecarBytes != nil ? legacyName : currentName
         let temporaryName = ".automation-draft-\(UUID().uuidString).tmp"
         let descriptor = Darwin.openat(destinationDirectory, temporaryName,
-            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw MCPAutomationReadError.unsafeCarrier }
         var temporaryExists = true
         defer {
@@ -735,6 +739,24 @@ nonisolated struct MCPAutomationFacade: Sendable {
               (staged.st_mode & S_IFMT) == S_IFREG, staged.st_nlink == 1,
               opened.st_dev == staged.st_dev, opened.st_ino == staged.st_ino,
               staged.st_size == data.count else { throw MCPAutomationReadError.photoChanged }
+        // Bind the retained staged inode before mutation, including exact readback. Recovery
+        // must match this generation and bytes; a same-byte external replacement is refused.
+        var readback = Data(count: data.count)
+        try readback.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+            var consumed = 0
+            while consumed < buffer.count {
+                let count = Darwin.pread(descriptor, base.advanced(by: consumed), buffer.count - consumed, off_t(consumed))
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw MCPAutomationReadError.photoChanged }
+                consumed += count
+            }
+        }
+        guard readback == data else { throw MCPAutomationReadError.photoChanged }
+        try beforeMutation(MCPPreparedXMPIdentity(opened))
+        try validate()
+        try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
+            in: directory.descriptor, descriptor: destinationDirectory)
         guard Darwin.renameat(destinationDirectory, temporaryName, destinationDirectory,
             destinationName) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
         temporaryExists = false
@@ -1371,6 +1393,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
     let sourceBytes: Data?
     let xmpBytes: Data?
     let preparedXMPIdentity: MCPPreparedXMPIdentity?
+    let preparedAppIdentity: MCPPreparedXMPIdentity?
     let appSidecarBytes: Data?
     let sourceModificationDate: Date
     let xmpModificationDate: Date?
@@ -1398,6 +1421,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             : ["\(photoName).meta.json", "\(stem).meta.json"]
         var ownedTokens: [String] = []
         var appSidecarBytes: Data?
+        var preparedAppIdentity: MCPPreparedXMPIdentity?
         var draftState = "absent"
         var draftFields: [String: MCPJSONValue]? = [:]
         var absentCarriers: [String] = []
@@ -1417,6 +1441,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
                     }
                     guard owner == photoName else { return nil }
                     if retainingBytes { appSidecarBytes = bytes }
+                    preparedAppIdentity = MCPPreparedXMPIdentity(identity)
                     let state: String
                     // Foundation bridging accepts JSON true as Int(1) and numeric 1 as
                     // Bool(true). Decode authority-bearing header types without coercion.
@@ -1473,6 +1498,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             sourceBytes: source.bytes,
             xmpBytes: xmpToken.bytes,
             preparedXMPIdentity: xmpToken.identity.map(MCPPreparedXMPIdentity.init),
+            preparedAppIdentity: preparedAppIdentity,
             appSidecarBytes: appSidecarBytes,
             sourceModificationDate: modificationDate(sourceIdentity),
             xmpModificationDate: xmpToken.identity.map(modificationDate)
@@ -2061,6 +2087,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         } catch let error as MCPIPTCPatchPlanStore.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPIPTCPatchPreparation.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
+        } catch let error as MCPKeywordAuthority.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPMetadataTemplatePreview.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)

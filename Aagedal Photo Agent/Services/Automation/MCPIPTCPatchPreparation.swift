@@ -1,4 +1,6 @@
+import CoreFoundation
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Pure, revision-bound proofreading previews. No result from this service authorizes a write.
@@ -33,6 +35,25 @@ nonisolated enum MCPIPTCPatchPreparation {
         let path: String
         let revisions: [String: MCPJSONValue]
         let operations: [Operation]
+        var editsKeywords: Bool { operations.contains { $0.field == "keywords" } }
+        func evaluatingKeywords(_ policy: ApprovedKeywordPolicyValues) throws -> Request {
+            var arguments = revisions
+            arguments["path"] = .string(path)
+            arguments["operations"] = .array(try operations.map { operation in
+                var value: [String: MCPJSONValue] = ["field": .string(operation.field), "operation": .string(operation.kind)]
+                if operation.kind == "set" {
+                    var after = operation.after
+                    if operation.field == "keywords", case .array(let entries) = after {
+                        let validated = policy.validateBulk(entries.compactMap(\.stringValue))
+                        guard validated.rejected.isEmpty else { throw MCPKeywordAuthority.Failure.rejected }
+                        after = .array(validated.accepted.map(MCPJSONValue.string))
+                    }
+                    value["value"] = after
+                }
+                return .object(value)
+            })
+            return try Request(arguments: arguments)
+        }
         init(arguments: [String: MCPJSONValue]) throws {
             guard Set(arguments.keys) == argumentKeys,
                   let path = arguments["path"]?.stringValue, path.hasPrefix("/"),
@@ -108,16 +129,20 @@ nonisolated enum MCPIPTCPatchPreparation {
     }
 
     static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade,
-                        plans: MCPIPTCPatchPlanStore? = nil) throws -> MCPJSONValue {
+                        plans: MCPIPTCPatchPlanStore? = nil,
+                        keywordAuthority: MCPKeywordAuthority = .init()) throws -> MCPJSONValue {
         let request = try Request(arguments: arguments)
         let configuration = try facade.authorizationStore.load()
         let createdAt = Date()
+        let authority = plans?.keywordAuthority ?? keywordAuthority
+        let keywords = request.editsKeywords ? try authority.capture() : nil
         let result = try facade.withPhotoSnapshot(path: request.path) { snapshot in
             // Compare before parsing expensive carrier content, while descriptors and lease remain held.
             try checkRevisions(request, source: snapshot.sourceRevision,
                 xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
-            return try preview(request: request, snapshot: snapshot, now: createdAt)
+            return try preview(request: request, snapshot: snapshot, now: createdAt, keywordAuthority: keywords)
         }
+        if let keywords { try authority.revalidate(keywords) }
         guard let plans else { return result }
         // Publish only after the retained snapshot's final carrier and authorization checks.
         guard try facade.authorizationStore.load() == configuration else {
@@ -133,20 +158,21 @@ nonisolated enum MCPIPTCPatchPreparation {
 
     /// Capture physical baselines inside the retained read lease. Retrieval reconstructs this
     /// entire value so no baseline from an older carrier generation can survive revalidation.
-    static func preview(request: Request, snapshot: MCPPhotoCarrierSnapshot, now: Date) throws -> MCPJSONValue {
+    static func preview(request: Request, snapshot: MCPPhotoCarrierSnapshot, now: Date,
+                        keywordAuthority: MCPKeywordAuthority.Snapshot? = nil) throws -> MCPJSONValue {
         let read = try MCPMetadataSnapshotReader.read(snapshot, includePreservation: true)
         let metadata = try read.protocolValue()
         var preflight = try preservationPreflight(snapshot: snapshot, baseline: read.preservationSnapshot)
         if var evidence = preflight.objectValue {
             evidence["schemaVersion"] = .integer(2)
-            evidence["effectiveSemanticExpectations"] = try semanticExpectations(request: request, metadata: read.resolution.metadata)
+            evidence["effectiveSemanticExpectations"] = try semanticExpectations(request: keywordAuthority.map { try request.evaluatingKeywords($0.policy) } ?? request, metadata: read.resolution.metadata)
             preflight = .object(evidence)
         }
-        return try preview(request: request, metadata: metadata, now: now, preflight: preflight)
+        return try preview(request: request, metadata: metadata, now: now, preflight: preflight, keywordAuthority: keywordAuthority)
     }
 
     static func preview(request: Request, metadata: MCPJSONValue, now: Date,
-                        preflight: MCPJSONValue? = nil) throws -> MCPJSONValue {
+                        preflight: MCPJSONValue? = nil, keywordAuthority: MCPKeywordAuthority.Snapshot? = nil) throws -> MCPJSONValue {
         guard let record = metadata.objectValue, let fields = record["fields"]?.objectValue,
               let canonicalPath = record["canonicalPath"]?.stringValue,
               let rootID = record["rootID"]?.stringValue,
@@ -170,7 +196,8 @@ nonisolated enum MCPIPTCPatchPreparation {
                 from: JSONEncoder().encode(MCPJSONValue.object(selected)))
         } catch { throw Failure.invalidArguments }
         var proposed = beforeMetadata
-        for operation in request.operations { try operation.apply(to: &proposed) }
+        let evaluatedRequest = try keywordAuthority.map { try request.evaluatingKeywords($0.policy) } ?? request
+        for operation in evaluatedRequest.operations { try operation.apply(to: &proposed) }
         let editedFields = Set(request.operations.map(\.fieldID))
         let report = MetadataValidationEngine().validate(proposed,
             imageURL: URL(fileURLWithPath: canonicalPath), profile: .iptcIIMCompatibility)
@@ -211,6 +238,7 @@ nonisolated enum MCPIPTCPatchPreparation {
             "physicalCarrierSupportEvaluated": .bool(false)])
         result["preservationWarnings"] = .array(warnings)
         if let preflight { result["preservationPreflight"] = preflight }
+        if let keywordAuthority { result["keywordAuthority"] = keywordAuthority.evidence }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let digest = SHA256.hash(data: try encoder.encode(MCPJSONValue.object(result)))
@@ -329,6 +357,250 @@ nonisolated enum MCPIPTCPatchPreparation {
         case .array(let values): return .array(try values.map { try protocolValue($0, isArray: false) })
         default: throw Failure.invalidArguments
         }
+    }
+
+}
+
+/// Exact local policy evidence for keyword previews. This is a content fingerprint,
+/// not a monotonic settings revision or permission to mutate. The captured policy
+/// uses the shared GUI canonical rules, with all MCP inputs treated as user input.
+/// Kept in the helper's existing compilation unit to avoid a GUI-store dependency.
+nonisolated struct MCPKeywordAuthority: Sendable {
+    enum Failure: String, LocalizedError {
+        case unavailable = "keyword_authority_unavailable"
+        case changed = "keyword_authority_changed"
+        case rejected = "keyword_policy_rejected"
+
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "The local Approved Keywords settings or managed list could not be captured safely. iCloud keyword lists are not supported by this preview."
+            case .changed: "Approved Keywords settings or managed-list bytes changed. Prepare and review a new patch."
+            case .rejected: "A requested keyword is not in the active strict Approved Keywords list. Review the keyword values before preparing a patch."
+            }
+        }
+    }
+
+    struct Configuration: Sendable, Equatable, Encodable {
+        let enabled: Bool
+        let mode: String
+        let allowStructuredBypass: Bool
+        let iCloudEnabled: Bool
+        let listURL: URL
+    }
+
+    struct Snapshot: Sendable, Equatable {
+        let evidence: MCPJSONValue
+        let policy: ApprovedKeywordPolicyValues
+    }
+
+    var resolveConfiguration: @Sendable () throws -> Configuration = Self.configured
+    var checkpoint: @Sendable () throws -> Void = {}
+    static let maximumListBytes = 50 * 1_024 * 1_024
+
+    static func configured() throws -> Configuration {
+        let domain = MCPServerConstants.preferencesSuiteName as CFString
+        let keys = ["approvedList.keywords.enabled", "approvedList.keywords.mode",
+                    "approvedList.keywords.allowStructuredBypass", "keywordLists.iCloudEnabled"]
+        guard let values = CFPreferencesCopyMultiple(keys as CFArray, domain,
+            kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any],
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw Failure.unavailable
+        }
+        func bool(_ key: String, fallback: Bool) throws -> Bool {
+            guard let value = values[key] else { return fallback }
+            guard let boolean = value as? Bool else { throw Failure.unavailable }
+            return boolean
+        }
+        let mode = values[keys[1]] as? String ?? "warn"
+        guard values[keys[1]] == nil || values[keys[1]] is String,
+              ["suggest", "warn", "strict"].contains(mode) else { throw Failure.unavailable }
+        return Configuration(enabled: try bool(keys[0], fallback: false), mode: mode,
+            allowStructuredBypass: try bool(keys[2], fallback: true),
+            iCloudEnabled: try bool(keys[3], fallback: false),
+            listURL: support.appendingPathComponent("Aagedal Photo Agent/Lists/approved/keywords.txt"))
+    }
+
+    func capture() throws -> Snapshot {
+        let configuration = try resolveConfiguration()
+        guard !configuration.iCloudEnabled,
+              ["suggest", "warn", "strict"].contains(configuration.mode) else { throw Failure.unavailable }
+        let list = try Self.read(configuration.listURL)
+        try checkpoint()
+        guard try resolveConfiguration() == configuration,
+              try Self.read(configuration.listURL) == list else { throw Failure.changed }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let entries: [String]
+        if let bytes = list.bytes {
+            guard let text = String(data: bytes, encoding: .utf8) else { throw Failure.unavailable }
+            entries = ApprovedKeywordPolicyValues.parseString(text, csv: false)
+        } else { entries = [] }
+        let policy = ApprovedKeywordPolicyValues(enabled: configuration.enabled, strict: configuration.mode == "strict", entries: entries)
+        return Snapshot(evidence: .object([
+            "schemaVersion": .integer(1),
+            "settingsSHA256": .string(Self.digest(try encoder.encode(configuration))),
+            "settingsComparison": .string("current-effective-content; no historical-change detection"),
+            "managedList": list.evidence,
+            "policyEvaluated": .bool(true),
+            "keywordSource": .string("user; structured bypass unavailable"),
+        ]), policy: policy)
+    }
+
+    func revalidate(_ snapshot: Snapshot) throws {
+        guard try capture() == snapshot else { throw Failure.changed }
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Open every component without following symlinks. No directory or missing list
+    /// is created. The two captures compare opened ancestor identity and exact bytes.
+    private struct List: Equatable {
+        let evidence: MCPJSONValue
+        let bytes: Data?
+    }
+
+    private static func read(_ url: URL) throws -> List {
+        guard url.isFileURL, url.path.hasPrefix("/"), !url.path.contains("\0") else { throw Failure.unavailable }
+        let components = url.path.split(separator: "/").map(String.init)
+        guard !components.isEmpty, !components.contains("."), !components.contains("..") else { throw Failure.unavailable }
+        var directory = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard directory >= 0 else { throw Failure.unavailable }
+        defer { Darwin.close(directory) }
+        var ancestors: [MCPJSONValue] = []
+        func identity(_ status: stat) -> MCPJSONValue {
+            .object(["device": .integer(Int64(status.st_dev)), "inode": .string(String(status.st_ino))])
+        }
+        func absent() -> List {
+            List(evidence: .object(["present": .bool(false), "ancestors": .array(ancestors)]), bytes: nil)
+        }
+        for component in components.dropLast() {
+            let next = Darwin.openat(directory, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard next >= 0 else {
+                if errno == ENOENT { return absent() }
+                throw Failure.unavailable
+            }
+            Darwin.close(directory); directory = next
+            var status = stat()
+            guard fstat(directory, &status) == 0 else { throw Failure.unavailable }
+            ancestors.append(identity(status))
+        }
+        let name = components.last!
+        let file = Darwin.openat(directory, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard file >= 0 else {
+            if errno == ENOENT { return absent() }
+            throw Failure.unavailable
+        }
+        defer { Darwin.close(file) }
+        var before = stat()
+        guard fstat(file, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_nlink == 1, before.st_size >= 0, before.st_size <= maximumListBytes else { throw Failure.unavailable }
+        var bytes = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(file, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0, count <= maximumListBytes - bytes.count else { throw Failure.unavailable }
+            if count == 0 { break }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        var after = stat(), named = stat()
+        guard fstat(file, &after) == 0, fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              bytes.count == before.st_size,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              named.st_dev == after.st_dev, named.st_ino == after.st_ino else { throw Failure.changed }
+        return List(evidence: .object(["present": .bool(true), "ancestors": .array(ancestors),
+            "identity": identity(after), "byteCount": .integer(Int64(bytes.count)), "sha256": .string(digest(bytes))]), bytes: bytes)
+    }
+}
+
+
+/// Pure canonical rules shared by the GUI's immutable policy and the STDIO helper.
+/// Managed UTF-8 parsing uses the same first normalized spelling in both paths.
+nonisolated struct ApprovedKeywordPolicyValues: Sendable, Equatable {
+    let enabled: Bool
+    let strict: Bool
+    let canonicalByNormalized: [String: String]
+
+    init(enabled: Bool, strict: Bool, entries: [String]) {
+        var canonical: [String: String] = [:]
+        for entry in entries {
+            let normalized = Self.normalize(entry)
+            if !normalized.isEmpty, canonical[normalized] == nil { canonical[normalized] = entry }
+        }
+        self.enabled = enabled; self.strict = strict; self.canonicalByNormalized = canonical
+    }
+
+    init(enabled: Bool, strict: Bool, canonicalByNormalized: [String: String]) {
+        self.enabled = enabled; self.strict = strict; self.canonicalByNormalized = canonicalByNormalized
+    }
+
+    var isActive: Bool { enabled && !canonicalByNormalized.isEmpty }
+    func canonical(_ value: String) -> String? {
+        isActive ? canonicalByNormalized[Self.normalize(value)] : nil
+    }
+    func allows(_ value: String) -> Bool { !isActive || !strict || canonical(value) != nil }
+    func validateBulk(_ values: [String]) -> (accepted: [String], rejected: [String]) {
+        var accepted: [String] = [], rejected: [String] = []
+        var seen = Set<String>()
+        for value in values {
+            guard allows(value) else { rejected.append(value); continue }
+            let result = canonical(value) ?? value
+            if seen.insert(Self.normalize(result)).inserted { accepted.append(result) }
+        }
+        return (accepted, rejected)
+    }
+    static func normalize(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+    static func parseString(_ raw: String, csv: Bool) -> [String] {
+        let cleaned = raw
+            .replacingOccurrences(of: "\u{FEFF}", with: "")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+
+        var seen = Set<String>()
+        var result: [String] = []
+        cleaned.enumerateLines { line, _ in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return }
+
+            let payload: String
+            if csv {
+                if let comma = trimmed.firstIndex(of: ",") {
+                    payload = String(trimmed[..<comma])
+                } else {
+                    payload = trimmed
+                }
+            } else {
+                payload = trimmed
+            }
+
+            let unquoted = stripSurroundingQuotes(payload)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !unquoted.isEmpty else { return }
+
+            if seen.insert(unquoted).inserted {
+                result.append(unquoted)
+            }
+        }
+        return result
+    }
+
+    private static func stripSurroundingQuotes(_ s: String) -> String {
+        guard s.count >= 2 else { return s }
+        let first = s.first!
+        let last = s.last!
+        if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+            return String(s.dropFirst().dropLast())
+        }
+        return s
     }
 
 }

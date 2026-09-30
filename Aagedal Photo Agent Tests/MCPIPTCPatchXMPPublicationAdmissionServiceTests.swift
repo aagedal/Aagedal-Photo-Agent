@@ -201,6 +201,74 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(try recovery.load() == material)
     }
 
+    @Test("Pre-receipt app publication restores exact originals after reopening",
+        arguments: [false, true], [false, true])
+    func interruptedAppPublication(pending: Bool, existingXMP: Bool) async throws {
+        let fixture = try Fixture(pending: pending, existingXMP: existingXMP)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let approvals = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let consent = try await approval(fixture, store: approvals)
+        let directory = try storageDirectory(fixture, name: "recovery")
+        let store = MCPIPTCPatchXMPRecoveryStore(directory: directory)
+        let service = Service(plans: fixture.plans, approvals: approvals, recovery: store, facade: fixture.facade,
+            hooks: .init(beforeAppReceipt: { throw CancellationError() }))
+        #expect(await service.publish(consent, context: try context(fixture)).outcome == .uncertain)
+        let material = try #require(try store.load())
+        let state = try #require(try store.loadRecoveryState())
+        #expect(state.installed?.appRevision == nil)
+        #expect(state.preparedMutation?.purpose == .appPublication)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.xmpBytes == material.candidate)
+        #expect(after.appSidecarBytes == material.appSidecarRecovery?.candidate)
+        #expect(after.preparedAppIdentity == state.preparedMutation?.identity)
+        #expect(try store.loadVerifiedDisposition() == nil)
+        let reopened = MCPIPTCPatchXMPRecoveryStore(directory: directory)
+        let recovery = MCPIPTCPatchXMPRecoveryService(recovery: reopened, facade: fixture.facade)
+        let review = try #require(try recovery.inspect())
+        #expect(review.canRestorePartialPublication)
+        #expect(!review.canResolveUnchanged)
+        try await recovery.restorePartialPublication(review)
+        let restored = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(restored.sourceRevision == before.sourceRevision)
+        #expect(restored.xmpBytes == before.xmpBytes)
+        #expect(restored.appSidecarBytes == before.appSidecarBytes)
+        #expect(try reopened.loadRestoredDisposition() == material)
+        #expect(try reopened.loadVerifiedDisposition() == nil)
+        #expect(await service.publish(consent, context: try context(fixture)).outcome == .refused)
+    }
+
+    @Test("Pre-receipt app generation refuses replaced peers, source or authorization",
+        arguments: ["app", "xmp", "source", "authorization"])
+    func interruptedAppAuthority(kind: String) async throws {
+        let fixture = try Fixture(pending: true)
+        let approvals = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let consent = try await approval(fixture, store: approvals)
+        let store = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let service = Service(plans: fixture.plans, approvals: approvals, recovery: store, facade: fixture.facade,
+            hooks: .init(beforeAppReceipt: { throw CancellationError() }))
+        #expect(await service.publish(consent, context: try context(fixture)).outcome == .uncertain)
+        let material = try #require(try store.load())
+        let recovery = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try recovery.inspect())
+        #expect(review.canRestorePartialPublication)
+        if kind == "authorization" {
+            try fixture.facade.authorizationStore.setEnabled(false)
+            try fixture.facade.authorizationStore.setEnabled(true)
+        } else {
+            let target = kind == "source" ? fixture.photo : (kind == "xmp"
+                ? URL(fileURLWithPath: material.targetPath)
+                : fixture.root.appendingPathComponent(".photo_metadata/\(fixture.photo.lastPathComponent).meta.json"))
+            try Data(contentsOf: target).write(to: target, options: .atomic)
+        }
+        await #expect(throws: (any Error).self) { try await recovery.restorePartialPublication(review) }
+        if let refreshed = try? recovery.inspect() { #expect(!refreshed.canRestorePartialPublication) }
+        #expect(try store.load() == material)
+        #expect(try store.loadRecoveryState()?.installed?.appRevision == nil)
+        #expect(try store.loadRecoveryState()?.preparedMutation != nil)
+        #expect(try store.loadRestoredDisposition() == nil)
+        #expect(try store.loadVerifiedDisposition() == nil)
+    }
+
     @Test("Missing XMP and app history are recorded as absent without creating either carrier")
     func missingCarriers() async throws {
         let fixture = try Fixture(existingXMP: false)

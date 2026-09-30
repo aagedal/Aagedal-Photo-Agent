@@ -62,46 +62,7 @@ nonisolated enum ApprovedListParser {
 
     /// Visible for testing — parses a raw string without touching the filesystem.
     static func parseString(_ raw: String, csv: Bool) -> [String] {
-        let cleaned = raw
-            .replacingOccurrences(of: "\u{FEFF}", with: "")
-            .replacingOccurrences(of: "\u{00A0}", with: " ")
-
-        var seen = Set<String>()
-        var result: [String] = []
-        cleaned.enumerateLines { line, _ in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return }
-
-            let payload: String
-            if csv {
-                if let comma = trimmed.firstIndex(of: ",") {
-                    payload = String(trimmed[..<comma])
-                } else {
-                    payload = trimmed
-                }
-            } else {
-                payload = trimmed
-            }
-
-            let unquoted = stripSurroundingQuotes(payload)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !unquoted.isEmpty else { return }
-
-            if seen.insert(unquoted).inserted {
-                result.append(unquoted)
-            }
-        }
-        return result
-    }
-
-    private static func stripSurroundingQuotes(_ s: String) -> String {
-        guard s.count >= 2 else { return s }
-        let first = s.first!
-        let last = s.last!
-        if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
-            return String(s.dropFirst().dropLast())
-        }
-        return s
+        ApprovedKeywordPolicyValues.parseString(raw, csv: csv)
     }
 
     private static func decode(_ data: Data) -> String? {

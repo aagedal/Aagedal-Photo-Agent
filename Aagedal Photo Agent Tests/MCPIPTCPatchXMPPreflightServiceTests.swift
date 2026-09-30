@@ -32,11 +32,16 @@ struct MCPIPTCPatchXMPPreflightServiceTests {
             xmp.setValue(.simple("retain"), namespace: "https://example.test/private/", property: "Desk")
             xmp.setValue(.simple("0.75"), namespace: XMPNamespace.crs, property: "Exposure2012")
             xmp.setValue(.simple("6"), namespace: XMPNamespace.tiff, property: "Orientation")
+            let xmpBytes = Data(XMPWriter.generateXML(xmp).utf8)
             if existingXMP {
-                try Data(XMPWriter.generateXML(xmp).utf8).write(to: photo.deletingPathExtension().appendingPathExtension("xmp"))
+                try xmpBytes.write(to: photo.deletingPathExtension().appendingPathExtension("xmp"))
             }
             if pending {
-                var metadata = try #require(XMPSidecarService().loadSidecar(for: photo))
+                // A pending app draft is valid without a physical XMP carrier. Keep its
+                // exact baseline metadata while deliberately leaving that carrier absent.
+                var metadata = try #require(existingXMP
+                    ? XMPSidecarService().loadSidecar(for: photo)
+                    : XMPSidecarService().loadSidecar(fromData: xmpBytes))
                 metadata.credit = "Pending unedited credit"
                 if let pendingCaptureDate { metadata.captureDate = pendingCaptureDate }
                 _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,

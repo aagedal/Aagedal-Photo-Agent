@@ -19,6 +19,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         let materialID: UUID
         let installedCarriers: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?
         fileprivate let preparedXMP: MCPPreparedXMPIdentity?
+        fileprivate let preparedMutation: MCPIPTCPatchXMPRecoveryStore.PreparedMutation?
         let canRestorePartialPublication: Bool
         let canResolveUnchanged: Bool
         fileprivate let restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?
@@ -27,11 +28,17 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         fileprivate let snapshot: MCPPhotoCarrierSnapshot
     }
 
+    struct Hooks: Sendable {
+        var beforeXMPReceipt: @Sendable () throws -> Void = {}
+        var beforeAppReceipt: @Sendable () throws -> Void = {}
+    }
+
+    private let hooks: Hooks
     private let recovery: MCPIPTCPatchXMPRecoveryStore
     private let facade: MCPAutomationFacade
 
-    init(recovery: MCPIPTCPatchXMPRecoveryStore, facade: MCPAutomationFacade) {
-        self.recovery = recovery; self.facade = facade
+    init(recovery: MCPIPTCPatchXMPRecoveryStore, facade: MCPAutomationFacade, hooks: Hooks = .init()) {
+        self.recovery = recovery; self.facade = facade; self.hooks = hooks
     }
 
     func inspect(photoPath: String? = nil) throws -> Review? {
@@ -44,7 +51,8 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
               let currentState = try recovery.loadRecoveryState(),
               currentState.material == material, currentState.installed == state.installed,
               currentState.restored == state.restored,
-              currentState.preparedXMP == state.preparedXMP else { throw Failure.staleReview }
+              currentState.preparedXMP == state.preparedXMP,
+              currentState.preparedMutation == state.preparedMutation else { throw Failure.staleReview }
         let unchanged = try state.installed == nil && matchesOriginal(snapshot, material: material)
         let preparedMatches = state.installed == nil && state.preparedXMP != nil
             && state.preparedXMP == snapshot.preparedXMPIdentity
@@ -52,13 +60,15 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
             && snapshot.xmpSidecarRevision != material.binding.xmpSidecarRevision
         let effectiveInstalled = state.installed ?? (preparedMatches
             ? .init(xmpRevision: snapshot.xmpSidecarRevision, appRevision: nil) : nil)
+        let progress = mutationProgress(snapshot, installed: effectiveInstalled,
+            restored: state.restored, prepared: state.preparedMutation)
         let restorable = try matchesRestorable(snapshot, material: material,
-            installed: effectiveInstalled, restored: state.restored)
+            installed: progress.installed, restored: progress.restored)
         let identityMessage = state.installed.map {
             $0.appRevision == nil ? " Installed XMP identity is retained." : " Installed XMP and app history identities are retained."
         } ?? ""
         return Review(photoPath: snapshot.target.url.path, materialID: material.id,
-            installedCarriers: state.installed, preparedXMP: state.preparedXMP,
+            installedCarriers: state.installed, preparedXMP: state.preparedXMP, preparedMutation: state.preparedMutation,
             canRestorePartialPublication: restorable,
             canResolveUnchanged: unchanged, restored: state.restored,
             message: unchanged
@@ -109,8 +119,9 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
     }
 
     /// Internal native-consent boundary. No MCP tool or automatic retry invokes restoration.
-    /// Receipt-complete steps can resume after reopening. A pre-receipt XMP mutation can
-    /// resume only when its prepared inode generation matches the rooted live carrier.
+    /// Receipt-complete steps can resume after reopening. A pre-receipt rename can resume
+    /// only when its prepared inode generation matches the rooted live carrier. Interrupted
+    /// removals remain unresolved because absence cannot authenticate who removed a file.
     @MetadataSidecarFilesystemActor
     func restorePartialPublication(_ review: Review) async throws {
         guard review.canRestorePartialPublication,
@@ -124,26 +135,69 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
             try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: photo)) { @MetadataSidecarFilesystemActor in
                 try cancellation.checking {
                     try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
-                    guard let state = try recovery.loadRecoveryState(), state.material == review.material,
-                          state.installed == review.installedCarriers,
-                          state.preparedXMP == review.preparedXMP,
-                          state.restored == review.restored else { throw Failure.staleReview }
+                    guard let retained = try recovery.loadRecoveryState(), retained.material == review.material,
+                          retained.installed == review.installedCarriers,
+                          retained.preparedXMP == review.preparedXMP,
+                          retained.preparedMutation == review.preparedMutation,
+                          retained.restored == review.restored else { throw Failure.staleReview }
+                    var state = retained
                     var current = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                    guard current.target == review.snapshot.target,
+                          current.sourceRevision == review.snapshot.sourceRevision,
+                          current.xmpSidecarRevision == review.snapshot.xmpSidecarRevision,
+                          current.appSidecarRevision == review.snapshot.appSidecarRevision else { throw Failure.staleReview }
+                    if let mutation = state.preparedMutation {
+                        let progress = mutationProgress(current, installed: state.installed,
+                            restored: state.restored, prepared: mutation)
+                        guard try matchesRestorable(current, material: retained.material,
+                            installed: progress.installed, restored: progress.restored) else { throw Failure.staleReview }
+                        let captured = current
+                        let verify = {
+                            try requireAuthority(retained.material)
+                            let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                            guard fresh.target == captured.target,
+                                  fresh.sourceRevision == captured.sourceRevision,
+                                  fresh.sourceBytes == captured.sourceBytes,
+                                  fresh.xmpSidecarRevision == captured.xmpSidecarRevision,
+                                  fresh.appSidecarRevision == captured.appSidecarRevision,
+                                  fresh.xmpBytes == captured.xmpBytes,
+                                  fresh.appSidecarBytes == captured.appSidecarBytes else { throw Failure.staleReview }
+                        }
+                        if progress.installed == state.installed, progress.restored == state.restored {
+                            try recovery.discardUnrenamedMutation(retained.material, verify: verify)
+                        } else {
+                            switch mutation.purpose {
+                            case .appPublication:
+                                guard let installed = progress.installed else { throw Failure.staleReview }
+                                try recovery.recordInstalled(retained.material, installed: installed, verify: verify)
+                            case .xmpRestoration:
+                                guard let restored = progress.restored else { throw Failure.staleReview }
+                                try recovery.recordRestored(retained.material, restored: restored, verify: verify)
+                            case .appRestoration:
+                                guard let restored = progress.restored else { throw Failure.staleReview }
+                                try recovery.recordRestored(retained.material, restored: restored, complete: true, verify: verify)
+                                return
+                            }
+                        }
+                        guard let updated = try recovery.loadRecoveryState(), updated.material == retained.material,
+                              updated.preparedMutation == nil else { throw Failure.staleReview }
+                        state = updated
+                    }
                     let installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers
                     if let receipt = state.installed {
                         installed = receipt
                     } else if let prepared = state.preparedXMP {
                         installed = .init(xmpRevision: current.xmpSidecarRevision, appRevision: nil)
                         guard current.target == review.snapshot.target,
-                              current.sourceRevision == state.material.binding.sourceRevision,
+                              current.sourceRevision == retained.material.binding.sourceRevision,
                               current.preparedXMPIdentity == prepared,
-                              current.xmpSidecarRevision != state.material.binding.xmpSidecarRevision,
-                              current.xmpBytes == state.material.candidate,
-                              current.appSidecarRevision == state.material.binding.appSidecarRevision,
+                              current.xmpSidecarRevision != retained.material.binding.xmpSidecarRevision,
+                              current.xmpBytes == retained.material.candidate,
+                              current.appSidecarRevision == retained.material.binding.appSidecarRevision,
                               current.appSidecarBytes == app.original else { throw Failure.staleReview }
                         let preparedSnapshot = current
-                        try recovery.recordInstalled(state.material, installed: installed) {
-                            try requireAuthority(state.material)
+                        try recovery.recordInstalled(retained.material, installed: installed) {
+                            try requireAuthority(retained.material)
                             let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
                             guard fresh.sourceRevision == preparedSnapshot.sourceRevision,
                                   fresh.xmpSidecarRevision == preparedSnapshot.xmpSidecarRevision,
@@ -156,47 +210,60 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                           current.sourceRevision == review.snapshot.sourceRevision,
                           current.xmpSidecarRevision == review.snapshot.xmpSidecarRevision,
                           current.appSidecarRevision == review.snapshot.appSidecarRevision,
-                          try matchesRestorable(current, material: state.material, installed: installed, restored: state.restored)
+                          try matchesRestorable(current, material: retained.material, installed: installed, restored: state.restored)
                     else { throw Failure.staleReview }
                     let original = MCPPhotoCarrierSnapshot(target: current.target, sourceBytes: current.sourceBytes,
-                        xmpBytes: state.material.original, appSidecarBytes: app.original,
+                        xmpBytes: retained.material.original, appSidecarBytes: app.original,
                         sourceModificationDate: current.sourceModificationDate, xmpModificationDate: nil,
-                        sourceRevision: state.material.binding.sourceRevision,
-                        xmpSidecarRevision: state.material.binding.xmpSidecarRevision,
-                        appSidecarRevision: state.material.binding.appSidecarRevision)
+                        sourceRevision: retained.material.binding.sourceRevision,
+                        xmpSidecarRevision: retained.material.binding.xmpSidecarRevision,
+                        appSidecarRevision: retained.material.binding.appSidecarRevision)
                     if state.restored == nil {
                         let recordXMP: @Sendable (MCPPhotoCarrierSnapshot) throws -> Void = { after in
-                            try recovery.recordRestored(state.material, restored: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil)) {
-                                guard after.xmpBytes == state.material.original,
+                            try hooks.beforeXMPReceipt()
+                            try recovery.recordRestored(retained.material, restored: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil)) {
+                                try requireAuthority(retained.material)
+                                let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                                guard fresh.target == after.target,
+                                      fresh.sourceRevision == after.sourceRevision,
+                                      fresh.xmpSidecarRevision == after.xmpSidecarRevision,
+                                      fresh.appSidecarRevision == after.appSidecarRevision,
+                                      after.xmpBytes == retained.material.original,
                                       after.sourceRevision == original.sourceRevision else { throw Failure.staleReview }
                             }
                         }
-                        if let bytes = state.material.original {
+                        if let bytes = retained.material.original {
                             _ = try facade.installXMPSidecar(data: bytes, expected: current, reservation: reservation,
                                 restoringEmptyOriginal: bytes.isEmpty,
-                                beforeInstall: { try requireAuthority(state.material) }, afterInstall: recordXMP)
+                                beforeInstall: { try requireAuthority(retained.material) }, beforeMutation: { identity in
+                                    try recovery.recordPreparedMutation(retained.material,
+                                        mutation: .init(purpose: .xmpRestoration, identity: identity)) {
+                                        try requireAuthority(retained.material)
+                                    }
+                                }, afterInstall: recordXMP)
                         } else {
-                            try facade.removeOriginallyAbsentCarrier(.xmp, original: original, candidate: state.material.candidate,
-                                installedRevision: installed.xmpRevision, authorizationRevision: state.material.binding.authorizationRevision,
+                            try facade.removeOriginallyAbsentCarrier(.xmp, original: original, candidate: retained.material.candidate,
+                                installedRevision: installed.xmpRevision, authorizationRevision: retained.material.binding.authorizationRevision,
                                 expected: current, reservation: reservation, afterRemoval: recordXMP)
                         }
                     }
                     current = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
                     guard let progress = try recovery.loadRecoveryState(), let restored = progress.restored,
-                          progress.material == state.material, progress.installed == installed,
-                          try matchesRestorable(current, material: state.material, installed: installed, restored: restored)
+                          progress.material == retained.material, progress.installed == installed,
+                          try matchesRestorable(current, material: retained.material, installed: installed, restored: restored)
                     else { throw Failure.staleReview }
                     let recordApp: @Sendable (MCPPhotoCarrierSnapshot) throws -> Void = { after in
-                        try recovery.recordRestored(state.material,
+                        try hooks.beforeAppReceipt()
+                        try recovery.recordRestored(retained.material,
                             restored: .init(xmpRevision: restored.xmpRevision, appRevision: after.appSidecarRevision), complete: true) {
-                                try requireAuthority(state.material)
+                                try requireAuthority(retained.material)
                                 let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
                                 guard fresh.sourceRevision == after.sourceRevision,
                                       fresh.xmpSidecarRevision == after.xmpSidecarRevision,
                                       fresh.appSidecarRevision == after.appSidecarRevision,
                                       after.sourceRevision == original.sourceRevision,
                                       after.xmpSidecarRevision == restored.xmpRevision,
-                                      after.xmpBytes == state.material.original, after.appSidecarBytes == app.original
+                                      after.xmpBytes == retained.material.original, after.appSidecarBytes == app.original
                                 else { throw Failure.staleReview }
                             }
                     }
@@ -204,15 +271,42 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                         try recordApp(current)
                     } else if let bytes = app.original {
                         _ = try facade.installPendingDraft(data: bytes, expected: current, reservation: reservation,
-                            beforeInstall: { try requireAuthority(state.material) }, afterInstall: recordApp)
+                            beforeInstall: { try requireAuthority(retained.material) }, beforeMutation: { identity in
+                                try recovery.recordPreparedMutation(retained.material,
+                                    mutation: .init(purpose: .appRestoration, identity: identity)) {
+                                    try requireAuthority(retained.material)
+                                }
+                            }, afterInstall: recordApp)
                     } else {
                         try facade.removeOriginallyAbsentCarrier(.appHistory, original: original, candidate: app.candidate!,
-                            installedRevision: installed.appRevision!, authorizationRevision: state.material.binding.authorizationRevision,
+                            installedRevision: installed.appRevision!, authorizationRevision: retained.material.binding.authorizationRevision,
                             expected: current, reservation: reservation, afterRemoval: recordApp)
                     }
                 }
             }
         } onCancel: { cancellation.cancel() }
+    }
+
+    /// Infer only the next exact staged inode; peer carriers and authority are verified by
+    /// matchesRestorable before this evidence is promoted into a durable receipt.
+    private func mutationProgress(_ snapshot: MCPPhotoCarrierSnapshot,
+                                  installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?,
+                                  restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?,
+                                  prepared: MCPIPTCPatchXMPRecoveryStore.PreparedMutation?)
+        -> (installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?,
+            restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?) {
+        guard let prepared, let installed else { return (installed, restored) }
+        switch prepared.purpose {
+        case .appPublication:
+            guard snapshot.preparedAppIdentity == prepared.identity else { return (installed, restored) }
+            return (.init(xmpRevision: installed.xmpRevision, appRevision: snapshot.appSidecarRevision), restored)
+        case .xmpRestoration:
+            guard snapshot.preparedXMPIdentity == prepared.identity else { return (installed, restored) }
+            return (installed, .init(xmpRevision: snapshot.xmpSidecarRevision, appRevision: nil))
+        case .appRestoration:
+            guard snapshot.preparedAppIdentity == prepared.identity, let restored else { return (installed, restored) }
+            return (installed, .init(xmpRevision: restored.xmpRevision, appRevision: snapshot.appSidecarRevision))
+        }
     }
 
     private func requireAuthority(_ material: MCPIPTCPatchXMPRecoveryStore.Material) throws {

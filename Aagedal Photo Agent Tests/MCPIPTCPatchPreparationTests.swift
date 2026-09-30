@@ -381,3 +381,119 @@ private extension MCPJSONValue {
         return values
     }
 }
+
+@Suite("Exact Approved Keywords authority")
+struct MCPKeywordAuthoritySnapshotTests {
+    private func fixture() throws -> (URL, URL, MCPKeywordAuthority.Configuration) {
+        let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(canonical) }
+        let root = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
+            .appendingPathComponent("keyword-authority-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let list = root.appendingPathComponent("keywords.txt")
+        return (root, list, .init(enabled: true, mode: "strict", allowStructuredBypass: true,
+            iCloudEnabled: false, listURL: list))
+    }
+
+    @Test("Exact list bytes and identity are evidence even when parsed policy is unchanged")
+    func exactBytes() throws {
+        let (root, list, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("Oslo\n".utf8)
+        try bytes.write(to: list)
+        let service = MCPKeywordAuthority(resolveConfiguration: { configuration })
+        let snapshot = try service.capture()
+        #expect(snapshot.policy.canonical(" oslo ") == "Oslo")
+        try Data("# comment\nOslo\n".utf8).write(to: list)
+        #expect(throws: MCPKeywordAuthority.Failure.changed) { try service.revalidate(snapshot) }
+        try bytes.write(to: list)
+        let restored = try service.capture()
+        let replacement = root.appendingPathComponent("replacement.txt")
+        try bytes.write(to: replacement)
+        try FileManager.default.removeItem(at: list)
+        try FileManager.default.moveItem(at: replacement, to: list)
+        #expect(throws: MCPKeywordAuthority.Failure.changed) { try service.revalidate(restored) }
+    }
+
+    @Test("Missing and empty managed lists are distinct and never created by capture")
+    func absentAndEmpty() throws {
+        let (root, list, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = MCPKeywordAuthority(resolveConfiguration: { configuration })
+        let absent = try service.capture()
+        #expect(absent.evidence.objectValue?["managedList"]?.objectValue?["present"] == .bool(false))
+        #expect(!FileManager.default.fileExists(atPath: list.path))
+        try Data().write(to: list)
+        let empty = try service.capture()
+        #expect(empty.evidence != absent.evidence)
+        #expect(!empty.policy.isActive)
+        #expect(empty.policy.allows("unknown"))
+    }
+
+    @Test("Cloud routes, symlinked files and malformed managed UTF-8 fail closed")
+    func unsafeList() throws {
+        let (root, list, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cloud = MCPKeywordAuthority.Configuration(enabled: true, mode: "strict", allowStructuredBypass: true,
+            iCloudEnabled: true, listURL: list)
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) {
+            try MCPKeywordAuthority(resolveConfiguration: { cloud }).capture()
+        }
+        try Data([0xff, 0xfe]).write(to: list)
+        let service = MCPKeywordAuthority(resolveConfiguration: { configuration })
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try service.capture() }
+        try FileManager.default.removeItem(at: list)
+        let outside = root.appendingPathComponent("outside.txt")
+        try Data("Oslo\n".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(at: list, withDestinationURL: outside)
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try service.capture() }
+    }
+
+    @Test("A list change during capture cannot publish a mixed generation")
+    func mixedCapture() throws {
+        let (root, list, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("Oslo\n".utf8).write(to: list)
+        let service = MCPKeywordAuthority(resolveConfiguration: { configuration },
+            checkpoint: { try Data("Paris\n".utf8).write(to: list) })
+        #expect(throws: MCPKeywordAuthority.Failure.changed) { try service.capture() }
+    }
+
+    @Test("Policy settings change evidence; restoring current values restores content evidence")
+    func settingsContent() throws {
+        let (root, list, configuration) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("Oslo\n".utf8).write(to: list)
+        let original = MCPKeywordAuthority(resolveConfiguration: { configuration })
+        let captured = try original.capture()
+        let warn = MCPKeywordAuthority.Configuration(enabled: true, mode: "warn", allowStructuredBypass: true,
+            iCloudEnabled: false, listURL: list)
+        let changed = MCPKeywordAuthority(resolveConfiguration: { warn })
+        #expect(try changed.capture().policy.allows("unknown"))
+        #expect(throws: MCPKeywordAuthority.Failure.changed) { try changed.revalidate(captured) }
+        try original.revalidate(captured)
+    }
+
+    @MainActor
+    @Test("GUI and helper share canonical parsing and strict decisions")
+    func sharedPolicy() throws {
+        let entries = ApprovedListParser.parseString("# list\n'Oslo'\noslo\nÅ\nå\n", csv: false)
+        let helper = ApprovedKeywordPolicyValues(enabled: true, strict: true, entries: entries)
+        let gui = ApprovedKeywordPolicy(enabled: true, mode: .strict, allowStructuredBypass: true, entries: entries)
+        for value in [" OSLO ", "a\u{030A}", "unknown"] {
+            if let canonical = helper.canonical(value) {
+                #expect(gui.validate(value) == .acceptCanonical(canonical))
+            } else {
+                #expect(!helper.allows(value))
+                #expect(gui.validate(value) == .reject(reason: "Not in approved list"))
+            }
+        }
+        #expect(gui.validate("unknown", source: .structuredTree) == .accept)
+        #expect(!helper.allows("unknown"))
+        let inputs = [" oslo ", "OSLO", "unknown", "UNKNOWN"]
+        let warn = ApprovedKeywordPolicyValues(enabled: true, strict: false, entries: entries)
+        let guiWarn = ApprovedKeywordPolicy(enabled: true, mode: .warn, allowStructuredBypass: true, entries: entries)
+        #expect(warn.validateBulk(inputs).accepted == guiWarn.validateBulk(inputs).accepted)
+        #expect(warn.validateBulk(inputs).accepted == ["Oslo", "unknown"])
+    }
+}

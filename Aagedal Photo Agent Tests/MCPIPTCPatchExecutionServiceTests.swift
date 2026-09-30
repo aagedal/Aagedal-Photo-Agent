@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 import Testing
@@ -11,16 +12,25 @@ struct MCPIPTCPatchExecutionServiceTests {
         let photo: URL
         let authority: MCPAuthorizationStore
         let facade: MCPAutomationFacade
-        let plans = MCPIPTCPatchPlanStore()
+        let plans: MCPIPTCPatchPlanStore
         let prepared: MCPJSONValue
         let planID: String
         let original: Data
 
-        init(existingDraft: Bool = false, legacyDraft: Bool = false) throws {
-            root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        init(existingDraft: Bool = false, legacyDraft: Bool = false, keywordValues: [String]? = nil) throws {
+            let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+            defer { free(canonical) }
+            root = URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
                 .appendingPathComponent("patch-approval-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             photo = root.appendingPathComponent("frame.jpg")
+            if keywordValues != nil {
+                let list = root.appendingPathComponent("approved.txt")
+                try Data("Oslo\noslo\nå\nÅ\n".utf8).write(to: list)
+                let configuration = MCPKeywordAuthority.Configuration(enabled: true, mode: "strict",
+                    allowStructuredBypass: true, iCloudEnabled: false, listURL: list)
+                plans = MCPIPTCPatchPlanStore(keywordAuthority: .init(resolveConfiguration: { configuration }))
+            } else { plans = MCPIPTCPatchPlanStore() }
             let pixels = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
                 bytesPerRow: 16, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
             let image = try #require(pixels.makeImage())
@@ -59,6 +69,10 @@ struct MCPIPTCPatchExecutionServiceTests {
             let metadata = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue)
             var arguments: [String: MCPJSONValue] = ["path": .string(photo.path), "operations": .array([
                 .object(["field": .string("title"), "operation": .string("set"), "value": .string("After")])])]
+            if let keywordValues {
+                arguments["operations"] = .array([.object(["field": .string("keywords"), "operation": .string("set"),
+                    "value": .array(keywordValues.map(MCPJSONValue.string))])])
+            }
             for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = metadata[key] }
             prepared = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: facade, plans: plans)
             planID = try #require(prepared.objectValue?["planID"]?.stringValue)
@@ -101,6 +115,68 @@ struct MCPIPTCPatchExecutionServiceTests {
         #expect(fixture.prepared.objectValue?["commitAvailable"] == .bool(false))
         let second = await service.applyToPendingDraft(approval)
         #expect(second.outcome == .refused)
+    }
+
+    @Test("Approved spelling is identical in preview and native draft, retaining exact requested values")
+    func canonicalKeywords() async throws {
+        let values = [" oslo ", "OSLO", "A\u{030A}"]
+        let fixture = try Fixture(keywordValues: values)
+        let changes = try #require(fixture.prepared.objectValue?["changes"])
+        guard case .array(let items) = changes else { Issue.record("Missing changes"); return }
+        let change = try #require(items.first?.objectValue)
+        #expect(change["requestedValue"] == .array(values.map(MCPJSONValue.string)))
+        #expect(change["after"] == .array([.string("Oslo"), .string("å")]))
+        #expect(fixture.prepared.objectValue?["keywordAuthority"]?.objectValue?["policyEvaluated"] == .bool(true))
+        let (store, approval) = try approved(fixture)
+        let result = await MCPIPTCPatchExecutionService(plans: fixture.plans, approvals: store, facade: fixture.facade)
+            .applyToPendingDraft(approval)
+        #expect(result.outcome == .draftSaved)
+        #expect(result.installedSidecar?.metadata.keywords == ["Oslo", "å"])
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Strict unapproved user keywords refuse preparation despite structured bypass")
+    func strictKeywords() throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let metadata = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: fixture.photo.path, facade: fixture.facade).objectValue)
+        var arguments: [String: MCPJSONValue] = ["path": .string(fixture.photo.path), "operations": .array([
+            .object(["field": .string("keywords"), "operation": .string("set"), "value": .array([.string("unknown")])])])]
+        for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = metadata[key] }
+        #expect(throws: MCPKeywordAuthority.Failure.rejected) {
+            try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: fixture.facade, plans: fixture.plans)
+        }
+        let response = MCPFoundationTools(authorizationStore: fixture.authority, patchPlans: fixture.plans)
+            .callTool(name: "prepare_iptc_patch", arguments: arguments)
+        #expect(response.objectValue?["isError"] == .bool(true))
+        #expect(response.objectValue?["structuredContent"]?.objectValue?["code"] == .string("keyword_policy_rejected"))
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+    }
+
+    @Test("Exact list bytes changed after approval refuse the native keyword draft")
+    func keywordAuthorityDrift() async throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let (store, approval) = try approved(fixture)
+        let list = fixture.root.appendingPathComponent("approved.txt")
+        let service = MCPIPTCPatchExecutionService(plans: fixture.plans, approvals: store, facade: fixture.facade,
+            hooks: .init(beforeAdmission: { try Data("# same policy, different bytes\nOslo\nå\n".utf8).write(to: list) }))
+        let result = await service.applyToPendingDraft(approval)
+        #expect(result.outcome == .refused)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Final keyword admission still checks policy after another carrier has changed")
+    func finalKeywordBoundary() throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        // Publication may already have changed XMP before reconciling app history.
+        // This boundary checks retained policy without reconstructing old photo revisions.
+        try Data("changed carrier".utf8).write(to: fixture.photo)
+        try fixture.plans.validateKeywordAuthorityForExecution(planID: fixture.planID)
+        try Data("# unchanged parsed policy\nOslo\nå\n".utf8)
+            .write(to: fixture.root.appendingPathComponent("approved.txt"))
+        #expect(throws: MCPIPTCPatchPlanStore.Failure.stalePlan) {
+            try fixture.plans.validateKeywordAuthorityForExecution(planID: fixture.planID)
+        }
     }
 
     @Test("A sole legacy draft updates in place and reports the installed filename")

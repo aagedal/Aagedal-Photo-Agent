@@ -59,8 +59,11 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     private let storage: MCPIPTCPatchPlanPersistence?
     private let maximumPlans: Int
     private let maximumBytes: Int
+    let keywordAuthority: MCPKeywordAuthority
 
-    init(maximumPlans: Int = 64, maximumBytes: Int = 8 * 1_024 * 1_024, storageDirectory: URL? = nil) {
+    init(maximumPlans: Int = 64, maximumBytes: Int = 8 * 1_024 * 1_024, storageDirectory: URL? = nil,
+         keywordAuthority: MCPKeywordAuthority = .init()) {
+        self.keywordAuthority = keywordAuthority
         let boundedBytes = min(max(0, maximumBytes), 8 * 1_024 * 1_024)
         self.storage = storageDirectory.map { MCPIPTCPatchPlanPersistence(directory: $0, maximumBytes: boundedBytes * 4 + 65_536) }
         self.maximumPlans = min(max(0, maximumPlans), 64)
@@ -117,16 +120,20 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
         }
         let plan = try lookup(id: id, now: now)
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
+        let keywords = plan.request.editsKeywords ? try keywordAuthority.capture() : nil
+        if let keywords, plan.preview.objectValue?["keywordAuthority"] != keywords.evidence { throw Failure.stalePlan }
         let current = try facade.withPhotoSnapshot(path: plan.request.path, reservation: reservation) { snapshot in
             do {
                 try MCPIPTCPatchPreparation.checkRevisions(plan.request, source: snapshot.sourceRevision,
                     xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
-                return try MCPIPTCPatchPreparation.preview(request: plan.request, snapshot: snapshot, now: plan.createdAt)
+                return try MCPIPTCPatchPreparation.preview(request: plan.request, snapshot: snapshot, now: plan.createdAt,
+                    keywordAuthority: keywords)
             } catch is MCPIPTCPatchPreparation.Failure {
                 throw Failure.stalePlan
             }
         }
         guard current == plan.preview else { throw Failure.stalePlan }
+        if let keywords { try keywordAuthority.revalidate(keywords) }
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
         // Production wall clock can pass the deadline while a large photo is being decoded.
         _ = try lookup(id: id, now: max(now, Date()))
@@ -168,8 +175,23 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     /// replacement fields can be substituted after exact-plan consent.
     func requestForDraftExecution(planID: String, facade: MCPAutomationFacade,
                                   reservation: MCPProcessReservationLease) throws -> MCPIPTCPatchPreparation.Request {
-        try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade,
-                            now: Date(), reservation: reservation).request
+        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade,
+                            now: Date(), reservation: reservation)
+        guard plan.request.editsKeywords else { return plan.request }
+        let keywords = try keywordAuthority.capture()
+        guard plan.preview.objectValue?["keywordAuthority"] == keywords.evidence else { throw Failure.stalePlan }
+        return try plan.request.evaluatingKeywords(keywords.policy)
+    }
+
+    /// Recheck only keyword authority at each native mutation boundary, including after
+    /// an earlier carrier was installed. Consent and photo admission remain the executor's job.
+    func validateKeywordAuthorityForExecution(planID: String) throws {
+        let plan = try lookup(id: planID, now: Date())
+        guard plan.request.editsKeywords else { return }
+        guard try keywordAuthority.capture().evidence == plan.preview.objectValue?["keywordAuthority"] else {
+            throw Failure.stalePlan
+        }
+        _ = try lookup(id: planID, now: Date())
     }
 
     /// The persistence lock spans reload, budget admission and atomic replacement across helpers.

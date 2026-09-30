@@ -284,12 +284,21 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomationRestoresAppPublicationInterruptedBeforeReceipt() throws {
+        try exercisePartialPublicationRestoration(replaceAfterInspection: false,
+            originalCarriersPresent: true, appReceiptInterruption: true)
+    }
+
+    @MainActor
     private func exercisePartialPublicationRestoration(replaceAfterInspection: Bool,
                                                        originalCarriersPresent: Bool,
-                                                       replaceHistoryAfterInspection: Bool = false) throws {
+                                                       replaceHistoryAfterInspection: Bool = false,
+                                                       appReceiptInterruption: Bool = false) throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot,
-            xmpPublicationInterruption: true, existingRecoveryCarriers: originalCarriersPresent)
+            xmpPublicationInterruption: !appReceiptInterruption,
+            appPublicationReceiptInterruption: appReceiptInterruption,
+            existingRecoveryCarriers: originalCarriersPresent)
         app.typeKey(",", modifierFlags: .command)
         let automation = app.staticTexts["Automation"]
         XCTAssertTrue(automation.waitForExistence(timeout: 8))
@@ -325,7 +334,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["automation.patchDraftStatus"].waitForExistence(timeout: 12))
         let published = try Data(contentsOf: xmp)
         XCTAssertFalse(published.isEmpty)
-        XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
+        if appReceiptInterruption {
+            XCTAssertNotEqual(try Data(contentsOf: history), originalHistory)
+        } else {
+            XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
+        }
         app.buttons["Clear Review"].click()
         let inspect = app.buttons["automation.inspectRecovery"]
         XCTAssertTrue(inspect.waitForExistence(timeout: 8))
@@ -1413,6 +1426,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         operationRecovery: Bool = false,
         xmpStagingInterruption: Bool = false,
         xmpPublicationInterruption: Bool = false,
+        appPublicationReceiptInterruption: Bool = false,
         existingRecoveryCarriers: Bool = false
     ) {
         app = XCUIApplication()
@@ -1442,6 +1456,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
         if xmpStagingInterruption { app.launchArguments.append("--ui-test-xmp-staging-interruption") }
         if xmpPublicationInterruption { app.launchArguments.append("--ui-test-xmp-publication-interruption") }
+        if appPublicationReceiptInterruption { app.launchArguments.append("--ui-test-app-publication-receipt-interruption") }
         if existingRecoveryCarriers { app.launchArguments.append("--ui-test-existing-recovery-carriers") }
         app.launch()
         reopenMainWindowIfNeeded()

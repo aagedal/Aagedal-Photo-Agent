@@ -496,6 +496,142 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
 
     private enum InterruptedInstall: Error, Equatable { case afterRename, beforeRename }
 
+    @Test("Prepared restoration generations resume after receipt interruption and reopening",
+        arguments: ["xmp", "app"], [false, true])
+    func preparedRestoration(carrier: String, emptyXMP: Bool) async throws {
+        let fixture = try Fixture(pending: true, existingXMP: true)
+        if emptyXMP { try Data().write(to: fixture.photo.deletingPathExtension().appendingPathExtension("xmp")) }
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        if carrier == "xmp" { hooks.beforeXMPReceipt = { throw InterruptedInstall.afterRename } }
+        else { hooks.beforeAppReceipt = { throw InterruptedInstall.afterRename } }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: InterruptedInstall.afterRename) { try await interrupted.restorePartialPublication(initial) }
+        let pending = try #require(try store.loadRecoveryState())
+        #expect(pending.preparedMutation?.purpose == (carrier == "xmp" ? .xmpRestoration : .appRestoration))
+        #expect(try store.loadRestoredDisposition() == nil)
+        #expect(try store.loadVerifiedDisposition() == nil)
+        let afterInterruption = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let reopened = MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture))
+        let resumed = MCPIPTCPatchXMPRecoveryService(recovery: reopened, facade: fixture.facade)
+        let review = try #require(try resumed.inspect())
+        #expect(review.canRestorePartialPublication)
+        #expect(!review.canResolveUnchanged)
+        try await resumed.restorePartialPublication(review)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceRevision == material.binding.sourceRevision)
+        #expect(after.xmpBytes == material.original)
+        #expect(after.appSidecarBytes == material.appSidecarRecovery?.original)
+        #expect(after.xmpSidecarRevision == afterInterruption.xmpSidecarRevision)
+        if carrier == "app" { #expect(after.appSidecarRevision == afterInterruption.appSidecarRevision) }
+        #expect(try reopened.loadRestoredDisposition() == material)
+        #expect(try reopened.loadVerifiedDisposition() == nil)
+    }
+
+    @Test("Prepared restoration rejects exact-byte replacement of the restored carrier",
+        arguments: ["xmp", "app"])
+    func preparedRestorationReplacement(carrier: String) async throws {
+        let fixture = try Fixture(pending: true)
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        if carrier == "xmp" { hooks.beforeXMPReceipt = { throw InterruptedInstall.afterRename } }
+        else { hooks.beforeAppReceipt = { throw InterruptedInstall.afterRename } }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: InterruptedInstall.afterRename) { try await interrupted.restorePartialPublication(initial) }
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        let url = carrier == "xmp" ? URL(fileURLWithPath: material.targetPath)
+            : fixture.photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/\(fixture.photo.lastPathComponent).meta.json")
+        let bytes = try #require(carrier == "xmp" ? material.original : material.appSidecarRecovery?.original)
+        try bytes.write(to: url, options: .atomic)
+        #expect(try #require(try service.inspect()).canRestorePartialPublication == false)
+        await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
+        #expect(try store.load() == material)
+        #expect(try store.loadRecoveryState()?.preparedMutation != nil)
+        #expect(try store.loadRestoredDisposition() == nil)
+    }
+
+    @Test("Originally absent restoration interrupted before unlink receipt stays fail-closed",
+        arguments: ["xmp", "app"])
+    func interruptedRemoval(carrier: String) async throws {
+        let fixture = try Fixture(pending: carrier != "app", existingXMP: carrier != "xmp")
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        if carrier == "xmp" { hooks.beforeXMPReceipt = { throw InterruptedInstall.afterRename } }
+        else { hooks.beforeAppReceipt = { throw InterruptedInstall.afterRename } }
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try service.inspect())
+        await #expect(throws: InterruptedInstall.afterRename) { try await service.restorePartialPublication(initial) }
+        let reopened = MCPIPTCPatchXMPRecoveryService(
+            recovery: MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture)), facade: fixture.facade)
+        let review = try #require(try reopened.inspect())
+        #expect(!review.canRestorePartialPublication)
+        #expect(!review.canResolveUnchanged)
+        #expect(try store.load() == material)
+    }
+
+    @Test("Prepared unrenamed app publication can abandon its intent and restore the receipted XMP",
+        arguments: [false, true])
+    func preparedUnrenamedApp(pending: Bool) async throws {
+        let fixture = try Fixture(pending: pending)
+        let (store, material) = try partiallyPublished(fixture, installApp: false)
+        let lease = try MCPProcessReservation.acquirePhoto(fixture.photo)
+        let current = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path, reservation: lease) { $0 }
+        #expect(throws: InterruptedInstall.beforeRename) {
+            try fixture.facade.installPendingDraft(data: try #require(material.appSidecarRecovery?.candidate),
+                expected: current, reservation: lease, beforeMutation: { identity in
+                    try store.recordPreparedMutation(material, mutation: .init(purpose: .appPublication, identity: identity), verify: {})
+                    throw InterruptedInstall.beforeRename
+                })
+        }
+        lease.release()
+        let reopened = MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture))
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: reopened, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.xmpBytes == material.original)
+        #expect(after.appSidecarRevision == current.appSidecarRevision)
+        #expect(try reopened.loadRestoredDisposition() == material)
+    }
+
+    @Test("Pending mutation journal checks phase, size, verifier failure and completion replay")
+    func pendingMutationAuthority() throws {
+        let fixture = try Fixture(pending: true)
+        let (store, material) = try partiallyPublished(fixture, installApp: false)
+        let identity = MCPPreparedXMPIdentity(file: .init(device: 1, inode: 2),
+            size: Int64(try #require(material.appSidecarRecovery?.candidate).count),
+            modificationSeconds: 10, modificationNanoseconds: 1)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try store.recordPreparedMutation(material, mutation: .init(purpose: .appRestoration, identity: identity), verify: {})
+        }
+        let wrongSize = MCPPreparedXMPIdentity(file: identity.file, size: identity.size + 1,
+            modificationSeconds: identity.modificationSeconds, modificationNanoseconds: identity.modificationNanoseconds)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try store.recordPreparedMutation(material, mutation: .init(purpose: .appPublication, identity: wrongSize), verify: {})
+        }
+        #expect(throws: InterruptedInstall.beforeRename) {
+            try store.recordPreparedMutation(material, mutation: .init(purpose: .appPublication, identity: identity)) {
+                throw InterruptedInstall.beforeRename
+            }
+        }
+        #expect(try store.loadRecoveryState()?.preparedMutation == nil)
+        try store.recordPreparedMutation(material, mutation: .init(purpose: .appPublication, identity: identity), verify: {})
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) { try store.recordVerified(material, verify: {}) }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try store.recordRestored(material, restored: .init(xmpRevision: "restored", appRevision: nil), verify: {})
+        }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+            try store.recordPreparedMutation(material, mutation: .init(purpose: .appPublication, identity: identity), verify: {})
+        }
+        #expect(try store.load() == material)
+        #expect(try store.loadRecoveryState()?.preparedMutation?.identity == identity)
+    }
+
     @Test("Prepared XMP generation authenticates restoration after rename without a receipt",
         arguments: [false, true])
     func preparedInterruptedInstall(existingXMP: Bool) async throws {
