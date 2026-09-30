@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 106: keyword history, publication requirements and removal recovery](release/cycle-106-keyword-history-publication-requirements-recovery-2026-09-30.md) binds keyword plans to cooperating settings history, adds read-only helper publication-requirement inspection and verifies originally absent XMP/app-history removal recovery across native relaunch. All 82 final affected focused tests, the earlier 128-test focused run, both native workflows, 3,498 final serial integrated tests and repository checks pass. Guarded helper commits, iCloud/list-writer authority, production executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 107: cooperative keyword writer coordination](release/cycle-107-keyword-writer-coordination-2026-09-30.md) reserves managed lists and settings through native draft/XMP verification, coordinates managed edits/imports/restores/migration/routing, and preserves prior preferences on failed transitions. All 80 final affected focused tests, the preceding 208-test focused run, both native publication/contention workflows, 3,517 serial integrated tests and repository checks pass. Helper consent/commits, iCloud authority, broader production executors and signed-model integration remain open.
 
 ## Portfolio
 

@@ -1649,6 +1649,17 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 107 continuation (2026-09-30):** Managed keyword/list edits, imports, backup
+restores, migration and route reconciliation now share cross-process reservations before mutation
+baselines. Keyword plan inspection and native draft/XMP publication retain settings/list ownership
+through verification, including reused nested admission checks. Missing-file aliases contend before
+creation, path drift refuses writes, and failed preference transitions restore the prior effective
+value while retaining pending authority. Both actual native publication/relaunch and independent
+writer-refusal workflows pass; the serial integrated suite passes 3,517 tests. iCloud authority,
+arbitrary user-selected export destinations, independent-process preference/power-loss evidence,
+helper consent/commits and broader production executors remain open. No whole Phase 5A checkbox
+closes; see [cycle 107 evidence](release/cycle-107-keyword-writer-coordination-2026-09-30.md).
+
 **Cycle 106 continuation (2026-09-30):** Approved Keywords plans bind persisted cooperating
 app-writer settings generations, including changes away and back; pending, malformed or mismatched
 history refuses authority. Legacy history remains explicitly untracked. The read-only helper

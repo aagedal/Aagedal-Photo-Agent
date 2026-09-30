@@ -1,5 +1,13 @@
 # App improvement audit plan
 
+**Cycle 107 continuation (2026-09-30):** Cooperative managed keyword/list writers
+reserve their mutation baselines across app/helper processes. Native keyword publication retains
+settings/list authority through verification; failed preference transitions preserve the previous
+setting and keep authority pending. Missing-file alias and path-drift regressions, both actual native
+publication/contention workflows, and 3,517 integrated tests pass. The broad audit remains 66 of 75;
+iCloud authority, arbitrary export destinations, performance and release evidence remain open.
+See [cycle 107 evidence](release/cycle-107-keyword-writer-coordination-2026-09-30.md).
+
 **Cycle 100 continuation (2026-09-23):** Native restoration now covers existing XMP
 and app-history bytes through relaunch; read-only template preview resolves retained
 GPS coordinates; authenticated Whisper recovery accepts complete staged model bytes.
