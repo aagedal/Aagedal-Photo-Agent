@@ -1983,13 +1983,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_operation_status",
-                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state and outcome; it does not prove that an executor is alive. Production automation executors are not connected yet.",
+                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcription drafts remain unapproved; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. Helper workflow invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["operationID"]
             ),
             definition(
                 name: "cancel_operation",
-                description: "Persist a cooperative cancellation request for one operation. Requires Enable local automation. A request is not cancellation completion: only the executing owner can acknowledge cancellation or report partial effects and recovery. Repeated requests are harmless. Production automation executors are not connected yet.",
+                description: "Persist a cooperative cancellation request for one operation. Requires Enable local automation. A request is not cancellation completion: only the executing owner can acknowledge cancellation or report partial effects and recovery. Repeated requests are harmless. Verified saved transcription drafts remain available after cancellation. Helper workflow invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["operationID"],
                 readOnly: false
@@ -2484,6 +2484,19 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             .object(["disposition": .string(resolution.disposition.rawValue),
                 "receiptSHA256": .string(resolution.receiptSHA256),
                 "resolvedAt": .string(resolution.resolvedAt.ISO8601Format())])
+        } ?? .null
+        value["batchProgress"] = record.batchProgress.map { progress in
+            .object([
+                "itemCount": .integer(Int64(progress.itemCount)),
+                "completedCount": .integer(Int64(progress.completedCount)),
+                "items": .array(progress.items.map { item in
+                    .object([
+                        "index": .integer(Int64(item.index)),
+                        "state": .string(item.state.rawValue),
+                        "outcome": item.outcome.map { .string($0.rawValue) } ?? .null,
+                    ])
+                }),
+            ])
         } ?? .null
         return value
     }

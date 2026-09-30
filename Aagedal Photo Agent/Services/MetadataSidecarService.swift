@@ -422,11 +422,59 @@ struct MetadataSidecarService: Sendable {
     /// Replaces only the versioned transcript extension while retaining the complete editorial
     /// record and every unknown top-level or nested extension. The operation shares the same
     /// per-photo lock and Dispatch executor as metadata/history writes.
+    /// Create-only automation boundary. The cross-process lease and in-process photo lock
+    /// cover the absence check, exact source/audio validation and verified transcript write.
+    @MetadataSidecarFilesystemActor
+    func createVoiceMemoTranscriptSerialized(
+        _ transcript: VoiceMemoTranscriptRecord,
+        for imageURL: URL,
+        in folderURL: URL,
+        expectedSourceRevision: SourceImageRevision,
+        expectedMemoURL: URL,
+        beforeCommit: @escaping @Sendable () throws -> Void = {}
+    ) async throws -> VoiceMemoTranscriptRecord {
+        guard transcript.approvedAt == nil else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+        let reservation = try MCPProcessReservation.acquirePhoto(imageURL)
+        defer { reservation.release() }
+        return try await saveVoiceMemoTranscriptSerialized(transcript, for: imageURL, in: folderURL,
+            createOnly: true, beforeCommit: {
+                try beforeCommit()
+                try VoiceMemoTranscriptionService.requireRegularInput(imageURL)
+                try VoiceMemoTranscriptionService.requireRegularInput(expectedMemoURL)
+                let expected = VoiceMemoAssociation(profileIdentifier: transcript.associationProfileIdentifier,
+                    imageURL: imageURL.standardizedFileURL.resolvingSymlinksInPath(),
+                    memoURL: expectedMemoURL.standardizedFileURL.resolvingSymlinksInPath())
+                guard try VoiceMemoTranscriptionService.lookupRegularAssociation(for: imageURL) == .available(expected) else {
+                    throw VoiceMemoTranscriptionError.sourceChanged
+                }
+                try Self.validateTranscriptInput(imageURL, byteCount: expectedSourceRevision.byteCount,
+                    sha256: expectedSourceRevision.sha256)
+                try Self.validateTranscriptInput(expectedMemoURL, byteCount: transcript.memoByteCount,
+                    sha256: transcript.memoSHA256)
+                guard try VoiceMemoTranscriptionService.lookupRegularAssociation(for: imageURL) == .available(expected) else {
+                    throw VoiceMemoTranscriptionError.sourceChanged
+                }
+            })
+    }
+
+    private nonisolated static func validateTranscriptInput(_ url: URL, byteCount: Int64, sha256: String) throws {
+        let io = SourceImageRevisionCaptureIO.system
+        try VoiceMemoTranscriptionService.requireRegularInput(url)
+        let before = try io.snapshot(url)
+        let hash = try io.hash(url).lowercaseHexString
+        let after = try io.snapshot(url)
+        try VoiceMemoTranscriptionService.requireRegularInput(url)
+        guard before.matches(after), after.byteCount == byteCount, hash == sha256 else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+    }
+
     @MetadataSidecarFilesystemActor
     func saveVoiceMemoTranscriptSerialized(
         _ transcript: VoiceMemoTranscriptRecord,
         for imageURL: URL,
         in folderURL: URL,
+        createOnly: Bool = false,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
     ) async throws -> VoiceMemoTranscriptRecord {
         try Task.checkCancellation()
@@ -440,16 +488,36 @@ struct MetadataSidecarService: Sendable {
         return try await MetadataIOCoordinator.shared.withLock(
             MetadataIOKey.key(for: imageURL)
         ) { @MetadataSidecarFilesystemActor in
+            // Retain every current/legacy carrier before reading its typed fields. Hashing in
+            // beforeCommit may outlive an external editor; no newly captured carrier may turn
+            // that stale typed record into authority to overwrite its current contents.
+            let sourceTokens = try self.contentTokens(for: imageURL, in: folderURL)
             // Decode first so a newer nested transcript is rejected before lastModified or any
             // other carrier byte is touched.
-            _ = try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL)
+            let currentTranscript = try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL)
+            if createOnly, currentTranscript != nil { throw VoiceMemoTranscriptionError.existingTranscript }
             let existing = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL)
             let carrier = existing ?? MetadataSidecar(sourceFile: imageURL.lastPathComponent)
             try beforeCommit()
-            _ = try self.saveSidecar(carrier, for: imageURL, in: folderURL)
+            if createOnly, try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL) != nil {
+                throw VoiceMemoTranscriptionError.existingTranscript
+            }
+            guard try self.contentTokens(for: imageURL, in: folderURL) == sourceTokens else {
+                throw VoiceMemoTranscriptionError.sourceChanged
+            }
+            _ = try self.saveSidecar(carrier, for: imageURL, in: folderURL,
+                expectedContentTokens: sourceTokens)
 
             let currentURL = self.sidecarFileURL(for: imageURL, in: folderURL)
             let currentData = try Data(contentsOf: currentURL)
+            if createOnly,
+               let currentObject = try JSONSerialization.jsonObject(with: currentData) as? [String: Any],
+               currentObject[Self.voiceMemoTranscriptFieldName] != nil {
+                // An external writer can insert a review after carrier creation. Preserve
+                // it; the carrier may already have changed, so this is possible-effects
+                // uncertainty rather than the pre-write existingTranscript refusal.
+                throw self.ownershipChanged(currentURL)
+            }
             let patched = try Self.replacingVoiceMemoTranscript(
                 in: currentData,
                 with: transcript,
@@ -521,10 +589,17 @@ struct MetadataSidecarService: Sendable {
 
     @discardableResult
     nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL,
-        orientationMutation: OrientationDraftMutation = .preserve
+        orientationMutation: OrientationDraftMutation = .preserve,
+        expectedContentTokens: [Data?]? = nil
     ) throws -> MetadataSidecar {
         try requireIncomingOwner(sidecar, imageURL: imageURL)
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
+        if let expectedContentTokens {
+            let capturedTokens = sidecarCandidateURLs(for: imageURL, in: folderURL).map { url in
+                snapshots.first(where: { $0.url == url })?.data
+            }
+            guard capturedTokens == expectedContentTokens else { throw ownershipChanged(imageURL) }
+        }
         let owned = snapshots.filter(\.isOwned)
         let current = try decodeOwnedRecords(owned).first
         var updatedSidecar = sidecar

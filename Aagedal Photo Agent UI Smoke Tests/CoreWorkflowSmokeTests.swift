@@ -6,6 +6,38 @@ import XCTest
 @_silgen_name("flock")
 private func keywordSmokeFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
+nonisolated private struct TranscriptionHistorySmokeItem: Encodable {
+    let index: Int
+    let state: String
+    let outcome: String?
+}
+
+nonisolated private struct TranscriptionHistorySmokeBatch: Encodable {
+    let items: [TranscriptionHistorySmokeItem]
+}
+
+nonisolated private struct TranscriptionHistorySmokeRecord: Encodable {
+    let id: UUID
+    let ownerID: UUID
+    let kind = "voice_transcription"
+    let createdAt: Date
+    let updatedAt: Date
+    let state: String
+    let outcome: String
+    let cancellationRequestedAt: Date?
+    let batchProgress: TranscriptionHistorySmokeBatch
+}
+
+nonisolated private struct TranscriptionHistorySmokeArchive: Encodable {
+    let schemaVersion = 2
+    let records: [TranscriptionHistorySmokeRecord]
+}
+
+nonisolated private struct TranscriptionHistorySmokeEnvelope: Encodable {
+    let payload: Data
+    let sha256: String
+}
+
 final class CoreWorkflowSmokeTests: XCTestCase {
     private var fixtureRoot: URL!
     private var app: XCUIApplication!
@@ -1287,6 +1319,82 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 12))
         XCTAssertEqual(try Data(contentsOf: draftURL), draftBytes)
         XCTAssertEqual(try Data(contentsOf: photo), before)
+    }
+
+    @MainActor
+    func testTranscriptionBatchHistoryPreservesPrivateProgressAcrossRelaunch() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let originalPhoto = try Data(contentsOf: image)
+        let ownerID = UUID()
+        let cases: [(id: String, outcome: String, items: [String?], savedCopy: String, progressCopy: String)] = [
+            (UUID().uuidString.lowercased(), "verified", ["draftSaved", "draftSaved"],
+                "Editable transcript drafts saved and verified", "2 of 2 photos finished"),
+            (UUID().uuidString.lowercased(), "failed", ["draftSaved", "failed", "draftSaved"],
+                "2 editable transcript drafts remain saved", "3 of 3 photos finished"),
+            (UUID().uuidString.lowercased(), "cancelled", ["draftSaved", "cancelled", nil],
+                "1 editable transcript draft remains saved", "2 of 3 photos finished"),
+        ]
+        let recordedAt = Date()
+        let records = cases.enumerated().map { index, item in
+            let batchItems = item.items.enumerated().map { index, outcome in
+                TranscriptionHistorySmokeItem(index: index, state: outcome == nil ? "queued" : "completed", outcome: outcome)
+            }
+            return TranscriptionHistorySmokeRecord(id: UUID(uuidString: item.id)!, ownerID: ownerID,
+                createdAt: recordedAt.addingTimeInterval(-10), updatedAt: recordedAt.addingTimeInterval(Double(index)),
+                state: item.outcome == "cancelled" ? "cancelled" : "completed", outcome: item.outcome,
+                cancellationRequestedAt: item.outcome == "cancelled" ? recordedAt : nil,
+                batchProgress: TranscriptionHistorySmokeBatch(items: batchItems))
+        }
+        // Seed only closed retained evidence in the existing disposable history seam.
+        // This presentation workflow grants no provider access and runs no inference.
+        let operationRoot = fixtureRoot.appendingPathComponent("patch-operations", isDirectory: true)
+        try FileManager.default.createDirectory(at: operationRoot, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = try encoder.encode(TranscriptionHistorySmokeArchive(records: records))
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let archive = try encoder.encode(TranscriptionHistorySmokeEnvelope(payload: payload, sha256: digest))
+        let archiveURL = operationRoot.appendingPathComponent("operations.json")
+        try archive.write(to: archiveURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archiveURL.path)
+        XCTAssertTrue(FileManager.default.createFile(atPath: operationRoot.appendingPathComponent("operations.lock").path,
+            contents: Data(), attributes: [.posixPermissions: 0o600]))
+
+        for _ in 0..<2 {
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+            app.typeKey(",", modifierFlags: .command)
+            XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+            app.staticTexts["Automation"].click()
+            let refresh = app.buttons["automation.refreshOperations"]
+            XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+            refresh.click()
+            for item in cases {
+                let status = app.staticTexts["automation.operationStatus.\(item.id)"]
+                XCTAssertTrue(status.waitForExistence(timeout: 8))
+                let statusText = status.label + ((status.value as? String) ?? "")
+                XCTAssertTrue(statusText.contains(item.savedCopy))
+                XCTAssertTrue(statusText.contains("unapproved"))
+                XCTAssertTrue(statusText.contains("IPTC metadata is unchanged"))
+                let progress = app.staticTexts["automation.operationBatchProgress.\(item.id)"]
+                XCTAssertTrue(progress.waitForExistence(timeout: 8))
+                let progressText = progress.label + ((progress.value as? String) ?? "")
+                XCTAssertTrue(progressText.contains(item.progressCopy))
+                XCTAssertTrue(progressText.contains("Photo 1: draft saved"))
+                for (index, outcome) in item.items.enumerated() {
+                    let expected = outcome == "draftSaved" ? "draft saved" : (outcome ?? "queued")
+                    XCTAssertTrue(progressText.contains("Photo \(index + 1): \(expected)"))
+                }
+                for privateValue in [ownerID.uuidString, photos.path, "smoke-1.jpg"] {
+                    XCTAssertFalse((statusText + progressText).contains(privateValue))
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: archiveURL), archive)
+            XCTAssertEqual(try Data(contentsOf: image), originalPhoto)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: image.deletingPathExtension().appendingPathExtension("xmp").path))
+            app.terminate()
+        }
     }
 
     @MainActor

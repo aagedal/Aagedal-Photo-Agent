@@ -90,7 +90,8 @@ struct MCPServerCoreTests {
         #expect(value["outcome"] == .null)
         #expect(value["executorLiveness"] == .string("unknown"))
         #expect(value["recoveryResolution"] == .null)
-        #expect(Set(value.keys) == ["operationID", "kind", "state", "terminal", "outcome", "cancellationRequested", "createdAt", "updatedAt", "scope", "executorLiveness", "cancellationRequestedAt", "recoveryResolution"])
+        #expect(value["batchProgress"] == .null)
+        #expect(Set(value.keys) == ["operationID", "kind", "state", "terminal", "outcome", "cancellationRequested", "createdAt", "updatedAt", "scope", "executorLiveness", "cancellationRequestedAt", "recoveryResolution", "batchProgress"])
         let restarted = MCPFoundationTools(authorizationStore: store,
             operationRegistry: AutomationOperationRegistry(storageDirectory: root))
         #expect(restarted.callTool(name: "get_operation_status", arguments: arguments) == result)
@@ -100,6 +101,51 @@ struct MCPServerCoreTests {
         #expect(terminal.objectValue?["structuredContent"]?.objectValue?["state"] == .string("cancelled"))
         #expect(terminal.objectValue?["structuredContent"]?.objectValue?["outcome"] == .string("partialUncertain"))
         #expect(restarted.callTool(name: "cancel_operation", arguments: arguments) == terminal)
+    }
+
+    @Test("Batch operation status exposes only ordered counts and closed item outcomes")
+    func batchOperationProgressProjection() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-batch-status-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        let record = try registry.enqueue(kind: .voiceTranscription, ownerID: owner)
+        _ = try registry.configureBatch(record.id, ownerID: owner, itemCount: 3)
+        _ = try registry.start(record.id, ownerID: owner)
+        _ = try registry.startBatchItem(record.id, ownerID: owner, index: 0)
+        _ = try registry.finishBatchItem(record.id, ownerID: owner, index: 0, outcome: .draftSaved)
+        _ = try registry.startBatchItem(record.id, ownerID: owner, index: 1)
+        let authorization = store()
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization, operationRegistry: registry)
+        let arguments: [String: MCPJSONValue] = ["operationID": .string(record.id.uuidString)]
+        let result = tools.callTool(name: "get_operation_status", arguments: arguments)
+        let progress = try #require(result.objectValue?["structuredContent"]?.objectValue?["batchProgress"]?.objectValue)
+        #expect(Set(progress.keys) == ["itemCount", "completedCount", "items"])
+        #expect(progress["itemCount"] == .integer(3))
+        #expect(progress["completedCount"] == .integer(1))
+        #expect(progress["items"] == .array([
+            .object(["index": .integer(0), "state": .string("completed"), "outcome": .string("draftSaved")]),
+            .object(["index": .integer(1), "state": .string("running"), "outcome": .null]),
+            .object(["index": .integer(2), "state": .string("queued"), "outcome": .null]),
+        ]))
+        let restarted = MCPFoundationTools(authorizationStore: authorization,
+            operationRegistry: AutomationOperationRegistry(storageDirectory: root))
+        #expect(restarted.callTool(name: "get_operation_status", arguments: arguments) == result)
+        let encoded = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+        #expect(!encoded.contains(root.path))
+        #expect(!encoded.contains(owner.uuidString))
+        _ = try registry.finishBatchItem(record.id, ownerID: owner, index: 1, outcome: .failed)
+        _ = try registry.finish(record.id, ownerID: owner, outcome: .failed)
+        let failed = tools.callTool(name: "get_operation_status", arguments: arguments)
+        #expect(failed.objectValue?["structuredContent"]?.objectValue?["outcome"] == .string("failed"))
+        #expect(failed.objectValue?["structuredContent"]?.objectValue?["batchProgress"]?.objectValue?["completedCount"] == .integer(2))
+        guard let itemValue = failed.objectValue?["structuredContent"]?.objectValue?["batchProgress"]?.objectValue?["items"],
+              case .array(let items) = itemValue else {
+            Issue.record("Missing retained batch items")
+            return
+        }
+        #expect(items.first?.objectValue?["outcome"] == .string("draftSaved"))
     }
 
     @Test("Operation discovery distinguishes coordination from execution and storage errors are private")

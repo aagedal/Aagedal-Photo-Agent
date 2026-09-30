@@ -23,6 +23,22 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         case verified, failed, cancelled, partialUncertain, recoveryRequired, stale
     }
 
+    enum BatchItemState: String, Codable, Sendable { case queued, running, completed }
+    /// Only closed status evidence is durable; photo identities and metadata stay out.
+    enum BatchItemOutcome: String, Codable, Sendable {
+        case draftSaved, failed, stale, cancelled, recoveryRequired
+    }
+    struct BatchItem: Codable, Equatable, Sendable {
+        let index: Int
+        fileprivate(set) var state: BatchItemState
+        fileprivate(set) var outcome: BatchItemOutcome?
+    }
+    struct BatchProgress: Codable, Equatable, Sendable {
+        fileprivate(set) var items: [BatchItem]
+        var itemCount: Int { items.count }
+        var completedCount: Int { items.filter { $0.state == .completed }.count }
+    }
+
     struct RecoveryResolution: Codable, Equatable, Sendable {
         enum Disposition: String, Codable, Sendable { case unchanged, restored }
         let disposition: Disposition
@@ -41,6 +57,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         fileprivate(set) var outcome: Outcome?
         fileprivate(set) var cancellationRequestedAt: Date?
         fileprivate(set) var recoveryResolution: RecoveryResolution?
+        fileprivate(set) var batchProgress: BatchProgress?
 
         var isTerminal: Bool { state == .completed || state == .cancelled }
         var canRemove: Bool {
@@ -115,6 +132,46 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         }
     }
 
+    /// Configure once before any item runs. Indices describe request order, never paths.
+    func configureBatch(_ id: UUID, ownerID: UUID, itemCount: Int, now: Date = Date()) throws -> Record {
+        guard (1...64).contains(itemCount) else { throw Failure.invalidArguments }
+        return try update(id, ownerID: ownerID, now: now) { record in
+            guard record.kind == .voiceTranscription, !record.isTerminal, record.cancellationRequestedAt == nil,
+                  record.batchProgress == nil else { throw Failure.invalidTransition }
+            record.batchProgress = BatchProgress(items: (0..<itemCount).map {
+                BatchItem(index: $0, state: .queued)
+            })
+        }
+    }
+
+    func startBatchItem(_ id: UUID, ownerID: UUID, index: Int, now: Date = Date()) throws -> Record {
+        try update(id, ownerID: ownerID, now: now) { record in
+            guard record.state == .running, record.cancellationRequestedAt == nil,
+                  var progress = record.batchProgress else { throw Failure.invalidTransition }
+            guard progress.items.indices.contains(index) else { throw Failure.invalidArguments }
+            guard progress.items[index].state == .queued,
+                  progress.items.prefix(index).allSatisfy({ $0.state == .completed }),
+                  !progress.items.contains(where: { $0.state == .running }) else { throw Failure.invalidTransition }
+            progress.items[index].state = .running
+            record.batchProgress = progress
+        }
+    }
+
+    /// Cancellation can race a completed save. Preserve the owner's exact result for
+    /// the running item, while refusing to start any subsequent item after the request.
+    func finishBatchItem(_ id: UUID, ownerID: UUID, index: Int, outcome: BatchItemOutcome,
+                         now: Date = Date()) throws -> Record {
+        try update(id, ownerID: ownerID, now: now) { record in
+            guard record.state == .running, var progress = record.batchProgress else { throw Failure.invalidTransition }
+            guard progress.items.indices.contains(index) else { throw Failure.invalidArguments }
+            guard progress.items[index].state == .running,
+                  outcome != .cancelled || record.cancellationRequestedAt != nil else { throw Failure.invalidTransition }
+            progress.items[index].state = .completed
+            progress.items[index].outcome = outcome
+            record.batchProgress = progress
+        }
+    }
+
     /// Any authorized coordinator can request cancellation; only the actual owner can
     /// acknowledge it. Repeated requests and requests after completion are harmless.
     func requestCancellation(_ id: UUID, now: Date = Date()) throws -> Record {
@@ -127,6 +184,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         try update(id, ownerID: ownerID, now: now) { record in
             guard !record.isTerminal, outcome != .cancelled,
                   outcome != .verified || record.state == .running else { throw Failure.invalidTransition }
+            guard Self.validBatchTerminal(record.batchProgress, outcome: outcome) else { throw Failure.invalidTransition }
             record.state = .completed
             record.outcome = outcome
         }
@@ -139,6 +197,7 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         try update(id, ownerID: ownerID, now: now) { record in
             guard !record.isTerminal, record.cancellationRequestedAt != nil,
                   [.cancelled, .partialUncertain, .recoveryRequired].contains(outcome) else { throw Failure.invalidTransition }
+            guard Self.validBatchTerminal(record.batchProgress, outcome: outcome) else { throw Failure.invalidTransition }
             record.state = .cancelled
             record.outcome = outcome
         }
@@ -266,7 +325,8 @@ nonisolated final class AutomationOperationRegistry: Sendable {
             if readOnly { return (result, data ?? Data()) }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            let payload = try encoder.encode(Archive(schemaVersion: 1, records: records))
+            let schemaVersion = records.contains(where: { $0.batchProgress != nil }) ? 2 : 1
+            let payload = try encoder.encode(Archive(schemaVersion: schemaVersion, records: records))
             let bytes = try encoder.encode(Envelope(payload: payload, sha256: Self.digest(payload)))
             guard bytes.count <= maximumBytes else { throw Failure.capacity }
             return (result, bytes)
@@ -282,17 +342,30 @@ nonisolated final class AutomationOperationRegistry: Sendable {
                   let object = try JSONSerialization.jsonObject(with: envelope.payload) as? [String: Any],
                   Set(object.keys) == ["schemaVersion", "records"],
                   let recordObjects = object["records"] as? [[String: Any]] else { throw Failure.invalidStorage }
+            let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
+            guard [1, 2].contains(archive.schemaVersion),
+                  (archive.schemaVersion == 2) == recordObjects.contains(where: { $0["batchProgress"] != nil }) else {
+                throw Failure.invalidStorage
+            }
             let required: Set<String> = ["id", "ownerID", "kind", "createdAt", "updatedAt", "state"]
             for record in recordObjects {
                 guard required.isSubset(of: Set(record.keys)),
-                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt", "ownerLeaseManaged", "recoveryResolution"])) else { throw Failure.invalidStorage }
+                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt", "ownerLeaseManaged", "recoveryResolution", "batchProgress"])) else { throw Failure.invalidStorage }
+                if let progress = record["batchProgress"] {
+                    guard let fields = progress as? [String: Any], Set(fields.keys) == ["items"],
+                          let items = fields["items"] as? [[String: Any]] else { throw Failure.invalidStorage }
+                    for item in items {
+                        guard Set(["index", "state"]).isSubset(of: Set(item.keys)),
+                              Set(item.keys).isSubset(of: ["index", "state", "outcome"]),
+                              item["outcome"] == nil || item["outcome"] is String else { throw Failure.invalidStorage }
+                    }
+                }
                 if let resolution = record["recoveryResolution"] {
                     guard let fields = resolution as? [String: Any],
                           Set(fields.keys) == ["disposition", "receiptSHA256", "resolvedAt"] else { throw Failure.invalidStorage }
                 }
             }
-            let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
-            guard archive.schemaVersion == 1, archive.records.count <= maximumRecords,
+            guard archive.records.count <= maximumRecords,
                   Set(archive.records.map(\.id)).count == archive.records.count else { throw Failure.invalidStorage }
             for record in archive.records {
                 guard record.createdAt.timeIntervalSinceReferenceDate.isFinite,
@@ -305,6 +378,14 @@ nonisolated final class AutomationOperationRegistry: Sendable {
                     guard record.cancellationRequestedAt != nil,
                           [.cancelled, .partialUncertain, .recoveryRequired].contains(record.outcome) else { throw Failure.invalidStorage }
                 } else if record.outcome == .cancelled { throw Failure.invalidStorage }
+                if let progress = record.batchProgress {
+                    guard record.kind == .voiceTranscription, Self.validBatch(progress),
+                          record.cancellationRequestedAt != nil || !progress.items.contains(where: { $0.outcome == .cancelled }),
+                          record.state != .queued || progress.items.allSatisfy({ $0.state == .queued }),
+                          !record.isTerminal || Self.validBatchTerminal(progress, outcome: record.outcome!) else {
+                        throw Failure.invalidStorage
+                    }
+                }
                 if let resolution = record.recoveryResolution {
                     guard record.kind == .iptcPatch, record.isTerminal,
                           [.recoveryRequired, .partialUncertain].contains(record.outcome),
@@ -321,6 +402,32 @@ nonisolated final class AutomationOperationRegistry: Sendable {
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func validBatch(_ progress: BatchProgress) -> Bool {
+        guard (1...64).contains(progress.items.count) else { return false }
+        var encounteredPending = false
+        for (index, item) in progress.items.enumerated() {
+            guard item.index == index, (item.state == .completed) == (item.outcome != nil) else { return false }
+            if item.state == .completed {
+                guard !encounteredPending else { return false }
+            } else if item.state == .running {
+                guard !encounteredPending else { return false }
+                encounteredPending = true
+            } else {
+                encounteredPending = true
+            }
+        }
+        return true
+    }
+
+    private static func validBatchTerminal(_ progress: BatchProgress?, outcome: Outcome) -> Bool {
+        guard let progress else { return true }
+        if outcome == .verified { return progress.items.allSatisfy { $0.state == .completed && $0.outcome == .draftSaved } }
+        if [.failed, .stale, .cancelled].contains(outcome) {
+            return !progress.items.contains { $0.state == .running || $0.outcome == .recoveryRequired }
+        }
+        return true
     }
 
     private static func validReceiptDigest(_ value: String) -> Bool {

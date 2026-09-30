@@ -696,6 +696,8 @@ struct CaptionVoiceMemoTranscriptionTests {
     @Test("changed WAV bytes discard the generated result")
     func changedSourceIsRejected() async {
         let found = association
+        let photo = imageURL
+        let stablePhoto = revision(hash: String(repeating: "a", count: 64))
         let revisions = VoiceMemoRevisionSequence([
             revision(hash: String(repeating: "a", count: 64)),
             revision(hash: String(repeating: "b", count: 64)),
@@ -703,7 +705,7 @@ struct CaptionVoiceMemoTranscriptionTests {
         let service = VoiceMemoTranscriptionService(
             runtime: runtime(status: .installed, transcript: "Must be discarded"),
             lookup: { _ in .available(found) },
-            captureRevision: { _ in revisions.next() },
+            captureRevision: { url in url == photo ? stablePhoto : revisions.next() },
             startAccess: { _ in false }
         )
 

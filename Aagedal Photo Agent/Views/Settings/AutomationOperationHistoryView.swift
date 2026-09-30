@@ -28,8 +28,13 @@ struct AutomationOperationHistoryView: View {
                         Text(verbatim: title(record.kind)).font(.headline)
                         Text(verbatim: record.id.uuidString.lowercased())
                             .font(.caption.monospaced()).textSelection(.enabled)
-                        Text(verbatim: status(record))
+                        Text(verbatim: Self.status(record))
                             .accessibilityIdentifier("automation.operationStatus.\(record.id.uuidString.lowercased())")
+                        if let progress = record.batchProgress {
+                            Text(verbatim: Self.batchProgressText(progress))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("automation.operationBatchProgress.\(record.id.uuidString.lowercased())")
+                        }
                         Text("Last recorded \(record.updatedAt.formatted(date: .abbreviated, time: .standard))")
                             .font(.caption).foregroundStyle(.secondary)
                         if let resolution = record.recoveryResolution {
@@ -39,7 +44,7 @@ struct AutomationOperationHistoryView: View {
                                 .accessibilityIdentifier("automation.operationRecoveryResolution.\(record.id.uuidString.lowercased())")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else if record.outcome == .recoveryRequired || record.outcome == .partialUncertain {
-                            Text("Inspect the affected photo and pending metadata before retrying. This record cannot establish whether a draft was saved. Automatic repair is unavailable; recovery evidence is retained.")
+                            Text(verbatim: Self.recoveryGuidance(record))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if !record.isTerminal && record.cancellationRequestedAt == nil {
@@ -96,18 +101,52 @@ struct AutomationOperationHistoryView: View {
         }
     }
 
-    private func status(_ record: AutomationOperationRegistry.Record) -> String {
+    nonisolated static func status(_ record: AutomationOperationRegistry.Record) -> String {
         switch record.outcome {
-        case .verified: record.kind == .iptcDraft ? "Pending draft saved and verified; not published to the photo or XMP." : "Completed and verified."
-        case .failed: "Failed or refused."
-        case .cancelled: "Cancellation confirmed with no uncertain effects."
-        case .stale: "Stale operation; prepare a fresh plan."
-        case .partialUncertain, .recoveryRequired: record.recoveryResolution == nil
+        case .verified:
+            if record.kind == .voiceTranscription {
+                return "Editable transcript drafts saved and verified. Drafts remain unapproved; IPTC metadata is unchanged."
+            }
+            return record.kind == .iptcDraft ? "Pending draft saved and verified; not published to the photo or XMP." : "Completed and verified."
+        case .failed: return "Failed or refused." + retainedTranscriptDrafts(record)
+        case .cancelled: return "Cancellation confirmed with no uncertain effects." + retainedTranscriptDrafts(record)
+        case .stale: return "Stale operation; prepare a fresh plan." + retainedTranscriptDrafts(record)
+        case .partialUncertain, .recoveryRequired: return (record.recoveryResolution == nil
             ? "Recovery required; effects are uncertain."
-            : "Recovery required at original publication; publication was not verified."
-        case nil: record.cancellationRequestedAt == nil
+            : "Recovery required at original publication; publication was not verified.") + retainedTranscriptDrafts(record)
+        case nil: return (record.cancellationRequestedAt == nil
             ? "Last recorded as \(record.state.rawValue). Current activity is not confirmed."
-            : "Cancellation requested; waiting for a confirmed outcome."
+            : "Cancellation requested; waiting for a confirmed outcome.") + retainedTranscriptDrafts(record)
         }
+    }
+
+    nonisolated private static func retainedTranscriptDrafts(_ record: AutomationOperationRegistry.Record) -> String {
+        guard record.kind == .voiceTranscription, let progress = record.batchProgress else { return "" }
+        let saved = progress.items.filter { $0.outcome == .draftSaved }.count
+        let drafts = saved == 1 ? "1 editable transcript draft remains saved" : "\(saved) editable transcript drafts remain saved"
+        return " \(drafts). Drafts remain unapproved; IPTC metadata is unchanged."
+    }
+
+    nonisolated static func recoveryGuidance(_ record: AutomationOperationRegistry.Record) -> String {
+        if record.kind == .voiceTranscription, record.batchProgress != nil {
+            return "Saved transcript drafts are retained. Inspect photos marked recovery required or last recorded as running before retrying; unfinished items are not confirmed as saved. Automatic repair is unavailable."
+        }
+        return "Inspect the affected photo and pending metadata before retrying. This record cannot establish whether a draft was saved. Automatic repair is unavailable; recovery evidence is retained."
+    }
+
+    nonisolated static func batchProgressText(_ progress: AutomationOperationRegistry.BatchProgress) -> String {
+        let items = progress.items.map { item in
+            let status: String
+            switch item.outcome {
+            case .draftSaved: status = "draft saved"
+            case .failed: status = "failed"
+            case .stale: status = "stale"
+            case .cancelled: status = "cancelled"
+            case .recoveryRequired: status = "recovery required"
+            case nil: status = item.state == .running ? "last recorded running" : item.state.rawValue
+            }
+            return "Photo \(item.index + 1): \(status)"
+        }.joined(separator: "; ")
+        return "\(progress.completedCount) of \(progress.itemCount) photos finished. \(items)."
     }
 }

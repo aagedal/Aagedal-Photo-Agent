@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -93,6 +94,217 @@ struct FFmpegWhisperTranscriptionProviderTests {
         json["provider"] = "Apple on-device speech"
         let legacy = try JSONDecoder().decode(VoiceMemoTranscriptRecord.self, from: JSONSerialization.data(withJSONObject: json))
         #expect(legacy.whisperProvenance == nil)
+    }
+
+    @Test("both providers discard results when only the photo changes", arguments: [false, true])
+    func changedPhotoDuringInference(whisper: Bool) async throws {
+        let state = WhisperDraftTestState()
+        let stable = revision()
+        let changed = revision("d")
+        let photoURL = image
+        let association = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
+        let locale = Locale(identifier: "en-US")
+        let runtime = VoiceMemoTranscriptionRuntime(isAvailable: { true }, supportedLocales: { [locale] },
+            resolveLocale: { _ in locale }, assetStatus: { _ in .installed }, installAssets: { _ in },
+            transcribe: { _, _ in state.markComplete(); return "hello" })
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in }, run: { request in
+                state.markComplete()
+                return .init(request: request, transcript: .init(
+                    segments: [.init(start: 0, end: 1, text: "hello")], editableText: "hello"))
+            })
+        let service = VoiceMemoTranscriptionService(runtime: runtime, lookup: { _ in .available(association) },
+            captureRevision: { url in url == photoURL && state.complete ? changed : stable },
+            startAccess: { _ in false })
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            if whisper { _ = try await service.transcribe(imageURL: photoURL, provider: provider) }
+            else { _ = try await service.transcribe(imageURL: photoURL, locale: locale) }
+        }
+    }
+
+    @Test("generated draft creation is durable, unapproved and preserves existing review")
+    func createOnlyDraftLifecycle() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("GeneratedDraft-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: audio)
+        try VoiceMemoCompanionRepository().save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let source = try await SourceImageRevision.capture(at: photo)
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in }, run: { request in
+                .init(request: request, transcript: .init(segments: [.init(start: 0, end: 1, text: "hello")], editableText: "hello"))
+            })
+        let service = VoiceMemoTranscriptionService()
+        let draft = try await service.transcribe(imageURL: photo, provider: provider)
+        let saved = try await service.persistGeneratedDraft(draft, expectedSourceRevision: source)
+        #expect(saved.approvedAt == nil)
+        #expect(saved.reviewedText == "hello")
+        let reloaded = try #require(try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: photo))
+        #expect(reloaded.approvedAt == nil)
+        await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
+            _ = try await service.approvedVariableContext(imageURL: photo)
+        }
+        var edited = saved
+        edited.reviewedText = "Human reviewed text"
+        let approved = try await service.approve(edited)
+        let carrier = folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
+            .appendingPathComponent("\(photo.lastPathComponent).meta.json")
+        let bytes = try Data(contentsOf: carrier)
+        await #expect(throws: VoiceMemoTranscriptionError.existingTranscript) {
+            _ = try await service.persistGeneratedDraft(draft, expectedSourceRevision: source)
+        }
+        #expect(try Data(contentsOf: carrier) == bytes)
+        await #expect(throws: VoiceMemoTranscriptionError.invalidGeneratedDraft) {
+            _ = try await service.persistGeneratedDraft(approved, expectedSourceRevision: source)
+        }
+        #expect(try Data(contentsOf: carrier) == bytes)
+    }
+
+    @Test("create-only write revalidates source and WAV inside the photo lock", arguments: [false, true])
+    func changedInputAtCreation(memoChanges: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DraftDrift-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: audio)
+        try VoiceMemoCompanionRepository().save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let source = try await SourceImageRevision.capture(at: photo)
+        let memo = try await SourceImageRevision.capture(at: audio)
+        let record = VoiceMemoTranscriptRecord(sourceImageFilename: "a.jpg", sourceMemoFilename: "a.wav",
+            memoByteCount: memo.byteCount, memoSHA256: memo.sha256, associationProfileIdentifier: "test",
+            localeIdentifier: "en", provider: "Apple on-device speech", providerModel: "System managed",
+            generatedAt: Date(), generatedText: "hello", reviewedText: "hello")
+        let service = MetadataSidecarService()
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            _ = try await service.createVoiceMemoTranscriptSerialized(record, for: photo, in: folder,
+                expectedSourceRevision: source, expectedMemoURL: audio,
+                beforeCommit: { try Data("changed".utf8).write(to: memoChanges ? audio : photo) })
+        }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
+            .appendingPathComponent("\(photo.lastPathComponent).meta.json").path))
+    }
+
+    @Test("external title edits during transcript admission preserve exact edited carrier bytes", arguments: [false, true])
+    func externalTitleDriftDuringAdmission(createOnly: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DraftTitleDrift-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: audio)
+        try VoiceMemoCompanionRepository().save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let source = try await SourceImageRevision.capture(at: photo)
+        let memo = try await SourceImageRevision.capture(at: audio)
+        let service = MetadataSidecarService()
+        try service.saveSidecar(.init(sourceFile: photo.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(title: "Initial title")), for: photo, in: folder)
+        let carrier = folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
+            .appendingPathComponent("\(photo.lastPathComponent).meta.json")
+        var externalGraph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
+        var metadata = try #require(externalGraph["metadata"] as? [String: Any])
+        metadata["title"] = "External editor title"
+        externalGraph["metadata"] = metadata
+        externalGraph["futureEditorialExtension"] = ["preserve": true]
+        let externalBytes = try JSONSerialization.data(withJSONObject: externalGraph, options: [.sortedKeys])
+        let record = VoiceMemoTranscriptRecord(sourceImageFilename: "a.jpg", sourceMemoFilename: "a.wav",
+            memoByteCount: memo.byteCount, memoSHA256: memo.sha256, associationProfileIdentifier: "test",
+            localeIdentifier: "en", provider: "Apple on-device speech", providerModel: "System managed",
+            generatedAt: Date(), generatedText: "hello", reviewedText: "hello")
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            if createOnly {
+                _ = try await service.createVoiceMemoTranscriptSerialized(record, for: photo, in: folder,
+                    expectedSourceRevision: source, expectedMemoURL: audio,
+                    beforeCommit: { try externalBytes.write(to: carrier, options: .atomic) })
+            } else {
+                _ = try await service.saveVoiceMemoTranscriptSerialized(record, for: photo, in: folder,
+                    beforeCommit: { try externalBytes.write(to: carrier, options: .atomic) })
+            }
+        }
+        #expect(try Data(contentsOf: carrier) == externalBytes)
+        #expect(try service.loadVoiceMemoTranscript(for: photo, in: folder) == nil)
+    }
+
+    @Test("live batch dependencies create reloadable unapproved drafts without changing photo or XMP bytes")
+    func liveBatchDraftPersistence() async throws {
+        let path = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(path) }
+        let folder = URL(fileURLWithPath: String(cString: path), isDirectory: true)
+            .appendingPathComponent("LiveTranscriptionBatch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var photos: [URL] = []
+        var originalPhotos: [Data] = []
+        var originalXMP: [Data] = []
+        for name in ["first", "second"] {
+            let photo = folder.appendingPathComponent(name + ".jpg")
+            let memo = folder.appendingPathComponent(name + ".wav")
+            let photoBytes = Data(("photo bytes " + name).utf8)
+            let xmpBytes = Data(("original XMP bytes " + name).utf8)
+            try photoBytes.write(to: photo)
+            try Data(("memo bytes " + name).utf8).write(to: memo)
+            try xmpBytes.write(to: photo.deletingPathExtension().appendingPathExtension("xmp"))
+            try VoiceMemoCompanionRepository().save(.init(profileIdentifier: "synthetic-batch",
+                imageURL: photo, memoURL: memo))
+            photos.append(photo)
+            originalPhotos.append(photoBytes)
+            originalXMP.append(xmpBytes)
+        }
+        let locale = Locale(identifier: "en-US")
+        let runtime = VoiceMemoTranscriptionRuntime(isAvailable: { true }, supportedLocales: { [locale] },
+            resolveLocale: { _ in locale }, assetStatus: { _ in .installed }, installAssets: { _ in },
+            transcribe: { url, _ in "Speech for " + url.lastPathComponent })
+        let service = VoiceMemoTranscriptionService(runtime: runtime, now: { Date(timeIntervalSince1970: 500.625) })
+        let registry = AutomationOperationRegistry(storageDirectory: folder.appendingPathComponent("operations", isDirectory: true))
+        let batch = AutomationVoiceTranscriptionBatchService(registry: registry, dependencies: .live(service: service))
+        let receipt = try await batch.submit(imageURLs: photos, provider: .apple(locale))
+        let finished = try await batch.waitForCompletion(receipt.id)
+        try await batch.shutdown()
+        #expect(finished.outcome == .verified)
+        #expect(finished.batchProgress?.items.map(\.outcome) == [.draftSaved, .draftSaved])
+        #expect(try registry.inspect(receipt.id) == finished)
+        for (index, photo) in photos.enumerated() {
+            let loaded = try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: photo)
+            let draft = try #require(loaded)
+            #expect(draft.generatedText == "Speech for " + photo.deletingPathExtension().appendingPathExtension("wav").lastPathComponent)
+            #expect(draft.reviewedText == draft.generatedText)
+            #expect(draft.approvedAt == nil)
+            #expect(draft.generatedAt == Date(timeIntervalSince1970: 500))
+            await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
+                _ = try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: photo)
+            }
+            #expect(try Data(contentsOf: photo) == originalPhotos[index])
+            #expect(try Data(contentsOf: photo.deletingPathExtension().appendingPathExtension("xmp")) == originalXMP[index])
+        }
+    }
+
+    @Test("regular associated-audio admission refuses linked source and memo entries", arguments: [false, true])
+    func linkedInputRefused(memoLinked: Bool) throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DraftLink-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg")
+        let audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: audio)
+        try VoiceMemoCompanionRepository().save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let input = memoLinked ? audio : photo
+        let target = folder.appendingPathComponent("linked-target")
+        try FileManager.default.moveItem(at: input, to: target)
+        try FileManager.default.createSymbolicLink(at: input, withDestinationURL: target)
+        #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            _ = try VoiceMemoTranscriptionService.lookupRegularAssociation(for: photo)
+        }
     }
 
     @Test("Whisper review approval and revocation survive real sidecar merges and fresh service reloads")

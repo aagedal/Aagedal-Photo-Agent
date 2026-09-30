@@ -94,6 +94,8 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
     case languageReservationLimitReached(maximum: Int)
     case relationshipUnavailable
     case sourceChanged
+    case existingTranscript
+    case invalidGeneratedDraft
     case audioUnreadable
     case emptyAudio
     case noSpeech
@@ -117,6 +119,10 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
             return "The saved voice-memo relationship is no longer available. Refresh it before transcribing."
         case .sourceChanged:
             return "The photo, voice memo, or relationship changed while transcribing. The result was discarded."
+        case .existingTranscript:
+            return "This photo already has a saved transcript. Its draft or human review was kept."
+        case .invalidGeneratedDraft:
+            return "A generated transcript draft must be unapproved before it can be saved by automation."
         case .audioUnreadable:
             return "The associated WAV could not be opened as supported audio. Playback remains available."
         case .emptyAudio:
@@ -405,6 +411,9 @@ actor VoiceMemoTranscriptionService {
         VoiceMemoTranscriptRecord, URL, URL
     ) async throws -> VoiceMemoTranscriptRecord
 
+    typealias CreateTranscript = @Sendable (VoiceMemoTranscriptRecord, URL, URL, SourceImageRevision, URL) async throws -> VoiceMemoTranscriptRecord
+
+    private let createTranscript: CreateTranscript
     private let runtime: VoiceMemoTranscriptionRuntime
     private let lookup: Lookup
     private let captureRevision: CaptureRevision
@@ -419,8 +428,11 @@ actor VoiceMemoTranscriptionService {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.voice-memo-transcription", qos: .utility
         ),
-        lookup: @escaping Lookup = { try VoiceMemoCompanionRepository().lookup(for: $0) },
-        captureRevision: @escaping CaptureRevision = { try await SourceImageRevision.capture(at: $0) },
+        lookup: @escaping Lookup = { try VoiceMemoTranscriptionService.lookupRegularAssociation(for: $0) },
+        captureRevision: @escaping CaptureRevision = {
+            try VoiceMemoTranscriptionService.requireRegularInput($0)
+            return try await SourceImageRevision.capture(at: $0)
+        },
         loadTranscript: @escaping LoadTranscript = { imageURL, folderURL in
             try await MetadataSidecarService().loadVoiceMemoTranscriptSerialized(
                 for: imageURL, in: folderURL
@@ -431,10 +443,16 @@ actor VoiceMemoTranscriptionService {
                 transcript, for: imageURL, in: folderURL
             )
         },
+        createTranscript: @escaping CreateTranscript = { record, image, folder, source, memo in
+            try await MetadataSidecarService().createVoiceMemoTranscriptSerialized(
+                record, for: image, in: folder, expectedSourceRevision: source, expectedMemoURL: memo
+            )
+        },
         now: @escaping @Sendable () -> Date = Date.init,
         startAccess: @escaping @Sendable (URL) -> Bool = { $0.startAccessingSecurityScopedResource() },
         stopAccess: @escaping @Sendable (URL) -> Void = { $0.stopAccessingSecurityScopedResource() }
     ) {
+        self.createTranscript = createTranscript
         self.runtime = runtime
         self.filesystemQueue = filesystemQueue
         self.lookup = lookup
@@ -536,13 +554,16 @@ actor VoiceMemoTranscriptionService {
             throw VoiceMemoTranscriptionError.unavailable
         }
 
+        let sourceBefore = try await captureRevision(image)
         let before = try await captureRevision(association.memoURL)
         try Task.checkCancellation()
         let session = try await runtime.makeRecognitionSession(association.memoURL, selected)
         let text = try await VoiceMemoRecognitionPipeline.transcribe(session: session)
         try Task.checkCancellation()
         let after = try await captureRevision(association.memoURL)
-        guard before.relationship(to: after) == .exactRevision,
+        let sourceAfter = try await captureRevision(image)
+        guard sourceBefore.relationship(to: sourceAfter) == .exactRevision,
+              before.relationship(to: after) == .exactRevision,
               try lookup(image) == .available(association) else {
             throw VoiceMemoTranscriptionError.sourceChanged
         }
@@ -579,13 +600,16 @@ actor VoiceMemoTranscriptionService {
               association.memoURL.pathExtension.lowercased() == "wav" else {
             throw VoiceMemoTranscriptionError.relationshipUnavailable
         }
+        let sourceBefore = try await captureRevision(image)
         let before = try await captureRevision(association.memoURL)
         let result = try await provider.transcribe(audio: .init(
             url: association.memoURL, byteCount: before.byteCount, sha256: before.sha256
         ))
         try Task.checkCancellation()
         let after = try await captureRevision(association.memoURL)
-        guard before.relationship(to: after) == .exactRevision,
+        let sourceAfter = try await captureRevision(image)
+        guard sourceBefore.relationship(to: sourceAfter) == .exactRevision,
+              before.relationship(to: after) == .exactRevision,
               try lookup(image) == .available(association) else {
             throw VoiceMemoTranscriptionError.sourceChanged
         }
@@ -599,6 +623,72 @@ actor VoiceMemoTranscriptionService {
             generatedAt: now(), generatedText: result.text, reviewedText: result.text,
             approvedAt: nil, whisperProvenance: result.provenance
         )
+    }
+
+    /// Automation may create an editable draft only when no transcript already exists.
+    /// Human review and replacement remain explicit native actions.
+    func persistGeneratedDraft(
+        _ draft: VoiceMemoTranscriptDraft,
+        expectedSourceRevision: SourceImageRevision
+    ) async throws -> VoiceMemoTranscriptDraft {
+        try Task.checkCancellation()
+        guard !draft.isApproved else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+        let image = draft.imageURL.standardizedFileURL
+        let folder = image.deletingLastPathComponent()
+        let didAccess = startAccess(folder)
+        defer { if didAccess { stopAccess(folder) } }
+        let source = try await captureRevision(image)
+        guard expectedSourceRevision.relationship(to: source) == .exactRevision else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        let association = try await validatedAssociation(for: image, memoSHA256: draft.memoSHA256,
+            memoByteCount: draft.memoByteCount, profileIdentifier: draft.associationProfileIdentifier)
+        guard association.memoURL == draft.memoURL.standardizedFileURL else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        let text = draft.generatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
+        let record = VoiceMemoTranscriptRecord(sourceImageFilename: image.lastPathComponent,
+            sourceMemoFilename: association.memoURL.lastPathComponent, memoByteCount: draft.memoByteCount,
+            memoSHA256: draft.memoSHA256, associationProfileIdentifier: draft.associationProfileIdentifier,
+            localeIdentifier: draft.localeIdentifier, provider: draft.provider, providerModel: draft.providerModel,
+            generatedAt: draft.generatedAt, generatedText: text, reviewedText: text, approvedAt: nil,
+            whisperProvenance: draft.whisperProvenance)
+        try Task.checkCancellation()
+        let installed = try await createTranscript(record, image, folder, expectedSourceRevision, association.memoURL)
+        // Creation verifies its saved bytes before returning. A cancellation after that durable
+        // boundary must not turn the successful save into a no-effects cancellation claim.
+        return VoiceMemoTranscriptDraft(imageURL: image, memoURL: association.memoURL,
+            memoByteCount: installed.memoByteCount, memoSHA256: installed.memoSHA256,
+            associationProfileIdentifier: installed.associationProfileIdentifier,
+            localeIdentifier: installed.localeIdentifier, provider: installed.provider, providerModel: installed.providerModel,
+            generatedAt: installed.generatedAt, generatedText: installed.generatedText,
+            reviewedText: installed.reviewedText, approvedAt: installed.approvedAt,
+            whisperProvenance: installed.whisperProvenance)
+    }
+
+    /// Repository lookup returns canonical URLs. Validate the original adjacent entries too,
+    /// so canonicalization cannot conceal a linked source, relationship record or WAV.
+    nonisolated static func lookupRegularAssociation(for image: URL) throws -> VoiceMemoCompanionRepository.Lookup {
+        try requireRegularInput(image)
+        let repository = VoiceMemoCompanionRepository()
+        let result = try repository.lookup(for: image)
+        guard case .available = result else { return result }
+        let recordURL = repository.recordURL(for: image)
+        try requireRegularInput(recordURL)
+        let record = try JSONDecoder().decode(VoiceMemoCompanionRecord.self, from: Data(contentsOf: recordURL))
+        let memoExtension = (record.memoFilename as NSString).pathExtension
+        let memoName = record.imageFilename == image.lastPathComponent ? record.memoFilename
+            : image.deletingPathExtension().lastPathComponent + (memoExtension.isEmpty ? "" : "." + memoExtension)
+        try requireRegularInput(image.deletingLastPathComponent().appendingPathComponent(memoName))
+        return result
+    }
+
+    nonisolated static func requireRegularInput(_ url: URL) throws {
+        guard url.isFileURL,
+              try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeRegular else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
     }
 
     func loadPersistedDraft(imageURL: URL) async throws -> VoiceMemoTranscriptDraft? {
