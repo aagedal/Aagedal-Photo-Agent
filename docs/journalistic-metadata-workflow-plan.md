@@ -1425,6 +1425,18 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 113 continuation (2026-09-30):** A shared app-side voice-transcription batch executor
+admits 1–8 explicit ordered photos, retains photo/WAV revisions, runs the selected Apple or
+explicitly admitted Whisper provider serially, and creates only unapproved editable drafts.
+Create-only writes hold the shared photo reservation and lock, preserve any saved human review,
+and refuse carrier drift across input hashing. Versioned private operation history retains closed
+per-photo indices/outcomes; helper status and native history distinguish saved drafts, definite
+failures, cancellation, queued suffixes and uncertain saves. Recognition cancellation drains
+provider teardown; uncertain creation stops the suffix without replay or rollback claims.
+Native batch launch/consent, rooted helper audio admission and authenticated IPC remain open;
+this backend and history checkpoint does not complete the batch-transcription tool criterion.
+See [cycle 113 evidence](release/cycle-113-transcription-batch-executor-2026-09-30.md).
+
 **Cycle 80 continuation (2026-09-20):** Caption now exposes explicit custom FFmpeg Whisper
 selection, session-scoped file access and execution consent, with persisted provider choice and
 unapproved drafts through the existing review flow. Failures retain the current review without

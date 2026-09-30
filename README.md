@@ -148,7 +148,10 @@ the support table and validation records.
   transcription, and photo mutation tools remain under implementation for 3.0.
   `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
   cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
-  outcomes; other workflow executors remain unfinished, and a request is not completion.
+  outcomes. Available transcription batch status includes ordered per-photo outcomes without paths
+  or transcript text. Saved drafts remain editable and unapproved; failed or cancelled batches can
+  retain a saved prefix. The shared batch backend is implemented, while native batch launch and
+  helper transcription invocation remain unfinished. A request is not completion.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and

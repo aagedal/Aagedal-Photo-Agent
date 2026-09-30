@@ -2,15 +2,25 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-30
-**Latest implementation state:** [Cycle 112](cycle-112-recovery-qualified-request-retirement-2026-09-30.md) extends confirmed request cleanup to uncertain XMP operations only with exact retained completed restoration or unchanged-staging receipts. Plan/operation/digest/disposition/timing match under recovery-before-operation-before-request locks; original outcomes and evidence remain unchanged. Missing/replaced/incomplete recovery, uncertain drafts and late cancellation stay retained. Confirmed cleanup cancels in-flight read-only polling instead of silently refusing it, with captured epochs and live revalidation intact. Verification passes 3,587 serial integrated tests, 132 focused tests, three native workflows, repository checks and the 22-tool helper probe. Physical crash/archive-loss qualification, authenticated IPC/helper commits, iCloud authority, broader executors and signed-model integration remain open.
-**Latest native evidence:** Cycle 112's final three workflows pass recovered-XMP cleanup, existing finished-XMP cleanup and cancelled-only cleanup with relaunch persistence. Unresolved recovery disables finished cleanup; explicit restoration binds the exact receipt without changing the uncertain outcome. Dialog Cancel preserves exact bytes; confirmation removes only the eligible request and preserves other requests, operation/recovery/photo/carrier evidence and rotated epochs after relaunch. The initial recovered cleanup confirmation did nothing; a held-read regression reproduced the refresh race in both cleanup actions before the fix. Final source and native reruns pass. Broader interruption, accessibility and real-volume cases remain open.
-**Implementation commits:** `a09cb30`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
-**Cycle baseline:** `c42dcff`, initially clean. No whole release-readiness gate is newly closed.
-**Continuation chat:** `01a0f3a1-6302-7121-a01e-72b902ee0e97`; no other active chat was editing this checkout.
+**Latest implementation state:** [Cycle 113](cycle-113-transcription-batch-executor-2026-09-30.md) implements the shared app-side transcription batch backend for 1–8 explicit photos, source/WAV revalidation, serial provider generation, create-only unapproved draft saves and private durable ordered outcomes. Existing human reviews and carrier edits remain preserved; cancellation retains the verified prefix and uncertain creation stops the suffix. Final verification passes 3,614 serial integrated tests, 144 focused tests, two native history/relaunch workflows, repository checks and the 22-tool helper probe. Native batch launch/consent, rooted helper audio admission/authenticated IPC, broader executors and signed-model integration remain open.
+**Latest native evidence:** Cycle 113 passes two workflows: seeded batch success/failure/cancellation history preserves exact operation/photo bytes on refresh and two launches, shows private ordered outcomes and explicitly unapproved/IPTC-unchanged saved drafts; existing stopped-owner recovery/relaunch also passes. These are history/presentation cases, not real provider inference or native batch launch evidence. Broader interruption, accessibility and real-volume cases remain open.
+**Implementation commits:** `20d4c37`. No new Release candidate was built; earlier candidate/model-omission/ZIP evidence remains historical.
+**Cycle baseline:** `ed1f0fc`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0f3d2-ae7b-7cf3-b28a-faf79190b234`; no other active chat was editing this checkout.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 113 shared transcription batch executor](cycle-113-transcription-batch-executor-2026-09-30.md)
+records source `20d4c37`, 144 focused tests and a complete serial suite of 3,614 tests / 360 suites,
+zero failures/skips in 168.299 seconds. Two native history/relaunch workflows, independent review,
+repository validation and the 22-tool helper probe pass. Exact source/WAV and carrier drift,
+create-only review preservation, production two-photo unapproved reload, whole-second date
+normalization, saved-prefix cancellation, provider teardown and uncertain read-back are covered.
+No whole 3.0 criterion closes: explicit native batch launch/consent and rooted helper audio admission
+remain the next integration boundary. Twelve existing QoS diagnostics leave performance gates open.
+Older cycles below retain their historical evidence states.
 
 [Cycle 112 recovery-qualified request retirement](cycle-112-recovery-qualified-request-retirement-2026-09-30.md)
 records 132 passing final focused tests, independent review, repository validation, the 22-tool helper
@@ -771,6 +781,11 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
+Cycle 113 adds the shared bounded transcription backend and durable ordered outcomes. Next wire
+explicit native batch launch/consent, immutable selected targets and review-cache refresh, then rooted
+associated-audio admission and authenticated helper invocation. The Phase 5A batch-transcription
+criterion stays open until those production/native boundaries are verified.
+
 **Next implementation slice after cycle 90:** Extend the exact-consent path from verified local
 pending drafts to an explicitly selected physical write mode with complete carrier-preservation,
 publication/C2PA approval, read-back and durable recovery. The native pending-draft executor is
@@ -925,6 +940,15 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 113 (`20d4c37`, baseline `ed1f0fc`) implements the shared transcription batch backend and
+create-only unapproved drafts with exact source/WAV/carrier guards, saved-prefix cancellation and
+private ordered outcomes. Final focused (144), serial integrated (3,614 / 360 suites), native
+history/relaunch (two), helper (22 tools), repository and independent review pass. Source is committed;
+no Release candidate is built. Native batch launch/consent, rooted helper audio authority, broader
+executors, signed-model lifecycle and all previously documented external/native release gates remain.
+The no-progress counter remains zero; this continuation does not alter or revalidate the automation.
+Older handoffs below remain historical.
 
 Cycle 85 (`1cdc45b`) moves custom Whisper configuration to Settings → Transcription and keeps Caption compact.
 Full regression passes 3,210 tests / 336 suites. The prior implementation and release worklist remain

@@ -125,6 +125,15 @@ This is separate from the unapproved AI-origin analyzer described above.
 
 ## Local automation boundary
 
+- The shared transcription batch backend accepts up to eight explicit photos and saves only
+  previously absent, unapproved transcripts. Existing saved drafts or human reviews are preserved.
+  Native batch launch/consent, rooted helper audio admission and authenticated IPC are unfinished.
+  Durable per-photo history retains numbered outcomes, without source paths or text; it does not
+  permit automatic replay or prove current executor liveness. Failed or cancelled batches can leave
+  verified drafts saved. Uncertain writes retain recovery evidence and stop the unprocessed suffix.
+  Operation archive schema 2 is required while batch records remain; older helpers refuse it.
+  Legacy records remain readable, and removing the last batch record returns the archive to schema 1.
+
 - MCP native review requests persist intent only. Selecting or retrying a request cannot grant
   consent; native review, approval and execution remain separate. Request and operation status
   do not prove executor liveness. Missing, removed or unverifiable linked history cannot confirm

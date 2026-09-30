@@ -110,8 +110,12 @@ sensitive and are subject to the connected client's privacy and retention policy
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not
 mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.
-Production face/template/transcription/IPTC executors are not connected yet, and executor liveness
-is reported as unknown. These endpoints do not start work or authorize photo writes.
+Available `batchProgress` contains completed counts and ordered photo indices/states/outcomes,
+without paths or transcript text. A saved transcription draft remains editable and unapproved,
+with IPTC unchanged. Failed or cancelled batches can retain saved drafts; inspect each outcome
+before retrying. Uncertain saves retain recovery evidence. Executor liveness is reported as unknown.
+These endpoints do not start work or authorize photo writes. Native batch launch and helper
+face/template/transcription invocation remain under implementation.
 
 Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
 absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,
