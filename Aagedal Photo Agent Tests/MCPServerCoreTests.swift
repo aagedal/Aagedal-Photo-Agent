@@ -42,6 +42,254 @@ struct MCPServerCoreTests {
                            .object(["number": .integer(1), "playerName": .string("Sam Keeper")])])]
     }
 
+    private func voiceMemoRecord(photo: URL, memo: URL) throws -> URL {
+        let record = photo.deletingLastPathComponent().appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")
+        let bytes = try JSONSerialization.data(withJSONObject: ["schemaVersion": 2,
+            "profileIdentifier": "custom-reviewed-profile", "imageFilename": photo.lastPathComponent,
+            "memoFilename": memo.lastPathComponent])
+        try bytes.write(to: record)
+        return record
+    }
+
+    @Test("Voice memo admission requires a persisted relationship and returns bounded comparison evidence only")
+    func voiceMemoRelationshipAdmission() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent("different.WAV")
+        try Data("source".utf8).write(to: photo)
+        try Data("not decoded audio".utf8).write(to: memo)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        let absent = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+        #expect(absent["associationState"] == .string("none"))
+        #expect(absent["audioRevision"] == .null)
+        let relationship = try voiceMemoRecord(photo: photo, memo: memo)
+        let available = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+        #expect(available["associationState"] == .string("available"))
+        #expect(available["audioByteCount"] == .integer(17))
+        #expect(available["audioContentDecoded"] == .bool(false))
+        #expect(available["executionAvailable"] == .bool(false))
+        #expect(available["providerReadiness"] == .string("unavailable-in-helper"))
+        #expect(available["audioRevision"]?.stringValue?.count == 64)
+        #expect(available["relationshipRevision"]?.stringValue?.count == 64)
+        let encoded = String(decoding: try JSONEncoder().encode(MCPJSONValue.object(available)), as: UTF8.self)
+        #expect(!encoded.contains("not decoded audio"))
+        #expect(!encoded.contains("custom-reviewed-profile"))
+        #expect(!encoded.contains(relationship.path))
+        #expect(available["transcript"] == nil)
+        try Data("new bytes".utf8).write(to: memo)
+        let changed = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+        #expect(changed["audioRevision"] != available["audioRevision"])
+        try FileManager.default.removeItem(at: memo)
+        #expect(throws: MCPVoiceMemoAdmissionError.memoUnavailable) { _ = try facade.inspectPhotoVoiceMemo(path: photo.path) }
+    }
+
+    @Test("Voice memo relationship parsing refuses malformed, stale and unsafe authority", arguments: [
+        #"{"schemaVersion":true,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav"}"#,
+        #"{"schemaVersion":3,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":" ","imageFilename":"frame.jpg","memoFilename":"memo.wav"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"old.jpg","memoFilename":"memo.wav"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"../memo.wav"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.mp3"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","imageIdentity":{"byteCount":true,"sha256":"bad"}}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","memoIdentity":{"byteCount":-1,"sha256":"bad"}}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","approvedTranscriptMemoSHA256":42}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","provenance":"unexpected"}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","imageDiscoveryHint":{"canonicalPath":false}}"#,
+    ])
+    func voiceMemoMalformedAuthority(record: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent("memo.wav")
+        try Data("source".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: memo)
+        let relationship = try voiceMemoRecord(photo: photo, memo: memo)
+        try Data(record.utf8).write(to: relationship)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        #expect(throws: MCPVoiceMemoAdmissionError.invalidRelationship) {
+            _ = try MCPAutomationFacade(authorizationStore: authorization).inspectPhotoVoiceMemo(path: photo.path)
+        }
+    }
+
+    @Test("Voice memo admission rejects substituted, special, hardlinked and private WAV targets", arguments: ["symlink", "fifo", "hardlink", "private", "oversized"])
+    func voiceMemoUnsafeTargets(kind: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent(kind == "private" ? ".caption-recovery-memo.wav" : "memo.wav")
+        try Data("source".utf8).write(to: photo)
+        if kind == "symlink" { try FileManager.default.createSymbolicLink(at: memo, withDestinationURL: photo) }
+        else if kind == "fifo" { #expect(Darwin.mkfifo(memo.path, 0o600) == 0) }
+        else if kind == "hardlink" {
+            let originalAudio = root.appendingPathComponent("original-audio.wav")
+            try Data("audio".utf8).write(to: originalAudio)
+            try FileManager.default.linkItem(at: originalAudio, to: memo)
+        }
+        else {
+            try Data("audio".utf8).write(to: memo)
+            if kind == "oversized" {
+                let handle = try FileHandle(forWritingTo: memo)
+                try handle.truncate(atOffset: UInt64(MCPVoiceMemoAdmission.maximumAudioBytes + 1))
+                try handle.close()
+            }
+        }
+        _ = try voiceMemoRecord(photo: photo, memo: memo)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        #expect(throws: (any Error).self) {
+            _ = try MCPAutomationFacade(authorizationStore: authorization).inspectPhotoVoiceMemo(path: photo.path)
+        }
+    }
+
+    @Test("Voice memo admission revalidates relationship, WAV, photo and authority after processing", arguments: ["memo", "relationship", "photo", "authorization", "new-relationship"])
+    func voiceMemoPublicationRevalidation(change: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent("memo.wav")
+        try Data("source".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: memo)
+        let relationship = try voiceMemoRecord(photo: photo, memo: memo)
+        if change == "new-relationship" { try FileManager.default.removeItem(at: relationship) }
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization, onVoiceMemoCaptureCheckpoint: {
+            #expect(throws: (any Error).self) { try MCPProcessReservation.acquirePhoto(photo) }
+            switch change {
+            case "memo": try? Data("changed".utf8).write(to: memo)
+            case "relationship", "new-relationship": try? Data("changed".utf8).write(to: relationship)
+            case "photo": try? Data("changed".utf8).write(to: photo)
+            default: try? authorization.setEnabled(false)
+            }
+        })
+        #expect(throws: (any Error).self) { _ = try facade.inspectPhotoVoiceMemo(path: photo.path) }
+    }
+
+    @Test("Voice memo schema one and historical identity hints preserve current read-only admission", arguments: [1, 2])
+    func voiceMemoHistoricalContentEvidence(schema: Int) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent("memo.wav")
+        let source = Data("source".utf8), audio = Data("audio".utf8)
+        try source.write(to: photo)
+        try audio.write(to: memo)
+        let relationship = try voiceMemoRecord(photo: photo, memo: memo)
+        let sourceHash = "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d"
+        let audioHash = "6ed8919ce20490a5e3ad8630a4fab69475297abd07db73918dd5f36fcfaeb11b"
+        let record: [String: Any] = ["schemaVersion": schema, "profileIdentifier": "custom-reviewed-profile",
+            "imageFilename": "frame.jpg", "memoFilename": "memo.wav",
+            "imageIdentity": ["byteCount": source.count, "sha256": sourceHash],
+            "memoIdentity": ["byteCount": audio.count, "sha256": audioHash],
+            "imageDiscoveryHint": ["canonicalPath": "/private/unavailable/old.jpg",
+                "fileResourceIdentifier": ["representation": "string", "value": "opaque-old-hint"]]]
+        let recordBytes = try JSONSerialization.data(withJSONObject: record)
+        try recordBytes.write(to: relationship)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        let first = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+        #expect(first["historicalPhotoContentMatches"] == .bool(true))
+        #expect(first["historicalAudioContentMatches"] == .bool(true))
+        #expect(try Data(contentsOf: photo) == source)
+        #expect(try Data(contentsOf: memo) == audio)
+        #expect(try Data(contentsOf: relationship) == recordBytes)
+        try Data("edited source".utf8).write(to: photo)
+        try Data("replaced audio".utf8).write(to: memo)
+        let updated = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+        #expect(updated["associationState"] == .string("available"))
+        #expect(updated["historicalPhotoContentMatches"] == .bool(false))
+        #expect(updated["historicalAudioContentMatches"] == .bool(false))
+    }
+
+    @Test("Voice memo relationship itself must remain a bounded owned regular file", arguments: ["symlink", "fifo", "hardlink", "oversized"])
+    func voiceMemoUnsafeRelationships(kind: String) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let memo = root.appendingPathComponent("memo.wav")
+        try Data("source".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: memo)
+        let relationship = try voiceMemoRecord(photo: photo, memo: memo)
+        let original = root.appendingPathComponent("original.json")
+        try FileManager.default.moveItem(at: relationship, to: original)
+        if kind == "symlink" { try FileManager.default.createSymbolicLink(at: relationship, withDestinationURL: original) }
+        else if kind == "fifo" { #expect(Darwin.mkfifo(relationship.path, 0o600) == 0) }
+        else if kind == "hardlink" { try FileManager.default.linkItem(at: original, to: relationship) }
+        else {
+            try Data().write(to: relationship)
+            let handle = try FileHandle(forWritingTo: relationship)
+            try handle.truncate(atOffset: 1_048_577)
+            try handle.close()
+        }
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        #expect(throws: (any Error).self) { _ = try MCPAutomationFacade(authorizationStore: authorization).inspectPhotoVoiceMemo(path: photo.path) }
+    }
+
+    @Test("Voice memo admission obeys fresh enablement and photo authorization")
+    func voiceMemoAuthorization() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("source".utf8).write(to: photo)
+        let authorization = store()
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        #expect(throws: MCPAuthorizationError.disabled) { _ = try facade.inspectPhotoVoiceMemo(path: photo.path) }
+        try authorization.setEnabled(true)
+        #expect(throws: MCPAuthorizationError.outsideAuthorizedRoots) { _ = try facade.inspectPhotoVoiceMemo(path: photo.path) }
+    }
+
+    @Test("Voice memo admission refuses replaced roots and ancestor directories", arguments: [false, true])
+    func voiceMemoAncestorRevalidation(replaceRoot: Bool) throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
+        let photo = nested.appendingPathComponent("frame.jpg")
+        let memo = nested.appendingPathComponent("memo.wav")
+        try Data("source".utf8).write(to: photo)
+        try Data("audio".utf8).write(to: memo)
+        _ = try voiceMemoRecord(photo: photo, memo: memo)
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let displaced = replaceRoot ? root.appendingPathExtension("old") : root.appendingPathComponent("old-nested")
+        defer { try? FileManager.default.removeItem(at: displaced) }
+        let facade = MCPAutomationFacade(authorizationStore: authorization, onVoiceMemoCaptureCheckpoint: {
+            let replaced = replaceRoot ? root : nested
+            try? FileManager.default.moveItem(at: replaced, to: displaced)
+            try? FileManager.default.createDirectory(at: replaced, withIntermediateDirectories: false)
+        })
+        #expect(throws: (any Error).self) { _ = try facade.inspectPhotoVoiceMemo(path: photo.path) }
+    }
+
+    @Test("Voice memo tool accepts only one path and reports no mutation authority")
+    func voiceMemoToolContract() throws {
+        let authorization = store()
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization)
+        #expect(tools.supportsTool(named: "get_photo_voice_memo"))
+        let capabilities = tools.callTool(name: "get_server_capabilities", arguments: [:]).objectValue?["structuredContent"]?.objectValue
+        guard case .array(let implemented) = capabilities?["implementedCapabilities"] else {
+            Issue.record("Missing capability array"); return
+        }
+        #expect(implemented.contains(.string("persisted-voice-memo-inspection")))
+        for arguments: [String: MCPJSONValue] in [[:], ["path": .integer(1)], ["path": .string("/private/tmp/photo.jpg"), "execute": .bool(true)]] {
+            #expect(tools.callTool(name: "get_photo_voice_memo", arguments: arguments).objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+    }
+
     @Test("Operation tools require fresh enablement and exact opaque identifiers")
     func operationAuthorizationAndArguments() throws {
         let root = URL(fileURLWithPath: "/private/tmp/apa-operations-\(UUID().uuidString)")
@@ -526,7 +774,7 @@ struct MCPServerCoreTests {
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
             "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
-            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "inspect_app_photo_draft",
+            "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])

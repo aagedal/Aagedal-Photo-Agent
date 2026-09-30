@@ -620,13 +620,16 @@ nonisolated struct MCPPhotoCarrierSnapshot: Sendable {
 nonisolated struct MCPAutomationFacade: Sendable {
     let authorizationStore: MCPAuthorizationStore
     private let onCaptureCheckpoint: @Sendable () -> Void
+    private let onVoiceMemoCaptureCheckpoint: @Sendable () -> Void
 
     init(
         authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(),
-        onCaptureCheckpoint: @escaping @Sendable () -> Void = {}
+        onCaptureCheckpoint: @escaping @Sendable () -> Void = {},
+        onVoiceMemoCaptureCheckpoint: @escaping @Sendable () -> Void = {}
     ) {
         self.authorizationStore = authorizationStore
         self.onCaptureCheckpoint = onCaptureCheckpoint
+        self.onVoiceMemoCaptureCheckpoint = onVoiceMemoCaptureCheckpoint
     }
 
     func inspectPhotoRevision(path: String) throws -> MCPJSONValue {
@@ -666,6 +669,28 @@ nonisolated struct MCPAutomationFacade: Sendable {
         ])
     }
 
+    /// Inspect one explicit persisted companion. The helper cannot infer a relationship from
+    /// adjacent filenames, decode audio, determine native provider readiness or grant consent.
+    func inspectPhotoVoiceMemo(path: String) throws -> MCPJSONValue {
+        var admission: MCPVoiceMemoAdmission.Witness?
+        _ = try capturePhotoEvidence(path: path, retainingBytes: true,
+            consumeAnchored: { target, evidence, directory in
+                guard let source = evidence.sourceBytes else { throw MCPAutomationReadError.photoChanged }
+                admission = try MCPVoiceMemoAdmission.capture(target: target, source: source,
+                    sourceRevision: evidence.source, appRevision: evidence.appSidecar,
+                    xmpRevision: evidence.xmpSidecar, directory: directory,
+                    authorizationStore: authorizationStore)
+                onVoiceMemoCaptureCheckpoint()
+            }, afterValidation: {
+                // Photo, metadata, ancestors and authorization have already been checked.
+                // Check the relationship and WAV last, while every retained handle and lease
+                // remains owned, before exposing any provisional comparison evidence.
+                try admission?.requireUnchanged(authorizationStore: authorizationStore)
+            })
+        guard let admission else { throw MCPAutomationReadError.photoChanged }
+        return .object(admission.value)
+    }
+
     func capturePhotoSnapshot(path: String) throws -> MCPPhotoCarrierSnapshot {
         let (target, evidence) = try capturePhotoEvidence(path: path, retainingBytes: true)
         return try Self.snapshot(target: target, evidence: evidence)
@@ -677,9 +702,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
     func withPhotoSnapshot<Value>(path: String, reservation: MCPProcessReservationLease? = nil,
                                   body: (MCPPhotoCarrierSnapshot) throws -> Value) throws -> Value {
         var result: Value?
-        _ = try capturePhotoEvidence(path: path, retainingBytes: true, reservation: reservation) { target, evidence in
-            result = try body(Self.snapshot(target: target, evidence: evidence))
-        }
+        _ = try capturePhotoEvidence(path: path, retainingBytes: true, reservation: reservation,
+            consume: { target, evidence in
+                result = try body(Self.snapshot(target: target, evidence: evidence))
+            })
         guard let result else { throw MCPAutomationReadError.photoChanged }
         return result
     }
@@ -1119,6 +1145,8 @@ nonisolated struct MCPAutomationFacade: Sendable {
 
     private func capturePhotoEvidence(
         path: String, retainingBytes: Bool = false, reservation: MCPProcessReservationLease? = nil,
+        consumeAnchored: (MCPAuthorizedTarget, MCPPhotoRevisionEvidence, MCPAnchoredPhotoDirectory) throws -> Void = { _, _, _ in },
+        afterValidation: () throws -> Void = {},
         consume: (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) throws -> Void = { _, _ in }
     ) throws -> (MCPAuthorizedTarget, MCPPhotoRevisionEvidence) {
         let target = try authorizationStore.authorizeExistingPath(path)
@@ -1143,19 +1171,23 @@ nonisolated struct MCPAutomationFacade: Sendable {
         let evidence = try MCPPhotoRevisionEvidence.capture(
             photoName: target.url.lastPathComponent, in: directory, retainingBytes: retainingBytes,
             onCaptureCheckpoint: onCaptureCheckpoint,
-            beforeValidation: { try consume(target, $0) }
+            beforeValidation: {
+                try consume(target, $0)
+                try consumeAnchored(target, $0, directory)
+            }
         )
         try directory.requireSameAncestors()
         let admittedAgain = try authorizationStore.authorizeExistingPath(path)
         guard admittedAgain == target else { throw MCPAutomationReadError.photoChanged }
         guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+        try afterValidation()
         return (target, evidence)
     }
 }
 
 /// Opens each ancestor relative to the granted root. An absolute carrier path can otherwise
 /// follow a retargeted ancestor between authorization and the actual read.
-nonisolated private final class MCPAnchoredPhotoDirectory {
+nonisolated fileprivate final class MCPAnchoredPhotoDirectory {
     var descriptor: Int32 { descriptors[descriptors.count - 1] }
     private let rootPath: String
     private let rootIdentity: MCPFileIdentity
@@ -1257,6 +1289,198 @@ nonisolated enum MCPAutomationReadError: LocalizedError, Sendable {
         case .photoChanged: "The photo or its metadata changed during inspection. Retry after it is stable."
         case .unreadableDraft: "The app-owned metadata draft cannot be safely interpreted."
         }
+    }
+}
+
+/// These wire types mirror the production companion record without pulling GUI repositories
+/// into the bundled helper. Historical identities are recovery evidence, never current authority.
+nonisolated private struct MCPVoiceMemoRelationship: Decodable {
+    struct ContentIdentity: Decodable {
+        let byteCount: Int64
+        let sha256: String
+        var isValid: Bool { byteCount >= 0 && MCPVoiceMemoRelationship.isSHA256(sha256) }
+    }
+    struct DiscoveryHint: Decodable {
+        struct ResourceIdentifier: Decodable { let representation: String; let value: String }
+        let canonicalPath: String
+        let fileResourceIdentifier: ResourceIdentifier?
+    }
+    enum Provenance: String, Decodable {
+        case capturedAssociation, archiveDerivative, exactRecovery, exactReassociation, explicitReplacement
+    }
+    let schemaVersion: Int
+    let profileIdentifier: String
+    let imageFilename: String
+    let memoFilename: String
+    let imageIdentity: ContentIdentity?
+    let memoIdentity: ContentIdentity?
+    let provenance: Provenance?
+    let imageDiscoveryHint: DiscoveryHint?
+    let approvedTranscriptMemoSHA256: String?
+
+    static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    static func safeFilename(_ value: String) -> Bool {
+        !value.isEmpty && value != "." && value != ".." && !value.contains("/")
+            && !value.contains("\\") && !value.contains("\0") && value.utf8.count <= 255
+    }
+    func validate(photoName: String) throws {
+        guard [1, 2].contains(schemaVersion),
+              !profileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              Self.safeFilename(imageFilename), Self.safeFilename(memoFilename),
+              imageFilename == photoName,
+              (memoFilename as NSString).pathExtension.lowercased() == "wav",
+              imageIdentity?.isValid ?? true, memoIdentity?.isValid ?? true,
+              approvedTranscriptMemoSHA256.map(Self.isSHA256) ?? true else {
+            throw MCPVoiceMemoAdmissionError.invalidRelationship
+        }
+    }
+}
+
+nonisolated enum MCPVoiceMemoAdmissionError: String, LocalizedError, Sendable {
+    case invalidRelationship = "invalid_voice_memo_relationship"
+    case memoUnavailable = "voice_memo_unavailable"
+    case audioTooLarge = "voice_memo_too_large"
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRelationship: "The saved voice-memo relationship is malformed, unsupported or stale."
+        case .memoUnavailable: "The explicitly associated WAV is unavailable."
+        case .audioTooLarge: "The associated WAV exceeds the local automation read limit."
+        }
+    }
+}
+
+nonisolated enum MCPVoiceMemoAdmission {
+    /// Automation admission bound only; production audio playback has its own decoder rules.
+    static let maximumAudioBytes: Int64 = 268_435_456
+    private static let maximumRelationshipBytes: Int64 = 1_048_576
+
+    fileprivate struct Carrier {
+        let name: String
+        let handle: FileHandle
+        let identity: stat
+        let revision: String
+        let sha256: String
+        let bytes: Data?
+
+        func requireUnchanged(in parent: Int32) throws {
+            try MCPPhotoRevisionEvidence.requireSameFile(name: name, in: parent, snapshot: identity)
+            var opened = stat()
+            guard Darwin.fstat(handle.fileDescriptor, &opened) == 0,
+                  (opened.st_mode & S_IFMT) == S_IFREG, opened.st_nlink == 1,
+                  MCPPreparedXMPIdentity(opened) == MCPPreparedXMPIdentity(identity),
+                  opened.st_ctimespec.tv_sec == identity.st_ctimespec.tv_sec,
+                  opened.st_ctimespec.tv_nsec == identity.st_ctimespec.tv_nsec else {
+                throw MCPAutomationReadError.photoChanged
+            }
+        }
+    }
+
+    fileprivate final class Witness {
+        let value: [String: MCPJSONValue]
+        private let directory: MCPAnchoredPhotoDirectory
+        private let relationshipName: String
+        private let relationship: Carrier?
+        private let audio: Carrier?
+        private let memoTarget: MCPAuthorizedTarget?
+        private let configuration: MCPAuthorizationConfiguration
+
+        fileprivate init(value: [String: MCPJSONValue], directory: MCPAnchoredPhotoDirectory,
+                         relationshipName: String, relationship: Carrier?, audio: Carrier?,
+                         memoTarget: MCPAuthorizedTarget?, configuration: MCPAuthorizationConfiguration) {
+            self.value = value; self.directory = directory; self.relationshipName = relationshipName
+            self.relationship = relationship; self.audio = audio; self.memoTarget = memoTarget
+            self.configuration = configuration
+        }
+
+        func requireUnchanged(authorizationStore: MCPAuthorizationStore) throws {
+            try directory.requireSameAncestors()
+            if let memoTarget {
+                guard try authorizationStore.authorizeExistingPath(memoTarget.url.path) == memoTarget else {
+                    throw MCPAutomationReadError.photoChanged
+                }
+            }
+            guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+            if let relationship { try relationship.requireUnchanged(in: directory.descriptor) }
+            else { try MCPPhotoRevisionEvidence.requireAbsent(name: relationshipName, in: directory.descriptor) }
+            if let audio { try audio.requireUnchanged(in: directory.descriptor) }
+        }
+    }
+
+    private static func captureCarrier(name: String, parent: Int32, domain: String,
+                                       maximumBytes: Int64, retaining: Bool) throws -> Carrier? {
+        try MCPPhotoRevisionEvidence.withSafeHandleIfPresent(name: name, in: parent) { handle, identity in
+            guard identity.st_size >= 0, identity.st_size <= maximumBytes else {
+                if domain == "voice-memo-audio" { throw MCPVoiceMemoAdmissionError.audioTooLarge }
+                throw MCPVoiceMemoAdmissionError.invalidRelationship
+            }
+            var contentHash = SHA256()
+            var revisionHash = SHA256()
+            revisionHash.update(data: Data("apa-mcp-revision-v1:\(domain):\(identity.st_dev):\(identity.st_ino):\(identity.st_size):\(identity.st_mtimespec.tv_sec):\(identity.st_mtimespec.tv_nsec):\(identity.st_ctimespec.tv_sec):\(identity.st_ctimespec.tv_nsec):".utf8))
+            var bytes: Data? = retaining ? Data() : nil
+            try MCPBoundedCarrierReader.read(byteCount: identity.st_size,
+                readChunk: { try handle.read(upToCount: $0) }, consume: {
+                    contentHash.update(data: $0); revisionHash.update(data: $0); bytes?.append($0)
+                })
+            return Carrier(name: name, handle: handle, identity: identity,
+                revision: revisionHash.finalize().map { String(format: "%02x", $0) }.joined(),
+                sha256: contentHash.finalize().map { String(format: "%02x", $0) }.joined(), bytes: bytes)
+        }
+    }
+
+    fileprivate static func capture(target: MCPAuthorizedTarget, source: Data, sourceRevision: String,
+                        appRevision: String, xmpRevision: String, directory: MCPAnchoredPhotoDirectory,
+                        authorizationStore: MCPAuthorizationStore) throws -> Witness {
+        let configuration = try authorizationStore.load()
+        let relationshipName = ".\(target.url.lastPathComponent).voice-memo.json"
+        var value: [String: MCPJSONValue] = [
+            "canonicalPath": .string(target.url.path), "rootID": .string(target.rootID.uuidString.lowercased()),
+            "sourceRevision": .string(sourceRevision), "appSidecarRevision": .string(appRevision),
+            "xmpSidecarRevision": .string(xmpRevision), "relationshipRevision": .null,
+            "associationState": .string("none"), "audioRevision": .null, "audioByteCount": .null,
+            "historicalPhotoContentMatches": .null, "historicalAudioContentMatches": .null,
+            "audioFormat": .null, "audioContentDecoded": .bool(false),
+            "executionAvailable": .bool(false), "providerReadiness": .string("unavailable-in-helper"),
+            "consentGranted": .bool(false), "scope": .string("persisted-relationship-read-only"),
+        ]
+        guard let relationship = try captureCarrier(name: relationshipName, parent: directory.descriptor,
+                domain: "voice-memo-relationship", maximumBytes: maximumRelationshipBytes, retaining: true) else {
+            return Witness(value: value, directory: directory, relationshipName: relationshipName,
+                relationship: nil, audio: nil, memoTarget: nil, configuration: configuration)
+        }
+        let record: MCPVoiceMemoRelationship
+        do {
+            guard let bytes = relationship.bytes else { throw MCPVoiceMemoAdmissionError.invalidRelationship }
+            record = try JSONDecoder().decode(MCPVoiceMemoRelationship.self, from: bytes)
+            try record.validate(photoName: target.url.lastPathComponent)
+        } catch { throw MCPVoiceMemoAdmissionError.invalidRelationship }
+        let memoURL = target.url.deletingLastPathComponent().appendingPathComponent(record.memoFilename)
+        let memoTarget: MCPAuthorizedTarget
+        do { memoTarget = try authorizationStore.authorizeExistingPath(memoURL.path) }
+        catch MCPAuthorizationError.unavailable { throw MCPVoiceMemoAdmissionError.memoUnavailable }
+        guard !memoTarget.isDirectory, memoTarget.url == memoURL else { throw MCPVoiceMemoAdmissionError.invalidRelationship }
+        guard let audio = try captureCarrier(name: record.memoFilename, parent: directory.descriptor,
+                domain: "voice-memo-audio", maximumBytes: maximumAudioBytes, retaining: false) else {
+            throw MCPVoiceMemoAdmissionError.memoUnavailable
+        }
+        guard UInt64(audio.identity.st_dev) == memoTarget.identity.device,
+              UInt64(audio.identity.st_ino) == memoTarget.identity.inode else { throw MCPAutomationReadError.photoChanged }
+        value["relationshipRevision"] = .string(relationship.revision)
+        value["associationState"] = .string("available")
+        value["audioRevision"] = .string(audio.revision)
+        value["audioByteCount"] = .integer(audio.identity.st_size)
+        value["audioFormat"] = .string("wav-extension")
+        if let identity = record.imageIdentity {
+            let hash = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+            value["historicalPhotoContentMatches"] = .bool(identity.byteCount == source.count && identity.sha256 == hash)
+        }
+        if let identity = record.memoIdentity {
+            value["historicalAudioContentMatches"] = .bool(identity.byteCount == audio.identity.st_size && identity.sha256 == audio.sha256)
+        }
+        return Witness(value: value, directory: directory, relationshipName: relationshipName,
+            relationship: relationship, audio: audio, memoTarget: memoTarget, configuration: configuration)
     }
 }
 
@@ -1706,7 +1930,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         return descriptor
     }
 
-    private static func withSafeHandleIfPresent<T>(name: String, in parent: Int32, consume: (FileHandle, stat) throws -> T) throws -> T? {
+    fileprivate static func withSafeHandleIfPresent<T>(name: String, in parent: Int32, consume: (FileHandle, stat) throws -> T) throws -> T? {
         // A carrier can be a FIFO, including after a pathname race. Do not block in openat
         // waiting for a writer before fstat can reject it. O_NONBLOCK has no effect on regular files.
         let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
@@ -2146,6 +2370,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: ["planID"]
             ),
             definition(
+                name: "get_photo_voice_memo",
+                description: "Inspect one exact persisted adjacent voice-memo relationship for an authorized photo. Independently authorizes its named WAV, captures bounded opaque current revisions and byte count, and revalidates photo, relationship, audio and roots under a shared photo reservation. Does not scan by basename. Rejects malformed or stale filenames, symbolic links, special/private files and WAVs over 256 MiB. Historical content matches are recovery hints. WAV extension admission does not decode or prove playable audio. Provider readiness and execution are unavailable in the helper; this grants no consent, creates no operation, downloads nothing and writes no metadata.",
+                properties: ["path": .object(["type": .string("string"),
+                    "description": .string("Absolute canonical path to one photo under an authorized folder.")])],
+                required: ["path"]
+            ),
+            definition(
                 name: "inspect_app_photo_draft",
                 description: "Read bounded editorial text, classification, rating, label, GPS and structured records from Photo Agent's owned JSON draft for one authorized photo. These are stored draft values, not reconciled effective IPTC or write authority.",
                 properties: [
@@ -2172,7 +2403,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
             case "create_team": acceptedArguments = Set(MCPTeamLibrary.properties.keys)
-            case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata":
+            case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata", "get_photo_voice_memo":
                 acceptedArguments = ["path"]
             case "prepare_iptc_patch": acceptedArguments = MCPIPTCPatchPreparation.argumentKeys
             case "preview_metadata_template": acceptedArguments = MCPMetadataTemplatePreview.argumentKeys
@@ -2316,7 +2547,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("effective-editorial-metadata-read"), .string("editorial-field-discovery"),
                         .string("local-template-header-discovery"), .string("literal-metadata-template-preview"),
                         .string("literal-metadata-template-batch-preview"),
-                        .string("transcription-provider-discovery"),
+                        .string("transcription-provider-discovery"), .string("persisted-voice-memo-inspection"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
@@ -2386,6 +2617,14 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "internal_error", message: "Photo Agent could not inspect the revision")
                 }
                 return success(value)
+            case "get_photo_voice_memo":
+                guard let path = arguments["path"]?.stringValue else {
+                    return failure(code: "invalid_arguments", message: "path must be an absolute string")
+                }
+                guard case .object(let value) = try automationFacade.inspectPhotoVoiceMemo(path: path) else {
+                    return failure(code: "internal_error", message: "Photo Agent could not inspect the associated voice memo")
+                }
+                return success(value)
             case "get_photo_metadata":
                 guard let path = arguments["path"]?.stringValue else {
                     return failure(code: "invalid_arguments", message: "path must be an absolute string")
@@ -2450,6 +2689,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch let error as MCPProcessReservationError {
             return failure(code: String(describing: error), message: error.localizedDescription)
+        } catch let error as MCPVoiceMemoAdmissionError {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPAutomationReadError {
             return failure(code: String(describing: error), message: error.localizedDescription)
         } catch {

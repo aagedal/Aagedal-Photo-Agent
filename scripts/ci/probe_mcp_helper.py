@@ -165,6 +165,22 @@ def probe(executable):
                     "Native review intent tool accepted unexpected execution arguments")
         require(capabilities["nativeReviewRequestsAvailable"] is True and capabilities["helperCommitAvailable"] is False,
                 "Native review intent overclaims helper commit authority")
+        require("get_photo_voice_memo" in names, "Missing rooted associated-audio inspection")
+        require("persisted-voice-memo-inspection" in capabilities["implementedCapabilities"],
+                "Associated-audio inspection is missing from capability discovery")
+        audio_tool = next(tool for tool in tools if tool["name"] == "get_photo_voice_memo")
+        require(audio_tool["annotations"]["readOnlyHint"] is True,
+                "Associated-audio inspection unexpectedly grants mutation authority")
+        require(audio_tool["inputSchema"]["additionalProperties"] is False,
+                "Associated-audio inspection accepts unspecified arguments")
+        for identifier, arguments in [(16, {}), (17, {"path": 1}),
+                                      (18, {"path": "/private/nonexistent.jpg", "execute": True})]:
+            connection.send(request(identifier, "tools/call", {
+                "name": "get_photo_voice_memo", "arguments": arguments,
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Associated-audio inspection accepted invalid or execution arguments")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
@@ -172,6 +188,7 @@ def probe(executable):
                 "providerDiscovery": True, "providerArgumentRefusal": True,
                 "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True,
                 "nativeReviewRequestArgumentRefusal": True, "honestExecutorBoundary": True,
+                "associatedAudioArgumentRefusal": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()
