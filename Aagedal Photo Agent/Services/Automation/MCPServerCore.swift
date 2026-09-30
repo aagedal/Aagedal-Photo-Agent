@@ -691,6 +691,74 @@ nonisolated struct MCPAutomationFacade: Sendable {
         return .object(admission.value)
     }
 
+    /// Retain the entire ordered set, every lease, anchored carrier validator and WAV
+    /// witness until final whole-set validation and the bounded private-plan publication.
+    /// The callback may write private coordination only; it must never change photo inputs.
+    func withVoiceMemoBatch<Value>(paths: [String],
+                                  body: ([[String: MCPJSONValue]]) throws -> Value) throws -> Value {
+        guard !paths.isEmpty, paths.count <= 8 else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
+        let configuration = try authorizationStore.load()
+        let targets = try paths.map { try authorizationStore.authorizeExistingPath($0) }
+        var keys = Set<String>()
+        for target in targets {
+            guard !target.isDirectory, MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased()),
+                  keys.insert(target.url.deletingPathExtension().path.lowercased()).inserted else {
+                throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments
+            }
+        }
+        var leases: [Int: MCPProcessReservationLease] = [:]
+        defer { for lease in leases.values { lease.release() } }
+        let order = targets.indices.sorted { targets[$0].url.path < targets[$1].url.path }
+        for index in order { leases[index] = try MCPProcessReservation.acquirePhoto(targets[index].url) }
+        var values: [Int: [String: MCPJSONValue]] = [:]
+        var validators: [Int: () throws -> Void] = [:]
+        var witnesses: [Int: MCPVoiceMemoAdmission.Witness] = [:]
+        var result: Value?
+        func retain(_ position: Int, bytes: Int) throws {
+            try Task.checkCancellation()
+            if position == order.count {
+                for index in order { try validators[index]?(); try witnesses[index]?.requireUnchanged(authorizationStore: authorizationStore) }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                result = try body(try targets.indices.map { index in
+                    guard let value = values[index] else { throw MCPAutomationReadError.photoChanged }
+                    return value
+                })
+                for index in order { try validators[index]?(); try witnesses[index]?.requireUnchanged(authorizationStore: authorizationStore) }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                return
+            }
+            let index = order[position], target = targets[index]
+            guard let lease = leases[index], lease.coversPhoto(target.url), configuration.isEnabled,
+                  let root = configuration.roots.first(where: { $0.id == target.rootID }) else { throw MCPAuthorizationError.rootChanged }
+            let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
+            _ = try MCPPhotoRevisionEvidence.capture(photoName: target.url.lastPathComponent,
+                in: directory, retainingBytes: true, onCaptureCheckpoint: onCaptureCheckpoint,
+                consumeRetained: { evidence, validateCarriers in
+                    guard let source = evidence.sourceBytes else { throw MCPAutomationReadError.photoChanged }
+                    let count = source.count + (evidence.xmpBytes?.count ?? 0) + (evidence.appSidecarBytes?.count ?? 0)
+                    guard count <= 268_435_456 - bytes else { throw MCPVoiceTranscriptionPlanStore.Failure.capacity }
+                    let witness = try MCPVoiceMemoAdmission.capture(target: target, source: source,
+                        sourceRevision: evidence.source, appRevision: evidence.appSidecar, xmpRevision: evidence.xmpSidecar,
+                        directory: directory, authorizationStore: authorizationStore)
+                    onVoiceMemoCaptureCheckpoint()
+                    values[index] = witness.value; witnesses[index] = witness
+                    try withoutActuallyEscaping(validateCarriers) { validator in
+                        validators[index] = {
+                            try validator(); try directory.requireSameAncestors()
+                            guard lease.coversPhoto(target.url),
+                                  try authorizationStore.authorizeExistingPath(paths[index]) == target,
+                                  try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                        }
+                        defer { validators.removeValue(forKey: index); witnesses.removeValue(forKey: index); values.removeValue(forKey: index) }
+                        try retain(position + 1, bytes: bytes + count)
+                    }
+                })
+        }
+        try retain(0, bytes: 0)
+        guard let result else { throw MCPAutomationReadError.photoChanged }
+        return result
+    }
+
     func capturePhotoSnapshot(path: String) throws -> MCPPhotoCarrierSnapshot {
         let (target, evidence) = try capturePhotoEvidence(path: path, retainingBytes: true)
         return try Self.snapshot(target: target, evidence: evidence)
@@ -1437,6 +1505,8 @@ nonisolated enum MCPVoiceMemoAdmission {
         let relationshipName = ".\(target.url.lastPathComponent).voice-memo.json"
         var value: [String: MCPJSONValue] = [
             "canonicalPath": .string(target.url.path), "rootID": .string(target.rootID.uuidString.lowercased()),
+            "photoIdentity": .string(SHA256.hash(data: Data("voice-photo-identity:\(target.identity.device):\(target.identity.inode)".utf8)).map { String(format: "%02x", $0) }.joined()),
+            "audioIdentity": .null,
             "sourceRevision": .string(sourceRevision), "appSidecarRevision": .string(appRevision),
             "xmpSidecarRevision": .string(xmpRevision), "relationshipRevision": .null,
             "associationState": .string("none"), "audioRevision": .null, "audioByteCount": .null,
@@ -1467,6 +1537,7 @@ nonisolated enum MCPVoiceMemoAdmission {
         }
         guard UInt64(audio.identity.st_dev) == memoTarget.identity.device,
               UInt64(audio.identity.st_ino) == memoTarget.identity.inode else { throw MCPAutomationReadError.photoChanged }
+        value["audioIdentity"] = .string(SHA256.hash(data: Data("voice-audio-identity:\(memoTarget.identity.device):\(memoTarget.identity.inode)".utf8)).map { String(format: "%02x", $0) }.joined())
         value["relationshipRevision"] = .string(relationship.revision)
         value["associationState"] = .string("available")
         value["audioRevision"] = .string(audio.revision)
@@ -1752,7 +1823,8 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         in directory: MCPAnchoredPhotoDirectory,
         retainingBytes: Bool,
         onCaptureCheckpoint: @Sendable () -> Void,
-        beforeValidation: (Self) throws -> Void = { _ in }
+        beforeValidation: (Self) throws -> Void = { _ in },
+        consumeRetained: (Self, () throws -> Void) throws -> Void = { _, _ in }
     ) throws -> Self {
         let source = try token(
             name: photoName, in: directory.descriptor, domain: "source", required: true,
@@ -1852,7 +1924,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             sourceModificationDate: modificationDate(sourceIdentity),
             xmpModificationDate: xmpToken.identity.map(modificationDate)
         )
-        try beforeValidation(evidence)
+        func validate() throws {
         try requireSameFile(name: photoName, in: directory.descriptor, snapshot: sourceIdentity)
         if let identity = xmpToken.identity {
             try requireSameFile(name: "\(stem).xmp", in: directory.descriptor, snapshot: identity)
@@ -1871,6 +1943,10 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         } else {
             try requireAbsent(name: ".photo_metadata", in: directory.descriptor)
         }
+        }
+        try beforeValidation(evidence)
+        try consumeRetained(evidence, validate)
+        try validate()
         return evidence
     }
 
@@ -2154,12 +2230,15 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let automationFacade: MCPAutomationFacade
     let templateDiscovery: MCPTemplateDiscovery
     let patchPlans: MCPIPTCPatchPlanStore
+    let voiceTranscriptionPlans: MCPVoiceTranscriptionPlanStore
     let teamLibrary: MCPTeamLibrary
     let operationRegistry: AutomationOperationRegistry?
     let nativeReviewRequests: MCPNativeReviewRequestStore?
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
-         patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(), teamLibrary: MCPTeamLibrary? = nil,
+         patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(),
+         voiceTranscriptionPlans: MCPVoiceTranscriptionPlanStore = MCPVoiceTranscriptionPlanStore(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory()),
+         teamLibrary: MCPTeamLibrary? = nil,
          operationRegistry: AutomationOperationRegistry? = nil,
          nativeReviewRequests: MCPNativeReviewRequestStore? = nil) {
         self.authorizationStore = authorizationStore
@@ -2168,11 +2247,32 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         self.operationRegistry = operationRegistry
         self.nativeReviewRequests = nativeReviewRequests
         self.patchPlans = patchPlans
+        self.voiceTranscriptionPlans = voiceTranscriptionPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
+            definition(
+                name: "prepare_voice_transcription",
+                description: "Retain an immutable ordered transcription intent preview for 1–8 explicit photos with the exact source/app/XMP/relationship/audio revisions from get_photo_voice_memo. Requires Enable local automation. Writes bounded private preview coordination storage only; no transcription, draft, download, consent or execution is available. Provider must be appleSpeech, whisper or customWhisper. Explicit language, translate and useGPU are required; Apple accepts a bounded locale identifier with translate/useGPU false, Whisper accepts auto or two lowercase ASCII letters. Native runtime/model identity and readiness remain unresolved. The five-minute preview expires and is revalidated as a whole set on inspection.",
+                properties: [
+                    "photos": .object(["type": .string("array"), "minItems": .integer(1), "maxItems": .integer(8),
+                        "items": .object(["type": .string("object"),
+                            "properties": .object(Dictionary(uniqueKeysWithValues: MCPVoiceTranscriptionPlanStore.Request.photoKeys.map {
+                                ($0, MCPJSONValue.object(["type": .string("string")]))
+                            })), "required": .array(MCPVoiceTranscriptionPlanStore.Request.photoKeys.sorted().map(MCPJSONValue.string)),
+                            "additionalProperties": .bool(false)])]),
+                    "provider": .object(["type": .string("string"), "enum": .array([.string("appleSpeech"), .string("whisper"), .string("customWhisper")])]),
+                    "language": .object(["type": .string("string")]),
+                    "translate": .object(["type": .string("boolean")]), "useGPU": .object(["type": .string("boolean")])
+                ], required: MCPVoiceTranscriptionPlanStore.Request.keys.sorted(), readOnly: false
+            ),
+            definition(
+                name: "get_voice_transcription_plan",
+                description: "Inspect only the returned lowercase canonical planID. Revalidates every retained photo, metadata carrier, WAV relationship, WAV and exact authorization configuration, language/options and expiry while holding the whole set's reservations. Returns the unchanged immutable preview. Reads private preview storage and may acquire private coordination locks; grants no consent, transcription, download, draft or execution authority.",
+                properties: ["planID": .object(["type": .string("string"), "format": .string("uuid")])], required: ["planID"]
+            ),
             definition(
                 name: "get_native_review_request_capacity",
                 description: "Initialize or migrate private native review coordination storage and return its current requestEpoch and bounded capacity. Requires Enable local automation. This may write coordination storage, grants no consent and changes no photos. Before creating a new review intent, get this epoch and supply it unchanged with a new lowercase canonical UUID requestID. Retries must retain their original epoch; never silently resubmit retired intent under a new epoch. Explicit cleanup is available only in the native app. Active work, uncertain admissions and incomplete recovery remain retained; exact finished or retained resolved-recovery evidence can qualify linked requests. Operation and recovery history is preserved.",
@@ -2405,6 +2505,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "create_team": acceptedArguments = Set(MCPTeamLibrary.properties.keys)
             case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata", "get_photo_voice_memo":
                 acceptedArguments = ["path"]
+            case "prepare_voice_transcription": acceptedArguments = MCPVoiceTranscriptionPlanStore.Request.keys
+            case "get_voice_transcription_plan": acceptedArguments = ["planID"]
             case "prepare_iptc_patch": acceptedArguments = MCPIPTCPatchPreparation.argumentKeys
             case "preview_metadata_template": acceptedArguments = MCPMetadataTemplatePreview.argumentKeys
             case "preview_metadata_template_batch": acceptedArguments = MCPMetadataTemplateBatchPreview.argumentKeys
@@ -2548,6 +2650,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("local-template-header-discovery"), .string("literal-metadata-template-preview"),
                         .string("literal-metadata-template-batch-preview"),
                         .string("transcription-provider-discovery"), .string("persisted-voice-memo-inspection"),
+                        .string("immutable-voice-transcription-batch-preview"), .string("voice-transcription-preview-revalidation"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
@@ -2634,6 +2737,18 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "internal_error", message: "Photo Agent could not read the metadata")
                 }
                 return success(value)
+            case "prepare_voice_transcription", "get_voice_transcription_plan":
+                if name == "prepare_voice_transcription" { _ = try MCPVoiceTranscriptionPlanStore.Request(arguments: arguments) }
+                else {
+                    guard Set(arguments.keys) == ["planID"], let id = arguments["planID"]?.stringValue,
+                          UUID(uuidString: id)?.uuidString.lowercased() == id else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
+                }
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                let result = try name == "prepare_voice_transcription"
+                    ? voiceTranscriptionPlans.prepare(arguments: arguments, facade: automationFacade)
+                    : voiceTranscriptionPlans.inspect(arguments: arguments, facade: automationFacade)
+                guard case .object(let value) = result else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
+                return success(value)
             case "prepare_iptc_patch":
                 guard case .object(let value) = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: automationFacade, plans: patchPlans) else {
                     return failure(code: "internal_error", message: "Photo Agent could not prepare the preview")
@@ -2674,6 +2789,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             return failure(code: code, message: "Photo Agent could not access the requested operation coordination record")
         } catch let error as MCPTeamLibrary.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
+        } catch let error as MCPVoiceTranscriptionPlanStore.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPIPTCPatchPlanStore.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)

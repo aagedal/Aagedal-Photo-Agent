@@ -139,8 +139,10 @@
 		C76000000000000000000032 /* MetadataValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000031 /* MetadataValidation.swift */; };
 		C76000000000000000000042 /* MetadataRequirements.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000041 /* MetadataRequirements.swift */; };
 		C77000000000000000000002 /* MCPIPTCPatchPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */; };
+		C96000000000000000000002 /* MCPVoiceTranscriptionPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */; };
 		C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */; };
 		C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */; };
+		C96000000000000000000102 /* MCPVoiceTranscriptionPlanStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */; };
 		C77000000000000000000202 /* FFmpegWhisperJobRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000201 /* FFmpegWhisperJobRunnerTests.swift */; };
 		C78000000000000000000102 /* FFmpegWhisperTranscriptionProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78000000000000000000101 /* FFmpegWhisperTranscriptionProviderTests.swift */; };
 		C78000000000000000000202 /* FFmpegWhisperTranscriptProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */; };
@@ -403,8 +405,10 @@
 		C76000000000000000000031 /* MetadataValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataValidation.swift; path = "Aagedal Photo Agent/Models/MetadataValidation.swift"; sourceTree = SOURCE_ROOT; };
 		C76000000000000000000041 /* MetadataRequirements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataRequirements.swift; path = "Aagedal Photo Agent/Models/MetadataRequirements.swift"; sourceTree = SOURCE_ROOT; };
 		C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchPlanStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchPlanStore.swift"; sourceTree = SOURCE_ROOT; };
+		C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionPlanStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionPlanStore.swift"; sourceTree = SOURCE_ROOT; };
 		C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchXMPRecoveryStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchXMPRecoveryStore.swift"; sourceTree = SOURCE_ROOT; };
 		C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchPlanStoreTests.swift; sourceTree = "<group>"; };
+		C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPVoiceTranscriptionPlanStoreTests.swift; sourceTree = "<group>"; };
 		C77000000000000000000201 /* FFmpegWhisperJobRunnerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJobRunnerTests.swift; sourceTree = "<group>"; };
 		C78000000000000000000101 /* FFmpegWhisperTranscriptionProviderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperTranscriptionProviderTests.swift; sourceTree = "<group>"; };
 		C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FFmpegWhisperTranscriptProvenance.swift; path = "Aagedal Photo Agent/Models/FFmpegWhisperTranscriptProvenance.swift"; sourceTree = SOURCE_ROOT; };
@@ -577,6 +581,7 @@
 				C86000000000000000000001 /* WhisperModelDownloadServiceTests.swift */,
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
+				C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */,
 				C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */,
 				C90000000000000000000001 /* MCPIPTCPatchXMPPreflightServiceTests.swift */,
 				C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */,
@@ -793,6 +798,7 @@
 				C76000000000000000000001 /* MCPIPTCPatchPreparation.swift */,
 				C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */,
 				C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */,
+				C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */,
 				C84000000000000000000011 /* AutomationOperationRegistry.swift */,
 				C84000000000000000000021 /* AutomationOperationPersistence.swift */,
 				C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */,
@@ -1021,6 +1027,7 @@
 				C86000000000000000000011 /* WhisperModelDownloadServiceTests.swift in Sources */,
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
+				C96000000000000000000102 /* MCPVoiceTranscriptionPlanStoreTests.swift in Sources */,
 				C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */,
 				C90000000000000000000002 /* MCPIPTCPatchXMPPreflightServiceTests.swift in Sources */,
 				C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */,
@@ -1220,6 +1227,7 @@
 				C76000000000000000000002 /* MCPIPTCPatchPreparation.swift in Sources */,
 				C78000000000000000000202 /* FFmpegWhisperTranscriptProvenance.swift in Sources */,
 				C77000000000000000000002 /* MCPIPTCPatchPlanStore.swift in Sources */,
+				C96000000000000000000002 /* MCPVoiceTranscriptionPlanStore.swift in Sources */,
 				C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */,
 				C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */,
 				C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */,

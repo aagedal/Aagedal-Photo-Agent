@@ -97,6 +97,18 @@ and remove this PatchPlans directory to erase the local previews. Previews do no
 in Activity. Photo-metadata mutation tools will remain unavailable until they use Photo
 Agent's existing confirmation, preservation, verification, recovery, and privacy-safe activity boundaries.
 
+Transcription previews retain ordered photo paths, root grants, opaque photo/metadata/relationship/WAV
+revisions, audio lengths and requested provider/language/translation/GPU options under
+`~/Library/Application Support/Aagedal Photo Agent/Automation/VoiceTranscriptionPlans`.
+The private store allows up to 64 plans within an 8 MiB serialized-preview budget. Plans survive
+helper restart, expire after five minutes and require complete revalidation on retrieval.
+Expired records are removed on the next successful preparation; there is no background deletion
+timer. Stop connected helpers and remove this directory to erase the previews. Interrupted writes
+may leave private temporary files. Preview storage includes no audio or transcript content, grants
+no consent and starts no inference or download. Archive checksums detect corruption and do not
+authenticate execution authority. Connected clients can retain returned previews under their own
+policies.
+
 Operation status and cancellation tools require local automation to be enabled. They return only
 opaque operation IDs, fixed kind/state/outcome values and timestamps, not paths, metadata or owner IDs.
 The private registry at `~/Library/Application Support/Aagedal Photo Agent/Automation/Operations`

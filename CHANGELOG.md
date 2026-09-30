@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added immutable automation previews for ordered voice-transcription batches of up to eight
+  photos. Exact photo, relationship, WAV and metadata revisions plus requested provider options
+  are retained for five minutes and rechecked on retrieval. Previews grant no execution consent.
+
 - Added read-only automation inspection of saved photo/WAV relationships with rooted file
   admission and exact revision evidence. Audio decoding, provider readiness and helper
   transcription invocation remain unavailable.

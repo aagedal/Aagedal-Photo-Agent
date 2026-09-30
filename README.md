@@ -155,6 +155,10 @@ the support table and validation records.
   `get_photo_voice_memo` inspects one photo's saved adjacent WAV relationship under the authorized
   root and returns exact relationship/audio revision evidence. It does not expose audio or transcript
   content, decode WAVs, inspect provider readiness, or start transcription.
+  `prepare_voice_transcription` retains an immutable five-minute preview for one to eight explicit
+  photos and requested provider options. `get_voice_transcription_plan` rechecks every photo,
+  metadata, relationship, WAV and root grant before returning it. Preparation writes private
+  coordination storage; neither tool grants consent, starts inference or saves drafts.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and

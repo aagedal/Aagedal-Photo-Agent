@@ -99,7 +99,7 @@ def probe(executable):
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
-                "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request",
+                "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
@@ -181,6 +181,30 @@ def probe(executable):
             result = connection.receive(identifier)["result"]
             require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
                     "Associated-audio inspection accepted invalid or execution arguments")
+        require({"prepare_voice_transcription", "get_voice_transcription_plan"}.issubset(names),
+                "Missing immutable transcription preview tools")
+        require({"immutable-voice-transcription-batch-preview", "voice-transcription-preview-revalidation"}
+                .issubset(capabilities["implementedCapabilities"]),
+                "Transcription previews are missing from capability discovery")
+        preview_tool = next(tool for tool in tools if tool["name"] == "prepare_voice_transcription")
+        require(preview_tool["annotations"]["readOnlyHint"] is False,
+                "Durable preview storage mutation is incorrectly annotated read-only")
+        plan_tool = next(tool for tool in tools if tool["name"] == "get_voice_transcription_plan")
+        require(plan_tool["annotations"]["readOnlyHint"] is True,
+                "Plan retrieval is incorrectly annotated as execution")
+        require(preview_tool["inputSchema"]["additionalProperties"] is False and
+                plan_tool["inputSchema"]["additionalProperties"] is False,
+                "Transcription previews accept unspecified arguments")
+        for identifier, tool, arguments in [
+            (19, "prepare_voice_transcription", {}),
+            (20, "prepare_voice_transcription", {"execute": True}),
+            (21, "get_voice_transcription_plan", {"planID": "not-a-uuid"}),
+            (22, "get_voice_transcription_plan", {"planID": "not-a-uuid", "execute": True}),
+        ]:
+            connection.send(request(identifier, "tools/call", {"name": tool, "arguments": arguments}))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Transcription plan tool accepted invalid or execution arguments")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
@@ -189,6 +213,7 @@ def probe(executable):
                 "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True,
                 "nativeReviewRequestArgumentRefusal": True, "honestExecutorBoundary": True,
                 "associatedAudioArgumentRefusal": True,
+                "transcriptionPreviewArgumentRefusal": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()

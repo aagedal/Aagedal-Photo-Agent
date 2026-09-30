@@ -132,6 +132,19 @@ It requires a relationship bound to the current photo filename; recover renamed 
 the app first. Historical recovery identities are reported separately from the captured current
 revisions; an ordinary photo edit can change the historical comparison.
 
+Call `prepare_voice_transcription` with an ordered `photos` array of one to eight entries.
+Each entry supplies `path` and the exact `sourceRevision`, `appSidecarRevision`,
+`xmpSidecarRevision`, `relationshipRevision` and `audioRevision` returned by
+`get_photo_voice_memo`. Supply `provider` (`appleSpeech`, `whisper` or `customWhisper`),
+`language`, `translate` and `useGPU` explicitly. Apple requests use a locale such as `en-US`
+with both booleans false; Whisper requests use `auto` or a two-letter lowercase language code.
+Provider availability and installed/custom model identity must still be checked in the app.
+The tool writes only a private, immutable preview and returns a `planID`, valid for five minutes.
+`get_voice_transcription_plan` accepts only that `planID` and returns the unchanged preview after
+rechecking every input and folder grant. Changed or expired plans require a new preparation.
+Neither tool runs inference, downloads assets, saves drafts, approves text or grants consent.
+Native review handoff and helper execution remain under implementation.
+
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not
 mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.

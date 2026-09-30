@@ -134,7 +134,10 @@ This is separate from the unapproved AI-origin analyzer described above.
   adjacent WAV relationship and exact revisions, with bounded hashing and final drift checks.
   It refuses stale filenames and audio exceeding 256 MiB, reports historical content matches
   separately, and does not establish WAV decoding
-  or provider readiness. Authenticated IPC remains unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
+  or provider readiness. Immutable helper batch previews additionally bind requested provider
+  options and every photo/metadata/relationship/WAV revision for five minutes. They write private
+  coordination storage only; installed model identity, readiness, native handoff and execution
+  consent remain unavailable. Authenticated IPC remains unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
   integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
   remain release gates.
   Durable per-photo history retains numbered outcomes, without source paths or text; it does not
