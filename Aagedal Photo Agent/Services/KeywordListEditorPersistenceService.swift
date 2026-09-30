@@ -392,6 +392,9 @@ final class KeywordListEditorPersistenceService {
             )
         }
 
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
+        try reservation.validate(for: destinationURL)
         try access.writeData(data, destinationURL)
         return .committed(KeywordListEditorSaveCommit(
             requestID: requestID,
@@ -419,6 +422,9 @@ final class KeywordListEditorPersistenceService {
             )
         }
 
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
+        try reservation.validate(for: destinationURL)
         try access.writeData(data, destinationURL)
         return .committed(KeywordListTextSaveCommit(
             requestID: requestID,
@@ -442,6 +448,8 @@ final class KeywordListEditorPersistenceService {
         guard !Task.isCancelled else {
             return .cancelledBeforeAccess(requestID: requestID)
         }
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
 
         let importedData: Data?
         var destinationExists = false
@@ -532,6 +540,7 @@ final class KeywordListEditorPersistenceService {
             )
         }
 
+        try reservation.validate(for: destinationURL)
         try access.writeData(data, destinationURL)
         return .committed(QuickListMutationCommit(
             requestID: requestID,
@@ -550,6 +559,8 @@ final class KeywordListEditorPersistenceService {
         guard !Task.isCancelled else {
             return .cancelledBeforeAccess(requestID: requestID)
         }
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
         let exists = access.itemExists(destinationURL)
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(
@@ -560,6 +571,7 @@ final class KeywordListEditorPersistenceService {
         guard exists else {
             return .missing(requestID: requestID, destinationURL: destinationURL)
         }
+        try reservation.validate(for: destinationURL)
         try access.removeItem(destinationURL)
         return .removed(
             requestID: requestID,

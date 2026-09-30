@@ -235,7 +235,7 @@ nonisolated struct MCPAuthorizedTarget: Equatable, Sendable {
 /// Folder leases are shared for photo operations and exclusive for folder operations, so a
 /// directory-wide operation cannot overlap any photo write in that directory. Existing
 /// MetadataIOCoordinator locks continue to order operations within the app process.
-nonisolated enum MCPProcessReservationError: LocalizedError, Sendable {
+nonisolated enum MCPProcessReservationError: LocalizedError, Sendable, Equatable {
     case busy
     case unavailable
 
@@ -300,6 +300,47 @@ nonisolated enum MCPProcessReservation {
     static func acquireFolder(_ folderURL: URL) throws -> MCPProcessReservationLease {
         let canonical = folderURL.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
         return MCPProcessReservationLease([try acquire("folder:\(canonical)", operation: LOCK_EX)])
+    }
+
+    /// Managed vocabulary uses its own namespace: a list next to a photo must not
+    /// recursively conflict with the photo reservation held by its native executor.
+    static func acquireManagedList(_ listURL: URL) throws -> MCPProcessReservationLease {
+        let canonical = try canonicalManagedListPath(listURL).lowercased()
+        return MCPProcessReservationLease([try acquire("managed-keyword-list:\(canonical)", operation: LOCK_EX)])
+    }
+
+    /// Foundation's symlink resolution may retain an unresolved parent when the final
+    /// list is missing. Resolve the nearest existing ancestor explicitly, then restore
+    /// the missing suffix so first-use creation and existing-file aliases share a lease.
+    static func canonicalManagedListPath(_ listURL: URL) throws -> String {
+        guard listURL.isFileURL, listURL.path.hasPrefix("/"), !listURL.path.contains("\0") else {
+            throw MCPProcessReservationError.unavailable
+        }
+        // Preserve POSIX spelling throughout. A Foundation URL round-trip can collapse
+        // /private/var to /var, making an independent process derive a different key.
+        var ancestor = listURL.path
+        while ancestor.count > 1, ancestor.hasSuffix("/") { ancestor.removeLast() }
+        var suffix: [String] = []
+        while true {
+            if let resolved = Darwin.realpath(ancestor, nil) {
+                defer { free(resolved) }
+                var canonical = String(cString: resolved)
+                for component in suffix.reversed() {
+                    canonical += (canonical == "/" ? "" : "/") + component
+                }
+                return canonical
+            }
+            guard errno == ENOENT, ancestor != "/", let slash = ancestor.lastIndex(of: "/") else {
+                throw MCPProcessReservationError.unavailable
+            }
+            suffix.append(String(ancestor[ancestor.index(after: slash)...]))
+            ancestor = slash == ancestor.startIndex ? "/" : String(ancestor[..<slash])
+        }
+    }
+
+    /// Preferences have one stable namespace across local/cloud routing transitions.
+    static func acquireKeywordSettings(_ identifier: String) throws -> MCPProcessReservationLease {
+        return MCPProcessReservationLease([try acquire("keyword-settings:\(identifier)", operation: LOCK_EX)])
     }
 
     private static func acquire(_ key: String, operation: Int32) throws -> Int32 {

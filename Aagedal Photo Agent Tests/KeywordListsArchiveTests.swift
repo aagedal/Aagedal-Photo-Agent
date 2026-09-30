@@ -1018,6 +1018,48 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
 
 @Suite("Keyword archive import read failure preservation")
 struct KeywordListsArchiveImportReadFailureTests {
+    @Test("A reserved archive destination preserves its bytes and reports the durable prefix", arguments: [false, true])
+    func archiveContention(durablePrefix: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-archive-busy-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let payload = root.appendingPathComponent("payload"), destination = root.appendingPathComponent("destination")
+        let archive = root.appendingPathComponent("lists.zip")
+        let prefix = "quick/keywords.txt", busy = "approved/keywords.txt"
+        try CloudCoordinatedIO.writeText("Imported\n", to: payload.appendingPathComponent(prefix))
+        try CloudCoordinatedIO.writeText("Oslo\n", to: payload.appendingPathComponent(busy))
+        try CloudCoordinatedIO.writeText("Paris\n", to: destination.appendingPathComponent(busy))
+        var files: [KeywordListsArchive.Manifest.File] = []
+        if durablePrefix { files.append(.init(path: prefix, kind: "quick.keywords", entryCount: 1)) }
+        files.append(.init(path: busy, kind: "approved.keywords", entryCount: 1))
+        let manifest = KeywordListsArchive.Manifest(schemaVersion: KeywordListsArchive.currentSchemaVersion,
+            exportedAt: Date(), files: files)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: payload.appendingPathComponent("manifest.json"))
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", "--keepParent", payload.path, archive.path]
+        try process.run(); process.waitUntilExit()
+        try #require(process.terminationStatus == 0)
+        let lease = try MCPKeywordListReservation.acquire(for: [destination.appendingPathComponent(busy)])
+        defer { lease.release() }
+        let result = await KeywordListsArchiveImportService.shared.importArchive(.init(
+            requestID: UUID(), sourceURL: archive, routes: [
+                .init(identifier: prefix, kind: "quick.keywords", destinationURL: destination.appendingPathComponent(prefix), mode: .replace),
+                .init(identifier: busy, kind: "approved.keywords", destinationURL: destination.appendingPathComponent(busy), mode: .append)
+            ]))
+        if durablePrefix {
+            guard case .partiallyCommitted(let commit, let failure) = result else {
+                Issue.record("Expected partial commit, received \(result)"); return
+            }
+            #expect(commit.items.map(\.identifier) == [prefix])
+            #expect(failure.identifier == busy)
+        } else {
+            guard case .failedBeforeCommit(_, _, let failure) = result else {
+                Issue.record("Expected refusal before commit, received \(result)"); return
+            }
+            #expect(failure.identifier == busy)
+        }
+        #expect(try String(contentsOf: destination.appendingPathComponent(busy), encoding: .utf8) == "Paris\n")
+    }
     @Test("Read failures preserve affected destination and report exact durable prefix",
           arguments: ["invalidUTF8", "invalidDestinationUTF8", "placeholder", "directory"], [false, true])
     func readFailure(failureKind: String, durablePrefix: Bool) async throws {

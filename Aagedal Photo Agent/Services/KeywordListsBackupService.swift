@@ -608,6 +608,8 @@ final class KeywordListBackupFileService {
         guard !Task.isCancelled else {
             return .cancelledBeforeRead(requestID: requestID)
         }
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
 
         let data = try io.readData(sourceURL)
         guard !Task.isCancelled else {
@@ -634,12 +636,14 @@ final class KeywordListBackupFileService {
             // Preserve exact bytes, including empty or damaged content, before replacement.
             // If reading or backing up the destination fails, the restore must not overwrite it.
             if let previous {
+                try reservation.validate(for: destinationURL)
                 try io.writeData(previous, previousContentBackupURL)
             }
         }
         guard !Task.isCancelled else {
             return .cancelledAfterRead(requestID: requestID, sourceURL: sourceURL, byteCount: data.count)
         }
+        try reservation.validate(for: destinationURL)
         try io.writeData(data, destinationURL)
         return .restored(KeywordListBackupRestoreCommit(
             requestID: requestID,

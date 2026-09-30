@@ -84,7 +84,8 @@ nonisolated final class MCPIPTCPatchApprovalStore: @unchecked Sendable {
     /// `consumeForDraft` is used only at the native executor's final admission boundary, with
     /// its live photo reservation held; removal and validation share this lock.
     func validate(_ approval: Approval, facade: MCPAutomationFacade, now: Date = Date(),
-                  reservation: MCPProcessReservationLease? = nil, consumeForDraft: Bool = false) throws -> MCPJSONValue {
+                  reservation: MCPProcessReservationLease? = nil, consumeForDraft: Bool = false,
+                  keywordReservation: MCPKeywordAuthority.Reservation? = nil) throws -> MCPJSONValue {
         lock.lock()
         defer { lock.unlock() }
         guard !consumeForDraft || reservation != nil else { throw Failure.invalidReview }
@@ -94,7 +95,8 @@ nonisolated final class MCPIPTCPatchApprovalStore: @unchecked Sendable {
         do {
             let checkedAt = max(now, Date())
             guard now >= approval.approvedAt, checkedAt < approval.expiresAt else { throw Failure.expiredApproval }
-            let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: now, reservation: reservation)
+            let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: now,
+                reservation: reservation, keywordReservation: keywordReservation)
             guard binding.digest == approval.digest else { throw Failure.changedReview }
             if consumeForDraft { approvals.removeValue(forKey: approval.id) }
             return binding.preview

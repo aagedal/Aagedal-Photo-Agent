@@ -100,7 +100,8 @@ nonisolated final class MCPIPTCPatchXMPPublicationApprovalStore: @unchecked Send
     /// durable recovery; removal and exact-candidate validation share the same lock.
     func validate(_ approval: Approval, candidate: Data, mode: Mode, targetPath: String,
                   facade: MCPAutomationFacade, reservation: MCPProcessReservationLease,
-                  now: Date = Date(), consumeForPublication: Bool = false) throws {
+                  now: Date = Date(), consumeForPublication: Bool = false,
+                  keywordReservation: MCPKeywordAuthority.Reservation? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
         guard approval.generation == generation, approvals[approval.id] == approval else {
@@ -116,7 +117,7 @@ nonisolated final class MCPIPTCPatchXMPPublicationApprovalStore: @unchecked Send
                 throw Failure.changedReview
             }
             let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade,
-                now: now, reservation: reservation)
+                now: now, reservation: reservation, keywordReservation: keywordReservation)
             guard binding.digest == approval.planDigest else { throw Failure.changedReview }
             if consumeForPublication { approvals.removeValue(forKey: approval.id) }
         } catch {

@@ -56,6 +56,7 @@ enum UITestPatchReviewFixture {
         let beforeTitle: String
         let afterTitle: String
         let beforeCity: String
+        let keywordListPath: String?
     }
 
     enum Failure: Error, Equatable { case invalidFolder, imageCreation, invalidPlan }
@@ -123,7 +124,21 @@ enum UITestPatchReviewFixture {
             guard let authorizationBytes = box.read() else { throw Failure.invalidFolder }
             try authorizationBytes.write(to: savedAuthority, options: .atomic)
             let facade = MCPAutomationFacade(authorizationStore: authority)
-            let plans = MCPIPTCPatchPlanStore()
+            let keywordList: URL?
+            let plans: MCPIPTCPatchPlanStore
+            if configuration.keywordPatchRequested {
+                guard let canonical = realpath(root.path, nil) else { throw Failure.invalidFolder }
+                defer { free(canonical) }
+                let list = URL(fileURLWithPath: String(cString: canonical)).appendingPathComponent("approved.txt")
+                try Data("Oslo\n".utf8).write(to: list, options: .withoutOverwriting)
+                let policy = MCPKeywordAuthority.Configuration(enabled: true, mode: "strict",
+                    allowStructuredBypass: false, iCloudEnabled: false, listURL: list)
+                plans = MCPIPTCPatchPlanStore(keywordAuthority: .init(resolveConfiguration: { policy }))
+                keywordList = list
+            } else {
+                plans = MCPIPTCPatchPlanStore()
+                keywordList = nil
+            }
             guard let metadata = try MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue else {
                 throw Failure.invalidPlan
             }
@@ -131,11 +146,16 @@ enum UITestPatchReviewFixture {
                 .object(["field": .string("title"), "operation": .string("set"), "value": .string(afterTitle)]),
                 .object(["field": .string("city"), "operation": .string("clear")]),
             ])]
+            if keywordList != nil, case .array(var operations) = arguments["operations"] {
+                operations.append(.object(["field": .string("keywords"), "operation": .string("set"),
+                    "value": .array([.string(" oslo "), .string("OSLO")])]))
+                arguments["operations"] = .array(operations)
+            }
             for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = metadata[key] }
             let prepared = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: facade, plans: plans)
             guard let id = prepared.objectValue?["planID"]?.stringValue else { throw Failure.invalidPlan }
             let manifest = Manifest(planID: id, photoPath: photo.path, beforeTitle: beforeTitle,
-                afterTitle: afterTitle, beforeCity: beforeCity)
+                afterTitle: afterTitle, beforeCity: beforeCity, keywordListPath: keywordList?.path)
             try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("patch-review-fixture.json"), options: .atomic)
             guard let canonical = realpath(folder.path, nil) else { throw Failure.invalidFolder }
             defer { free(canonical) }

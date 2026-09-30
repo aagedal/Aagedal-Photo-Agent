@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import Foundation
 import ImageIO
 import SwiftMediaMetadata
@@ -11,14 +12,24 @@ struct MCPIPTCPatchXMPPreflightServiceTests {
         let root: URL
         let photo: URL
         let facade: MCPAutomationFacade
-        let plans = MCPIPTCPatchPlanStore()
+        let plans: MCPIPTCPatchPlanStore
         let planID: String
 
-        init(pending: Bool = false, existingXMP: Bool = true, pendingCaptureDate: String? = nil) throws {
+        init(pending: Bool = false, existingXMP: Bool = true, pendingCaptureDate: String? = nil,
+             keywordValues: [String]? = nil) throws {
             root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
                 .appendingPathComponent("xmp-preflight-test-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
             photo = root.appendingPathComponent("photo.jpg")
+            if keywordValues != nil {
+                let canonical = try #require(realpath(root.path, nil))
+                defer { free(canonical) }
+                let list = URL(fileURLWithPath: String(cString: canonical)).appendingPathComponent("approved.txt")
+                try Data("Oslo\n".utf8).write(to: list)
+                let configuration = MCPKeywordAuthority.Configuration(enabled: true, mode: "strict",
+                    allowStructuredBypass: false, iCloudEnabled: false, listURL: list)
+                plans = MCPIPTCPatchPlanStore(keywordAuthority: .init(resolveConfiguration: { configuration }))
+            } else { plans = MCPIPTCPatchPlanStore() }
             let context = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
                 bytesPerRow: 16, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
             let image = try #require(context.makeImage())
@@ -54,6 +65,10 @@ struct MCPIPTCPatchXMPPreflightServiceTests {
             let read = try #require(MCPMetadataSnapshotReader.inspectPhoto(path: photo.path, facade: facade).objectValue)
             var arguments: [String: MCPJSONValue] = ["path": .string(photo.path), "operations": .array([
                 .object(["field": .string("title"), "operation": .string("set"), "value": .string("After")])])]
+            if let keywordValues {
+                arguments["operations"] = .array([.object(["field": .string("keywords"), "operation": .string("set"),
+                    "value": .array(keywordValues.map(MCPJSONValue.string))])])
+            }
             for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = read[key] }
             let preview = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: facade, plans: plans)
             planID = try #require(preview.objectValue?["planID"]?.stringValue)

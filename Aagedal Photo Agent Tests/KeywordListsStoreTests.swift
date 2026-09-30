@@ -272,6 +272,23 @@ struct KeywordListBackupPreviewServiceTests {
 
 @Suite("Keyword-list backup inventory and restore filesystem boundary")
 struct KeywordListBackupFileServiceTests {
+    @Test("Backup restore refuses a reserved list without reading source or preserving a preimage")
+    func restoreContention() async throws {
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-restore-busy-\(UUID())/keywords.txt")
+        let lease = try MCPKeywordListReservation.acquire(for: [list])
+        defer { lease.release() }
+        let system = KeywordListBackupFileIO.system
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: system.contentsOfDirectory, inspectTextFile: system.inspectTextFile,
+            createDirectory: system.createDirectory,
+            readData: { _ in Issue.record("Reserved restore read bytes"); return Data() },
+            writeData: { _, _ in Issue.record("Reserved restore wrote bytes") }, removeItem: system.removeItem
+        )
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await KeywordListBackupFileService(io: io).restore(from: list.appendingPathExtension("backup"),
+                to: list, requestID: UUID(), previousContentBackupURL: list.appendingPathExtension("previous"))
+        }
+    }
     @Test("blocked snapshot history access allows managed restore commits")
     func blockedSnapshotAllowsManagedRestore() async throws {
         let probe = BlockingKeywordListBackupFileIOProbe()
@@ -1691,6 +1708,23 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
 
 @Suite("Keyword list legacy migration filesystem boundary")
 struct KeywordListsLegacyMigrationServiceTests {
+    @Test("Reserved migration reports failed source without destination mutation")
+    func migrationContention() async throws {
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-migration-busy-\(UUID())/keywords.txt")
+        let lease = try MCPKeywordListReservation.acquire(for: [list])
+        defer { lease.release() }
+        let service = KeywordListsLegacyMigrationService(access: .init(
+            readSource: { _, _ in Issue.record("Reserved migration read source"); return "" },
+            writeTextIfMissing: { _, _ in Issue.record("Reserved migration wrote destination"); return true },
+            readDestination: { _ in Issue.record("Reserved migration verified destination"); return "" }
+        ))
+        let source = KeywordListsLegacyMigrationSource(id: "busy", bookmarkKey: "busy", bookmarkData: Data([1]),
+            key: .approved(.keywords), destinationURL: list, format: .approved)
+        let result = await service.migrate(sources: [source], requestID: UUID()) { _ in list.appendingPathExtension("source") }
+        #expect(result.failedIDs == ["busy"])
+        #expect(result.completedIDs.isEmpty)
+        #expect(result.writtenIDs.isEmpty)
+    }
     private func source(_ id: String, bookmark: Data? = Data([1])) -> KeywordListsLegacyMigrationSource {
         KeywordListsLegacyMigrationSource(
             id: id, bookmarkKey: id, bookmarkData: bookmark, key: .structured,
@@ -1957,6 +1991,22 @@ struct KeywordListsReconciliationReadFailureTests {
 @Suite("Keyword-list durable write route publication")
 @MainActor
 struct KeywordListsStoreRoutePublicationTests {
+    @Test("A settings reservation refuses route publication and keeps the current cache and preference")
+    func reservedRoutePublication() throws {
+        let suite = "reserved-route-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = KeywordListsStore(usesTestStorage: false, defaults: defaults)
+        let original = store.currentRootURL
+        let version = store.version
+        let held = try MCPProcessReservation.acquireKeywordSettings(MCPServerConstants.preferencesSuiteName)
+        defer { held.release() }
+        #expect(!store.applyICloudRoutingPreference(true, resolvedRoot: original.appendingPathComponent("cloud")))
+        #expect(!store.iCloudEnabled)
+        #expect(store.currentRootURL == original)
+        #expect(store.version == version)
+        #expect(defaults.data(forKey: MCPKeywordSettingsHistory.historyKey) == nil)
+    }
     @Test("An old-root commit invalidates the current route without publishing stale payload or owner identity")
     func staleCommitInvalidatesActiveRoute() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -2132,6 +2182,24 @@ struct KeywordRootRoutingPublicationTests {
 
 @Suite("Keyword managed UTF-8 preservation")
 struct KeywordManagedUTF8PreservationTests {
+    @Test("A reserved routing source or destination prevents all merge writes", arguments: [true, false])
+    func routingContention(reserveSource: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-route-busy-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+        let path = KeywordListKey.approved(.keywords).relativePath
+        try CloudCoordinatedIO.writeText("Oslo\n", to: source.appendingPathComponent(path))
+        try CloudCoordinatedIO.writeText("Paris\n", to: destination.appendingPathComponent(path))
+        let lease = try MCPKeywordListReservation.acquire(for: [(reserveSource ? source : destination).appendingPathComponent(path)])
+        defer { lease.release() }
+        #expect(throws: MCPProcessReservationError.busy) {
+            try KeywordListsStore.reconcileTree(from: source, to: destination)
+        }
+        #expect(try String(contentsOf: destination.appendingPathComponent(path), encoding: .utf8) == "Paris\n")
+        lease.release()
+        try KeywordListsStore.reconcileTree(from: source, to: destination)
+        #expect(try String(contentsOf: destination.appendingPathComponent(path), encoding: .utf8) == "Paris\nOslo\n")
+    }
     @Test("Routing rejects damaged source or destination without changing either file",
           arguments: [true, false])
     func routingPreservesInvalidBytes(damagedSource: Bool) throws {

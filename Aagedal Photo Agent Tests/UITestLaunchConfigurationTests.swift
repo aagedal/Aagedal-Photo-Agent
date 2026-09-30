@@ -78,4 +78,10 @@ struct UITestLaunchConfigurationTests {
             .removalReceiptInterruptionCarrier == nil)
     }
 
+    @Test("Synthetic keyword policy requires the explicit UI-testing gate")
+    func keywordPatchIsGated() {
+        #expect(!UITestLaunchConfiguration(arguments: ["--ui-test-keyword-patch"]).keywordPatchRequested)
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing", "--ui-test-keyword-patch"]).keywordPatchRequested)
+    }
+
 }

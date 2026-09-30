@@ -135,8 +135,11 @@ This is separate from the unapproved AI-origin analyzer described above.
   enforcing the editor's Strict policy and canonical spelling at preparation and native mutation.
   iCloud keyword-list authority is unsupported. Settings checks bind current values and a persisted
   generation from cooperating app writers; app changes away and back invalidate old plans. Legacy
-  settings without recorded history remain explicitly untracked. Raw preference edits/rollback,
-  cross-process durability qualification and cooperative list-writer reservation remain open. It
+  settings without recorded history remain explicitly untracked. Cooperating managed-list and
+  settings writers now share reservations with native keyword publication through verification.
+  Busy operations refuse before writing. Missing-list aliases share the same reservation, and
+  path drift refuses the write. Arbitrary user-selected export destinations, raw preference/file
+  edits, external cloud writers and physical power-loss durability remain outside this evidence. It
   retains an immutable local plan across helper restart for `get_iptc_patch_plan` to revalidate until its five-minute expiry. It does not
   persist a committable plan. `inspect_iptc_patch_publication_requirements` revalidates one retained
   plan and reports its exact native binding, target and review requirements, without staging a

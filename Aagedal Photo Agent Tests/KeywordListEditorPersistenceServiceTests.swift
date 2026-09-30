@@ -4,6 +4,90 @@ import Testing
 
 @Suite("Keyword-list editor filesystem boundary")
 struct KeywordListEditorPersistenceServiceTests {
+    @Test("Approved import refuses a reserved destination before source access")
+    func approvedImportContention() async throws {
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("approved-import-busy-\(UUID())/keywords.txt")
+        let lease = try MCPKeywordListReservation.acquire(for: [list])
+        defer { lease.release() }
+        let service = ApprovedListImportService(access: ApprovedListImportFileAccess(
+            startAccessing: { _ in Issue.record("Reserved import opened source"); return false },
+            stopAccessing: { _ in }, fileSize: { _ in Issue.record("Reserved import inspected source"); return 0 },
+            readData: { _ in Issue.record("Reserved import read source"); return Data() },
+            writeData: { _, _ in Issue.record("Reserved import wrote destination") }
+        ))
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await service.importEntries(from: list.appendingPathExtension("csv"), to: list, requestID: UUID())
+        }
+    }
+    @Test("A managed-list reservation refuses all editor mutations before filesystem access")
+    func cooperatingWriterContention() async throws {
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-contention-\(UUID())/approved/keywords.txt")
+        let lease = try MCPKeywordListReservation.acquire(for: [list])
+        defer { lease.release() }
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in Issue.record("Busy mutation probed the destination"); return true },
+            readData: { _ in Issue.record("Busy mutation read the destination"); return Data() },
+            writeData: { _, _ in Issue.record("Busy mutation wrote the destination") },
+            removeItem: { _ in Issue.record("Busy mutation removed the destination") }
+        ))
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await service.saveEntries(["Oslo"], to: list, requestID: UUID())
+        }
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await service.saveText("Oslo", to: list, requestID: UUID())
+        }
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await service.appendEntries(["Oslo"], to: list, requestID: UUID())
+        }
+        await #expect(throws: MCPProcessReservationError.busy) {
+            try await service.deleteQuickList(at: list, requestID: UUID())
+        }
+    }
+
+    @Test("Append holds its list reservation through read, merge, and durable write")
+    func appendRetainsReservation() async throws {
+        let list = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-held-\(UUID())/keywords.txt")
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in
+                #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+                return true
+            },
+            readData: { _ in
+                #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+                return Data("Oslo\n".utf8)
+            },
+            writeData: { data, _ in
+                #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+                #expect(data == Data("Oslo\nParis\n".utf8))
+            }
+        ))
+        let result = try await service.appendEntries(["Paris"], to: list, requestID: UUID())
+        guard case .committed = result else { Issue.record("Append did not commit"); return }
+        let next = try MCPKeywordListReservation.acquire(for: [list]); next.release()
+    }
+
+    @Test("Destination symlink drift during append refuses replacement bytes")
+    func appendDestinationDrift() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("keyword-drift-\(UUID())")
+        let first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")
+        let route = root.appendingPathComponent("route")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(at: route, withDestinationURL: first)
+        let list = route.appendingPathComponent("keywords.txt")
+        let service = KeywordListEditorPersistenceService(access: KeywordListEditorFileAccess(
+            itemExists: { _ in true }, readData: { _ in
+                try FileManager.default.removeItem(at: route)
+                try FileManager.default.createSymbolicLink(at: route, withDestinationURL: second)
+                return Data("Oslo\n".utf8)
+            }, writeData: { _, _ in Issue.record("Drifted destination was written") }
+        ))
+        await #expect(throws: MCPProcessReservationError.unavailable) {
+            try await service.appendEntries(["Paris"], to: list, requestID: UUID())
+        }
+    }
+
     @Test("managed reads and commits use the Dispatch worker with the caller's task context")
     @MainActor
     func managedTransactionUsesDispatchWorker() async throws {

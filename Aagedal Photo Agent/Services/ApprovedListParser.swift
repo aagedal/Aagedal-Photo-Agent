@@ -177,6 +177,8 @@ final class ApprovedListImportService {
         guard !Task.isCancelled else {
             return .cancelledBeforeAccess(requestID: requestID)
         }
+        let reservation = try MCPKeywordListReservation.acquire(for: [destinationURL])
+        defer { reservation.release() }
 
         let didStartAccessing = access.startAccessing(sourceURL)
         defer {
@@ -229,6 +231,7 @@ final class ApprovedListImportService {
             )
         }
 
+        try reservation.validate(for: destinationURL)
         try access.writeData(committedData, destinationURL)
         return .committed(ApprovedListImportCommit(
             requestID: requestID,

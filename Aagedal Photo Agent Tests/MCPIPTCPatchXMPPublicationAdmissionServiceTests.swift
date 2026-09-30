@@ -105,6 +105,52 @@ struct MCPIPTCPatchXMPPublicationAdmissionServiceTests {
         #expect(!app.history.isEmpty)
     }
 
+    @Test("Keyword XMP publication holds list ownership across staging, both installs and disposition", arguments: [false, true])
+    func keywordReservationLifetime(interrupted: Bool) async throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let list = fixture.root.appendingPathComponent("approved.txt")
+        let check: @Sendable () throws -> Void = {
+            #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+        }
+        let service = Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade,
+            hooks: .init(afterStaging: { _ in try check() }, afterRecovery: check,
+                beforeDisposition: check, afterXMPInstall: {
+                    try check()
+                    if interrupted { throw CocoaError(.fileReadCorruptFile) }
+                }, beforeAppReceipt: check))
+        let result = await service.publish(receipt, context: try context(fixture))
+        #expect(result.outcome == (interrupted ? .uncertain : .verified))
+        #expect((try recovery.load() != nil) == interrupted)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceBytes == before.sourceBytes)
+        if !interrupted { #expect(try MCPMetadataSnapshotReader.read(after).resolution.metadata.keywords == ["Oslo"]) }
+        let released = try MCPKeywordListReservation.acquire(for: [list])
+        released.release()
+    }
+
+    @Test("An active managed-list writer refuses XMP admission without recovery staging")
+    func keywordWriterBusy() async throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let store = MCPIPTCPatchXMPPublicationApprovalStore(plans: fixture.plans)
+        let receipt = try await approval(fixture, store: store)
+        let recovery = MCPIPTCPatchXMPRecoveryStore(directory: try storageDirectory(fixture, name: "recovery"))
+        let lease = try MCPKeywordListReservation.acquire(for: [fixture.root.appendingPathComponent("approved.txt")])
+        defer { lease.release() }
+        let result = await Service(plans: fixture.plans, approvals: store, recovery: recovery, facade: fixture.facade)
+            .publish(receipt, context: try context(fixture))
+        #expect(result.outcome == .refused)
+        #expect(try recovery.load() == nil)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.sourceBytes == before.sourceBytes)
+        #expect(after.xmpBytes == before.xmpBytes)
+        #expect(after.appSidecarBytes == before.appSidecarBytes)
+    }
+
     @Test("A second newly reviewed publication succeeds after durable completion")
     func successivePublications() async throws {
         let fixture = try Fixture()

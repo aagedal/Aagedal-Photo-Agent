@@ -238,9 +238,10 @@ final class KeywordListsStore {
     /// Installs the route chosen by `KeywordListsRoutingService` after its coordinated merge has
     /// completed away from MainActor. The destination skeleton already exists at this point, so
     /// publication only changes the preference/cache and invalidates observers.
-    func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) {
+    @discardableResult
+    func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) -> Bool {
         if cloudPreference == nil {
-            MCPKeywordSettingsHistory.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled, defaults: defaults)
+            guard MCPKeywordSettingsHistory.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled, defaults: defaults) else { return false }
         }
         routingGeneration = UUID()
         cachedRoot = resolvedRoot
@@ -248,6 +249,7 @@ final class KeywordListsStore {
         for key in Self.allKnownKeys() {
             notifyChanged(key)
         }
+        return true
     }
 
     /// Called by the iCloud coordinator when an NSMetadataQuery update arrives.
@@ -386,11 +388,20 @@ final class KeywordListsStore {
     ///   so it is **seeded only when the destination has none** — an existing
     ///   destination tree is left untouched rather than clobbered.
     nonisolated static func reconcileTree(from source: URL, to destination: URL) throws {
+        // Reserve every known source and destination before any merge writes. Sorting and
+        // deduplication prevent opposite-direction route reconciliations from interleaving.
+        let keys = allKnownKeys()
+        let reservation = try MCPKeywordListReservation.acquire(for: keys.flatMap {
+            [source.appendingPathComponent($0.relativePath), destination.appendingPathComponent($0.relativePath)]
+        })
+        defer { reservation.release() }
         try CloudCoordinatedIO.ensureDirectory(destination)
-        for key in allKnownKeys() {
+        for key in keys {
             let sourceURL = source.appendingPathComponent(key.relativePath)
+            try reservation.validate(for: sourceURL)
             guard CloudCoordinatedIO.itemExists(at: sourceURL) else { continue }
             let destURL = destination.appendingPathComponent(key.relativePath)
+            try reservation.validate(for: destURL)
             switch key {
             case .quick, .approved:
                 let destEntries = try entries(at: destURL)
@@ -400,11 +411,15 @@ final class KeywordListsStore {
                     merged.append(entry)
                 }
                 let joined = merged.joined(separator: "\n") + (merged.isEmpty ? "" : "\n")
+                try reservation.validate(for: sourceURL)
+                try reservation.validate(for: destURL)
                 try CloudCoordinatedIO.writeText(joined, to: destURL)
             case .structured, .structuredPersonShown:
                 guard !CloudCoordinatedIO.itemExists(at: destURL) else { continue }
                 let data = try CloudCoordinatedIO.readData(at: sourceURL)
                 _ = try decodeManagedText(data)
+                try reservation.validate(for: sourceURL)
+                try reservation.validate(for: destURL)
                 try CloudCoordinatedIO.writeData(data, to: destURL)
             }
         }
@@ -510,8 +525,11 @@ final class KeywordListsLegacyMigrationService {
             defer { if didStart { url.stopAccessingSecurityScopedResource() } }
             do {
                 guard !Task.isCancelled else { break }
+                let reservation = try MCPKeywordListReservation.acquire(for: [source.destinationURL])
+                defer { reservation.release() }
                 let text = try access.readSource(url, source.format)
                 guard !Task.isCancelled else { break }
+                try reservation.validate(for: source.destinationURL)
                 guard try access.writeTextIfMissing(text, source.destinationURL) else {
                     // Managed content takes precedence over legacy data, including an edit that
                     // committed while source parsing was in progress. Keep the bookmark for recovery.

@@ -1,6 +1,10 @@
 import AppKit
 import CryptoKit
+import Darwin
 import XCTest
+
+@_silgen_name("flock")
+private func keywordSmokeFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
 final class CoreWorkflowSmokeTests: XCTestCase {
     private var fixtureRoot: URL!
@@ -539,6 +543,89 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No retained operations"].waitForExistence(timeout: 8))
         XCTAssertTrue(try retainedOperationObjects().isEmpty)
         XCTAssertEqual(try Data(contentsOf: journal), journalBytes)
+    }
+
+    @MainActor
+    func testAutomationKeywordPublicationPersistsAcrossRelaunch() throws {
+        try exerciseKeywordPublication(writerBusy: false)
+    }
+
+    @MainActor
+    func testAutomationKeywordPublicationRefusesIndependentWriter() throws {
+        try exerciseKeywordPublication(writerBusy: true)
+    }
+
+    @MainActor
+    private func exerciseKeywordPublication(writerBusy: Bool) throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot, keywordPatch: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        let input = app.textFields["automation.patchPlanID"]
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let list = URL(fileURLWithPath: try XCTUnwrap(manifest["keywordListPath"]))
+        let sourceBytes = try Data(contentsOf: photo)
+        let listBytes = try Data(contentsOf: list)
+        input.click()
+        input.typeText(try XCTUnwrap(manifest["planID"]))
+        app.buttons["automation.inspectPatchPlan"].click()
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
+        acknowledgement.click()
+        app.buttons["automation.approveXMPCandidate"].click()
+        let publish = app.buttons["automation.publishApprovedXMP"]
+        XCTAssertTrue(publish.waitForExistence(timeout: 8))
+        var writerDescriptor: Int32 = -1
+        defer { if writerDescriptor >= 0 { _ = keywordSmokeFlock(writerDescriptor, LOCK_UN); close(writerDescriptor) } }
+        if writerBusy {
+            // The XCTest runner is a separate process from Photo Agent. Hold the exact
+            // cooperative writer namespace after native consent, without editing the list.
+            let resolved = try XCTUnwrap(realpath(list.path, nil))
+            defer { free(resolved) }
+            let key = "managed-keyword-list:" + String(cString: resolved).lowercased()
+            let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+            let path = "/private/tmp/aagedal-photo-agent-reservations-\(getuid())/\(digest).lock"
+            // XCTest's runner has read-only access outside its fixture container.
+            // flock needs an existing descriptor, not permission to modify its bytes.
+            writerDescriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            XCTAssertGreaterThanOrEqual(writerDescriptor, 0, "Could not open fixture reservation: errno \(errno), \(path)")
+            XCTAssertEqual(keywordSmokeFlock(writerDescriptor, LOCK_EX | LOCK_NB), 0)
+        }
+        publish.click()
+        let status = app.staticTexts["automation.patchDraftStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 12))
+        let displayed = status.label + ((status.value as? String) ?? "")
+        XCTAssertTrue(displayed.contains(writerBusy ? "refused before saving" : "XMP published"))
+        XCTAssertEqual(try Data(contentsOf: photo), sourceBytes)
+        XCTAssertEqual(try Data(contentsOf: list), listBytes)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        let recovery = fixtureRoot.appendingPathComponent("patch-operations/iptc-xmp-recovery/operations.json")
+        if writerBusy {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+        } else {
+            let published = try Data(contentsOf: xmp)
+            let saved = try Data(contentsOf: history)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+            XCTAssertEqual(object["pendingChanges"] as? Bool, false)
+            let metadata = try XCTUnwrap(object["metadata"] as? [String: Any])
+            XCTAssertEqual(metadata["keywords"] as? [String], ["Oslo"])
+            app.terminate()
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+            XCTAssertEqual(try Data(contentsOf: xmp), published)
+            XCTAssertEqual(try Data(contentsOf: history), saved)
+            XCTAssertEqual(try Data(contentsOf: photo), sourceBytes)
+            XCTAssertEqual(try Data(contentsOf: list), listBytes)
+        }
     }
 
     @MainActor
@@ -1576,6 +1663,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
         patchReviewFolder: URL? = nil,
+        keywordPatch: Bool = false,
         operationRecovery: Bool = false,
         xmpStagingInterruption: Bool = false,
         xmpPublicationInterruption: Bool = false,
@@ -1608,6 +1696,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-known-people-root", knownPeopleRoot)
         append("--ui-test-template-root", templateRoot)
         append("--ui-test-patch-review-folder", patchReviewFolder)
+        if keywordPatch { app.launchArguments.append("--ui-test-keyword-patch") }
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
         if xmpStagingInterruption { app.launchArguments.append("--ui-test-xmp-staging-interruption") }
         if xmpPublicationInterruption { app.launchArguments.append("--ui-test-xmp-publication-interruption") }

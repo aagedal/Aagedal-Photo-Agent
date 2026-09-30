@@ -30,7 +30,9 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
         do {
             try Task.checkCancellation()
             try await context?.checkCancellation()
-            let preview = try approvals.validate(approval, facade: facade)
+            let keywordReservation = try plans.acquireKeywordAuthorityReservationForExecution(planID: approval.planID)
+            defer { keywordReservation?.release() }
+            let preview = try approvals.validate(approval, facade: facade, keywordReservation: keywordReservation)
             guard let path = preview.objectValue?["canonicalPath"]?.stringValue else {
                 throw MCPIPTCPatchPlanStore.Failure.invalidArguments
             }
@@ -38,7 +40,8 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
             let reservation = try MCPProcessReservation.acquirePhoto(photo)
             defer { reservation.release() }
             return await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: photo)) { @MetadataSidecarFilesystemActor in
-                await execute(approval, photo: photo, reservation: reservation, context: context)
+                await execute(approval, photo: photo, reservation: reservation,
+                    keywordReservation: keywordReservation, context: context)
             }
         } catch {
             return .init(outcome: error is CancellationError ? .cancelled : .refused,
@@ -49,6 +52,7 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
     @MetadataSidecarFilesystemActor
     private func execute(_ approval: MCPIPTCPatchApprovalStore.Approval, photo: URL,
                          reservation: MCPProcessReservationLease,
+                         keywordReservation: MCPKeywordAuthority.Reservation?,
                          context: AutomationOperationExecutionCoordinator.Context?) async -> Result {
         var sidecarURL: URL?
         var saveMayHaveOccurred = false
@@ -56,9 +60,10 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
             try hooks.beforeAdmission()
             try Task.checkCancellation()
             try await context?.checkCancellation()
-            _ = try approvals.validate(approval, facade: facade, reservation: reservation)
+            _ = try approvals.validate(approval, facade: facade, reservation: reservation,
+                keywordReservation: keywordReservation)
             let request = try plans.requestForDraftExecution(planID: approval.planID,
-                facade: facade, reservation: reservation)
+                facade: facade, reservation: reservation, keywordReservation: keywordReservation)
             let configuration = try facade.authorizationStore.load()
             let snapshot = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
             let baseline = try MCPMetadataSnapshotReader.read(snapshot).resolution.metadata
@@ -102,10 +107,12 @@ nonisolated struct MCPIPTCPatchExecutionService: Sendable {
             try await context?.markEffectsMayHaveOccurred()
             try Task.checkCancellation()
             try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
-            _ = try approvals.validate(approval, facade: facade, reservation: reservation, consumeForDraft: true)
+            _ = try approvals.validate(approval, facade: facade, reservation: reservation,
+                consumeForDraft: true, keywordReservation: keywordReservation)
             saveMayHaveOccurred = true
             sidecarURL = try facade.installPendingDraft(data: stagedBytes, expected: snapshot, reservation: reservation,
-                beforeMutation: { _ in try plans.validateKeywordAuthorityForExecution(planID: approval.planID) })
+                beforeMutation: { _ in try plans.validateKeywordAuthorityForExecution(planID: approval.planID,
+                    keywordReservation: keywordReservation) })
             try hooks.afterSave()
             // Cancellation after install cannot skip verification or become a no-effects claim.
             let after = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }

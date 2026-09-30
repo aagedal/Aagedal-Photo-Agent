@@ -888,6 +888,8 @@ enum KeywordListsArchive {
             guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
 
             do {
+                let reservation = try MCPKeywordListReservation.acquire(for: [route.destinationURL])
+                defer { reservation.release() }
                 let importedText = try String(contentsOf: fileURL, encoding: .utf8)
                 let committedText: String
                 let committedEntryCount: Int
@@ -918,6 +920,7 @@ enum KeywordListsArchive {
                         + (finalEntries.isEmpty ? "" : "\n")
                     committedEntryCount = finalEntries.count
                 }
+                try reservation.validate(for: route.destinationURL)
                 try CloudCoordinatedIO.writeText(committedText, to: route.destinationURL)
                 committedItems.append(KeywordListsArchiveImportCommit.Item(
                     identifier: route.identifier,

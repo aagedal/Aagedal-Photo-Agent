@@ -113,14 +113,17 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     }
 
     private func revalidatedPlan(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date,
-                                 reservation: MCPProcessReservationLease? = nil) throws -> Plan {
+                                 reservation: MCPProcessReservationLease? = nil,
+                                 keywordReservation supplied: MCPKeywordAuthority.Reservation? = nil) throws -> Plan {
         guard Set(arguments.keys) == ["planID"], let id = arguments["planID"]?.stringValue,
               let uuid = UUID(uuidString: id), uuid.uuidString.lowercased() == id else {
             throw Failure.invalidArguments
         }
         let plan = try lookup(id: id, now: now)
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
-        let keywords = plan.request.editsKeywords ? try keywordAuthority.capture() : nil
+        let keywordReservation = try supplied ?? (plan.request.editsKeywords ? keywordAuthority.acquireReservation() : nil)
+        defer { if supplied == nil { keywordReservation?.release() } }
+        let keywords = plan.request.editsKeywords ? try keywordAuthority.capture(reservation: keywordReservation) : nil
         if let keywords, plan.preview.objectValue?["keywordAuthority"] != keywords.evidence { throw Failure.stalePlan }
         let current = try facade.withPhotoSnapshot(path: plan.request.path, reservation: reservation) { snapshot in
             do {
@@ -133,7 +136,7 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
             }
         }
         guard current == plan.preview else { throw Failure.stalePlan }
-        if let keywords { try keywordAuthority.revalidate(keywords) }
+        if let keywords { try keywordAuthority.revalidate(keywords, reservation: keywordReservation) }
         guard try facade.authorizationStore.load() == plan.configuration else { throw Failure.authorityChanged }
         // Production wall clock can pass the deadline while a large photo is being decoded.
         _ = try lookup(id: id, now: max(now, Date()))
@@ -157,9 +160,11 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     /// Helper requirements inspection exposes the digest only as comparison evidence;
     /// neither the binding nor its digest grants native consent or write capability.
     func localApprovalBinding(planID: String, facade: MCPAutomationFacade, now: Date,
-                              reservation: MCPProcessReservationLease? = nil) throws
+                              reservation: MCPProcessReservationLease? = nil,
+                              keywordReservation: MCPKeywordAuthority.Reservation? = nil) throws
         -> (preview: MCPJSONValue, digest: String, expiresAt: Date) {
-        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade, now: now, reservation: reservation)
+        let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade, now: now,
+                                       reservation: reservation, keywordReservation: keywordReservation)
         struct Binding: Encodable {
             let preview: MCPJSONValue
             let configuration: MCPAuthorizationConfiguration
@@ -175,21 +180,36 @@ nonisolated final class MCPIPTCPatchPlanStore: @unchecked Sendable {
     /// Only the retained native draft executor uses this typed intent. No caller-provided
     /// replacement fields can be substituted after exact-plan consent.
     func requestForDraftExecution(planID: String, facade: MCPAutomationFacade,
-                                  reservation: MCPProcessReservationLease) throws -> MCPIPTCPatchPreparation.Request {
+                                  reservation: MCPProcessReservationLease,
+                                  keywordReservation: MCPKeywordAuthority.Reservation? = nil) throws -> MCPIPTCPatchPreparation.Request {
         let plan = try revalidatedPlan(arguments: ["planID": .string(planID)], facade: facade,
-                            now: Date(), reservation: reservation)
+                            now: Date(), reservation: reservation, keywordReservation: keywordReservation)
         guard plan.request.editsKeywords else { return plan.request }
-        let keywords = try keywordAuthority.capture()
+        let keywords = try keywordAuthority.capture(reservation: keywordReservation)
         guard plan.preview.objectValue?["keywordAuthority"] == keywords.evidence else { throw Failure.stalePlan }
         return try plan.request.evaluatingKeywords(keywords.policy)
     }
 
     /// Recheck only keyword authority at each native mutation boundary, including after
     /// an earlier carrier was installed. Consent and photo admission remain the executor's job.
-    func validateKeywordAuthorityForExecution(planID: String) throws {
+    func acquireKeywordAuthorityReservationForExecution(planID: String) throws -> MCPKeywordAuthority.Reservation? {
+        let plan = try lookup(id: planID, now: Date())
+        guard plan.request.editsKeywords else { return nil }
+        let reservation = try keywordAuthority.acquireReservation()
+        do {
+            try validateKeywordAuthorityForExecution(planID: planID, keywordReservation: reservation)
+            return reservation
+        } catch {
+            reservation.release()
+            throw error
+        }
+    }
+
+    func validateKeywordAuthorityForExecution(planID: String,
+                                             keywordReservation: MCPKeywordAuthority.Reservation? = nil) throws {
         let plan = try lookup(id: planID, now: Date())
         guard plan.request.editsKeywords else { return }
-        guard try keywordAuthority.capture().evidence == plan.preview.objectValue?["keywordAuthority"] else {
+        guard try keywordAuthority.capture(reservation: keywordReservation).evidence == plan.preview.objectValue?["keywordAuthority"] else {
             throw Failure.stalePlan
         }
         _ = try lookup(id: planID, now: Date())

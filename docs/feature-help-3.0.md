@@ -126,6 +126,10 @@ unapproved values; accepted values use the same spelling and duplicate handling 
 The preview keeps your exact requested text. Changing the list or its settings requires a new
 preview and review. Changes made in the app invalidate old plans even if you change the setting
 back to its earlier value. Keyword patches currently refuse lists routed through iCloud.
+If an app operation is editing the managed list or publishing a keyword patch, a competing
+managed edit or patch refuses the write. Retry after the first operation finishes. A failed
+settings update keeps its previous value and requires a successful retry before keyword
+authority is available again.
 
 The schema-3 result shows production-normalized before/after values, exact `sourceValue` and
 `requestedValue`, each field's comparison rule, edited-field legacy IPTC byte-limit warnings, a content-bound

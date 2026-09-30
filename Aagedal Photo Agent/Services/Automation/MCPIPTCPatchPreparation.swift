@@ -135,14 +135,16 @@ nonisolated enum MCPIPTCPatchPreparation {
         let configuration = try facade.authorizationStore.load()
         let createdAt = Date()
         let authority = plans?.keywordAuthority ?? keywordAuthority
-        let keywords = request.editsKeywords ? try authority.capture() : nil
+        let keywordReservation = request.editsKeywords ? try authority.acquireReservation() : nil
+        defer { keywordReservation?.release() }
+        let keywords = request.editsKeywords ? try authority.capture(reservation: keywordReservation) : nil
         let result = try facade.withPhotoSnapshot(path: request.path) { snapshot in
             // Compare before parsing expensive carrier content, while descriptors and lease remain held.
             try checkRevisions(request, source: snapshot.sourceRevision,
                 xmp: snapshot.xmpSidecarRevision, app: snapshot.appSidecarRevision)
             return try preview(request: request, snapshot: snapshot, now: createdAt, keywordAuthority: keywords)
         }
-        if let keywords { try authority.revalidate(keywords) }
+        if let keywords { try authority.revalidate(keywords, reservation: keywordReservation) }
         guard let plans else { return result }
         // Publish only after the retained snapshot's final carrier and authorization checks.
         guard try facade.authorizationStore.load() == configuration else {
@@ -365,6 +367,57 @@ nonisolated enum MCPIPTCPatchPreparation {
 /// retain a generation, including changes away and back. This is not write permission.
 /// The captured policy uses shared GUI canonical rules, treating all MCP inputs as user input.
 /// Kept in the helper's existing compilation unit to avoid a GUI-store dependency.
+nonisolated final class MCPKeywordListReservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var leases: [MCPProcessReservationLease]
+    private let paths: [String: String]
+
+    private init(leases: [MCPProcessReservationLease], paths: [String: String]) {
+        self.leases = leases
+        self.paths = paths
+    }
+
+    static func acquire(for urls: [URL]) throws -> MCPKeywordListReservation {
+        var paths: [String: String] = [:]
+        for url in urls {
+            guard url.isFileURL, url.path.hasPrefix("/"), !url.path.contains("\0") else {
+                throw MCPProcessReservationError.unavailable
+            }
+            // Foundation's standardizedFileURL may change its spelling after a missing
+            // leaf is created. Keep the caller's stable lexical URL as the coverage key.
+            paths[url.path] = try MCPProcessReservation.canonicalManagedListPath(url)
+        }
+        var leases: [MCPProcessReservationLease] = []
+        do {
+            let distinct = Dictionary(paths.values.map { ($0.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+            for key in distinct.keys.sorted() {
+                let path = distinct[key]!
+                leases.append(try MCPProcessReservation.acquireManagedList(URL(fileURLWithPath: path)))
+            }
+            let result = MCPKeywordListReservation(leases: leases, paths: paths)
+            for url in urls { try result.validate(for: url) }
+            return result
+        } catch {
+            for lease in leases.reversed() { lease.release() }
+            throw error
+        }
+    }
+
+    func validate(for url: URL) throws {
+        let canonical = try MCPProcessReservation.canonicalManagedListPath(url)
+        guard lock.withLock({ !leases.isEmpty && paths[url.path] == canonical }) else {
+            throw MCPProcessReservationError.unavailable
+        }
+    }
+
+    func release() {
+        let held = lock.withLock { let held = leases; leases.removeAll(); return held }
+        for lease in held.reversed() { lease.release() }
+    }
+
+    deinit { release() }
+}
+
 nonisolated struct MCPKeywordAuthority: Sendable {
     enum Failure: String, LocalizedError {
         case unavailable = "keyword_authority_unavailable"
@@ -387,11 +440,45 @@ nonisolated struct MCPKeywordAuthority: Sendable {
         let iCloudEnabled: Bool
         let listURL: URL
         var settingsGeneration: String = "legacy-untracked"
+        /// Production configuration always supplies the stable preference domain.
+        /// Injected configurations may omit it to isolate synthetic filesystem tests.
+        var settingsReservationID: String? = nil
     }
 
     struct Snapshot: Sendable, Equatable {
         let evidence: MCPJSONValue
         let policy: ApprovedKeywordPolicyValues
+    }
+
+    final class Reservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var settingsLease: MCPProcessReservationLease?
+        private var listLease: MCPKeywordListReservation?
+        fileprivate let configuration: Configuration
+
+        fileprivate init(configuration: Configuration, settingsLease: MCPProcessReservationLease?,
+                         listLease: MCPKeywordListReservation) {
+            self.configuration = configuration
+            self.settingsLease = settingsLease
+            self.listLease = listLease
+        }
+
+        fileprivate func validate(_ current: Configuration) throws {
+            guard current == configuration else { throw Failure.changed }
+            try lock.withLock {
+                guard let listLease else { throw Failure.unavailable }
+                try listLease.validate(for: current.listURL)
+            }
+        }
+
+        func release() {
+            let held = lock.withLock { () -> (MCPProcessReservationLease?, MCPKeywordListReservation?) in
+                let held = (settingsLease, listLease); settingsLease = nil; listLease = nil; return held
+            }
+            held.1?.release(); held.0?.release()
+        }
+
+        deinit { release() }
     }
 
     var resolveConfiguration: @Sendable () throws -> Configuration = Self.configured
@@ -408,8 +495,10 @@ nonisolated struct MCPKeywordAuthority: Sendable {
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             throw Failure.unavailable
         }
-        return try configured(values: values,
+        var configuration = try configured(values: values,
             listURL: support.appendingPathComponent("Aagedal Photo Agent/Lists/approved/keywords.txt"))
+        configuration.settingsReservationID = MCPServerConstants.preferencesSuiteName
+        return configuration
     }
 
     /// Also used by isolated preference tests; never writes or initializes history.
@@ -421,12 +510,30 @@ nonisolated struct MCPKeywordAuthority: Sendable {
             iCloudEnabled: settings.iCloudEnabled, listURL: listURL, settingsGeneration: generation)
     }
 
-    func capture() throws -> Snapshot {
+    func acquireReservation() throws -> Reservation {
         let configuration = try resolveConfiguration()
         guard !configuration.iCloudEnabled,
               ["suggest", "warn", "strict"].contains(configuration.mode) else { throw Failure.unavailable }
+        let settingsLease = try configuration.settingsReservationID.map { try MCPProcessReservation.acquireKeywordSettings($0) }
+        do {
+            let listLease = try MCPKeywordListReservation.acquire(for: [configuration.listURL])
+            let reservation = Reservation(configuration: configuration, settingsLease: settingsLease, listLease: listLease)
+            try reservation.validate(try resolveConfiguration())
+            return reservation
+        } catch {
+            settingsLease?.release()
+            throw error
+        }
+    }
+
+    func capture(reservation supplied: Reservation? = nil) throws -> Snapshot {
+        let reservation = try supplied ?? acquireReservation()
+        defer { if supplied == nil { reservation.release() } }
+        let configuration = try resolveConfiguration()
+        try reservation.validate(configuration)
         let list = try Self.read(configuration.listURL)
         try checkpoint()
+        try reservation.validate(try resolveConfiguration())
         guard try resolveConfiguration() == configuration,
               try Self.read(configuration.listURL) == list else { throw Failure.changed }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -449,8 +556,8 @@ nonisolated struct MCPKeywordAuthority: Sendable {
         ]), policy: policy)
     }
 
-    func revalidate(_ snapshot: Snapshot) throws {
-        guard try capture() == snapshot else { throw Failure.changed }
+    func revalidate(_ snapshot: Snapshot, reservation: Reservation? = nil) throws {
+        guard try capture(reservation: reservation) == snapshot else { throw Failure.changed }
     }
 
     private static func digest(_ data: Data) -> String {
@@ -577,13 +684,17 @@ nonisolated enum MCPKeywordSettingsHistory {
     /// App setters are serialized on MainActor. The injected checkpoint/synchronizer
     /// permit interruption tests without changing production preferences or disk files.
     @MainActor
+    @discardableResult
     static func set(_ value: Any, forKey key: String, defaults: UserDefaults,
                     synchronize: ((UserDefaults) -> Bool)? = nil,
-                    checkpoint: (() throws -> Void)? = nil) {
+                    checkpoint: (() throws -> Void)? = nil,
+                    reservationID: String = MCPServerConstants.preferencesSuiteName) -> Bool {
         guard settingKeys.contains(key) else {
             defaults.set(value, forKey: key)
-            return
+            return true
         }
+        guard let reservation = try? MCPProcessReservation.acquireKeywordSettings(reservationID) else { return false }
+        defer { reservation.release() }
         let sync = synchronize ?? { $0.synchronize() }
         let generation = UUID()
         func retain(pending: Bool) -> Bool {
@@ -600,12 +711,21 @@ nonisolated enum MCPKeywordSettingsHistory {
             defaults.set(data, forKey: historyKey)
             return sync(defaults)
         }
-        guard retain(pending: true) else { return }
-        do { try checkpoint?() } catch { return }
+        guard retain(pending: true) else { return false }
+        do { try checkpoint?() } catch { return false }
+        let previousValue = defaults.object(forKey: key)
+        func rollback() {
+            if let previousValue { defaults.set(previousValue, forKey: key) }
+            else { defaults.removeObject(forKey: key) }
+            // Keep authority revoked even if the best-effort rollback synchronization
+            // fails. Never reinstall the old ready envelope after a failed transition.
+            _ = retain(pending: true)
+        }
         defaults.set(value, forKey: key)
         let settingsSynchronized = sync(defaults)
-        guard settingsSynchronized else { return }
-        if !retain(pending: false) { _ = retain(pending: true) }
+        guard settingsSynchronized else { rollback(); return false }
+        if !retain(pending: false) { rollback(); return false }
+        return true
     }
 }
 

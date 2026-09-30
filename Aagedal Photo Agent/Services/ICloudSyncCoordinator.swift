@@ -808,7 +808,11 @@ final class ICloudSyncCoordinator {
                 pendingKeywordListsEnabled = nil
                 switch result {
                 case .committed(let commit):
-                    KeywordListsStore.shared.applyICloudRoutingPreference(on, resolvedRoot: commit.destinationURL)
+                    guard KeywordListsStore.shared.applyICloudRoutingPreference(on, resolvedRoot: commit.destinationURL) else {
+                        lastError = "Could not update keyword-list routing while another operation owns its settings. Retry after it finishes."
+                        bump()
+                        return
+                    }
                     if on {
                         KeywordListsCloudCoordinator.shared.refresh(resolvedRoot: commit.destinationURL)
                     } else {

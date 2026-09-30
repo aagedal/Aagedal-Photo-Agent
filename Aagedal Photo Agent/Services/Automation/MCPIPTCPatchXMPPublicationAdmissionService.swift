@@ -14,18 +14,21 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         let planID: String
         let targetPath: String
         fileprivate let reservation: MCPProcessReservationLease
+        fileprivate let keywordReservation: MCPKeywordAuthority.Reservation?
         fileprivate let snapshot: MCPPhotoCarrierSnapshot
         fileprivate let material: MCPIPTCPatchXMPRecoveryStore.Material
 
         fileprivate init(operationID: UUID, planID: String, targetPath: String,
                          reservation: MCPProcessReservationLease, snapshot: MCPPhotoCarrierSnapshot,
-                         material: MCPIPTCPatchXMPRecoveryStore.Material) {
+                         material: MCPIPTCPatchXMPRecoveryStore.Material,
+                         keywordReservation: MCPKeywordAuthority.Reservation?) {
             self.operationID = operationID; self.planID = planID; self.targetPath = targetPath
             self.reservation = reservation; self.snapshot = snapshot; self.material = material
+            self.keywordReservation = keywordReservation
         }
 
-        func release() { reservation.release() }
-        deinit { reservation.release() }
+        func release() { reservation.release(); keywordReservation?.release() }
+        deinit { reservation.release(); keywordReservation?.release() }
     }
 
     struct Hooks: Sendable {
@@ -80,7 +83,10 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         defer { if !admitted { approvals.revoke(approval) } }
         try Task.checkCancellation()
         try await context.checkCancellation()
-        let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: Date())
+        let keywordReservation = try plans.acquireKeywordAuthorityReservationForExecution(planID: approval.planID)
+        defer { if !admitted { keywordReservation?.release() } }
+        let binding = try plans.localApprovalBinding(planID: approval.planID, facade: facade, now: Date(),
+            keywordReservation: keywordReservation)
         guard let path = binding.preview.objectValue?["canonicalPath"]?.stringValue else {
             throw MCPIPTCPatchPlanStore.Failure.invalidArguments
         }
@@ -90,7 +96,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
             let result = try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: photo)) { @MetadataSidecarFilesystemActor in
                 try cancellation.check()
                 return try await prepare(approval, photo: photo, reservation: reservation,
-                    context: context, cancellation: cancellation)
+                    keywordReservation: keywordReservation, context: context, cancellation: cancellation)
             }
             admitted = true
             return result
@@ -103,9 +109,11 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
     @MetadataSidecarFilesystemActor
     private func prepare(_ approval: MCPIPTCPatchXMPPublicationApprovalStore.Approval, photo: URL,
                          reservation: MCPProcessReservationLease,
+                         keywordReservation: MCPKeywordAuthority.Reservation?,
                          context: AutomationOperationExecutionCoordinator.Context,
                          cancellation: Cancellation) async throws -> Admission {
-        let request = try plans.requestForDraftExecution(planID: approval.planID, facade: facade, reservation: reservation)
+        let request = try plans.requestForDraftExecution(planID: approval.planID, facade: facade,
+            reservation: reservation, keywordReservation: keywordReservation)
         let configuration = try facade.authorizationStore.load()
         guard let authorizationRevision = configuration.authorizationRevision else {
             throw Failure.missingAuthorizationRevision
@@ -139,7 +147,7 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
             stagedPhoto: stagedPhoto, staging: staging)
         let targetPath = service.sidecarURL(for: photo).path
         try approvals.validate(approval, candidate: candidate, mode: .xmpSidecar, targetPath: targetPath,
-            facade: facade, reservation: reservation)
+            facade: facade, reservation: reservation, keywordReservation: keywordReservation)
         try await context.checkCancellation()
         try cancellation.check()
         try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
@@ -158,10 +166,12 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
         try AutomationDraftEditorAdmission.shared.requireUnselected(photo)
         try cancellation.checking {
             try approvals.validate(approval, candidate: candidate, mode: .xmpSidecar, targetPath: targetPath,
-                facade: facade, reservation: reservation, consumeForPublication: true)
+                facade: facade, reservation: reservation, consumeForPublication: true,
+                keywordReservation: keywordReservation)
         }
         return Admission(operationID: context.operationID, planID: approval.planID,
-            targetPath: targetPath, reservation: reservation, snapshot: snapshot, material: material)
+            targetPath: targetPath, reservation: reservation, snapshot: snapshot, material: material,
+            keywordReservation: keywordReservation)
     }
 
     private final class Effects: @unchecked Sendable {
@@ -214,7 +224,8 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                                 guard material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                                 else { throw Failure.verification }
                             }
-                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID)
+                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID,
+                                keywordReservation: admission.keywordReservation)
                         }, afterInstall: { installed in
                             try recovery.recordInstalled(material,
                                 installed: .init(xmpRevision: installed.xmpSidecarRevision, appRevision: nil)) {
@@ -246,7 +257,8 @@ nonisolated struct MCPIPTCPatchXMPPublicationAdmissionService: Sendable {
                                 guard material.binding.authorizationRevision == (try facade.authorizationStore.load()).authorizationRevision
                                 else { throw Failure.verification }
                             }
-                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID)
+                            try plans.validateKeywordAuthorityForExecution(planID: admission.planID,
+                                keywordReservation: admission.keywordReservation)
                         }, afterInstall: { installed in
                             try hooks.beforeAppReceipt()
                             try recovery.recordInstalled(material,

@@ -385,6 +385,68 @@ private extension MCPJSONValue {
 
 @Suite("Exact Approved Keywords authority")
 struct MCPKeywordAuthoritySnapshotTests {
+    @Test("Missing list aliases contend before creation and retain reservation identity after creation")
+    func absentListAliases() throws {
+        let (root, _, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let real = root.appendingPathComponent("real")
+        let alias = root.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        let actual = real.appendingPathComponent("nested/keywords.txt")
+        let routed = alias.appendingPathComponent("nested/keywords.txt")
+        #expect(!FileManager.default.fileExists(atPath: actual.path))
+        let initialCanonicalPath = try MCPProcessReservation.canonicalManagedListPath(routed)
+        #expect(initialCanonicalPath == (try MCPProcessReservation.canonicalManagedListPath(actual)))
+        let held = try MCPKeywordListReservation.acquire(for: [routed])
+        defer { held.release() }
+        #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [actual]) }
+        try FileManager.default.createDirectory(at: actual.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("Oslo\n".utf8).write(to: actual)
+        #expect(try MCPProcessReservation.canonicalManagedListPath(routed) == initialCanonicalPath)
+        let nativeCanonical = try #require(realpath(actual.path, nil))
+        defer { free(nativeCanonical) }
+        #expect(try MCPProcessReservation.canonicalManagedListPath(routed) == String(cString: nativeCanonical))
+        try held.validate(for: routed)
+        #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [actual]) }
+    }
+    @Test("Authority execution reservation holds list and settings until explicit release")
+    func retainedAuthorityReservation() throws {
+        let (root, list, base) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration: MCPKeywordAuthority.Configuration = {
+            var value = base; value.settingsReservationID = UUID().uuidString; return value
+        }()
+        try Data("Oslo\n".utf8).write(to: list)
+        let authority = MCPKeywordAuthority(resolveConfiguration: { configuration })
+        let reservation = try authority.acquireReservation()
+        defer { reservation.release() }
+        let snapshot = try authority.capture(reservation: reservation)
+        try authority.revalidate(snapshot, reservation: reservation)
+        #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+        #expect(throws: MCPProcessReservationError.busy) {
+            try MCPProcessReservation.acquireKeywordSettings(configuration.settingsReservationID!)
+        }
+        reservation.release()
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try authority.capture(reservation: reservation) }
+        let next = try authority.acquireReservation(); next.release()
+    }
+
+    @Test("Managed list reservations deduplicate, coexist with photo leases, and release partial acquisition")
+    func listNamespaceAndPartialRelease() throws {
+        let (root, list, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = try MCPProcessReservation.acquirePhoto(root.appendingPathComponent("photo.jpg"))
+        defer { photo.release() }
+        let second = root.appendingPathComponent("z.txt")
+        let held = try MCPKeywordListReservation.acquire(for: [second, second])
+        defer { held.release() }
+        #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list, second]) }
+        let recovered = try MCPKeywordListReservation.acquire(for: [list, list]); recovered.release()
+        held.release()
+        let combined = try MCPKeywordListReservation.acquire(for: [second, list]); combined.release()
+    }
+
     private func fixture() throws -> (URL, URL, MCPKeywordAuthority.Configuration) {
         let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
         defer { free(canonical) }
@@ -504,6 +566,24 @@ struct MCPKeywordAuthoritySnapshotTests {
 @Suite("Cooperative Approved Keywords settings history")
 @MainActor
 struct MCPKeywordSettingsHistoryTests {
+    @Test("A held settings reservation refuses preference and history mutation without invoking synchronization")
+    func reservedSettingsRefusal() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults,
+                                             reservationID: suite))
+        let before = defaults.dictionaryRepresentation()
+        let held = try MCPProcessReservation.acquireKeywordSettings(suite)
+        defer { held.release() }
+        #expect(!MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults,
+            synchronize: { _ in Issue.record("Reserved preference mutation synchronized"); return true },
+            reservationID: suite))
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == "strict")
+        #expect(defaults.data(forKey: MCPKeywordSettingsHistory.historyKey) == before[MCPKeywordSettingsHistory.historyKey] as? Data)
+        held.release()
+        #expect(MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults,
+                                             reservationID: suite))
+    }
     private func defaults() throws -> (String, UserDefaults) {
         let suite = "com.aagedal.photo-agent.tests.keyword-history.\(UUID().uuidString)"
         return (suite, try #require(UserDefaults(suiteName: suite)))
@@ -619,8 +699,27 @@ struct MCPKeywordSettingsHistoryTests {
                 syncs += 1
                 return syncs != failingBoundary
             })
-        #expect(defaults.string(forKey: "approvedList.keywords.mode") == (failingBoundary == 1 ? nil : "strict"))
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == nil)
         #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+    }
+
+    @Test("Failed installed-setting synchronization restores the prior value and retains pending authority", arguments: [2, 3], [false, true])
+    func synchronizationRollsBack(_ failingBoundary: Int, subsequentSyncFails: Bool) throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults))
+        let before = try configuration(defaults)
+        var syncs = 0
+        let installed = MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults,
+            synchronize: { _ in
+                syncs += 1
+                return subsequentSyncFails ? syncs < failingBoundary : syncs != failingBoundary
+            })
+        #expect(!installed)
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == "strict")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        #expect(MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults))
+        #expect(try configuration(defaults).settingsGeneration != before.settingsGeneration)
     }
 
     @Test("A failed pending synchronization never changes an existing setting")

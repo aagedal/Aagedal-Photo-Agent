@@ -28,6 +28,7 @@ struct UITestLaunchConfiguration {
     let whisperDefaultsSuite: String?
     let patchReviewFolderURL: URL?
     let patchReviewRequested: Bool
+    let keywordPatchRequested: Bool
     let operationRecoveryRequested: Bool
     let xmpStagingInterruptionRequested: Bool
     let xmpPublicationInterruptionRequested: Bool
@@ -66,6 +67,7 @@ struct UITestLaunchConfiguration {
         resumePatchRecoveryRequested = isEnabled && arguments.contains("--ui-test-resume-patch-recovery")
         existingRecoveryCarriersRequested = isEnabled && arguments.contains("--ui-test-existing-recovery-carriers")
         patchReviewRequested = isEnabled && arguments.contains("--ui-test-patch-review-folder")
+        keywordPatchRequested = isEnabled && arguments.contains("--ui-test-keyword-patch")
         patchReviewFolderURL = isEnabled
             ? value(after: "--ui-test-patch-review-folder").map { URL(fileURLWithPath: $0) }
             : nil

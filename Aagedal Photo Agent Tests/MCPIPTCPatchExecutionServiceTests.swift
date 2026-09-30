@@ -165,6 +165,40 @@ struct MCPIPTCPatchExecutionServiceTests {
         #expect(try Data(contentsOf: fixture.photo) == fixture.original)
     }
 
+    @Test("Keyword draft retains managed-list ownership through installed-byte verification", arguments: [false, true])
+    func keywordReservationLifetime(interrupted: Bool) async throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let (store, approval) = try approved(fixture)
+        let list = fixture.root.appendingPathComponent("approved.txt")
+        let originalList = try Data(contentsOf: list)
+        let service = MCPIPTCPatchExecutionService(plans: fixture.plans, approvals: store, facade: fixture.facade,
+            hooks: .init(beforeAdmission: {
+                #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+            }, afterSave: {
+                #expect(throws: MCPProcessReservationError.busy) { try MCPKeywordListReservation.acquire(for: [list]) }
+                if interrupted { throw CocoaError(.fileReadCorruptFile) }
+            }))
+        let result = await service.applyToPendingDraft(approval)
+        #expect(result.outcome == (interrupted ? .uncertain : .draftSaved))
+        #expect(try Data(contentsOf: list) == originalList)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        let released = try MCPKeywordListReservation.acquire(for: [list])
+        released.release()
+    }
+
+    @Test("An active managed-list writer refuses draft execution before any save")
+    func keywordWriterBusy() async throws {
+        let fixture = try Fixture(keywordValues: ["Oslo"])
+        let (store, approval) = try approved(fixture)
+        let lease = try MCPKeywordListReservation.acquire(for: [fixture.root.appendingPathComponent("approved.txt")])
+        defer { lease.release() }
+        let result = await MCPIPTCPatchExecutionService(plans: fixture.plans, approvals: store, facade: fixture.facade)
+            .applyToPendingDraft(approval)
+        #expect(result.outcome == .refused)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
     @Test("Final keyword admission still checks policy after another carrier has changed")
     func finalKeywordBoundary() throws {
         let fixture = try Fixture(keywordValues: ["Oslo"])
