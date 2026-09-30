@@ -150,6 +150,20 @@ These are read-only plans: no commit endpoint is available, actual write support
 publication approval are not yet verified, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
 
+A client can queue a native review with `request_iptc_patch_review`, supplying a new lowercase
+UUID `requestID`, the retained `planID`, and purpose `pendingDraft` or `xmpPublication`. Open
+**Settings → Automation → Proofreading Plan Review → Show Client Review Requests**, then
+**Refresh Review Requests** and **Inspect Requested Plan**. This rechecks the current plan and
+clears any earlier approval. Review and explicitly approve the requested action; requests do not
+provide consent. You can also **Cancel Review Request** before admission.
+
+`get_native_review_request` returns durable request status and, after native admission, its exact
+operation ID for `get_operation_status`. Retry with the same request ID and identical plan/purpose
+to retrieve status after helper restart. `cancel_native_review_request` cancels an awaiting request
+or requests cooperative cancellation of linked work. An unknown admission cannot be replayed;
+inspect operation history and recovery before preparing another request. The archive retains up to
+256 requests without automatic eviction, including cancelled requests.
+
 To inspect a plan in Photo Agent, open **Settings → Automation → Proofreading Plan Review**,
 paste its exact `planID`, and choose **Inspect Plan**. The app rechecks the current authorization
 and photo/sidecar revisions on a background worker before displaying normalized before/proposed

@@ -1649,6 +1649,16 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 108 continuation (2026-09-30):** The helper can persist an intent-only native review
+request for an exact retained IPTC plan, inspect its durable status and request cancellation.
+Settings refresh/selection rechecks the plan and clears prior consent; explicit native approval
+and application remain separate. Request admission persists before enqueue, the operation link
+persists before work starts, and cancellation reaches the existing safe execution boundaries.
+Interrupted admissions remain unknown and cannot be replayed. The bounded private request archive
+retains idempotency records without eviction. Authenticated IPC/helper commits and broader
+production executors remain open; this does not close a whole Phase 5A checkbox. See
+[cycle 108 evidence](release/cycle-108-native-review-request-handoff-2026-09-30.md).
+
 **Cycle 107 continuation (2026-09-30):** Managed keyword/list edits, imports, backup
 restores, migration and route reconciliation now share cross-process reservations before mutation
 baselines. Keyword plan inspection and native draft/XMP publication retain settings/list ownership

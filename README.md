@@ -123,7 +123,14 @@ the support table and validation records.
   the editor's Strict policy, canonical spelling and duplicate handling. iCloud keyword lists
   are not yet supported by patch previews. `get_iptc_patch_plan` revalidates the retained preview
   and keyword authority. These expiring read-only plans survive helper restart in a bounded
-  private local archive but cannot be committed by MCP. Settings can explicitly apply an approved
+  private local archive but cannot be committed by MCP. `request_iptc_patch_review` queues a
+  durable request with a new lowercase UUID `requestID`, the `planID`, and purpose `pendingDraft`
+  or `xmpPublication`. In Settings → Automation → Show Client Review Requests, refresh and inspect the
+  request, then explicitly approve and apply it. `get_native_review_request` reports the retained
+  intent and linked operation ID; `cancel_native_review_request` cancels before admission or requests
+  cooperative cancellation of linked work. Exact retries retain status across helper restart;
+  requests grant no consent and interrupted admission is never replayed. This private archive retains
+  at most 256 requests without automatic eviction. Settings can explicitly apply an approved
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo
   and XMP. Template application, face,
   transcription, and photo mutation tools remain under implementation for 3.0.

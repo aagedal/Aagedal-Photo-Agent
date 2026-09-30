@@ -2,14 +2,26 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-30
-**Latest implementation state:** [Cycle 107](cycle-107-keyword-writer-coordination-2026-09-30.md) completes cooperative managed keyword/list writer reservations and holds settings/list authority through native draft/XMP verification. Failed settings synchronization restores the prior effective value and retains pending authority; route/cache publication refuses failed transitions. All 80 final affected focused tests, the preceding 208-test run, both native publication/independent-writer workflows, 3,517 serial integrated tests and repository checks pass. Helper consent/commits, iCloud authority, broader production executors and production signed-model integration remain open.
-**Latest native evidence:** Cycle 107 verifies canonical keyword XMP publication and reconciled app history across native relaunch, preserving original photo/list bytes. A separate XCTest runner holds the actual list reservation after native approval; publication refuses before creating XMP, app history or recovery staging. Broader interruption, accessibility and real-volume cases remain open.
-**Implementation commits:** `fa7d005`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
-**Cycle baseline:** `81c059d`, initially clean. No whole release-readiness gate is newly closed.
+**Latest implementation state:** [Cycle 108](cycle-108-native-review-request-handoff-2026-09-30.md) adds durable intent-only helper requests to explicit native review and the existing consent/executor. Requests support exact retries, cancellation and operation linkage; admission precedes enqueue, and linking precedes execution. Unknown admissions cannot replay. Final focused tests pass 119 cases; both native request/approval/cancellation/relaunch workflows, 3,547 serial integrated tests and repository checks pass. Authenticated IPC/helper commits, request capacity recovery, iCloud authority, broader executors and production signed-model integration remain open.
+**Latest native evidence:** Cycle 108 verifies request selection grants no consent, explicit approval saves a verified pending draft and operation link, and pre-admission cancellation prevents draft creation. Both exact request records persist after relaunch with original JPEG bytes and absent XMP unchanged. Broader interruption, accessibility and real-volume cases remain open.
+**Implementation commits:** `a5b4618`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
+**Cycle baseline:** `7a41692`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0f318-cf54-7da2-a515-ce0dad6ee53d`; the earlier coordinator chat below was inspected and inactive.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 108 durable native review request handoff](cycle-108-native-review-request-handoff-2026-09-30.md)
+records 119 passing final focused tests, two passing native UI workflows, independent review,
+repository validation and a 21-tool helper probe. The final serial integrated suite passes
+3,547 tests / 358 suites, zero failures in 160.783 seconds. Intent admission
+and exact operation linkage precede execution; cancellation is checked at safe boundaries.
+Selection grants no consent, interrupted unlinked admissions remain unknown and cannot replay,
+and the private archive retains at most 256 idempotency records without eviction. Explicit native
+review/approval remains required; helper commits and authenticated IPC are unfinished. The first
+integrated run exposed a concrete-service protocol fallback dispatch issue, resolved by matching
+async signatures and the final regression run. Older cycle reports retain their historical gate states.
 
 [Cycle 107 cooperative keyword writer coordination](cycle-107-keyword-writer-coordination-2026-09-30.md) records 80 final affected focused
 tests, the preceding 208-test run, two passing actual native UI workflows, independent review,
@@ -77,14 +89,13 @@ progress/completion, canonical list field references and authenticated rollback-
 Restoration refuses external identity changes and missing receipt evidence; production model and
 workflow integration remain open.
 
-Ordered next implementation actions: durable intent-only helper request handoff to explicit native
-review/consent and retained execution, with idempotent admission and conservative crash/link failure
-handling; authenticated IPC/guarded helper commits and broader native recovery; iCloud keyword
-authority, arbitrary-destination export coverage and independent-process preference/power-loss
-qualification; shared face-scan/template/transcription executors; production signed Whisper
-descriptors, Settings/Caption integration and authenticated missing-ledger/partial-orphan recovery. External interoperability,
-real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact signed-candidate/user
-acceptance gates remain open. No-progress count is zero.
+Ordered next implementation actions: authenticated IPC/guarded helper commits and broader native
+recovery; request archive capacity-recovery/removal protocol and physical crash/link-loss qualification;
+iCloud keyword authority, arbitrary-destination export coverage and independent-process preference/
+power-loss qualification; shared face-scan/template/transcription executors; production signed Whisper
+descriptors, Settings/Caption integration and authenticated missing-ledger/partial-orphan recovery.
+External interoperability, real-server/cloud/hardware/accessibility, privacy/legal, remote-CI and exact
+signed-candidate/user acceptance gates remain open. No-progress count is zero.
 
 [Cycle 97 installed identities, recursive previews and model content recovery](cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md)
 retains preceding installed-carrier receipts and five passing native publication/refusal workflows.
