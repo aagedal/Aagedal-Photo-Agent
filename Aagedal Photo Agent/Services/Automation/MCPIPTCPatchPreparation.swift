@@ -361,9 +361,9 @@ nonisolated enum MCPIPTCPatchPreparation {
 
 }
 
-/// Exact local policy evidence for keyword previews. This is a content fingerprint,
-/// not a monotonic settings revision or permission to mutate. The captured policy
-/// uses the shared GUI canonical rules, with all MCP inputs treated as user input.
+/// Exact local policy evidence for keyword previews. Cooperating app preference writers
+/// retain a generation, including changes away and back. This is not write permission.
+/// The captured policy uses shared GUI canonical rules, treating all MCP inputs as user input.
 /// Kept in the helper's existing compilation unit to avoid a GUI-store dependency.
 nonisolated struct MCPKeywordAuthority: Sendable {
     enum Failure: String, LocalizedError {
@@ -386,6 +386,7 @@ nonisolated struct MCPKeywordAuthority: Sendable {
         let allowStructuredBypass: Bool
         let iCloudEnabled: Bool
         let listURL: URL
+        var settingsGeneration: String = "legacy-untracked"
     }
 
     struct Snapshot: Sendable, Equatable {
@@ -399,25 +400,25 @@ nonisolated struct MCPKeywordAuthority: Sendable {
 
     static func configured() throws -> Configuration {
         let domain = MCPServerConstants.preferencesSuiteName as CFString
-        let keys = ["approvedList.keywords.enabled", "approvedList.keywords.mode",
-                    "approvedList.keywords.allowStructuredBypass", "keywordLists.iCloudEnabled"]
-        guard let values = CFPreferencesCopyMultiple(keys as CFArray, domain,
-            kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any],
+        // The helper must refresh its independent preferences cache before copying both
+        // the effective values and their cooperative generation envelope.
+        guard CFPreferencesAppSynchronize(domain),
+              let values = CFPreferencesCopyMultiple(MCPKeywordSettingsHistory.keys as CFArray, domain,
+                kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any],
               let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             throw Failure.unavailable
         }
-        func bool(_ key: String, fallback: Bool) throws -> Bool {
-            guard let value = values[key] else { return fallback }
-            guard let boolean = value as? Bool else { throw Failure.unavailable }
-            return boolean
-        }
-        let mode = values[keys[1]] as? String ?? "warn"
-        guard values[keys[1]] == nil || values[keys[1]] is String,
-              ["suggest", "warn", "strict"].contains(mode) else { throw Failure.unavailable }
-        return Configuration(enabled: try bool(keys[0], fallback: false), mode: mode,
-            allowStructuredBypass: try bool(keys[2], fallback: true),
-            iCloudEnabled: try bool(keys[3], fallback: false),
+        return try configured(values: values,
             listURL: support.appendingPathComponent("Aagedal Photo Agent/Lists/approved/keywords.txt"))
+    }
+
+    /// Also used by isolated preference tests; never writes or initializes history.
+    static func configured(values: [String: Any], listURL: URL) throws -> Configuration {
+        let settings = try MCPKeywordSettingsHistory.effectiveSettings(values)
+        let generation = try MCPKeywordSettingsHistory.generation(values, settings: settings)
+        return Configuration(enabled: settings.enabled, mode: settings.mode,
+            allowStructuredBypass: settings.allowStructuredBypass,
+            iCloudEnabled: settings.iCloudEnabled, listURL: listURL, settingsGeneration: generation)
     }
 
     func capture() throws -> Snapshot {
@@ -436,9 +437,12 @@ nonisolated struct MCPKeywordAuthority: Sendable {
         } else { entries = [] }
         let policy = ApprovedKeywordPolicyValues(enabled: configuration.enabled, strict: configuration.mode == "strict", entries: entries)
         return Snapshot(evidence: .object([
-            "schemaVersion": .integer(1),
+            "schemaVersion": .integer(2),
+            "settingsGeneration": .string(configuration.settingsGeneration),
             "settingsSHA256": .string(Self.digest(try encoder.encode(configuration))),
-            "settingsComparison": .string("current-effective-content; no historical-change detection"),
+            "settingsComparison": .string(configuration.settingsGeneration == "legacy-untracked"
+                ? "legacy-current-effective-content; no historical-change detection"
+                : "cooperating-app-writer-generation-and-current-effective-content"),
             "managedList": list.evidence,
             "policyEvaluated": .bool(true),
             "keywordSource": .string("user; structured bypass unavailable"),
@@ -516,6 +520,91 @@ nonisolated struct MCPKeywordAuthority: Sendable {
               named.st_dev == after.st_dev, named.st_ino == after.st_ino else { throw Failure.changed }
         return List(evidence: .object(["present": .bool(true), "ancestors": .array(ancestors),
             "identity": identity(after), "byteCount": .integer(Int64(bytes.count)), "sha256": .string(digest(bytes))]), bytes: bytes)
+    }
+}
+
+
+/// Preference history for cooperating app writers, kept in the helper's shared unit.
+/// A synchronized pending envelope precedes the preference mutation; a ready envelope
+/// binds all four effective values after synchronization. A stopped/failed transition
+/// therefore leaves preview authority unavailable instead of reusing an old generation.
+/// Raw preference editors and malicious rollback are outside this cooperative evidence.
+nonisolated enum MCPKeywordSettingsHistory {
+    static let historyKey = "approvedList.keywords.authorityHistory"
+    static let settingKeys = ["approvedList.keywords.enabled", "approvedList.keywords.mode",
+        "approvedList.keywords.allowStructuredBypass", "keywordLists.iCloudEnabled"]
+    static var keys: [String] { settingKeys + [historyKey] }
+
+    struct Settings: Codable, Equatable {
+        let enabled: Bool
+        let mode: String
+        let allowStructuredBypass: Bool
+        let iCloudEnabled: Bool
+    }
+
+    struct Envelope: Codable {
+        let schemaVersion: Int
+        let generation: UUID
+        let pending: Bool
+        let settings: Settings
+    }
+
+    static func effectiveSettings(_ values: [String: Any]) throws -> Settings {
+        func bool(_ key: String, fallback: Bool) throws -> Bool {
+            guard let value = values[key] else { return fallback }
+            // NSNumber bridges arbitrary numbers to Bool. Require an actual CFBoolean.
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) == CFBooleanGetTypeID() else { throw MCPKeywordAuthority.Failure.unavailable }
+            return number.boolValue
+        }
+        let mode = values[settingKeys[1]] as? String ?? "warn"
+        guard values[settingKeys[1]] == nil || values[settingKeys[1]] is String,
+              ["suggest", "warn", "strict"].contains(mode) else { throw MCPKeywordAuthority.Failure.unavailable }
+        return Settings(enabled: try bool(settingKeys[0], fallback: false), mode: mode,
+            allowStructuredBypass: try bool(settingKeys[2], fallback: true),
+            iCloudEnabled: try bool(settingKeys[3], fallback: false))
+    }
+
+    static func generation(_ values: [String: Any], settings: Settings) throws -> String {
+        guard let stored = values[historyKey] else { return "legacy-untracked" }
+        guard let data = stored as? Data,
+              let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
+              envelope.schemaVersion == 1, !envelope.pending,
+              envelope.settings == settings else { throw MCPKeywordAuthority.Failure.unavailable }
+        return envelope.generation.uuidString.lowercased()
+    }
+
+    /// App setters are serialized on MainActor. The injected checkpoint/synchronizer
+    /// permit interruption tests without changing production preferences or disk files.
+    @MainActor
+    static func set(_ value: Any, forKey key: String, defaults: UserDefaults,
+                    synchronize: ((UserDefaults) -> Bool)? = nil,
+                    checkpoint: (() throws -> Void)? = nil) {
+        guard settingKeys.contains(key) else {
+            defaults.set(value, forKey: key)
+            return
+        }
+        let sync = synchronize ?? { $0.synchronize() }
+        let generation = UUID()
+        func retain(pending: Bool) -> Bool {
+            guard let settings = try? effectiveSettings(defaults.dictionaryRepresentation()),
+                  let data = try? JSONEncoder().encode(Envelope(schemaVersion: 1,
+                    generation: generation, pending: pending, settings: settings)) else {
+                // Malformed old settings may be repaired one key at a time. A sentinel
+                // remains unavailable until a fully valid transition completes.
+                defaults.set(Data(), forKey: historyKey)
+                _ = sync(defaults)
+                return false
+            }
+            defaults.set(data, forKey: historyKey)
+            return sync(defaults)
+        }
+        let pendingSynchronized = retain(pending: true)
+        do { try checkpoint?() } catch { return }
+        defaults.set(value, forKey: key)
+        let settingsSynchronized = sync(defaults)
+        guard pendingSynchronized, settingsSynchronized else { return }
+        if !retain(pending: false) { _ = retain(pending: true) }
     }
 }
 

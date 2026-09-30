@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -459,13 +460,14 @@ struct MCPKeywordAuthoritySnapshotTests {
         #expect(throws: MCPKeywordAuthority.Failure.changed) { try service.capture() }
     }
 
-    @Test("Policy settings change evidence; restoring current values restores content evidence")
+    @Test("Legacy settings retain explicit current-content evidence without read-time initialization")
     func settingsContent() throws {
         let (root, list, configuration) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("Oslo\n".utf8).write(to: list)
         let original = MCPKeywordAuthority(resolveConfiguration: { configuration })
         let captured = try original.capture()
+        #expect(captured.evidence.objectValue?["settingsGeneration"] == .string("legacy-untracked"))
         let warn = MCPKeywordAuthority.Configuration(enabled: true, mode: "warn", allowStructuredBypass: true,
             iCloudEnabled: false, listURL: list)
         let changed = MCPKeywordAuthority(resolveConfiguration: { warn })
@@ -495,5 +497,168 @@ struct MCPKeywordAuthoritySnapshotTests {
         let guiWarn = ApprovedKeywordPolicy(enabled: true, mode: .warn, allowStructuredBypass: true, entries: entries)
         #expect(warn.validateBulk(inputs).accepted == guiWarn.validateBulk(inputs).accepted)
         #expect(warn.validateBulk(inputs).accepted == ["Oslo", "unknown"])
+    }
+}
+
+
+@Suite("Cooperative Approved Keywords settings history")
+@MainActor
+struct MCPKeywordSettingsHistoryTests {
+    private func defaults() throws -> (String, UserDefaults) {
+        let suite = "com.aagedal.photo-agent.tests.keyword-history.\(UUID().uuidString)"
+        return (suite, try #require(UserDefaults(suiteName: suite)))
+    }
+
+    private func configuration(_ defaults: UserDefaults) throws -> MCPKeywordAuthority.Configuration {
+        try MCPKeywordAuthority.configured(values: defaults.dictionaryRepresentation(),
+            listURL: URL(fileURLWithPath: "/uncreated-keyword-history-test/keywords.txt"))
+    }
+
+    @Test("GUI changes away and back invalidate captured authority across preference reload")
+    func changeAwayAndBack() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = ApprovedListService(defaults: defaults, startInitialLoad: false, observeChanges: false)
+        service.setEnabled(true, for: .keywords)
+        service.setMode(.strict, for: .keywords)
+        let before = try configuration(defaults)
+        let captured = try MCPKeywordAuthority(resolveConfiguration: { before }).capture()
+        service.setMode(.warn, for: .keywords)
+        service.setMode(.strict, for: .keywords)
+        let reloaded = try #require(UserDefaults(suiteName: suite))
+        let after = try configuration(reloaded)
+        #expect(after.mode == before.mode)
+        #expect(after.settingsGeneration != before.settingsGeneration)
+        #expect(throws: MCPKeywordAuthority.Failure.changed) {
+            try MCPKeywordAuthority(resolveConfiguration: { after }).revalidate(captured)
+        }
+        #expect(captured.evidence.objectValue?["settingsComparison"] ==
+            .string("cooperating-app-writer-generation-and-current-effective-content"))
+    }
+
+    @Test("Independent CFPreferences snapshots bind the app's persisted generation and values")
+    func helperPreferencesSnapshot() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = ApprovedListService(defaults: defaults, startInitialLoad: false, observeChanges: false)
+        service.setEnabled(true, for: .keywords)
+        service.setMode(.strict, for: .keywords)
+        let app = try configuration(defaults)
+        #expect(CFPreferencesAppSynchronize(suite as CFString))
+        let values = try #require(CFPreferencesCopyMultiple(MCPKeywordSettingsHistory.keys as CFArray,
+            suite as CFString, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any])
+        let helper = try MCPKeywordAuthority.configured(values: values, listURL: app.listURL)
+        #expect(helper == app)
+        service.setMode(.warn, for: .keywords)
+        service.setMode(.strict, for: .keywords)
+        #expect(CFPreferencesAppSynchronize(suite as CFString))
+        let updatedValues = try #require(CFPreferencesCopyMultiple(MCPKeywordSettingsHistory.keys as CFArray,
+            suite as CFString, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any])
+        let updated = try MCPKeywordAuthority.configured(values: updatedValues, listURL: app.listURL)
+        #expect(updated.settingsGeneration != helper.settingsGeneration)
+        #expect(updated == (try configuration(defaults)))
+    }
+
+    @Test("All policy setters and local-cloud-local routing retain distinct generations")
+    func cooperatingSetters() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let service = ApprovedListService(defaults: defaults, startInitialLoad: false, observeChanges: false)
+        service.setEnabled(true, for: .keywords)
+        let enabled = try configuration(defaults)
+        service.setAllowStructuredBypass(false, for: .keywords)
+        let bypass = try configuration(defaults)
+        #expect(enabled.settingsGeneration != bypass.settingsGeneration)
+        #expect(!bypass.allowStructuredBypass)
+        let store = KeywordListsStore(defaults: defaults)
+        store.applyICloudRoutingPreference(true)
+        let cloud = try configuration(defaults)
+        #expect(cloud.iCloudEnabled)
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) {
+            try MCPKeywordAuthority(resolveConfiguration: { cloud }).capture()
+        }
+        store.applyICloudRoutingPreference(false)
+        let local = try configuration(defaults)
+        #expect(local.settingsGeneration != bypass.settingsGeneration)
+        #expect(!local.iCloudEnabled)
+    }
+
+    @Test("Other approved fields preserve ordinary preference writes without rotating keyword authority")
+    func unrelatedField() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        let before = try configuration(defaults)
+        MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.personShown.mode", defaults: defaults)
+        #expect(defaults.string(forKey: "approvedList.personShown.mode") == "warn")
+        #expect(try configuration(defaults) == before)
+    }
+
+    @Test("Interruption after pending evidence refuses authority before preference mutation")
+    func interruptedTransition() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        enum Interrupted: Error { case stop }
+        MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults,
+            checkpoint: { throw Interrupted.stop })
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == "strict")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        // A later complete user change repairs the pending transition with a fresh generation.
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        #expect(try configuration(defaults).settingsGeneration != "legacy-untracked")
+    }
+
+    @Test("Failure at any synchronization boundary leaves pending authority", arguments: [1, 2, 3])
+    func synchronizationFailure(_ failingBoundary: Int) throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var syncs = 0
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults,
+            synchronize: { _ in
+                syncs += 1
+                return syncs != failingBoundary
+            })
+        #expect(defaults.string(forKey: "approvedList.keywords.mode") == "strict")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+    }
+
+    @Test("Malformed envelopes and direct unbound setting changes fail closed")
+    func unboundSettings() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        defaults.set("warn", forKey: "approvedList.keywords.mode")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        defaults.set(Data("{}".utf8), forKey: MCPKeywordSettingsHistory.historyKey)
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        defaults.set("foreign", forKey: MCPKeywordSettingsHistory.historyKey)
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+        defaults.removeObject(forKey: MCPKeywordSettingsHistory.historyKey)
+        defaults.set(1, forKey: "approvedList.keywords.enabled")
+        #expect(throws: MCPKeywordAuthority.Failure.unavailable) { try configuration(defaults) }
+    }
+
+    @Test("Generation changes during the capture double-check refuse mixed evidence")
+    func mixedGeneration() throws {
+        let (suite, defaults) = try defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        let first = try configuration(defaults)
+        MCPKeywordSettingsHistory.set("warn", forKey: "approvedList.keywords.mode", defaults: defaults)
+        MCPKeywordSettingsHistory.set("strict", forKey: "approvedList.keywords.mode", defaults: defaults)
+        let second = try configuration(defaults)
+        let sequence = KeywordSettingsConfigurationSequence([first, second])
+        let authority = MCPKeywordAuthority(resolveConfiguration: { sequence.next() })
+        #expect(throws: MCPKeywordAuthority.Failure.changed) { try authority.capture() }
+    }
+}
+
+private nonisolated final class KeywordSettingsConfigurationSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [MCPKeywordAuthority.Configuration]
+    init(_ values: [MCPKeywordAuthority.Configuration]) { self.values = values }
+    func next() -> MCPKeywordAuthority.Configuration {
+        lock.withLock { values.count > 1 ? values.removeFirst() : values[0] }
     }
 }

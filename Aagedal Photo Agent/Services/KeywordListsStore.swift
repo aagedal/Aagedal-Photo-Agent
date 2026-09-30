@@ -240,7 +240,7 @@ final class KeywordListsStore {
     /// publication only changes the preference/cache and invalidates observers.
     func applyICloudRoutingPreference(_ enabled: Bool, resolvedRoot: URL? = nil) {
         if cloudPreference == nil {
-            defaults.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled)
+            MCPKeywordSettingsHistory.set(enabled, forKey: UserDefaultsKeys.keywordListsICloudEnabled, defaults: defaults)
         }
         routingGeneration = UUID()
         cachedRoot = resolvedRoot

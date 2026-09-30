@@ -245,17 +245,17 @@ final class ApprovedListService {
     }
 
     func setEnabled(_ enabled: Bool, for field: ApprovedListField) {
-        defaults.set(enabled, forKey: field.enabledKey)
+        MCPKeywordSettingsHistory.set(enabled, forKey: field.enabledKey, defaults: defaults)
         bumpVersion()
     }
 
     func setMode(_ mode: ApprovedListMode, for field: ApprovedListField) {
-        defaults.set(mode.rawValue, forKey: field.modeKey)
+        MCPKeywordSettingsHistory.set(mode.rawValue, forKey: field.modeKey, defaults: defaults)
         bumpVersion()
     }
 
     func setAllowStructuredBypass(_ enabled: Bool, for field: ApprovedListField) {
-        defaults.set(enabled, forKey: field.allowStructuredBypassKey)
+        MCPKeywordSettingsHistory.set(enabled, forKey: field.allowStructuredBypassKey, defaults: defaults)
         bumpVersion()
     }
 
