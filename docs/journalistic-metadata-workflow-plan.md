@@ -1649,6 +1649,16 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 111 continuation (2026-09-30):** Separate confirmed native cleanup now retires linked
+requests only when exact retained operation identity, kind and timing establish a terminal verified,
+failed, cancelled or stale outcome. Operation history stays locked through request removal and epoch
+rotation; operation and recovery evidence remains unchanged. Every recovery outcome remains retained,
+even after separate restoration. Unavailable history leaves finished eligibility explicitly unavailable
+and preserves cancelled-only cleanup. Both dialogs bind the inspected epoch and cleanup clears consent.
+See [cycle 111 evidence](release/cycle-111-finished-review-request-retirement-2026-09-30.md).
+No whole Phase 5A checkbox closes; authenticated IPC/helper commits, recovery-qualified retirement,
+physical crash/archive-loss evidence and broader executors remain open.
+
 **Cycle 110 continuation (2026-09-30):** Schema-2 native review request epochs now allow
 explicit confirmed cleanup of requests cancelled before admission. Atomic rotation refuses stale
 helper submissions and stale cancellation/admission/uncertainty handles, including reused UUIDs;

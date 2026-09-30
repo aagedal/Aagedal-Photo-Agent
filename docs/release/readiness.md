@@ -2,15 +2,26 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads with field provenance and revision evidence. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-09-30
-**Latest implementation state:** [Cycle 110](cycle-110-native-review-capacity-epochs-2026-09-30.md) adds explicit native cleanup of requests cancelled before admission, atomic archive epoch rotation and original-epoch binding for helper/native handles. Retained active, admitted, linked and uncertain records keep their exact identities and evidence. Cleanup clears consent; passive reads grant none. Final verification passes 3,572 serial integrated tests, three native workflows, repository checks and the 22-tool helper probe. Linked-terminal retirement, physical crash/archive-loss qualification, authenticated IPC/helper commits, iCloud authority, broader executors and signed-model integration remain open.
-**Latest native evidence:** Cycle 110's final three workflows pass separate draft/XMP consent and publication/relaunch checks plus cancelled-before-admission cleanup. Cancelling the cleanup dialog preserves exact archive bytes; confirming rotates the epoch and removes exactly the cancelled record without metadata/operation writes. Relaunch reuses saved authority, waits for the retained request and preserves exact archive/photo bytes. Broader interruption, accessibility and real-volume cases remain open.
-**Implementation commits:** `7d3bc47`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
-**Cycle baseline:** `120f3a3`, initially clean. No whole release-readiness gate is newly closed.
-**Continuation chat:** `01a0f35c-b9d7-7413-a9d0-db654b629e9a`; no other active chat was editing this checkout.
+**Latest implementation state:** [Cycle 111](cycle-111-finished-review-request-retirement-2026-09-30.md) adds separate confirmed native cleanup for linked requests with exact matching terminal verified/failed/cancelled/stale operation evidence. Operation-before-request locks retain current history through retirement and epoch rotation, preserving operation/recovery bytes. All recovery outcomes, missing/mismatched/older history, active work and uncertain admission remain retained. Unavailable history leaves cancelled-only cleanup usable; both dialogs capture the displayed epoch and clear consent before cleanup. Verification passes 3,581 serial integrated tests, three native workflows, repository checks and the 22-tool helper probe. Recovery-qualified retirement, physical crash/archive-loss qualification, authenticated IPC/helper commits, iCloud authority, broader executors and signed-model integration remain open.
+**Latest native evidence:** Cycle 111's final three workflows pass finished draft/XMP cleanup plus existing cancelled-only cleanup. Dialog Cancel preserves exact archive bytes; confirmation rotates the epoch, removes only the eligible request and preserves other request identity, operation/photo/carrier bytes and durable evidence after relaunch. The initial runner timed out before test initialization; desktop accessibility responded slowly, and a bounded retry passed without changing permissions. Broader interruption, accessibility and real-volume cases remain open.
+**Implementation commits:** `0d510cd`. No new Release candidate was built this cycle; earlier candidate/model-omission/ZIP evidence remains historical.
+**Cycle baseline:** `ac2a06d`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0f380-9922-71d3-81f3-97f94c40f553`; no other active chat was editing this checkout.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 111 finished native review request retirement](cycle-111-finished-review-request-retirement-2026-09-30.md)
+records 108 final focused tests, independent review, repository validation, the 22-tool helper probe
+and three passing actual native confirmation/preservation/relaunch workflows. The final serial
+integrated suite passes 3,581 tests / 358 suites, zero failures in 164.398 seconds. Exact linked
+operation identity, kind, terminal outcome and chronology gate explicit retirement; operation
+history remains locked through request removal and epoch rotation. Operation and recovery evidence
+is preserved. Any recovery outcome remains retained even after separate restoration. Missing or
+unavailable history cannot enable finished cleanup and does not block cancelled-only maintenance.
+Both native dialogs bind the displayed epoch. Twelve existing QoS diagnostics remain; no broader
+release/performance gate closes. Older cycles retain their historical evidence states.
 
 [Cycle 110 native review capacity and request epochs](cycle-110-native-review-capacity-epochs-2026-09-30.md)
 records three final actual native workflows, independent review, repository validation and a passing
@@ -113,7 +124,7 @@ Restoration refuses external identity changes and missing receipt evidence; prod
 workflow integration remain open.
 
 Ordered next implementation actions: authenticated IPC/guarded helper commits and broader native
-recovery; extend epoch-bound request capacity recovery to exactly verified linked-terminal eligibility,
+recovery; extend epoch-bound request retirement to exactly verified recovery-resolved eligibility,
 with physical crash/link-loss/archive-loss qualification;
 iCloud keyword authority, arbitrary-destination export coverage and independent-process preference/
 power-loss qualification; shared face-scan/template/transcription executors; production signed Whisper
