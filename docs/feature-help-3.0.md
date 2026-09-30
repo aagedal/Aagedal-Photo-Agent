@@ -121,6 +121,11 @@ lists the supported descriptive text fields and keyword/person arrays. Unknown f
 operations, stale revisions and unresolved XMP conflicts are refused. Empty `set` values are
 refused; use `clear` to remove a value explicitly.
 
+Keyword changes use the local Approved Keywords list and settings. Strict mode rejects
+unapproved values; accepted values use the same spelling and duplicate handling as the editor.
+The preview keeps your exact requested text. Changing the list or its settings requires a new
+preview and review. Keyword patches currently refuse lists routed through iCloud.
+
 The schema-3 result shows production-normalized before/after values, exact `sourceValue` and
 `requestedValue`, each field's comparison rule, edited-field legacy IPTC byte-limit warnings, a content-bound
 preview ID, a `planID` and a five-minute expiry. Call `get_iptc_patch_plan` with only that `planID`

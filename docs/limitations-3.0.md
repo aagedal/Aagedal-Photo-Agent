@@ -128,6 +128,10 @@ This is separate from the unapproved AI-origin analyzer described above.
   metadata tools. Effective reads accept one explicit photo per call and refuse malformed or oversized
   records without truncation. `prepare_iptc_patch` previews a bounded descriptive-field subset
   against exact read revisions, with before/proposed values and IIM compatibility warnings. It
+  binds keyword changes to the exact local Approved Keywords list and effective settings,
+  enforcing the editor's Strict policy and canonical spelling at preparation and native mutation.
+  iCloud keyword-list authority is unsupported. Settings checks compare current values;
+  historical settings changes and cooperative list-writer reservation remain unfinished. It
   retains an immutable local plan across helper restart for `get_iptc_patch_plan` to revalidate until its five-minute expiry. It does not
   persist a committable plan. It captures production normalization and preservation preflight
   evidence but does not execute or verify physical writes. Settings supports explicit local

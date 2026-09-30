@@ -1649,6 +1649,16 @@ Expiry and late local approval completions are covered deterministically. See th
 
 ### Tool and operation contract
 
+**Cycle 104 continuation (2026-09-30):** Native recovery authenticates app-history publication
+and existing-carrier restoration interrupted before their first durable receipts, with prepared
+generation, exact bytes, rooted source/peer revisions and current authority. Native restoration
+and relaunch persistence pass. Keyword plans now bind exact local list/settings authority,
+sharing GUI/helper Strict policy, canonical spelling and bulk duplicate handling through final
+mutation checks. Cloud keyword authority, historical settings revisions and cooperative list
+reservations remain open. The internal signed Whisper lifecycle repairs exact retained current
+or rollback releases while preserving the ledger and replay floor; production signing/UI wiring
+remain open. No whole Phase 5A gate is newly closed; see [cycle 104 evidence](release/cycle-104-history-recovery-keyword-authority-whisper-2026-09-30.md).
+
 **Cycle 97 continuation (2026-09-22):** Reviewed native XMP publication now retains exact installed
 carrier generations across incomplete and verified dispositions; recovery inspection reports this
 evidence. Full restoration remains open. Template previews resolve bounded acyclic scalar field

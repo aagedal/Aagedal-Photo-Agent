@@ -118,8 +118,11 @@ the support table and validation records.
   fields are refused; it creates no draft or approval. `get_photo_metadata` returns bounded, typed
   effective editorial values with field provenance, pending/conflict state and those revision tokens.
   `prepare_iptc_patch` returns read-only, revision-bound normalized before/after values, exact inputs and compatibility warnings
-  for supported descriptive fields, exact carrier hashes and preservation baselines; `get_iptc_patch_plan`
-  revalidates the retained preview. These expiring read-only plans survive helper restart in a bounded
+  for supported descriptive fields, exact carrier hashes and preservation baselines. Keyword edits
+  bind the exact local Approved Keywords list and settings, using
+  the editor's Strict policy, canonical spelling and duplicate handling. iCloud keyword lists
+  are not yet supported by patch previews. `get_iptc_patch_plan` revalidates the retained preview
+  and keyword authority. These expiring read-only plans survive helper restart in a bounded
   private local archive but cannot be committed by MCP. Settings can explicitly apply an approved
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo
   and XMP. Template application, face,

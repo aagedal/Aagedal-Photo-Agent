@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-09-29
+**Last reviewed:** 2026-09-30
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 103: interrupted XMP recovery, keyword policy and Whisper setup retry](release/cycle-103-prepared-xmp-keyword-whisper-2026-09-29.md) authenticates a prepared XMP generation for explicit native restoration, captures consistent Approved Keywords policy per operation, and rechecks installed Whisper files on Retry Setup. The serial 3,445-test suite passes. Other pre-receipt recovery, production executors and signed-model integration remain open.
+**Latest implementation continuation:** [Cycle 104: history recovery, keyword authority and signed Whisper repair](release/cycle-104-history-recovery-keyword-authority-whisper-2026-09-30.md) authenticates interrupted app-history publication and existing-carrier restoration, binds keyword patches to exact local list/settings authority with shared Strict/canonical rules, and repairs exact retained signed Whisper releases. Native restoration and relaunch persistence, 175 focused tests and all 3,467 serial integrated tests pass. Absent-carrier unlink recovery, history reconciliation, cloud keyword authority, production executors and signed-model integration remain open.
 
 ## Portfolio
 
