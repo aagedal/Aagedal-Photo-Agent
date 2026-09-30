@@ -478,12 +478,12 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
-            "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
-            #expect(annotations["readOnlyHint"] as? Bool == (!["create_team", "cancel_operation"].contains(tool["name"] as? String ?? "")))
+            #expect(annotations["readOnlyHint"] as? Bool == (!["create_team", "cancel_operation", "request_iptc_patch_review", "cancel_native_review_request"].contains(tool["name"] as? String ?? "")))
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }

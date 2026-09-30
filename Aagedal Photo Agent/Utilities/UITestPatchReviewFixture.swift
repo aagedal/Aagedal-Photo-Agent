@@ -57,6 +57,8 @@ enum UITestPatchReviewFixture {
         let afterTitle: String
         let beforeCity: String
         let keywordListPath: String?
+        let draftRequestID: String
+        let xmpRequestID: String
     }
 
     enum Failure: Error, Equatable { case invalidFolder, imageCreation, invalidPlan }
@@ -64,7 +66,9 @@ enum UITestPatchReviewFixture {
     static func makeService(configuration: UITestLaunchConfiguration = .current) throws -> AutomationPatchReviewService? {
         guard configuration.isEnabled, configuration.patchReviewRequested else { return nil }
         guard let requestedFolder = configuration.patchReviewFolderURL else { throw Failure.invalidFolder }
-        let folder = requestedFolder.standardizedFileURL.resolvingSymlinksInPath()
+        guard let canonicalFolder = realpath(requestedFolder.path, nil) else { throw Failure.invalidFolder }
+        defer { free(canonicalFolder) }
+        let folder = URL(fileURLWithPath: String(cString: canonicalFolder), isDirectory: true)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { throw Failure.invalidFolder }
@@ -76,8 +80,10 @@ enum UITestPatchReviewFixture {
             box.write(try Data(contentsOf: savedAuthority))
             let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
             guard try authority.load().isEnabled else { throw Failure.invalidFolder }
-            return AutomationPatchReviewService(facade: .init(authorizationStore: authority),
-                recoveryDirectory: folder.appendingPathComponent("patch-operations"))
+            return AutomationPatchReviewService(plans: MCPIPTCPatchPlanStore(), facade: .init(authorizationStore: authority),
+                operationRegistry: AutomationOperationRegistry(storageDirectory: folder.appendingPathComponent("patch-operations")),
+                recoveryDirectory: folder.appendingPathComponent("patch-operations"),
+                nativeRequests: MCPNativeReviewRequestStore(storageDirectory: folder.appendingPathComponent("patch-requests")))
         }
         let root = folder.appendingPathComponent("patch-review-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -154,8 +160,16 @@ enum UITestPatchReviewFixture {
             for key in ["sourceRevision", "xmpSidecarRevision", "appSidecarRevision"] { arguments[key] = metadata[key] }
             let prepared = try MCPIPTCPatchPreparation.prepare(arguments: arguments, facade: facade, plans: plans)
             guard let id = prepared.objectValue?["planID"]?.stringValue else { throw Failure.invalidPlan }
+            let nativeRequests = MCPNativeReviewRequestStore(storageDirectory: folder.appendingPathComponent("patch-requests"))
+            let tools = MCPFoundationTools(authorizationStore: authority, patchPlans: plans, nativeReviewRequests: nativeRequests)
+            let draftID = UUID().uuidString.lowercased(), xmpID = UUID().uuidString.lowercased()
+            for (requestID, purpose) in [(draftID, "pendingDraft"), (xmpID, "xmpPublication")] {
+                let response = tools.callTool(name: "request_iptc_patch_review", arguments: [
+                    "requestID": .string(requestID), "planID": .string(id), "purpose": .string(purpose)])
+                guard response.objectValue?["isError"] == .bool(false) else { throw Failure.invalidPlan }
+            }
             let manifest = Manifest(planID: id, photoPath: photo.path, beforeTitle: beforeTitle,
-                afterTitle: afterTitle, beforeCity: beforeCity, keywordListPath: keywordList?.path)
+                afterTitle: afterTitle, beforeCity: beforeCity, keywordListPath: keywordList?.path, draftRequestID: draftID, xmpRequestID: xmpID)
             try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent("patch-review-fixture.json"), options: .atomic)
             guard let canonical = realpath(folder.path, nil) else { throw Failure.invalidFolder }
             defer { free(canonical) }
@@ -189,7 +203,7 @@ enum UITestPatchReviewFixture {
                 recoveryHooks.beforeAppReceipt = { throw Failure.invalidPlan }
             }
             return AutomationPatchReviewService(plans: plans, facade: facade, operationRegistry: registry,
-                recoveryDirectory: operationFolder, publicationHooks: hooks, recoveryHooks: recoveryHooks)
+                recoveryDirectory: operationFolder, nativeRequests: nativeRequests, publicationHooks: hooks, recoveryHooks: recoveryHooks)
         } catch {
             try? FileManager.default.removeItem(at: root)
             throw error

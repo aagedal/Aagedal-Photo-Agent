@@ -71,6 +71,11 @@ nonisolated struct AutomationPatchReview: Sendable {
 }
 
 nonisolated protocol AutomationPatchReviewServing: Sendable {
+    func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record]
+    func cancelNativeReviewRequest(_ id: UUID) async throws
+    func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
     func inspect(planID: String) async throws -> AutomationPatchReview
     func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report
     func reviewXMPPublication(_ report: MCPIPTCPatchXMPPreflightService.Report) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Review
@@ -81,6 +86,26 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
     func approve(_ review: AutomationPatchReview) async throws -> MCPIPTCPatchApprovalStore.Approval
     func revoke(_ receipt: MCPIPTCPatchApprovalStore.Approval) async
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record
+}
+
+// Alternate service implementations must explicitly support request binding; a helper
+// identifier can never silently fall back to an unrelated manual execution path.
+extension AutomationPatchReviewServing {
+    func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] { [] }
+    func cancelNativeReviewRequest(_ id: UUID) async throws { throw MCPNativeReviewRequestStore.Failure.unknownRequest }
+    func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record {
+        throw MCPNativeReviewRequestStore.Failure.unknownRequest
+    }
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval,
+                             requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
+        guard requestID == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        return try await applyToPendingDraft(receipt)
+    }
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval,
+                    requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
+        guard requestID == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        return try await publishXMP(receipt)
+    }
 }
 
 actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationRecoveryServing {
@@ -96,10 +121,12 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     private let recoveryHooks: MCPIPTCPatchXMPRecoveryService.Hooks
     private let publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks
     private let operationRegistry: AutomationOperationRegistry?
+    private let nativeRequests: MCPNativeReviewRequestStore?
     private var executionCoordinator: AutomationOperationExecutionCoordinator?
 
     init(plans: MCPIPTCPatchPlanStore? = nil, facade: MCPAutomationFacade = .init(),
          operationRegistry: AutomationOperationRegistry? = nil, recoveryDirectory: URL? = nil,
+         nativeRequests: MCPNativeReviewRequestStore? = nil,
          publicationHooks: MCPIPTCPatchXMPPublicationAdmissionService.Hooks = .init(),
          recoveryHooks: MCPIPTCPatchXMPRecoveryService.Hooks = .init()) {
         let plans = plans ?? MCPIPTCPatchPlanStore(storageDirectory:
@@ -107,12 +134,70 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
                 "Library/Application Support/Aagedal Photo Agent/Automation/PatchPlans", isDirectory: true))
         self.plans = plans
         self.operationRegistry = operationRegistry
+        self.nativeRequests = nativeRequests
         self.recoveryDirectory = recoveryDirectory
         self.publicationHooks = publicationHooks
         self.recoveryHooks = recoveryHooks
         self.approvals = MCPIPTCPatchApprovalStore(plans: plans)
         self.publicationApprovals = MCPIPTCPatchXMPPublicationApprovalStore(plans: plans)
         self.facade = facade
+    }
+
+    private func registry() throws -> AutomationOperationRegistry {
+        try operationRegistry ?? AutomationOperationRegistry(storageDirectory:
+            recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory())
+    }
+
+    private func requestStore() throws -> MCPNativeReviewRequestStore {
+        try nativeRequests ?? MCPNativeReviewRequestStore(storageDirectory: MCPNativeReviewRequestStore.defaultStorageDirectory())
+    }
+
+    func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] {
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load().isEnabled else { throw MCPAuthorizationError.disabled }
+        return try requestStore().records()
+    }
+
+    func cancelNativeReviewRequest(_ id: UUID) async throws {
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load().isEnabled else { throw MCPAuthorizationError.disabled }
+        let record = try requestStore().cancel(id)
+        if let operationID = record.operationID {
+            let registry = try registry()
+            _ = try registry.requestCancellation(operationID)
+        }
+    }
+
+    func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record {
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load().isEnabled else { throw MCPAuthorizationError.disabled }
+        let record = try requestStore().inspect(id)
+        guard record.state == .awaitingReview else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        return record
+    }
+
+    private func boundRequest(_ id: UUID?, planID: String,
+                              purpose: MCPNativeReviewRequestStore.Purpose) throws -> MCPNativeReviewRequestStore? {
+        guard let id else { return nil }
+        let store = try requestStore()
+        let request = try store.inspect(id)
+        guard request.planID == planID, request.purpose == purpose, request.state == .awaitingReview else {
+            throw MCPNativeReviewRequestStore.Failure.invalidTransition
+        }
+        return store
+    }
+
+    private nonisolated static func checkRequestCancellation(_ id: UUID?, store: MCPNativeReviewRequestStore?,
+        operationID: UUID, registry: AutomationOperationRegistry) throws {
+        guard let id, let store else { return }
+        let request = try store.inspect(id)
+        guard request.state == .linked, request.operationID == operationID else {
+            throw MCPNativeReviewRequestStore.Failure.invalidTransition
+        }
+        if request.cancellationRequestedAt != nil {
+            _ = try registry.requestCancellation(operationID)
+            throw CancellationError()
+        }
     }
 
     func inspect(planID: String) throws -> AutomationPatchReview {
@@ -150,7 +235,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     }
 
     private func reconcileRecoveryHistory(directory: URL) async throws {
-        let registry = operationRegistry ?? AutomationOperationRegistry(storageDirectory: directory)
+        let registry = try registry()
         // Retry the receipt-to-history handoff before replacing the single retained
         // recovery journal. A failed durable history write leaves that receipt intact.
         try await AutomationOperationHistoryService(registry: registry,
@@ -183,9 +268,14 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
 
     /// Explicit native consent is the only entry point; helper clients cannot publish.
     func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+        try await publishXMP(receipt, requestID: nil)
+    }
+
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
         try Task.checkCancellation()
+        let requests = try boundRequest(requestID, planID: receipt.planID, purpose: .xmpPublication)
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
-        let registry = operationRegistry ?? AutomationOperationRegistry(storageDirectory: directory)
+        let registry = try registry()
         try await reconcileRecoveryHistory(directory: directory)
         let coordinator: AutomationOperationExecutionCoordinator
         if let existing = executionCoordinator { coordinator = existing }
@@ -196,16 +286,28 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         let executor = MCPIPTCPatchXMPPublicationAdmissionService(plans: plans,
             approvals: publicationApprovals, recovery: .init(directory: directory),
             facade: facade, hooks: publicationHooks)
-        let accepted = try await coordinator.submit(kind: .iptcPatch) { context in
-            let result = await executor.publish(receipt, context: context)
-            switch result.outcome {
-            case .verified: return .verified
-            case .refused: return .failed
-            case .uncertain: return .recoveryRequired
-            case .cancelled:
-                _ = try registry.requestCancellation(context.operationID)
-                return .cancelled
+        let accepted: AutomationOperationRegistry.Record
+        do {
+            accepted = try await coordinator.submit(kind: .iptcPatch, admission: {
+                if let requestID, let requests { _ = try requests.admit(requestID) }
+            }, didEnqueue: { record in
+                if let requestID, let requests { _ = try requests.link(requestID, operationID: record.id) }
+            }, cancellationCheck: { operationID in
+                try Self.checkRequestCancellation(requestID, store: requests, operationID: operationID, registry: registry)
+            }) { context in
+                let result = await executor.publish(receipt, context: context)
+                switch result.outcome {
+                case .verified: return .verified
+                case .refused: return .failed
+                case .uncertain: return .recoveryRequired
+                case .cancelled:
+                    _ = try registry.requestCancellation(context.operationID)
+                    return .cancelled
+                }
             }
+        } catch {
+            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID) }
+            throw error
         }
         return try await withTaskCancellationHandler {
             try await coordinator.waitForCompletion(accepted.id)
@@ -240,9 +342,13 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     /// The retained operation outlives a dismissed Settings panel. Cancellation requests
     /// are checked before saving; an already saved draft is still verified to completion.
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval) async throws -> AutomationOperationRegistry.Record {
+        try await applyToPendingDraft(receipt, requestID: nil)
+    }
+
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
         try Task.checkCancellation()
-        let registry = try operationRegistry ?? AutomationOperationRegistry(
-            storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
+        let requests = try boundRequest(requestID, planID: receipt.planID, purpose: .pendingDraft)
+        let registry = try registry()
         let coordinator: AutomationOperationExecutionCoordinator
         if let existing = executionCoordinator { coordinator = existing }
         else {
@@ -250,16 +356,28 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
             executionCoordinator = coordinator
         }
         let executor = MCPIPTCPatchExecutionService(plans: plans, approvals: approvals, facade: facade)
-        let accepted = try await coordinator.submit(kind: .iptcDraft) { context in
-            let result = await executor.applyToPendingDraft(receipt, context: context)
-            switch result.outcome {
-            case .draftSaved: return .verified
-            case .refused: return .failed
-            case .uncertain: return .recoveryRequired
-            case .cancelled:
-                _ = try registry.requestCancellation(context.operationID)
-                return .cancelled
+        let accepted: AutomationOperationRegistry.Record
+        do {
+            accepted = try await coordinator.submit(kind: .iptcDraft, admission: {
+                if let requestID, let requests { _ = try requests.admit(requestID) }
+            }, didEnqueue: { record in
+                if let requestID, let requests { _ = try requests.link(requestID, operationID: record.id) }
+            }, cancellationCheck: { operationID in
+                try Self.checkRequestCancellation(requestID, store: requests, operationID: operationID, registry: registry)
+            }) { context in
+                let result = await executor.applyToPendingDraft(receipt, context: context)
+                switch result.outcome {
+                case .draftSaved: return .verified
+                case .refused: return .failed
+                case .uncertain: return .recoveryRequired
+                case .cancelled:
+                    _ = try registry.requestCancellation(context.operationID)
+                    return .cancelled
+                }
             }
+        } catch {
+            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID) }
+            throw error
         }
         return try await withTaskCancellationHandler {
             try await coordinator.waitForCompletion(accepted.id)
@@ -273,6 +391,8 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
 final class AutomationPatchReviewModel {
     var planID = "" { didSet { if planID != oldValue { clear() } } }
     private(set) var review: AutomationPatchReview?
+    private(set) var nativeRequests: [MCPNativeReviewRequestStore.Record] = []
+    private(set) var selectedRequest: MCPNativeReviewRequestStore.Record?
     private(set) var message: String?
     private(set) var isLoading = false
     private(set) var isApproved = false
@@ -325,6 +445,7 @@ final class AutomationPatchReviewModel {
     }
 
     func clear() {
+        selectedRequest = nil
         revokeApproval()
         review = nil
         xmpPreflight = nil
@@ -480,13 +601,15 @@ final class AutomationPatchReviewModel {
         guard let receipt = publicationApproval, let review, isXMPPublicationApproved,
               !isLoading, !isApplying, applicationResult == nil, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
+        guard selectedRequest == nil || selectedRequest?.purpose == .xmpPublication else { return }
+        let requestID = selectedRequest?.requestID
         isApplying = true
         isLoading = true
         message = nil
         let expected = generation
         task = Task { [weak self, service] in
             do {
-                let result = try await service.publishXMP(receipt)
+                let result = try await service.publishXMP(receipt, requestID: requestID)
                 if result.outcome == .verified || result.outcome == .recoveryRequired {
                     NotificationCenter.default.post(name: .automationDraftDidChange,
                         object: URL(fileURLWithPath: review.path))
@@ -517,6 +640,8 @@ final class AutomationPatchReviewModel {
         guard let receipt = approval, let review, !isLoading, !isApplying,
               applicationResult == nil, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
+        guard selectedRequest == nil || selectedRequest?.purpose == .pendingDraft else { return }
+        let requestID = selectedRequest?.requestID
         isApplying = true
         xmpPublicationReview = nil
         xmpPreflight = nil
@@ -525,7 +650,7 @@ final class AutomationPatchReviewModel {
         let expected = generation
         task = Task { [weak self, service] in
             do {
-                let result = try await service.applyToPendingDraft(receipt)
+                let result = try await service.applyToPendingDraft(receipt, requestID: requestID)
                 if result.outcome == .verified {
                     NotificationCenter.default.post(name: .automationDraftDidChange,
                         object: URL(fileURLWithPath: review.path))
@@ -545,6 +670,77 @@ final class AutomationPatchReviewModel {
                 self.isLoading = false
                 self.isApplying = false
                 self.message = "Draft application could not be confirmed. Inspect the photo's pending metadata and operation status before retrying."
+                self.task = nil
+            }
+        }
+    }
+
+    func refreshNativeRequests() {
+        guard !isLoading, !isApplying else { return }
+        clear()
+        isLoading = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let records = try await service.nativeReviewRequests()
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.nativeRequests = records
+                self.isLoading = false
+                self.task = nil
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.nativeRequests = []
+                self.message = "Review requests could not be loaded."
+                self.isLoading = false
+                self.task = nil
+            }
+        }
+    }
+
+    func cancelNativeRequest(_ id: UUID) {
+        guard !isLoading, !isApplying else { return }
+        clear()
+        isLoading = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                try await service.cancelNativeReviewRequest(id)
+                let records = try await service.nativeReviewRequests()
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.nativeRequests = records
+                self.isLoading = false
+                self.task = nil
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.message = "Cancellation could not be confirmed. Refresh requests and inspect operation history."
+                self.isLoading = false
+                self.task = nil
+            }
+        }
+    }
+
+    func inspectNativeRequest(_ id: UUID) {
+        guard !isApplying else { return }
+        clear()
+        isLoading = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let request = try await service.inspectNativeReviewRequest(id)
+                let result = try await service.inspect(planID: request.planID)
+                guard request.state == .awaitingReview, result.planID == request.planID else {
+                    throw MCPNativeReviewRequestStore.Failure.invalidTransition
+                }
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.planID = request.planID // This clears all prior consent before selection.
+                self.selectedRequest = request
+                self.review = result
+                self.isLoading = false
+                self.task = nil
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.message = "This request cannot be reviewed. It may be cancelled, admitted, expired or changed. Refresh requests and inspect retained operation history."
+                self.isLoading = false
                 self.task = nil
             }
         }

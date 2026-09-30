@@ -1932,20 +1932,45 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let patchPlans: MCPIPTCPatchPlanStore
     let teamLibrary: MCPTeamLibrary
     let operationRegistry: AutomationOperationRegistry?
+    let nativeReviewRequests: MCPNativeReviewRequestStore?
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
          patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(), teamLibrary: MCPTeamLibrary? = nil,
-         operationRegistry: AutomationOperationRegistry? = nil) {
+         operationRegistry: AutomationOperationRegistry? = nil,
+         nativeReviewRequests: MCPNativeReviewRequestStore? = nil) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
         self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
         self.operationRegistry = operationRegistry
+        self.nativeReviewRequests = nativeReviewRequests
         self.patchPlans = patchPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
     }
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
+            definition(
+                name: "request_iptc_patch_review",
+                description: "Persist intent to review one exact retained IPTC patch plan in Photo Agent's native app. Requires Enable local automation and a new lowercase canonical UUID requestID; reuse the same ID, planID and purpose for retries. New requests revalidate the retained plan, authority, expiry and carrier revisions. Exact retries report the durable request even after the plan expires. Purpose is pendingDraft or xmpPublication. Creates no approval or metadata write, grants no consent, and cannot commit through this helper. Open Photo Agent's Automation review to continue explicitly.",
+                properties: [
+                    "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "planID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "purpose": .object(["type": .string("string"), "enum": .array([.string("pendingDraft"), .string("xmpPublication")])]),
+                ],
+                required: ["requestID", "planID", "purpose"], readOnly: false
+            ),
+            definition(
+                name: "get_native_review_request",
+                description: "Inspect a durable native review intent by lowercase canonical requestID. Requires Enable local automation. Reports recorded handoff state without revalidating an expired plan or implying consent, execution or executor liveness. A linked operationID can be inspected with get_operation_status. An unknown disposition must be reviewed in the app and cannot be replayed automatically.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID"]
+            ),
+            definition(
+                name: "cancel_native_review_request",
+                description: "Persist cancellation intent for one native review request. Requires Enable local automation and a lowercase canonical requestID. Cancels an awaiting review request; after native admission, requests cooperative cancellation and forwards it to a linked operation when available. Cancellation intent is not verified completion or rollback. Repeated requests are harmless.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID"], readOnly: false
+            ),
             definition(
                 name: "get_operation_status",
                 description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state and outcome; it does not prove that an executor is alive. Production automation executors are not connected yet.",
@@ -2133,6 +2158,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         do {
             let acceptedArguments: Set<String>
             switch name {
+            case "request_iptc_patch_review": acceptedArguments = ["requestID", "planID", "purpose"]
+            case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
             case "create_team": acceptedArguments = Set(MCPTeamLibrary.properties.keys)
             case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata":
@@ -2150,6 +2177,61 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             let configuration = try authorizationStore.load()
             switch name {
+            case "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                let expected: Set<String> = name == "request_iptc_patch_review"
+                    ? ["requestID", "planID", "purpose"] : ["requestID"]
+                guard Set(arguments.keys) == expected,
+                      let requestID = canonicalUUID(arguments["requestID"]) else {
+                    return failure(code: "invalid_arguments", message: "Provide the exact lowercase canonical requestID and required tool arguments")
+                }
+                let requests = try nativeReviewRequests ?? MCPNativeReviewRequestStore(
+                    storageDirectory: MCPNativeReviewRequestStore.defaultStorageDirectory())
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                let record: MCPNativeReviewRequestStore.Record
+                if name == "request_iptc_patch_review" {
+                    guard canonicalUUID(arguments["planID"]) != nil,
+                          let planID = arguments["planID"]?.stringValue,
+                          let rawPurpose = arguments["purpose"]?.stringValue,
+                          let purpose = MCPNativeReviewRequestStore.Purpose(rawValue: rawPurpose) else {
+                        return failure(code: "invalid_arguments", message: "Provide a canonical planID and pendingDraft or xmpPublication purpose")
+                    }
+                    do {
+                        let existing = try requests.inspect(requestID)
+                        guard existing.planID == planID, existing.purpose == purpose else {
+                            throw MCPNativeReviewRequestStore.Failure.conflictingRequest
+                        }
+                        // This is status retrieval, not fresh admission. Never erase truthful
+                        // cancellation/linkage because the original photo or plan expired.
+                        record = existing
+                    } catch MCPNativeReviewRequestStore.Failure.unknownRequest {
+                        _ = try patchPlans.localApprovalBinding(planID: planID, facade: automationFacade, now: Date())
+                        guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                        record = try requests.request(requestID: requestID, planID: planID, purpose: purpose)
+                    }
+                } else {
+                    record = try name == "cancel_native_review_request" ? requests.cancel(requestID) : requests.inspect(requestID)
+                }
+                var operationCancellationStatus: String? = nil
+                if name == "cancel_native_review_request", let operationID = record.operationID {
+                    do {
+                        guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                        let registry = try operationRegistry ?? AutomationOperationRegistry(
+                            storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
+                        _ = try registry.requestCancellation(operationID)
+                        operationCancellationStatus = "requested"
+                    } catch is AutomationOperationRegistry.Failure {
+                        // The durable request remains truthful even when its operation
+                        // record cannot be accessed. The owner also observes this intent.
+                        operationCancellationStatus = "confirmation-unavailable"
+                    }
+                }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                var value = nativeReviewRequestValue(record)
+                if let operationCancellationStatus {
+                    value["operationCancellationStatus"] = .string(operationCancellationStatus)
+                }
+                return success(value)
             case "get_operation_status", "cancel_operation":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 guard Set(arguments.keys) == ["operationID"],
@@ -2194,10 +2276,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("transcription-provider-discovery"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
+                        .string("durable-native-review-intent"),
                         .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
                     ]),
                     "mutationToolsAvailable": .bool(true),
                     "operationExecutorsConnected": .bool(false),
+                    "nativeReviewRequestsAvailable": .bool(true),
+                    "helperCommitAvailable": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])
             case "list_supported_photo_formats":
@@ -2293,6 +2378,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPNativeReviewRequestStore.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as AutomationOperationRegistry.Failure {
             let code: String
             switch error {
@@ -2327,6 +2414,31 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             return failure(code: "internal_error", message: "Photo Agent could not validate the request")
         }
+    }
+
+    private func canonicalUUID(_ value: MCPJSONValue?) -> UUID? {
+        guard let raw = value?.stringValue, raw.utf8.count == 36,
+              let id = UUID(uuidString: raw), id.uuidString.lowercased() == raw else { return nil }
+        return id
+    }
+
+    private func nativeReviewRequestValue(_ record: MCPNativeReviewRequestStore.Record) -> [String: MCPJSONValue] {
+        [
+            "requestID": .string(record.requestID.uuidString.lowercased()),
+            "planID": .string(record.planID), "purpose": .string(record.purpose.rawValue),
+            "state": .string(record.state.rawValue),
+            "operationID": record.operationID.map { .string($0.uuidString.lowercased()) } ?? .null,
+            "createdAt": .string(record.createdAt.ISO8601Format()),
+            "updatedAt": .string(record.updatedAt.ISO8601Format()),
+            "admittedAt": record.admittedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
+            "cancellationRequestedAt": record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "scope": .string("durable-native-review-intent"),
+            "executionDisposition": .string(record.operationID != nil ? "inspect-linked-operation" :
+                (record.state == .admitted || record.state == .unknownDisposition ? "unknown" : "not-admitted")),
+            "commitAvailable": .bool(false), "consentGranted": .bool(false),
+            "executorLiveness": .string("unknown"),
+        ]
     }
 
     private func definition(

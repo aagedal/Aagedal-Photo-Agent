@@ -13,13 +13,17 @@ actor AutomationOperationExecutionCoordinator {
         let operationID: UUID
         private let registry: AutomationOperationRegistry
         private var effectsPossible = false
+        private let cancellationCheck: @Sendable (UUID) throws -> Void
 
-        init(operationID: UUID, registry: AutomationOperationRegistry) {
+        init(operationID: UUID, registry: AutomationOperationRegistry,
+             cancellationCheck: @escaping @Sendable (UUID) throws -> Void = { _ in }) {
             self.operationID = operationID
             self.registry = registry
+            self.cancellationCheck = cancellationCheck
         }
 
         func checkCancellation() throws {
+            try cancellationCheck(operationID)
             if try registry.inspect(operationID).cancellationRequestedAt != nil {
                 throw CancellationError()
             }
@@ -51,12 +55,24 @@ actor AutomationOperationExecutionCoordinator {
 
     /// Admission and durable enqueue finish before execution can begin. A returned
     /// record is an acceptance receipt, never a promise that mutation succeeded.
-    func submit(kind: AutomationOperationRegistry.Kind, work: @escaping Work) throws -> AutomationOperationRegistry.Record {
+    func submit(kind: AutomationOperationRegistry.Kind,
+                admission: @Sendable () throws -> Void = {},
+                didEnqueue: @Sendable (AutomationOperationRegistry.Record) throws -> Void = { _ in },
+                cancellationCheck: @escaping @Sendable (UUID) throws -> Void = { _ in },
+                work: @escaping Work) throws -> AutomationOperationRegistry.Record {
         guard accepting else { throw Failure.stopped }
         guard tasks.count < maximumConcurrentOperations else { throw Failure.capacity }
         if ownerLease == nil { ownerLease = try registry.acquireOwnerLease(ownerID: ownerID) }
+        // Persist intent admission before enqueue, then persist its operation link before
+        // scheduling work. A failure at either boundary never schedules the closure.
+        try admission()
         let record = try registry.enqueue(kind: kind, ownerID: ownerID, ownerLease: ownerLease)
-        tasks[record.id] = Task { try await execute(record.id, work: work) }
+        do { try didEnqueue(record) }
+        catch {
+            _ = try? registry.finish(record.id, ownerID: ownerID, outcome: .failed)
+            throw error
+        }
+        tasks[record.id] = Task { try await execute(record.id, cancellationCheck: cancellationCheck, work: work) }
         return record
     }
 
@@ -86,9 +102,9 @@ actor AutomationOperationExecutionCoordinator {
         return reconciled
     }
 
-    private func execute(_ id: UUID, work: Work) async throws -> AutomationOperationRegistry.Record {
+    private func execute(_ id: UUID, cancellationCheck: @escaping @Sendable (UUID) throws -> Void, work: Work) async throws -> AutomationOperationRegistry.Record {
         defer { tasks.removeValue(forKey: id) }
-        let context = Context(operationID: id, registry: registry)
+        let context = Context(operationID: id, registry: registry, cancellationCheck: cancellationCheck)
         let outcome: AutomationOperationRegistry.Outcome
         do {
             try await context.checkCancellation()

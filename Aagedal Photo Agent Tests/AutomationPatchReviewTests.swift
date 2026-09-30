@@ -682,4 +682,168 @@ struct AutomationPatchReviewTests {
         try await waitUntil { await service.publicationRevocations == 1 }
     }
 
+    @Test("Request selection grants no consent and explicit draft execution links exact operation") @MainActor
+    func requestedDraftLifecycle() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        #expect(model.nativeRequests == [request])
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        #expect(model.review?.planID == fixture.planID)
+        #expect(model.selectedRequest == request)
+        #expect(!model.isApproved && !model.isXMPPublicationApproved)
+        model.applyApprovedPlanToPendingDraft()
+        #expect(try registry.records().isEmpty)
+        #expect(try requests.inspect(request.requestID).state == .awaitingReview)
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isApproved)
+        model.applyApprovedPlanToPendingDraft()
+        try await waitUntil { !model.isLoading }
+        let operation = try #require(model.applicationResult)
+        #expect(operation.outcome == .verified)
+        let linked = try requests.inspect(request.requestID)
+        #expect(linked.state == .linked && linked.operationID == operation.id)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        let restored = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        #expect(try restored.inspect(request.requestID) == linked)
+        model.clear()
+        #expect(model.selectedRequest == nil && !model.isApproved)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        #expect(model.review == nil && model.message != nil)
+        #expect(try registry.records().count == 1)
+    }
+
+    @Test("Cancelled or wrong-purpose requests cannot consume an approved draft", arguments: [true, false])
+    func requestAdmissionRefusal(cancelled: Bool) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID,
+            purpose: cancelled ? .pendingDraft : .xmpPublication)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, nativeRequests: requests)
+        let review = try await service.inspect(planID: fixture.planID)
+        let approval = try await service.approve(review)
+        if cancelled { _ = try requests.cancel(request.requestID) }
+        await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try await service.applyToPendingDraft(approval, requestID: request.requestID)
+        }
+        #expect(try registry.records().isEmpty)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+    }
+
+    @Test("Request refresh and selection clear prior native approval") @MainActor
+    func requestRefreshRevokesConsent() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isApproved)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        #expect(model.selectedRequest?.requestID == request.requestID)
+        #expect(!model.isApproved)
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        #expect(!model.isApproved && model.selectedRequest == nil && model.review == nil)
+    }
+
+    @Test("Requested XMP publication requires dry run and separate consent") @MainActor
+    func requestedXMPLifecycle() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let operations = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: operations)
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .xmpPublication)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, recoveryDirectory: operations, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        #expect(model.selectedRequest?.purpose == .xmpPublication)
+        #expect(!model.isApproved && !model.canApproveXMPPublication)
+        model.publishApprovedXMP()
+        #expect(try registry.records().isEmpty)
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        #expect(model.xmpPreflight != nil)
+        #expect(!model.canApproveXMPPublication)
+        model.acknowledgesC2PA = true
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isXMPPublicationApproved)
+        #expect(try registry.records().isEmpty)
+        model.publishApprovedXMP()
+        try await waitUntil { !model.isLoading }
+        let result = try #require(model.applicationResult)
+        #expect(result.kind == .iptcPatch && result.outcome == .verified)
+        #expect(try requests.inspect(request.requestID).operationID == result.id)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(FileManager.default.fileExists(atPath: fixture.photo.deletingPathExtension().appendingPathExtension("xmp").path))
+    }
+
+    @Test("Helper cancellation after native inspection refuses an approved request before enqueue") @MainActor
+    func requestedCancellationAfterInspection() async throws {
+        let fixture = try Fixture()
+        let directory = fixture.root.appendingPathComponent("requests")
+        let requests = MCPNativeReviewRequestStore(storageDirectory: directory)
+        let helper = MCPNativeReviewRequestStore(storageDirectory: directory)
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.isApproved)
+        _ = try helper.cancel(request.requestID)
+        model.applyApprovedPlanToPendingDraft()
+        try await waitUntil { !model.isLoading }
+        #expect(model.applicationResult == nil && model.message != nil)
+        #expect(!model.isApproved)
+        #expect(try registry.records().isEmpty)
+        #expect(try requests.inspect(request.requestID).state == .cancelled)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent(".photo_metadata").path))
+    }
+
+    @Test("Native request cancellation uses the same injected operation directory as publication")
+    func requestCancellationRegistryRouting() async throws {
+        let fixture = try Fixture()
+        let directory = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: directory)
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .xmpPublication)
+        _ = try requests.admit(request.requestID)
+        let operation = try registry.enqueue(kind: .iptcPatch, ownerID: UUID())
+        _ = try requests.link(request.requestID, operationID: operation.id)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            recoveryDirectory: directory, nativeRequests: requests)
+        try await service.cancelNativeReviewRequest(request.requestID)
+        #expect(try registry.inspect(operation.id).cancellationRequestedAt != nil)
+        #expect(try requests.inspect(request.requestID).cancellationRequestedAt != nil)
+        #expect(try registry.inspect(operation.id).state == .queued)
+    }
+
 }

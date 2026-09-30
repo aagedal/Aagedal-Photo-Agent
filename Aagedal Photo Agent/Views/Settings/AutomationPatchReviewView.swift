@@ -2,9 +2,45 @@ import SwiftUI
 
 struct AutomationPatchReviewView: View {
     @State private var model = AutomationPatchReviewModel()
+    @State private var showsRequests = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Button(showsRequests ? "Hide Client Review Requests" : "Show Client Review Requests") {
+                showsRequests.toggle()
+            }
+            .accessibilityIdentifier("automation.showReviewRequests")
+            .disabled(model.isLoading || model.isApplying)
+            if showsRequests {
+                Text("Client requests await your review here. Select a request to inspect its current changes, then approve and apply them explicitly. Request IDs grant no consent.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Refresh Review Requests") { model.refreshNativeRequests() }
+                    .disabled(model.isLoading || model.isApplying)
+                    .accessibilityIdentifier("automation.refreshReviewRequests")
+                ForEach(model.nativeRequests, id: \.requestID) { request in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: request.requestID.uuidString.lowercased())
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                        Text(request.purpose == .pendingDraft ? "Apply to Pending Draft" : "Publish XMP")
+                        if request.state == .awaitingReview {
+                            Button("Inspect Requested Plan") { model.inspectNativeRequest(request.requestID) }
+                                .disabled(model.isLoading || model.isApplying)
+                                .accessibilityIdentifier("automation.inspectRequestedPlan.\(request.requestID.uuidString.lowercased())")
+                            Button("Cancel Review Request") { model.cancelNativeRequest(request.requestID) }
+                                .disabled(model.isLoading || model.isApplying)
+                                .accessibilityIdentifier("automation.cancelReviewRequest.\(request.requestID.uuidString.lowercased())")
+                        } else if let operationID = request.operationID {
+                            Text(verbatim: "Operation: \(operationID.uuidString.lowercased())")
+                                .font(.caption).textSelection(.enabled)
+                        } else if request.state == .cancelled {
+                            Text("Cancelled before admission.").font(.caption)
+                        } else {
+                            Text("Admission disposition is unknown. Inspect operation history and recovery before preparing another request.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.padding(.vertical, 4)
+                }
+            }
             Text("Paste a plan ID from prepare_iptc_patch to inspect its proposed changes. Inspection checks the current photo, sidecars and folder authorization. It does not approve or write metadata.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -40,6 +76,10 @@ struct AutomationPatchReviewView: View {
 
     private func content(_ review: AutomationPatchReview) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let request = model.selectedRequest {
+                Text(request.purpose == .pendingDraft ? "Client request: Apply to Pending Draft" : "Client request: Publish XMP")
+                    .accessibilityIdentifier("automation.selectedReviewRequest")
+            }
             Text(verbatim: review.path).font(.caption).textSelection(.enabled)
             Text("Checked snapshot · expires \(review.expiresAt.formatted(date: .omitted, time: .standard))")
                 .font(.caption).foregroundStyle(.secondary)
@@ -58,7 +98,7 @@ struct AutomationPatchReviewView: View {
             ForEach(Array(review.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(verbatim: warning).font(.caption).foregroundStyle(.secondary)
             }
-            if model.applicationResult == nil {
+            if model.applicationResult == nil && (model.selectedRequest == nil || model.selectedRequest?.purpose == .xmpPublication) {
                 VStack(alignment: .leading, spacing: 6) {
                     Button("Verify XMP Dry Run") { model.inspectXMPCandidate() }
                         .disabled(model.isLoading || model.isApplying)
@@ -90,7 +130,7 @@ struct AutomationPatchReviewView: View {
                     .accessibilityIdentifier("automation.patchDraftStatus")
                 Text(verbatim: "Operation: \(result.id.uuidString.lowercased())")
                     .font(.caption).textSelection(.enabled)
-            } else if model.isApproved {
+            } else if model.isApproved && (model.selectedRequest == nil || model.selectedRequest?.purpose == .pendingDraft) {
                 Text("Reviewed plan approved for this session. No metadata has been written.")
                     .accessibilityIdentifier("automation.patchApprovalStatus")
                 Text("Apply to Pending Draft saves exactly these changes in Photo Agent’s local metadata history. Deselect this photo in all metadata editors first. The photo and XMP stay unchanged. Review and publish the pending draft using the normal metadata workflow.")
@@ -101,7 +141,7 @@ struct AutomationPatchReviewView: View {
                 Button("Revoke Approval") { model.revokeApproval() }
                     .disabled(model.isLoading)
                     .accessibilityIdentifier("automation.revokePatchApproval")
-            } else {
+            } else if model.selectedRequest == nil || model.selectedRequest?.purpose == .pendingDraft {
                 Button("Approve Reviewed Plan") { model.approveReviewedPlan() }
                     .disabled(model.isLoading)
                     .accessibilityIdentifier("automation.approvePatchPlan")

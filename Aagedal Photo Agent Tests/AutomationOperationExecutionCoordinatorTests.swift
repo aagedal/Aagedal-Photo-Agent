@@ -289,4 +289,88 @@ struct AutomationOperationExecutionCoordinatorTests {
         #expect(try registry.records() == [first, later])
     }
 
+    @Test("Admission and link durability precede execution; lost links never schedule work")
+    func nativeRequestBoundaries() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
+        let requests = MCPNativeReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let id = UUID()
+        _ = try requests.request(requestID: id, planID: UUID().uuidString.lowercased(), purpose: .pendingDraft)
+        await #expect(throws: InjectedFailure.write) {
+            try await runner.submit(kind: .iptcDraft, admission: { _ = try requests.admit(id) }, didEnqueue: { _ in
+                #expect(try requests.inspect(id).state == .admitted)
+                throw InjectedFailure.write
+            }) { _ in
+                Issue.record("An unlinked operation executed")
+                return .verified
+            }
+        }
+        #expect(try requests.inspect(id).state == .admitted)
+        #expect(try registry.records().first?.outcome == .failed)
+        await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try await runner.submit(kind: .iptcDraft, admission: { _ = try requests.admit(id) }) { _ in
+                Issue.record("An interrupted admission was replayed")
+                return .verified
+            }
+        }
+        #expect(try registry.records().count == 1)
+    }
+
+    @Test("Cancellation between admission and linking schedules no work")
+    func requestCancellationBeforeLink() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
+        let requests = MCPNativeReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let id = UUID()
+        _ = try requests.request(requestID: id, planID: UUID().uuidString.lowercased(), purpose: .pendingDraft)
+        await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try await runner.submit(kind: .iptcDraft, admission: { _ = try requests.admit(id) }, didEnqueue: { record in
+                _ = try requests.cancel(id)
+                _ = try requests.link(id, operationID: record.id)
+            }) { _ in
+                Issue.record("Cancelled admission executed")
+                return .verified
+            }
+        }
+        #expect(try requests.inspect(id).state == .unknownDisposition)
+        #expect(try registry.records().first?.outcome == .failed)
+    }
+
+    @Test("Linked request cancellation is inspected at safe effect boundaries", arguments: [false, true])
+    func requestSafeBoundaryCancellation(afterEffects: Bool) async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
+        let requests = MCPNativeReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let id = UUID(), entered = Gate(), release = Gate()
+        _ = try requests.request(requestID: id, planID: UUID().uuidString.lowercased(), purpose: .pendingDraft)
+        let accepted = try await runner.submit(kind: .iptcDraft, admission: { _ = try requests.admit(id) },
+            didEnqueue: { record in _ = try requests.link(id, operationID: record.id) }, cancellationCheck: { operationID in
+                let request = try requests.inspect(id)
+                #expect(request.operationID == operationID)
+                if request.cancellationRequestedAt != nil {
+                    _ = try registry.requestCancellation(operationID)
+                    throw CancellationError()
+                }
+            }) { context in
+                if afterEffects { try await context.markEffectsMayHaveOccurred() }
+                await entered.open()
+                await release.wait()
+                try await context.checkCancellation()
+                Issue.record("Cancelled request passed effect boundary")
+                return .verified
+            }
+        await entered.wait()
+        _ = try requests.cancel(id) // Deliberately do not forward registry cancellation here.
+        await release.open()
+        let result = try await runner.waitForCompletion(accepted.id)
+        #expect(result.outcome == (afterEffects ? .recoveryRequired : .cancelled))
+        #expect(result.cancellationRequestedAt != nil)
+    }
+
 }

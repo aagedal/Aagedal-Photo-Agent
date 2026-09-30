@@ -227,6 +227,9 @@
 		C94000000000000000000102 /* MCPXMPSidecarInstallationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */; };
 		C92000000000000000000302 /* WhisperModelDistributionStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */; };
 		C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */; };
+		C10800000000000000000002 /* MCPNativeReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */; };
+		C10800000000000000000102 /* MCPNativeReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */; };
+		C10800000000000000000202 /* MCPNativeReviewRequestProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -490,6 +493,9 @@
 		C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPXMPSidecarInstallationTests.swift; sourceTree = "<group>"; };
 		C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDistributionStateStoreTests.swift; sourceTree = "<group>"; };
 		C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPMetadataTemplateBatchPreview.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataTemplateBatchPreview.swift"; sourceTree = SOURCE_ROOT; };
+		C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNativeReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPNativeReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
+		C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestStoreTests.swift; sourceTree = "<group>"; };
+		C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -553,6 +559,8 @@
 			isa = PBXGroup;
 			children = (
 				C5A000000000000000000011 /* MCPServerCoreTests.swift */,
+				C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */,
+				C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */,
 				C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */,
 				C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */,
 				C76000000000000000000021 /* MCPIPTCPatchPreparationTests.swift */,
@@ -778,6 +786,7 @@
 				C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */,
 				C84000000000000000000011 /* AutomationOperationRegistry.swift */,
 				C84000000000000000000021 /* AutomationOperationPersistence.swift */,
+				C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */,
 				C7900000000000000000011 /* MCPIPTCPatchPlanPersistence.swift */,
 				C76000000000000000000041 /* MetadataRequirements.swift */,
 				C76000000000000000000031 /* MetadataValidation.swift */,
@@ -991,6 +1000,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */,
+				C10800000000000000000202 /* MCPNativeReviewRequestProtocolTests.swift in Sources */,
+				C10800000000000000000102 /* MCPNativeReviewRequestStoreTests.swift in Sources */,
 				C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */,
 				C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */,
 				C76000000000000000000022 /* MCPIPTCPatchPreparationTests.swift in Sources */,
@@ -1200,6 +1211,7 @@
 				C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */,
 				C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */,
 				C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */,
+				C10800000000000000000002 /* MCPNativeReviewRequestStore.swift in Sources */,
 				C7900000000000000000012 /* MCPIPTCPatchPlanPersistence.swift in Sources */,
 				C76000000000000000000042 /* MetadataRequirements.swift in Sources */,
 				C76000000000000000000032 /* MetadataValidation.swift in Sources */,

@@ -98,7 +98,9 @@ def probe(executable):
         names = [tool["name"] for tool in tools]
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
-            require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {"create_team", "cancel_operation"}),
+            require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
+                "create_team", "cancel_operation", "request_iptc_patch_review", "cancel_native_review_request",
+            }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
         require("create_team" in names, "Missing team creation")
@@ -151,12 +153,25 @@ def probe(executable):
         requirements = connection.receive(11)["result"]
         require(requirements["isError"] is True and requirements["structuredContent"]["code"] == "invalid_arguments",
                 "Publication requirements accepted unexpected execution arguments")
+        require({"request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request"}.issubset(names),
+                "Missing durable native review intent tools")
+        for identifier, tool in [(12, "request_iptc_patch_review"), (13, "get_native_review_request"),
+                                 (14, "cancel_native_review_request")]:
+            connection.send(request(identifier, "tools/call", {
+                "name": tool, "arguments": {"requestID": "not-a-uuid", "execute": True},
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Native review intent tool accepted unexpected execution arguments")
+        require(capabilities["nativeReviewRequestsAvailable"] is True and capabilities["helperCommitAvailable"] is False,
+                "Native review intent overclaims helper commit authority")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
                 "pipelinedRequests": True, "malformedInputRecovery": True,
                 "providerDiscovery": True, "providerArgumentRefusal": True,
-                "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True, "honestExecutorBoundary": True,
+                "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True,
+                "nativeReviewRequestArgumentRefusal": True, "honestExecutorBoundary": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()
