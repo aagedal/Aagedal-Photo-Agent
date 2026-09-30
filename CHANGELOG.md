@@ -10,6 +10,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Transcribe a captured selection of up to eight voice memos from Caption after explicit
+  provider/language consent. Ordered results distinguish saved, unapproved drafts from failed,
+  cancelled or uncertain items; cancellation keeps drafts already saved. Changed inputs and
+  existing reviews refuse admission. Helper transcription invocation remains under implementation.
+
 - Restore identified interrupted XMP publications from Automation Settings after a separate confirmation.
   Original metadata is restored or originally absent files are removed; durable restoration receipts
   support resuming recorded progress. Changed or uncertain files remain blocked.

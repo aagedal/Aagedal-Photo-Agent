@@ -1425,6 +1425,15 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 114 continuation (2026-09-30):** Caption connects the shared batch executor to a captured
+1–8-photo Browser selection, read-only source/WAV preparation, explicit provider/language consent
+and ordered native results. Final admission revalidates every consented input, readiness and saved
+review absence. The session provider reservation lasts through drained cancellation; saved drafts
+remain unapproved, and guarded current-photo refresh preserves navigation and local reviews.
+Rooted associated-audio admission, authenticated helper invocation and real provider lifecycle
+evidence remain open. The broader batch-transcription/MCP criterion is not complete.
+See [cycle 114 evidence](release/cycle-114-native-transcription-batch-consent-2026-09-30.md).
+
 **Cycle 113 continuation (2026-09-30):** A shared app-side voice-transcription batch executor
 admits 1–8 explicit ordered photos, retains photo/WAV revisions, runs the selected Apple or
 explicitly admitted Whisper provider serially, and creates only unapproved editable drafts.

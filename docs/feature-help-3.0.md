@@ -72,7 +72,7 @@ Select **Whisper** to use the embedded FFmpeg engine. Choose Tiny (about 78 MB),
 Downloads come from the pinned whisper.cpp model repository over HTTPS; the app checks the exact
 byte count and SHA-256 before installing in local Application Support. Progress and cancellation
 are available. Installed models can be removed from Settings and used offline after preparation.
-No executable selection is needed for this provider. Inference starts only when you press **Transcribe**.
+No executable selection is needed for this provider. Inference starts only after an explicit single-photo or batch action.
 Language defaults to `auto`; you can enter a two-letter code, request translation into English,
 and request GPU acceleration. GPU use is requested rather than verified. Each draft records the
 engine/model identities and settings used, and remains editable until explicitly reviewed and approved.
@@ -84,6 +84,20 @@ bookmarks persist; custom execution consent and identity admission must be renew
 **Clear Custom Files** forgets those saved selections. Custom files are unverified; hashes establish
 identity, not software trust. No provider automatically falls back to Apple Speech. Downloads require
 an explicit action and do not send voice memos, photos or transcripts to the hosting service.
+
+To transcribe several memos, select 1–8 photos in Browser, open Caption, and choose
+**Transcribe Selected…**. The batch retains that selection in Browser order. Check the photo names,
+provider and language in the confirmation, grant consent, then press **Transcribe N Photos**.
+Every photo needs a supported saved WAV relationship. Photos sharing a metadata sidecar cannot
+be included together. Existing saved transcripts refuse preparation; an active or unsaved current review must finish before a batch starts.
+The chosen provider must already be ready. This action downloads no language or model assets and
+does not switch providers. Changed photos, WAVs or relationships require a fresh confirmation.
+
+Results show each numbered photo separately. Saved drafts remain editable and unapproved; IPTC
+fields are unchanged. **Cancel Batch** requests cancellation and waits for the active item to stop.
+Drafts already saved remain available for individual review and approval in Caption, even if the
+batch fails or is cancelled. An uncertain save stops the remaining photos and requires inspection
+before retrying. The current empty review reloads a saved batch draft without replacing local edits.
 
 ## Connect a local automation client
 
@@ -114,8 +128,8 @@ Available `batchProgress` contains completed counts and ordered photo indices/st
 without paths or transcript text. A saved transcription draft remains editable and unapproved,
 with IPTC unchanged. Failed or cancelled batches can retain saved drafts; inspect each outcome
 before retrying. Uncertain saves retain recovery evidence. Executor liveness is reported as unknown.
-These endpoints do not start work or authorize photo writes. Native batch launch and helper
-face/template/transcription invocation remain under implementation.
+These endpoints do not start work or authorize photo writes. Batch transcription starts through
+Caption's explicit native consent; helper face/template/transcription invocation remains under implementation.
 
 Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
 absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,

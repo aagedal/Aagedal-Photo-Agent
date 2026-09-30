@@ -127,7 +127,13 @@ This is separate from the unapproved AI-origin analyzer described above.
 
 - The shared transcription batch backend accepts up to eight explicit photos and saves only
   previously absent, unapproved transcripts. Existing saved drafts or human reviews are preserved.
-  Native batch launch/consent, rooted helper audio admission and authenticated IPC are unfinished.
+  Caption now launches a captured Browser selection through explicit provider/language consent.
+  Every target must have a supported WAV relationship, and targets sharing a metadata sidecar
+  cannot be included together. Preparation refuses any existing saved transcript, and active/unsaved current reviews block launch. Source/WAV drift
+  after confirmation refuses admission. Rooted helper audio admission and authenticated IPC remain
+  unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
+  integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
+  remain release gates.
   Durable per-photo history retains numbered outcomes, without source paths or text; it does not
   permit automatic replay or prove current executor liveness. Failed or cancelled batches can leave
   verified drafts saved. Uncertain writes retain recovery evidence and stop the unprocessed suffix.
