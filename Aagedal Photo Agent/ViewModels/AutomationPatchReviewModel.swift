@@ -133,6 +133,8 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
         try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
             .resolveUnchanged(review)
+        do { try await reconcileRecoveryHistory(directory: directory) }
+        catch { throw AutomationRecoveryHistoryFailure.unchangedResolutionRecorded }
     }
 
     func restorePartialPublication(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws {
@@ -140,6 +142,16 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
         try await MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: directory), facade: facade)
             .restorePartialPublication(review)
+        do { try await reconcileRecoveryHistory(directory: directory) }
+        catch { throw AutomationRecoveryHistoryFailure.restorationRecorded }
+    }
+
+    private func reconcileRecoveryHistory(directory: URL) async throws {
+        let registry = operationRegistry ?? AutomationOperationRegistry(storageDirectory: directory)
+        // Retry the receipt-to-history handoff before replacing the single retained
+        // recovery journal. A failed durable history write leaves that receipt intact.
+        try await AutomationOperationHistoryService(registry: registry,
+            recovery: .init(directory: directory)).reconcileRecovery()
     }
 
     func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report {
@@ -171,6 +183,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         try Task.checkCancellation()
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
         let registry = operationRegistry ?? AutomationOperationRegistry(storageDirectory: directory)
+        try await reconcileRecoveryHistory(directory: directory)
         let coordinator: AutomationOperationExecutionCoordinator
         if let existing = executionCoordinator { coordinator = existing }
         else {

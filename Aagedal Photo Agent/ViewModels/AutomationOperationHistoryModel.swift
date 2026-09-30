@@ -13,15 +13,28 @@ actor AutomationOperationHistoryService: AutomationOperationHistoryServing {
         label: "com.aagedal.photo-agent.automation-operation-history", qos: .utility)
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
     private let registry: AutomationOperationRegistry
+    private let recovery: MCPIPTCPatchXMPRecoveryStore
 
-    init(registry: AutomationOperationRegistry) { self.registry = registry }
+    init(registry: AutomationOperationRegistry, recovery: MCPIPTCPatchXMPRecoveryStore? = nil) {
+        self.registry = registry
+        self.recovery = recovery ?? .init(directory: registry.storageDirectory)
+    }
 
     func records() throws -> [AutomationOperationRegistry.Record] {
         guard try !registry.records().isEmpty else { return [] }
-        _ = try registry.reconcileAbandonedOwners()
+        try reconcileRecovery()
         return try registry.records().sorted {
             if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
             return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    /// Keep the exact completion receipt locked until its separate status is durable.
+    /// Missing, unresolved or publication-success journals cannot settle uncertain history.
+    func reconcileRecovery() throws {
+        if try !registry.records().isEmpty { _ = try registry.reconcileAbandonedOwners() }
+        try recovery.reconcileHistoryDisposition { receipt in
+            _ = try registry.recordRecoveryResolution(receipt)
         }
     }
 
@@ -34,7 +47,7 @@ actor AutomationOperationHistoryService: AutomationOperationHistoryServing {
     }
 
     nonisolated static func canRemove(_ record: AutomationOperationRegistry.Record) -> Bool {
-        record.isTerminal && [.verified, .failed, .cancelled, .stale].contains(record.outcome)
+        record.canRemove
     }
 }
 

@@ -20,6 +20,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
         let installedCarriers: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?
         fileprivate let preparedXMP: MCPPreparedXMPIdentity?
         fileprivate let preparedMutation: MCPIPTCPatchXMPRecoveryStore.PreparedMutation?
+        fileprivate let removals: [MCPIPTCPatchXMPRecoveryStore.PreparedMutation]
         let canRestorePartialPublication: Bool
         let canResolveUnchanged: Bool
         fileprivate let restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?
@@ -31,6 +32,9 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
     struct Hooks: Sendable {
         var beforeXMPReceipt: @Sendable () throws -> Void = {}
         var beforeAppReceipt: @Sendable () throws -> Void = {}
+        var beforeRemoval: @Sendable () throws -> Void = {}
+        var beforeRemovalCleanup: @Sendable () throws -> Void = {}
+        var beforeRemovalCleanupReceipt: @Sendable () throws -> Void = {}
     }
 
     private let hooks: Hooks
@@ -52,7 +56,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
               currentState.material == material, currentState.installed == state.installed,
               currentState.restored == state.restored,
               currentState.preparedXMP == state.preparedXMP,
-              currentState.preparedMutation == state.preparedMutation else { throw Failure.staleReview }
+              currentState.preparedMutation == state.preparedMutation, currentState.removals == state.removals else { throw Failure.staleReview }
         let unchanged = try state.installed == nil && matchesOriginal(snapshot, material: material)
         let preparedMatches = state.installed == nil && state.preparedXMP != nil
             && state.preparedXMP == snapshot.preparedXMPIdentity
@@ -60,15 +64,16 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
             && snapshot.xmpSidecarRevision != material.binding.xmpSidecarRevision
         let effectiveInstalled = state.installed ?? (preparedMatches
             ? .init(xmpRevision: snapshot.xmpSidecarRevision, appRevision: nil) : nil)
-        let progress = mutationProgress(snapshot, installed: effectiveInstalled,
+        let progress = mutationProgress(snapshot, material: material, installed: effectiveInstalled,
             restored: state.restored, prepared: state.preparedMutation)
         let restorable = try matchesRestorable(snapshot, material: material,
             installed: progress.installed, restored: progress.restored)
+            && removalCleanupMatches(snapshot, material: material, removals: state.removals)
         let identityMessage = state.installed.map {
             $0.appRevision == nil ? " Installed XMP identity is retained." : " Installed XMP and app history identities are retained."
         } ?? ""
         return Review(photoPath: snapshot.target.url.path, materialID: material.id,
-            installedCarriers: state.installed, preparedXMP: state.preparedXMP, preparedMutation: state.preparedMutation,
+            installedCarriers: state.installed, preparedXMP: state.preparedXMP, preparedMutation: state.preparedMutation, removals: state.removals,
             canRestorePartialPublication: restorable,
             canResolveUnchanged: unchanged, restored: state.restored,
             message: unchanged
@@ -120,8 +125,8 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
 
     /// Internal native-consent boundary. No MCP tool or automatic retry invokes restoration.
     /// Receipt-complete steps can resume after reopening. A pre-receipt rename can resume
-    /// only when its prepared inode generation matches the rooted live carrier. Interrupted
-    /// removals remain unresolved because absence cannot authenticate who removed a file.
+    /// only when its prepared inode generation matches the rooted live carrier. Removed
+    /// carriers require an exact rooted witness; absence alone is never admitted.
     @MetadataSidecarFilesystemActor
     func restorePartialPublication(_ review: Review) async throws {
         guard review.canRestorePartialPublication,
@@ -139,16 +144,18 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                           retained.installed == review.installedCarriers,
                           retained.preparedXMP == review.preparedXMP,
                           retained.preparedMutation == review.preparedMutation,
-                          retained.restored == review.restored else { throw Failure.staleReview }
+                          retained.restored == review.restored, retained.removals == review.removals else { throw Failure.staleReview }
                     var state = retained
                     var current = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
                     guard current.target == review.snapshot.target,
                           current.sourceRevision == review.snapshot.sourceRevision,
                           current.xmpSidecarRevision == review.snapshot.xmpSidecarRevision,
-                          current.appSidecarRevision == review.snapshot.appSidecarRevision else { throw Failure.staleReview }
+                          current.appSidecarRevision == review.snapshot.appSidecarRevision,
+                          removalCleanupMatches(current, material: retained.material, removals: state.removals, reservation: reservation)
+                    else { throw Failure.staleReview }
                     if let mutation = state.preparedMutation {
-                        let progress = mutationProgress(current, installed: state.installed,
-                            restored: state.restored, prepared: mutation)
+                        let progress = mutationProgress(current, material: retained.material, installed: state.installed,
+                            restored: state.restored, prepared: mutation, reservation: reservation)
                         guard try matchesRestorable(current, material: retained.material,
                             installed: progress.installed, restored: progress.restored) else { throw Failure.staleReview }
                         let captured = current
@@ -162,6 +169,11 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                                   fresh.appSidecarRevision == captured.appSidecarRevision,
                                   fresh.xmpBytes == captured.xmpBytes,
                                   fresh.appSidecarBytes == captured.appSidecarBytes else { throw Failure.staleReview }
+                            if mutation.removalWitness != nil, progress.restored != state.restored {
+                                try facade.requireRemovalWitness(mutation,
+                                    candidate: removalCandidate(mutation, material: retained.material), expected: fresh,
+                                    authorizationRevision: retained.material.binding.authorizationRevision, reservation: reservation)
+                            }
                         }
                         if progress.installed == state.installed, progress.restored == state.restored {
                             try recovery.discardUnrenamedMutation(retained.material, verify: verify)
@@ -176,12 +188,19 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                             case .appRestoration:
                                 guard let restored = progress.restored else { throw Failure.staleReview }
                                 try recovery.recordRestored(retained.material, restored: restored, complete: true, verify: verify)
+                                try finishRemovalCleanup(retained.material, snapshot: current, reservation: reservation)
                                 return
                             }
                         }
                         guard let updated = try recovery.loadRecoveryState(), updated.material == retained.material,
                               updated.preparedMutation == nil else { throw Failure.staleReview }
                         state = updated
+                    }
+                    if state.restored?.appRevision != nil {
+                        guard try matchesRestorable(current, material: retained.material, installed: state.installed, restored: state.restored)
+                        else { throw Failure.staleReview }
+                        try finishRemovalCleanup(retained.material, snapshot: current, reservation: reservation)
+                        return
                     }
                     let installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers
                     if let receipt = state.installed {
@@ -221,6 +240,7 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                     if state.restored == nil {
                         let recordXMP: @Sendable (MCPPhotoCarrierSnapshot) throws -> Void = { after in
                             try hooks.beforeXMPReceipt()
+                            let pendingMutation = try recovery.loadRecoveryState()?.preparedMutation
                             try recovery.recordRestored(retained.material, restored: .init(xmpRevision: after.xmpSidecarRevision, appRevision: nil)) {
                                 try requireAuthority(retained.material)
                                 let fresh = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
@@ -230,6 +250,11 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                                       fresh.appSidecarRevision == after.appSidecarRevision,
                                       after.xmpBytes == retained.material.original,
                                       after.sourceRevision == original.sourceRevision else { throw Failure.staleReview }
+                                if let mutation = pendingMutation, mutation.removalWitness != nil {
+                                    try facade.requireRemovalWitness(mutation, candidate: removalCandidate(mutation, material: retained.material),
+                                        expected: fresh, authorizationRevision: retained.material.binding.authorizationRevision,
+                                        reservation: reservation)
+                                }
                             }
                         }
                         if let bytes = retained.material.original {
@@ -244,16 +269,29 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                         } else {
                             try facade.removeOriginallyAbsentCarrier(.xmp, original: original, candidate: retained.material.candidate,
                                 installedRevision: installed.xmpRevision, authorizationRevision: retained.material.binding.authorizationRevision,
-                                expected: current, reservation: reservation, afterRemoval: recordXMP)
+                                expected: current, reservation: reservation, beforeRemoval: hooks.beforeRemoval,
+                                beforeMutation: { mutation in
+                                    try recovery.recordPreparedMutation(retained.material, mutation: mutation) {
+                                        try requireAuthority(retained.material)
+                                    }
+                                }, afterRemoval: recordXMP)
                         }
                     }
                     current = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
                     guard let progress = try recovery.loadRecoveryState(), let restored = progress.restored,
                           progress.material == retained.material, progress.installed == installed,
-                          try matchesRestorable(current, material: retained.material, installed: installed, restored: restored)
+                          try matchesRestorable(current, material: retained.material, installed: installed, restored: restored),
+                          removalCleanupMatches(current, material: retained.material, removals: progress.removals, reservation: reservation)
                     else { throw Failure.staleReview }
+                    let appSnapshot = current
+                    let requireAppBoundary: @Sendable () throws -> Void = {
+                        try requireAuthority(retained.material)
+                        guard removalCleanupMatches(appSnapshot, material: retained.material, removals: progress.removals, reservation: reservation)
+                        else { throw Failure.staleReview }
+                    }
                     let recordApp: @Sendable (MCPPhotoCarrierSnapshot) throws -> Void = { after in
                         try hooks.beforeAppReceipt()
+                        let pendingMutation = try recovery.loadRecoveryState()?.preparedMutation
                         try recovery.recordRestored(retained.material,
                             restored: .init(xmpRevision: restored.xmpRevision, appRevision: after.appSidecarRevision), complete: true) {
                                 try requireAuthority(retained.material)
@@ -265,37 +303,113 @@ nonisolated struct MCPIPTCPatchXMPRecoveryService: Sendable {
                                       after.xmpSidecarRevision == restored.xmpRevision,
                                       after.xmpBytes == retained.material.original, after.appSidecarBytes == app.original
                                 else { throw Failure.staleReview }
+                                if let mutation = pendingMutation, mutation.removalWitness != nil {
+                                    try facade.requireRemovalWitness(mutation, candidate: removalCandidate(mutation, material: retained.material),
+                                        expected: fresh, authorizationRevision: retained.material.binding.authorizationRevision,
+                                        reservation: reservation)
+                                }
                             }
                     }
                     if installed.appRevision == nil || restored.appRevision != nil {
                         try recordApp(current)
                     } else if let bytes = app.original {
                         _ = try facade.installPendingDraft(data: bytes, expected: current, reservation: reservation,
-                            beforeInstall: { try requireAuthority(retained.material) }, beforeMutation: { identity in
+                            beforeInstall: requireAppBoundary, beforeMutation: { identity in
                                 try recovery.recordPreparedMutation(retained.material,
-                                    mutation: .init(purpose: .appRestoration, identity: identity)) {
-                                    try requireAuthority(retained.material)
-                                }
+                                    mutation: .init(purpose: .appRestoration, identity: identity), verify: requireAppBoundary)
                             }, afterInstall: recordApp)
                     } else {
                         try facade.removeOriginallyAbsentCarrier(.appHistory, original: original, candidate: app.candidate!,
                             installedRevision: installed.appRevision!, authorizationRevision: retained.material.binding.authorizationRevision,
-                            expected: current, reservation: reservation, afterRemoval: recordApp)
+                            expected: current, reservation: reservation, beforeRemoval: {
+                                try hooks.beforeRemoval()
+                                try requireAppBoundary()
+                            }, beforeMutation: { mutation in
+                                try recovery.recordPreparedMutation(retained.material, mutation: mutation, verify: requireAppBoundary)
+                            }, afterRemoval: recordApp)
                     }
+                    let finalSnapshot = try facade.withPhotoSnapshot(path: photo.path, reservation: reservation) { $0 }
+                    try finishRemovalCleanup(retained.material, snapshot: finalSnapshot, reservation: reservation)
                 }
             }
         } onCancel: { cancellation.cancel() }
     }
 
+    private func removalCandidate(_ mutation: MCPIPTCPatchXMPRecoveryStore.PreparedMutation,
+                                  material: MCPIPTCPatchXMPRecoveryStore.Material) -> Data {
+        mutation.purpose == .xmpRestoration ? material.candidate : material.appSidecarRecovery!.candidate!
+    }
+
+    private func removalCleanupMatches(_ snapshot: MCPPhotoCarrierSnapshot,
+                                       material: MCPIPTCPatchXMPRecoveryStore.Material,
+                                       removals: [MCPIPTCPatchXMPRecoveryStore.PreparedMutation],
+                                       reservation: MCPProcessReservationLease? = nil) -> Bool {
+        do {
+            for mutation in removals {
+                try facade.requireRemovalWitness(mutation, candidate: removalCandidate(mutation, material: material),
+                    expected: snapshot, authorizationRevision: material.binding.authorizationRevision,
+                    reservation: reservation, allowAbsent: true)
+            }
+            return true
+        } catch { return false }
+    }
+
+    private func finishRemovalCleanup(_ material: MCPIPTCPatchXMPRecoveryStore.Material,
+                                      snapshot: MCPPhotoCarrierSnapshot,
+                                      reservation: MCPProcessReservationLease) throws {
+        guard let state = try recovery.loadRecoveryState(), !state.removals.isEmpty else { return }
+        guard state.material == material, state.preparedMutation == nil, state.restored?.appRevision != nil,
+              try matchesRestorable(snapshot, material: material, installed: state.installed, restored: state.restored)
+        else { throw Failure.staleReview }
+        try hooks.beforeRemovalCleanup()
+        for mutation in state.removals {
+            try requireAuthority(material)
+            try facade.requireRemovalWitness(mutation, candidate: removalCandidate(mutation, material: material),
+                expected: snapshot, authorizationRevision: material.binding.authorizationRevision,
+                reservation: reservation, allowAbsent: true, remove: true)
+        }
+        try hooks.beforeRemovalCleanupReceipt()
+        try recovery.completeRemovalCleanup(material) {
+            try requireAuthority(material)
+            let fresh = try facade.withPhotoSnapshot(path: snapshot.target.url.path, reservation: reservation) { $0 }
+            guard fresh.target == snapshot.target,
+                  try matchesRestorable(fresh, material: material, installed: state.installed, restored: state.restored)
+            else { throw Failure.staleReview }
+            for mutation in state.removals {
+                try facade.requireRemovalWitness(mutation, candidate: removalCandidate(mutation, material: material),
+                    expected: fresh, authorizationRevision: material.binding.authorizationRevision,
+                    reservation: reservation, allowAbsent: true, mustBeAbsent: true)
+            }
+        }
+    }
+
     /// Infer only the next exact staged inode; peer carriers and authority are verified by
     /// matchesRestorable before this evidence is promoted into a durable receipt.
     private func mutationProgress(_ snapshot: MCPPhotoCarrierSnapshot,
+                                  material: MCPIPTCPatchXMPRecoveryStore.Material,
                                   installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?,
                                   restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?,
-                                  prepared: MCPIPTCPatchXMPRecoveryStore.PreparedMutation?)
+                                  prepared: MCPIPTCPatchXMPRecoveryStore.PreparedMutation?,
+                                  reservation: MCPProcessReservationLease? = nil)
         -> (installed: MCPIPTCPatchXMPRecoveryStore.InstalledCarriers?,
             restored: MCPIPTCPatchXMPRecoveryStore.RestoredCarriers?) {
         guard let prepared, let installed else { return (installed, restored) }
+        if prepared.removalWitness != nil {
+            let absent = prepared.purpose == .xmpRestoration ? snapshot.xmpBytes == nil : snapshot.appSidecarBytes == nil
+            guard absent else { return (installed, restored) }
+            do {
+                try facade.requireRemovalWitness(prepared, candidate: removalCandidate(prepared, material: material),
+                    expected: snapshot, authorizationRevision: material.binding.authorizationRevision, reservation: reservation)
+                switch prepared.purpose {
+                case .xmpRestoration:
+                    return (installed, .init(xmpRevision: snapshot.xmpSidecarRevision, appRevision: nil))
+                case .appRestoration:
+                    guard let restored else { return (installed, restored) }
+                    return (installed, .init(xmpRevision: restored.xmpRevision, appRevision: snapshot.appSidecarRevision))
+                case .appPublication: return (installed, restored)
+                }
+            } catch { return (installed, restored) }
+        }
         switch prepared.purpose {
         case .appPublication:
             guard snapshot.preparedAppIdentity == prepared.identity else { return (installed, restored) }

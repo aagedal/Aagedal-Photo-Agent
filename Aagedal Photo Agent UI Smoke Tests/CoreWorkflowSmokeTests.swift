@@ -256,10 +256,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             status.exists && (status.label == empty || status.value as? String == empty)
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [emptyStatus], timeout: 8), .completed)
+        try verifyResolvedPublicationHistoryCanBeRemoved(journal: journal, originalOutcome: "failed", resolution: nil)
         app.terminate()
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
         XCTAssertEqual(try Data(contentsOf: journal), receipt)
         XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertTrue(try retainedOperationObjects().isEmpty)
     }
 
     @MainActor
@@ -386,6 +388,73 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(try? Data(contentsOf: xmp),
             replaceAfterInspection || replaceHistoryAfterInspection ? published : originalXMP)
         XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
+        if appReceiptInterruption && !replaceAfterInspection && !replaceHistoryAfterInspection {
+            // Relaunch preserves both the failed publication outcome and its separate
+            // restoration evidence. Removing history must not erase the recovery journal.
+            app.typeKey(",", modifierFlags: .command)
+            XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+            app.staticTexts["Automation"].click()
+            try verifyResolvedPublicationHistoryCanBeRemoved(journal: journal, originalOutcome: "recoveryRequired",
+                resolution: "Original metadata restored")
+            app.terminate()
+            launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+            XCTAssertTrue(try retainedOperationObjects().isEmpty)
+            XCTAssertEqual(try Data(contentsOf: journal), finalJournal)
+            XCTAssertEqual(try Data(contentsOf: photo), original)
+            XCTAssertEqual(try? Data(contentsOf: xmp), originalXMP)
+            XCTAssertEqual(try? Data(contentsOf: history), originalHistory)
+        }
+    }
+
+    private func retainedOperationObjects() throws -> [[String: Any]] {
+        let url = fixtureRoot.appendingPathComponent("patch-operations/operations.json")
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let encoded = try XCTUnwrap(envelope["payload"] as? String)
+        let payload = try XCTUnwrap(Data(base64Encoded: encoded))
+        let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        return try XCTUnwrap(archive["records"] as? [[String: Any]])
+    }
+
+    @MainActor
+    private func verifyResolvedPublicationHistoryCanBeRemoved(journal: URL, originalOutcome: String, resolution: String?) throws {
+        let journalBytes = try Data(contentsOf: journal)
+        let records = try retainedOperationObjects()
+        XCTAssertEqual(records.count, 1)
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record["kind"] as? String, "iptc_patch")
+        XCTAssertEqual(record["outcome"] as? String, originalOutcome)
+        let operationID = try XCTUnwrap(record["id"] as? String).lowercased()
+        let refresh = app.buttons["automation.refreshOperations"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        refresh.click()
+        let status = app.staticTexts["automation.operationStatus.\(operationID)"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        let originalStatus = originalOutcome == "failed" ? "Failed or refused" : "Recovery required"
+        XCTAssertTrue(status.label.contains(originalStatus) ||
+            (status.value as? String)?.contains(originalStatus) == true)
+        let resolved = app.staticTexts["automation.operationRecoveryResolution.\(operationID)"]
+        if let resolution {
+            XCTAssertNotNil(record["recoveryResolution"])
+            XCTAssertTrue(resolved.waitForExistence(timeout: 8))
+            XCTAssertTrue(resolved.label.contains(resolution) || (resolved.value as? String)?.contains(resolution) == true)
+        } else {
+            XCTAssertNil(record["recoveryResolution"])
+            XCTAssertFalse(resolved.exists)
+        }
+        let remove = app.buttons["automation.removeOperation.\(operationID)"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 8))
+        remove.click()
+        let confirmation = app.sheets.firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Cancel"].click()
+        XCTAssertEqual(try retainedOperationObjects().count, 1)
+        XCTAssertEqual(try Data(contentsOf: journal), journalBytes)
+        remove.click()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Remove Record"].click()
+        XCTAssertTrue(app.staticTexts["No retained operations"].waitForExistence(timeout: 8))
+        XCTAssertTrue(try retainedOperationObjects().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: journal), journalBytes)
     }
 
     @MainActor

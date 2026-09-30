@@ -284,6 +284,38 @@ struct MCPIPTCPatchXMPRecoveryStoreTests {
         #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadRestoredDisposition() }
     }
 
+    @Test("Removal journals validate witness names, identity and phase and refuse resolution relabeling", arguments: [false, true])
+    func removalJournalAuthority(receipted: Bool) throws {
+        let fixture = try Fixture()
+        let material = try fixture.store.stage(id: UUID(), planID: "plan", targetPath: "/test.xmp",
+            binding: fixture.binding, original: nil, candidate: Data("xmp".utf8),
+            appSidecarRecovery: .init(original: nil, candidate: Data("history".utf8)), publicationApprovalID: UUID())
+        try fixture.store.recordInstalled(material, installed: .init(xmpRevision: "installed-xmp", appRevision: nil), verify: {})
+        let identity = MCPPreparedXMPIdentity(file: .init(device: 1, inode: 2), size: 3,
+            modificationSeconds: 1, modificationNanoseconds: 1)
+        for name in ["../foreign", ".photo-agent-recovery-../foreign.removed", ".photo-agent-recovery-invalid.removed"] {
+            #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+                try fixture.store.recordPreparedMutation(material, mutation: .init(purpose: .xmpRestoration,
+                    identity: identity, removalWitness: .init(name: name, parent: .init(device: 1, inode: 3))), verify: {})
+            }
+        }
+        let mutation = MCPIPTCPatchXMPRecoveryStore.PreparedMutation(purpose: .xmpRestoration, identity: identity,
+            removalWitness: .init(name: ".photo-agent-recovery-\(UUID().uuidString).removed", parent: .init(device: 1, inode: 3)))
+        try fixture.store.recordPreparedMutation(material, mutation: mutation, verify: {})
+        if receipted {
+            try fixture.store.recordRestored(material, restored: .init(xmpRevision: "restored-xmp", appRevision: nil), verify: {})
+            #expect(try fixture.store.loadRecoveryState()?.removals == [mutation])
+            #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.verification) {
+                try fixture.store.completeRemovalCleanup(material, verify: {})
+            }
+        }
+        var envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.journal)) as? [String: Any])
+        envelope["version"] = receipted ? 8 : 10
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fixture.journal)
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadRecoveryState() }
+        #expect(throws: MCPIPTCPatchXMPRecoveryStore.Failure.corruptJournal) { try fixture.store.loadRestoredDisposition() }
+    }
+
     @Test("Directory durability failure refuses publication and retry syncs existing ancestors")
     func directorySyncFailure() throws {
         let fixture = try Fixture()
@@ -554,7 +586,7 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
         #expect(try store.loadRestoredDisposition() == nil)
     }
 
-    @Test("Originally absent restoration interrupted before unlink receipt stays fail-closed",
+    @Test("Originally absent restoration resumes only from the exact rooted removal witness",
         arguments: ["xmp", "app"])
     func interruptedRemoval(carrier: String) async throws {
         let fixture = try Fixture(pending: carrier != "app", existingXMP: carrier != "xmp")
@@ -568,8 +600,150 @@ struct MCPIPTCPatchXMPRecoveryServiceTests {
         let reopened = MCPIPTCPatchXMPRecoveryService(
             recovery: MCPIPTCPatchXMPRecoveryStore(directory: try recoveryDirectory(fixture)), facade: fixture.facade)
         let review = try #require(try reopened.inspect())
-        #expect(!review.canRestorePartialPublication)
+        #expect(review.canRestorePartialPublication)
         #expect(!review.canResolveUnchanged)
+        #expect(try store.loadRecoveryState()?.preparedMutation?.removalWitness != nil)
+        try await reopened.restorePartialPublication(review)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.xmpBytes == material.original)
+        #expect(after.appSidecarBytes == material.appSidecarRecovery?.original)
+        #expect(try store.loadRestoredDisposition() == material)
+    }
+
+    @Test("Prepared removal refuses lost or substituted witnesses and changed authority",
+        arguments: ["xmp", "app"], ["missing", "replacement", "source", "peer", "authorization", "parent", "symlink", "reappeared"])
+    func interruptedRemovalRefusal(carrier: String, change: String) async throws {
+        let fixture = try Fixture(pending: carrier != "app", existingXMP: carrier != "xmp")
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        if carrier == "xmp" { hooks.beforeXMPReceipt = { throw InterruptedInstall.afterRename } }
+        else { hooks.beforeAppReceipt = { throw InterruptedInstall.afterRename } }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: InterruptedInstall.afterRename) { try await interrupted.restorePartialPublication(initial) }
+        let prepared = try #require(try store.loadRecoveryState()?.preparedMutation)
+        let witness = try #require(prepared.removalWitness)
+        let parent = carrier == "xmp" ? fixture.photo.deletingLastPathComponent()
+            : fixture.photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata")
+        let witnessURL = parent.appendingPathComponent(witness.name)
+        let journal = try Data(contentsOf: try recoveryDirectory(fixture).appendingPathComponent("iptc-xmp-recovery/operations.json"))
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        switch change {
+        case "missing": try FileManager.default.removeItem(at: witnessURL)
+        case "replacement": try Data(contentsOf: witnessURL).write(to: witnessURL, options: .atomic)
+        case "symlink":
+            let other = parent.appendingPathComponent("foreign-witness")
+            try FileManager.default.moveItem(at: witnessURL, to: other)
+            try FileManager.default.createSymbolicLink(at: witnessURL, withDestinationURL: other)
+        case "reappeared":
+            let live = carrier == "xmp" ? URL(fileURLWithPath: material.targetPath)
+                : parent.appendingPathComponent("\(fixture.photo.lastPathComponent).meta.json")
+            try Data(contentsOf: witnessURL).write(to: live)
+        case "parent":
+            let renamed = parent.deletingLastPathComponent().appendingPathComponent("moved-parent-\(UUID().uuidString)")
+            try FileManager.default.moveItem(at: parent, to: renamed)
+            defer { try? FileManager.default.removeItem(at: renamed) }
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            for url in try FileManager.default.contentsOfDirectory(at: renamed, includingPropertiesForKeys: nil) {
+                try FileManager.default.moveItem(at: url, to: parent.appendingPathComponent(url.lastPathComponent))
+            }
+        case "source": try Data("changed photo".utf8).write(to: fixture.photo, options: .atomic)
+        case "peer":
+            let peer = carrier == "xmp" ? parent.appendingPathComponent(".photo_metadata/\(fixture.photo.lastPathComponent).meta.json")
+                : URL(fileURLWithPath: material.targetPath)
+            try Data(contentsOf: peer).write(to: peer, options: .atomic)
+        default:
+            var configuration = try fixture.facade.authorizationStore.load()
+            configuration.authorizationRevision = UUID()
+            try fixture.facade.authorizationStore.save(configuration)
+        }
+        #expect((try? service.inspect()?.canRestorePartialPublication) != true)
+        await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
+        #expect(try Data(contentsOf: try recoveryDirectory(fixture).appendingPathComponent("iptc-xmp-recovery/operations.json")) == journal)
+        #expect(try store.loadRestoredDisposition() == nil)
+    }
+
+    @Test("Removal cleanup interruption retains a resumable receipt before final disposition", arguments: ["xmp", "app"], [false, true])
+    func interruptedRemovalCleanup(carrier: String, afterUnlink: Bool) async throws {
+        let fixture = try Fixture(pending: carrier != "app", existingXMP: carrier != "xmp")
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        if afterUnlink { hooks.beforeRemovalCleanupReceipt = { throw InterruptedInstall.beforeRename } }
+        else { hooks.beforeRemovalCleanup = { throw InterruptedInstall.beforeRename } }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: InterruptedInstall.beforeRename) { try await interrupted.restorePartialPublication(initial) }
+        #expect(try store.loadRecoveryState()?.restored?.appRevision != nil)
+        #expect(try store.loadRestoredDisposition() == nil)
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: .init(directory: try recoveryDirectory(fixture)), facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        #expect(try store.loadRestoredDisposition() == material)
+    }
+
+    @Test("Pre-removal interruption preserves candidates and a collision never overwrites foreign bytes",
+        arguments: ["xmp", "app"], [false, true])
+    func preparedRemovalBeforeRename(carrier: String, collision: Bool) async throws {
+        let fixture = try Fixture(pending: carrier != "app", existingXMP: carrier != "xmp")
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let parent = carrier == "xmp" ? fixture.photo.deletingLastPathComponent()
+            : fixture.photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata")
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        hooks.beforeRemoval = {
+            if collision {
+                let witness = try #require(try store.loadRecoveryState()?.preparedMutation?.removalWitness)
+                try Data("foreign recovery bytes".utf8).write(to: parent.appendingPathComponent(witness.name))
+            } else { throw InterruptedInstall.beforeRename }
+        }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: (any Error).self) { try await interrupted.restorePartialPublication(initial) }
+        let witness = try #require(try store.loadRecoveryState()?.preparedMutation?.removalWitness)
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        if carrier == "xmp" { #expect(after.xmpSidecarRevision == before.xmpSidecarRevision) }
+        else { #expect(after.appSidecarRevision == before.appSidecarRevision) }
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        try await service.restorePartialPublication(review)
+        #expect(try store.loadRestoredDisposition() == material)
+        if collision {
+            #expect(try Data(contentsOf: parent.appendingPathComponent(witness.name)) == Data("foreign recovery bytes".utf8))
+        }
+    }
+
+    @Test("A substituted receipted XMP witness refuses before remaining app restoration")
+    func staleReceiptedRemoval() async throws {
+        let fixture = try Fixture(pending: false, existingXMP: false)
+        let (store, material) = try partiallyPublished(fixture, installApp: true)
+        var hooks = MCPIPTCPatchXMPRecoveryService.Hooks()
+        hooks.beforeRemoval = {
+            if try store.loadRecoveryState()?.preparedMutation?.purpose == .appRestoration {
+                throw InterruptedInstall.beforeRename
+            }
+        }
+        let interrupted = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade, hooks: hooks)
+        let initial = try #require(try interrupted.inspect())
+        await #expect(throws: InterruptedInstall.beforeRename) { try await interrupted.restorePartialPublication(initial) }
+        let state = try #require(try store.loadRecoveryState())
+        let witness = try #require(state.removals.first?.removalWitness)
+        let url = fixture.photo.deletingLastPathComponent().appendingPathComponent(witness.name)
+        let service = MCPIPTCPatchXMPRecoveryService(recovery: store, facade: fixture.facade)
+        let review = try #require(try service.inspect())
+        #expect(review.canRestorePartialPublication)
+        let before = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        let journalURL = try recoveryDirectory(fixture).appendingPathComponent("iptc-xmp-recovery/operations.json")
+        let journal = try Data(contentsOf: journalURL)
+        try Data(contentsOf: url).write(to: url, options: .atomic)
+        await #expect(throws: (any Error).self) { try await service.restorePartialPublication(review) }
+        let after = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
+        #expect(after.appSidecarBytes == before.appSidecarBytes)
+        #expect(after.appSidecarRevision == before.appSidecarRevision)
+        #expect(try Data(contentsOf: journalURL) == journal)
         #expect(try store.load() == material)
     }
 

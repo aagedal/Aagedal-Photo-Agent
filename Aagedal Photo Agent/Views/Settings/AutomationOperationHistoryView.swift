@@ -32,7 +32,13 @@ struct AutomationOperationHistoryView: View {
                             .accessibilityIdentifier("automation.operationStatus.\(record.id.uuidString.lowercased())")
                         Text("Last recorded \(record.updatedAt.formatted(date: .abbreviated, time: .standard))")
                             .font(.caption).foregroundStyle(.secondary)
-                        if record.outcome == .recoveryRequired || record.outcome == .partialUncertain {
+                        if let resolution = record.recoveryResolution {
+                            Text(resolution.disposition == .restored
+                                ? "Original metadata restored; original publication was not verified."
+                                : "Unchanged staging resolved; original publication was not verified.")
+                                .accessibilityIdentifier("automation.operationRecoveryResolution.\(record.id.uuidString.lowercased())")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else if record.outcome == .recoveryRequired || record.outcome == .partialUncertain {
                             Text("Inspect the affected photo and pending metadata before retrying. This record cannot establish whether a draft was saved. Automatic repair is unavailable; recovery evidence is retained.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
@@ -43,6 +49,7 @@ struct AutomationOperationHistoryView: View {
                         }
                         if AutomationOperationHistoryService.canRemove(record) {
                             Button("Remove Record…", role: .destructive) { removal = record }
+                                .accessibilityIdentifier("automation.removeOperation.\(record.id.uuidString.lowercased())")
                                 .accessibilityLabel("Remove completed operation record \(record.id.uuidString.lowercased())")
                                 .disabled(model.isLoading || model.message != nil)
                         }
@@ -95,7 +102,9 @@ struct AutomationOperationHistoryView: View {
         case .failed: "Failed or refused."
         case .cancelled: "Cancellation confirmed with no uncertain effects."
         case .stale: "Stale operation; prepare a fresh plan."
-        case .partialUncertain, .recoveryRequired: "Recovery required; effects are uncertain."
+        case .partialUncertain, .recoveryRequired: record.recoveryResolution == nil
+            ? "Recovery required; effects are uncertain."
+            : "Recovery required at original publication; publication was not verified."
         case nil: record.cancellationRequestedAt == nil
             ? "Last recorded as \(record.state.rawValue). Current activity is not confirmed."
             : "Cancellation requested; waiting for a confirmed outcome."

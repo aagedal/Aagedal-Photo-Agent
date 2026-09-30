@@ -907,6 +907,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
                                        expected: MCPPhotoCarrierSnapshot,
                                        reservation: MCPProcessReservationLease,
                                        beforeRemoval: @Sendable () throws -> Void = {},
+                                       beforeMutation: @Sendable (MCPIPTCPatchXMPRecoveryStore.PreparedMutation) throws -> Void = { _ in },
                                        afterRemoval: @Sendable (MCPPhotoCarrierSnapshot) throws -> Void) throws {
         guard original.target == expected.target,
               original.sourceRevision == expected.sourceRevision,
@@ -957,20 +958,32 @@ nonisolated struct MCPAutomationFacade: Sendable {
             guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
         }
         try validate()
-        // Retain the exact generation through the last entry check and unlink.
+        // Retain the exact generation through the last entry check and removal rename.
         let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else { throw MCPAutomationReadError.photoChanged }
         defer { _ = Darwin.close(descriptor) }
         var opened = stat()
         guard Darwin.fstat(descriptor, &opened) == 0,
               (opened.st_mode & S_IFMT) == S_IFREG, opened.st_nlink == 1 else { throw MCPAutomationReadError.unsafeCarrier }
+        var parentIdentity = stat()
+        guard Darwin.fstat(parent, &parentIdentity) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        let witness = MCPIPTCPatchXMPRecoveryStore.RemovalWitness(
+            name: ".photo-agent-recovery-\(UUID().uuidString).removed",
+            parent: .init(device: UInt64(parentIdentity.st_dev), inode: UInt64(parentIdentity.st_ino)))
+        let mutation = MCPIPTCPatchXMPRecoveryStore.PreparedMutation(
+            purpose: carrier == .xmp ? .xmpRestoration : .appRestoration,
+            identity: MCPPreparedXMPIdentity(opened), removalWitness: witness)
+        try beforeMutation(mutation)
         try beforeRemoval()
         try validate()
         var live = stat()
         guard Darwin.fstatat(parent, name, &live, AT_SYMLINK_NOFOLLOW) == 0,
               live.st_dev == opened.st_dev, live.st_ino == opened.st_ino,
               (live.st_mode & S_IFMT) == S_IFREG, live.st_nlink == 1 else { throw MCPAutomationReadError.photoChanged }
-        guard Darwin.unlinkat(parent, name, 0) == 0, Darwin.fsync(parent) == 0 else {
+        // Move the admitted inode to durable evidence, never overwrite a foreign witness.
+        // Absence of the original name is insufficient without this exact retained inode.
+        guard Darwin.renameatx_np(parent, name, parent, witness.name, UInt32(RENAME_EXCL)) == 0,
+              Darwin.fsync(parent) == 0 else {
             throw MCPAutomationReadError.unsafeCarrier
         }
         try directory.requireSameAncestors()
@@ -989,7 +1002,78 @@ nonisolated struct MCPAutomationFacade: Sendable {
             guard after.appSidecarBytes == nil, after.appSidecarRevision == original.appSidecarRevision,
                   after.xmpSidecarRevision == expected.xmpSidecarRevision else { throw MCPAutomationReadError.photoChanged }
         }
+        try requireRemovalWitness(mutation, candidate: candidate, expected: after,
+            authorizationRevision: authorizationRevision, reservation: reservation)
         try afterRemoval(after)
+    }
+
+    /// Prepared absence is admitted only with its exact rooted witness. Receipted cleanup
+    /// can also accept an absent witness after a previous unlink, then sync its parent again.
+    func requireRemovalWitness(_ mutation: MCPIPTCPatchXMPRecoveryStore.PreparedMutation,
+                               candidate: Data, expected: MCPPhotoCarrierSnapshot,
+                               authorizationRevision: UUID, reservation: MCPProcessReservationLease? = nil,
+                               allowAbsent: Bool = false, remove: Bool = false, mustBeAbsent: Bool = false) throws {
+        guard let witness = mutation.removalWitness, witness.isValid, !candidate.isEmpty,
+              mutation.purpose != .appPublication else { throw MCPAutomationReadError.unsafeCarrier }
+        let lease = try reservation ?? MCPProcessReservation.acquirePhoto(expected.target.url)
+        defer { if reservation == nil { lease.release() } }
+        guard lease.coversPhoto(expected.target.url) else { throw MCPAutomationReadError.unsafeCarrier }
+        let configuration = try authorizationStore.load()
+        let target = try authorizationStore.authorizeExistingPath(expected.target.url.path)
+        guard target == expected.target, configuration.authorizationRevision == authorizationRevision,
+              let root = configuration.roots.first(where: { $0.id == target.rootID }) else {
+            throw MCPAuthorizationError.rootChanged
+        }
+        let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
+        let privateDirectory = mutation.purpose == .appRestoration
+            ? try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(name: ".photo_metadata", in: directory.descriptor) : nil
+        defer { if let privateDirectory { _ = Darwin.close(privateDirectory) } }
+        guard mutation.purpose != .appRestoration || privateDirectory != nil else { throw MCPAutomationReadError.photoChanged }
+        let parent = privateDirectory ?? directory.descriptor
+        func validate() throws {
+            try directory.requireSameAncestors()
+            if let privateDirectory {
+                try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata", in: directory.descriptor, descriptor: privateDirectory)
+            }
+            var identity = stat()
+            guard Darwin.fstat(parent, &identity) == 0,
+                  witness.parent == MCPFileIdentity(device: UInt64(identity.st_dev), inode: UInt64(identity.st_ino)),
+                  try authorizationStore.load() == configuration else { throw MCPAutomationReadError.photoChanged }
+            let fresh = try withPhotoSnapshot(path: target.url.path, reservation: lease) { $0 }
+            guard fresh.target == expected.target, fresh.sourceRevision == expected.sourceRevision,
+                  fresh.sourceBytes == expected.sourceBytes,
+                  fresh.xmpSidecarRevision == expected.xmpSidecarRevision, fresh.xmpBytes == expected.xmpBytes,
+                  fresh.appSidecarRevision == expected.appSidecarRevision, fresh.appSidecarBytes == expected.appSidecarBytes
+            else { throw MCPAutomationReadError.photoChanged }
+        }
+        try validate()
+        let present = try MCPPhotoRevisionEvidence.withSafeBytesIfPresent(name: witness.name, in: parent) { bytes, identity in
+            guard MCPPreparedXMPIdentity(identity) == mutation.identity, bytes == candidate else {
+                throw MCPAutomationReadError.photoChanged
+            }
+            try validate()
+            // The no-follow reader retains the descriptor and verifies the entry. Deletion
+            // happens below after this read has completed its final exact generation check.
+            return identity
+        }
+        guard !mustBeAbsent || present == nil else { throw MCPAutomationReadError.photoChanged }
+        if let present, remove {
+            let descriptor = Darwin.openat(parent, witness.name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { throw MCPAutomationReadError.photoChanged }
+            defer { _ = Darwin.close(descriptor) }
+            var retained = stat()
+            guard Darwin.fstat(descriptor, &retained) == 0,
+                  MCPPreparedXMPIdentity(retained) == mutation.identity,
+                  (retained.st_mode & S_IFMT) == S_IFREG, retained.st_nlink == 1 else { throw MCPAutomationReadError.photoChanged }
+            try validate()
+            try MCPPhotoRevisionEvidence.requireSameFile(name: witness.name, in: parent, snapshot: present)
+            guard Darwin.unlinkat(parent, witness.name, 0) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        } else if present == nil, !allowAbsent { throw MCPAutomationReadError.photoChanged }
+        if remove {
+            try MCPPhotoRevisionEvidence.requireAbsent(name: witness.name, in: parent)
+            guard Darwin.fsync(parent) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
+        }
+        try validate()
     }
 
     private func capturePhotoEvidence(
@@ -1530,7 +1614,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
             + Double(identity.st_mtimespec.tv_nsec) / 1_000_000_000)
     }
 
-    private static func requireAbsent(name: String, in parent: Int32) throws {
+    fileprivate static func requireAbsent(name: String, in parent: Int32) throws {
         var item = stat()
         guard Darwin.fstatat(parent, name, &item, AT_SYMLINK_NOFOLLOW) != 0,
               errno == ENOENT else {
@@ -1538,7 +1622,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         }
     }
 
-    private static func requireSameFile(name: String, in parent: Int32, snapshot: stat) throws {
+    fileprivate static func requireSameFile(name: String, in parent: Int32, snapshot: stat) throws {
         var entry = stat()
         guard Darwin.fstatat(parent, name, &entry, AT_SYMLINK_NOFOLLOW) == 0,
               (entry.st_mode & S_IFMT) == S_IFREG, entry.st_nlink == 1,
@@ -1619,7 +1703,7 @@ nonisolated private struct MCPPhotoRevisionEvidence: Sendable {
         return result
     }
 
-    private static func withSafeBytesIfPresent<T>(name: String, in parent: Int32, consume: (Data, stat) throws -> T) throws -> T? {
+    fileprivate static func withSafeBytesIfPresent<T>(name: String, in parent: Int32, consume: (Data, stat) throws -> T) throws -> T? {
         try withSafeHandleIfPresent(name: name, in: parent) { handle, identity in
             guard identity.st_size <= 8_388_608 else {
                 throw MCPAutomationReadError.unsafeCarrier

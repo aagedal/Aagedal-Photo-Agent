@@ -23,6 +23,13 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         case verified, failed, cancelled, partialUncertain, recoveryRequired, stale
     }
 
+    struct RecoveryResolution: Codable, Equatable, Sendable {
+        enum Disposition: String, Codable, Sendable { case unchanged, restored }
+        let disposition: Disposition
+        let receiptSHA256: String
+        let resolvedAt: Date
+    }
+
     struct Record: Codable, Equatable, Sendable {
         let id: UUID
         let ownerID: UUID
@@ -33,8 +40,13 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         fileprivate(set) var state: State
         fileprivate(set) var outcome: Outcome?
         fileprivate(set) var cancellationRequestedAt: Date?
+        fileprivate(set) var recoveryResolution: RecoveryResolution?
 
         var isTerminal: Bool { state == .completed || state == .cancelled }
+        var canRemove: Bool {
+            isTerminal && ([.verified, .failed, .cancelled, .stale].contains(outcome)
+                || recoveryResolution != nil)
+        }
     }
 
     private struct Archive: Codable {
@@ -44,10 +56,12 @@ nonisolated final class AutomationOperationRegistry: Sendable {
     private struct Envelope: Codable { let payload: Data; let sha256: String }
 
     private let persistence: AutomationOperationPersistence
+    let storageDirectory: URL
     private let maximumRecords: Int
     private let maximumBytes: Int
 
     init(storageDirectory: URL, maximumRecords: Int = 256, maximumBytes: Int = 1_048_576) {
+        self.storageDirectory = storageDirectory
         self.maximumRecords = min(max(0, maximumRecords), 256)
         self.maximumBytes = min(max(0, maximumBytes), 1_048_576)
         persistence = AutomationOperationPersistence(directory: storageDirectory,
@@ -126,8 +140,45 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         try transaction { records in
             guard let index = records.firstIndex(where: { $0.id == id }) else { throw Failure.unknownOperation }
             guard records[index].ownerID == ownerID else { throw Failure.wrongOwner }
-            guard records[index].isTerminal else { throw Failure.invalidTransition }
+            guard records[index].canRemove else { throw Failure.invalidTransition }
             records.remove(at: index)
+        }
+    }
+
+    /// Native recovery supplies only an exact resolved journal while retaining its lock.
+    /// Preserve the original publication outcome; this receipt proves separate restoration
+    /// or unchanged-staging resolution, never successful publication or mutation authority.
+    /// An absent record is harmless (legacy material or an explicitly removed record).
+    @discardableResult
+    func recordRecoveryResolution(_ receipt: MCPIPTCPatchXMPRecoveryStore.HistoryDisposition,
+                                  now: Date = Date()) throws -> Record? {
+        let id = receipt.operationID
+        let disposition: RecoveryResolution.Disposition = receipt.resolution == .restored ? .restored : .unchanged
+        let receiptSHA256 = receipt.receiptSHA256
+        guard Self.validReceiptDigest(receiptSHA256), now.timeIntervalSinceReferenceDate.isFinite else {
+            throw Failure.invalidArguments
+        }
+        return try transaction { records in
+            guard let index = records.firstIndex(where: { $0.id == id }) else { return nil }
+            guard records[index].kind == .iptcPatch, records[index].isTerminal else {
+                throw Failure.invalidTransition
+            }
+            // Staging can precede a refusal or clean cancellation. Those confirmed
+            // outcomes already permit removal and need no uncertainty-resolution marker.
+            guard [.recoveryRequired, .partialUncertain].contains(records[index].outcome) else {
+                return records[index]
+            }
+            if let previous = records[index].recoveryResolution {
+                guard previous.disposition == disposition, previous.receiptSHA256 == receiptSHA256 else {
+                    throw Failure.invalidTransition
+                }
+                return records[index]
+            }
+            guard now >= records[index].updatedAt else { throw Failure.invalidArguments }
+            records[index].recoveryResolution = .init(disposition: disposition,
+                receiptSHA256: receiptSHA256, resolvedAt: now)
+            records[index].updatedAt = now
+            return records[index]
         }
     }
 
@@ -226,7 +277,11 @@ nonisolated final class AutomationOperationRegistry: Sendable {
             let required: Set<String> = ["id", "ownerID", "kind", "createdAt", "updatedAt", "state"]
             for record in recordObjects {
                 guard required.isSubset(of: Set(record.keys)),
-                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt", "ownerLeaseManaged"])) else { throw Failure.invalidStorage }
+                      Set(record.keys).isSubset(of: required.union(["outcome", "cancellationRequestedAt", "ownerLeaseManaged", "recoveryResolution"])) else { throw Failure.invalidStorage }
+                if let resolution = record["recoveryResolution"] {
+                    guard let fields = resolution as? [String: Any],
+                          Set(fields.keys) == ["disposition", "receiptSHA256", "resolvedAt"] else { throw Failure.invalidStorage }
+                }
             }
             let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
             guard archive.schemaVersion == 1, archive.records.count <= maximumRecords,
@@ -242,6 +297,15 @@ nonisolated final class AutomationOperationRegistry: Sendable {
                     guard record.cancellationRequestedAt != nil,
                           [.cancelled, .partialUncertain, .recoveryRequired].contains(record.outcome) else { throw Failure.invalidStorage }
                 } else if record.outcome == .cancelled { throw Failure.invalidStorage }
+                if let resolution = record.recoveryResolution {
+                    guard record.kind == .iptcPatch, record.isTerminal,
+                          [.recoveryRequired, .partialUncertain].contains(record.outcome),
+                          Self.validReceiptDigest(resolution.receiptSHA256),
+                          resolution.resolvedAt.timeIntervalSinceReferenceDate.isFinite,
+                          resolution.resolvedAt >= record.createdAt, resolution.resolvedAt <= record.updatedAt else {
+                        throw Failure.invalidStorage
+                    }
+                }
             }
             return archive.records
         } catch { throw Failure.invalidStorage }
@@ -249,5 +313,9 @@ nonisolated final class AutomationOperationRegistry: Sendable {
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func validReceiptDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }

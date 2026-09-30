@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 
+nonisolated enum AutomationRecoveryHistoryFailure: Error {
+    case unchangedResolutionRecorded, restorationRecorded
+}
+
 nonisolated protocol AutomationRecoveryServing: Sendable {
     func inspectRecovery(photoPath: String?) async throws -> MCPIPTCPatchXMPRecoveryService.Review?
     func resolveUnchangedRecovery(_ review: MCPIPTCPatchXMPRecoveryService.Review) async throws
@@ -79,7 +83,11 @@ final class AutomationRecoveryModel {
         } catch {
             guard request == generation else { return }
             review = nil
-            message = "Staging could not be resolved. Deselect the photo in all metadata editors and inspect recovery again. Changed or uncertain files require restoration; retained evidence has not been discarded."
+            if error is AutomationRecoveryHistoryFailure {
+                message = "Unchanged staging resolved. Operation History could not be updated. Refresh Operation History before publishing again; the recovery receipt remains retained."
+            } else {
+                message = "Staging could not be resolved. Deselect the photo in all metadata editors and inspect recovery again. Changed or uncertain files require restoration; retained evidence has not been discarded."
+            }
         }
     }
 
@@ -109,7 +117,11 @@ final class AutomationRecoveryModel {
         } catch {
             guard request == generation else { return }
             review = nil
-            message = "Restoration could not be completed. Deselect the photo in all metadata editors and inspect retained recovery again. Files or authorization may have changed; retained evidence has not been discarded."
+            if error is AutomationRecoveryHistoryFailure {
+                message = "Original metadata restored. Operation History could not be updated. Refresh Operation History before publishing again; the restoration receipt remains retained."
+            } else {
+                message = "Restoration could not be completed. Deselect the photo in all metadata editors and inspect retained recovery again. Files or authorization may have changed; retained evidence has not been discarded."
+            }
         }
     }
 

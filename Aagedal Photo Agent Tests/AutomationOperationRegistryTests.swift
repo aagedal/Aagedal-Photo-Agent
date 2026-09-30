@@ -326,6 +326,90 @@ struct AutomationOperationRegistryTests {
         #expect(try Data(contentsOf: url) == data)
     }
 
+    @Test("Recovery resolution is restricted, durable and cannot overwrite a conflicting receipt")
+    func recoveryResolutionGuards() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        let publication = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.finish(publication.id, ownerID: owner, outcome: .recoveryRequired, now: now)
+        let draft = try registry.enqueue(kind: .iptcDraft, ownerID: owner, now: now)
+        _ = try registry.finish(draft.id, ownerID: owner, outcome: .recoveryRequired, now: now)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidTransition) {
+            try registry.removeTerminal(publication.id, ownerID: owner)
+        }
+        func receipt(id: UUID) throws -> MCPIPTCPatchXMPRecoveryStore.HistoryDisposition {
+            let recovery = MCPIPTCPatchXMPRecoveryStore(directory: root.appendingPathComponent(UUID().uuidString))
+            let material = try recovery.stage(id: id, planID: UUID().uuidString, targetPath: "/private/tmp/photo.xmp",
+                binding: .init(sourceRevision: "source", xmpSidecarRevision: "xmp", appSidecarRevision: "app", authorizationRevision: UUID()),
+                original: Data("original".utf8), candidate: Data("candidate".utf8),
+                appSidecarRecovery: .init(original: nil, candidate: Data("app-candidate".utf8)), publicationApprovalID: UUID())
+            try recovery.recordUnchanged(material) {}
+            var result: MCPIPTCPatchXMPRecoveryStore.HistoryDisposition?
+            try recovery.reconcileHistoryDisposition { result = $0 }
+            return try #require(result)
+        }
+        let draftReceipt = try receipt(id: draft.id)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidTransition) {
+            try registry.recordRecoveryResolution(draftReceipt, now: now)
+        }
+        let publicationReceipt = try receipt(id: publication.id)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidArguments) {
+            try registry.recordRecoveryResolution(publicationReceipt, now: now.addingTimeInterval(-1))
+        }
+        let resolved = try #require(try registry.recordRecoveryResolution(publicationReceipt, now: now.addingTimeInterval(1)))
+        #expect(resolved.outcome == .recoveryRequired)
+        #expect(try registry.recordRecoveryResolution(publicationReceipt, now: now.addingTimeInterval(2)) == resolved)
+        let conflictingReceipt = try receipt(id: publication.id)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidTransition) {
+            try registry.recordRecoveryResolution(conflictingReceipt, now: now.addingTimeInterval(2))
+        }
+        #expect(try AutomationOperationRegistry(storageDirectory: root).inspect(publication.id) == resolved)
+        try registry.removeTerminal(publication.id, ownerID: owner)
+        #expect(try registry.inspect(draft.id).recoveryResolution == nil)
+    }
+
+    @Test("Malformed or inconsistent recovery markers refuse removal without replacing archive evidence", arguments:
+        ["digest", "field", "time", "kind", "active", "disposition"])
+    func invalidRecoveryResolutionArchive(kind: String) throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        let operation = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.finish(operation.id, ownerID: owner, outcome: .recoveryRequired, now: now)
+        let url = root.appendingPathComponent("operations.json")
+        let stored = try Data(contentsOf: url)
+        let envelopeObject = try JSONSerialization.jsonObject(with: stored)
+        var envelope = try #require(envelopeObject as? [String: Any])
+        let encoded = try #require(envelope["payload"] as? String)
+        let originalPayload = try #require(Data(base64Encoded: encoded))
+        let archiveObject = try JSONSerialization.jsonObject(with: originalPayload)
+        var archive = try #require(archiveObject as? [String: Any])
+        var records = try #require(archive["records"] as? [[String: Any]])
+        var resolution: [String: Any] = ["disposition": "unchanged", "receiptSHA256": String(repeating: "a", count: 64),
+            "resolvedAt": now.timeIntervalSinceReferenceDate]
+        switch kind {
+        case "digest": resolution["receiptSHA256"] = "not-a-receipt"
+        case "field": resolution["photoPath"] = "/private/tmp/photo.jpg"
+        case "time": resolution["resolvedAt"] = now.addingTimeInterval(1).timeIntervalSinceReferenceDate
+        case "kind": records[0]["kind"] = "iptc_draft"
+        case "active": records[0]["state"] = "running"; records[0].removeValue(forKey: "outcome")
+        default: resolution["disposition"] = "published"
+        }
+        records[0]["recoveryResolution"] = resolution
+        archive["records"] = records
+        let payload = try JSONSerialization.data(withJSONObject: archive)
+        envelope["payload"] = payload.base64EncodedString()
+        envelope["sha256"] = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let changed = try JSONSerialization.data(withJSONObject: envelope)
+        try changed.write(to: url)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidStorage) { try registry.records() }
+        #expect(throws: AutomationOperationRegistry.Failure.invalidStorage) { try registry.removeTerminal(operation.id, ownerID: owner) }
+        #expect(try Data(contentsOf: url) == changed)
+    }
+
     @Test("An independently held lock refuses reads and mutations without losing evidence")
     func lockContention() throws {
         let root = try directory()
