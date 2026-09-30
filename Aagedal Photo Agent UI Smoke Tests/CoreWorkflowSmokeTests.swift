@@ -137,6 +137,114 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeClientXMPRequestPublishesOnlyAfterSeparateConsentAndPersistsStatus() throws {
+        try exerciseNativeClientXMPRequest(cancelAfterDryRun: false)
+    }
+
+    @MainActor
+    func testNativeClientXMPRequestCancellationRevokesReviewedCandidate() throws {
+        try exerciseNativeClientXMPRequest(cancelAfterDryRun: true)
+    }
+
+    @MainActor
+    private func exerciseNativeClientXMPRequest(cancelAfterDryRun: Bool) throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.textFields["automation.patchPlanID"].waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let requestID = try XCTUnwrap(manifest["xmpRequestID"])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let original = try Data(contentsOf: photo)
+        let xmp = photo.deletingPathExtension().appendingPathExtension("xmp")
+        let history = photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json")
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        let inspect = app.buttons["automation.inspectRequestedPlan." + requestID]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        inspect.click()
+        XCTAssertTrue(app.staticTexts["automation.selectedReviewRequest"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["automation.approvePatchPlan"].exists)
+        XCTAssertFalse(app.buttons["automation.applyPatchDraft"].exists)
+        XCTAssertFalse(app.buttons["automation.publishApprovedXMP"].exists)
+        let dryRun = app.buttons["automation.verifyPatchXMP"]
+        XCTAssertTrue(dryRun.waitForExistence(timeout: 8))
+        dryRun.click()
+        let acknowledgement = app.descendants(matching: .any)["automation.acknowledgeXMPC2PA"]
+        XCTAssertTrue(acknowledgement.waitForExistence(timeout: 12))
+        let approve = app.buttons["automation.approveXMPCandidate"]
+        XCTAssertTrue(approve.exists)
+        XCTAssertFalse(approve.isEnabled)
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+        if cancelAfterDryRun {
+            app.buttons["automation.cancelReviewRequest." + requestID].click()
+            XCTAssertTrue(app.staticTexts["Cancelled before admission."].waitForExistence(timeout: 8))
+            XCTAssertFalse(app.buttons["automation.publishApprovedXMP"].exists)
+            XCTAssertFalse(app.staticTexts["automation.selectedReviewRequest"].exists)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent("patch-operations/operations.json").path))
+        } else {
+            acknowledgement.click()
+            approve.click()
+            let publish = app.buttons["automation.publishApprovedXMP"]
+            XCTAssertTrue(publish.waitForExistence(timeout: 8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: xmp.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: history.path))
+            publish.click()
+            let status = app.staticTexts["automation.patchDraftStatus"]
+            XCTAssertTrue(status.waitForExistence(timeout: 12))
+            XCTAssertTrue((status.label + ((status.value as? String) ?? "")).contains("XMP published and local metadata history verified"))
+            let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: history)) as? [String: Any])
+            XCTAssertEqual(record["pendingChanges"] as? Bool, false)
+            let metadata = try XCTUnwrap(record["metadata"] as? [String: Any])
+            XCTAssertEqual(metadata["title"] as? String, manifest["afterTitle"])
+            XCTAssertTrue(metadata["city"] == nil || metadata["city"] is NSNull)
+            XCTAssertFalse(try Data(contentsOf: xmp).isEmpty)
+            app.buttons["Clear Review"].click()
+            app.buttons["automation.refreshReviewRequests"].click()
+            let operationStatus = app.staticTexts["automation.reviewRequestOperationStatus." + requestID]
+            XCTAssertTrue(operationStatus.waitForExistence(timeout: 8))
+            XCTAssertTrue((operationStatus.label + ((operationStatus.value as? String) ?? "")).lowercased().contains("verified"))
+        }
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        let requestsURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
+        let requests = try Data(contentsOf: requestsURL)
+        let operations = cancelAfterDryRun ? nil : try retainedOperationObjects() as NSArray
+        let published = try? Data(contentsOf: xmp)
+        let saved = try? Data(contentsOf: history)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot, resumePatchRecovery: true)
+        XCTAssertEqual(try Data(contentsOf: requestsURL), requests)
+        if let operations {
+            XCTAssertEqual(try retainedOperationObjects() as NSArray, operations)
+        } else {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent("patch-operations/operations.json").path))
+        }
+        XCTAssertEqual(try Data(contentsOf: photo), original)
+        XCTAssertEqual(try? Data(contentsOf: xmp), published)
+        XCTAssertEqual(try? Data(contentsOf: history), saved)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.showReviewRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        if cancelAfterDryRun {
+            XCTAssertTrue(app.staticTexts["Cancelled before admission."].waitForExistence(timeout: 8))
+        } else {
+            let operationStatus = app.staticTexts["automation.reviewRequestOperationStatus." + requestID]
+            XCTAssertTrue(operationStatus.waitForExistence(timeout: 8))
+            XCTAssertTrue((operationStatus.label + ((operationStatus.value as? String) ?? "")).lowercased().contains("verified"))
+        }
+    }
+
+    @MainActor
     func testAutomationPatchReviewDisplaysExactPlanAndRefusesChangedPhoto() throws {
         let photos = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)

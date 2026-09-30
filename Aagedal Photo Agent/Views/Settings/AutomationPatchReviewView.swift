@@ -10,13 +10,17 @@ struct AutomationPatchReviewView: View {
                 showsRequests.toggle()
             }
             .accessibilityIdentifier("automation.showReviewRequests")
-            .disabled(model.isLoading || model.isApplying)
             if showsRequests {
                 Text("Client requests await your review here. Select a request to inspect its current changes, then approve and apply them explicitly. Request IDs grant no consent.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Refresh Review Requests") { model.refreshNativeRequests() }
-                    .disabled(model.isLoading || model.isApplying)
+                    .disabled(model.isRefreshingNativeRequests || (model.isLoading && !model.isApplying))
                     .accessibilityIdentifier("automation.refreshReviewRequests")
+                if model.isRefreshingNativeRequests { ProgressView().controlSize(.small) }
+                if let message = model.nativeRequestMessage {
+                    Text(verbatim: message).font(.caption).foregroundStyle(.red)
+                        .accessibilityIdentifier("automation.reviewRequestEvidenceError")
+                }
                 ForEach(model.nativeRequests, id: \.requestID) { request in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(verbatim: request.requestID.uuidString.lowercased())
@@ -26,17 +30,28 @@ struct AutomationPatchReviewView: View {
                             Button("Inspect Requested Plan") { model.inspectNativeRequest(request.requestID) }
                                 .disabled(model.isLoading || model.isApplying)
                                 .accessibilityIdentifier("automation.inspectRequestedPlan.\(request.requestID.uuidString.lowercased())")
-                            Button("Cancel Review Request") { model.cancelNativeRequest(request.requestID) }
-                                .disabled(model.isLoading || model.isApplying)
-                                .accessibilityIdentifier("automation.cancelReviewRequest.\(request.requestID.uuidString.lowercased())")
                         } else if let operationID = request.operationID {
                             Text(verbatim: "Operation: \(operationID.uuidString.lowercased())")
                                 .font(.caption).textSelection(.enabled)
+                            Text(verbatim: model.nativeRequestOperationStatus(request))
+                                .font(.caption)
+                                .accessibilityIdentifier("automation.reviewRequestOperationStatus.\(request.requestID.uuidString.lowercased())")
+                            if let operation = model.operation(for: request) {
+                                Text("Last recorded \(operation.updatedAt.formatted(date: .abbreviated, time: .standard))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         } else if request.state == .cancelled {
                             Text("Cancelled before admission.").font(.caption)
                         } else {
                             Text("Admission disposition is unknown. Inspect operation history and recovery before preparing another request.")
                                 .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if model.canCancelNativeRequest(request) {
+                            Button(request.operationID == nil ? "Cancel Review Request" : "Request Cancellation") {
+                                model.cancelNativeRequest(request.requestID)
+                            }
+                            .disabled(model.isRefreshingNativeRequests || (model.isLoading && !model.isApplying))
+                            .accessibilityIdentifier("automation.cancelReviewRequest.\(request.requestID.uuidString.lowercased())")
                         }
                     }.padding(.vertical, 4)
                 }
@@ -69,6 +84,18 @@ struct AutomationPatchReviewView: View {
                 }
                 Button("Clear Review") { model.clear() }
                     .disabled(model.isApplying)
+            }
+        }
+        .task(id: showsRequests) {
+            guard showsRequests else { return }
+            model.refreshNativeRequestEvidence()
+            // Observe helper cancellation and the durable operation link while native
+            // execution waits. Polling evidence never grants or clears idle consent.
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                model.refreshNativeRequestEvidence()
             }
         }
         .onDisappear { model.clear() }

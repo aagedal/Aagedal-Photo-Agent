@@ -127,7 +127,9 @@ the support table and validation records.
   durable request with a new lowercase UUID `requestID`, the `planID`, and purpose `pendingDraft`
   or `xmpPublication`. In Settings → Automation → Show Client Review Requests, refresh and inspect the
   request, then explicitly approve and apply it. `get_native_review_request` reports the retained
-  intent and linked operation ID; `cancel_native_review_request` cancels before admission or requests
+  intent, linked operation ID and matching retained outcome; unavailable history stays explicitly
+  unconfirmed. Settings shows these outcomes and lets you request cancellation during execution.
+  `cancel_native_review_request` cancels before admission or requests
   cooperative cancellation of linked work. Exact retries retain status across helper restart;
   requests grant no consent and interrupted admission is never replayed. This private archive retains
   at most 256 requests without automatic eviction. Settings can explicitly apply an approved

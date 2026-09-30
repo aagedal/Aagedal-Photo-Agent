@@ -155,10 +155,16 @@ UUID `requestID`, the retained `planID`, and purpose `pendingDraft` or `xmpPubli
 **Settings → Automation → Proofreading Plan Review → Show Client Review Requests**, then
 **Refresh Review Requests** and **Inspect Requested Plan**. This rechecks the current plan and
 clears any earlier approval. Review and explicitly approve the requested action; requests do not
-provide consent. You can also **Cancel Review Request** before admission.
+provide consent. You can also **Cancel Review Request** before admission. Linked requests show
+the last recorded operation outcome and separate recovery resolution. **Request Cancellation**
+remains available while work runs, including when operation confirmation is unavailable.
+Cancellation is a request; wait for the recorded outcome before assuming work stopped.
 
 `get_native_review_request` returns durable request status and, after native admission, its exact
-operation ID for `get_operation_status`. Retry with the same request ID and identical plan/purpose
+operation ID and a matching operation snapshot when retained. `operationStatus` reports
+`available`, `confirmation-unavailable`, or `not-linked`; `operation` is null when no matching operation record can
+be confirmed. Recovery resolution remains separate from the original publication outcome.
+`get_operation_status` also exposes this evidence. Retry with the same request ID and identical plan/purpose
 to retrieve status after helper restart. `cancel_native_review_request` cancels an awaiting request
 or requests cooperative cancellation of linked work. An unknown admission cannot be replayed;
 inspect operation history and recovery before preparing another request. The archive retains up to

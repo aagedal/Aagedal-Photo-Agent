@@ -127,7 +127,10 @@ This is separate from the unapproved AI-origin analyzer described above.
 
 - MCP native review requests persist intent only. Selecting or retrying a request cannot grant
   consent; native review, approval and execution remain separate. Request and operation status
-  do not prove executor liveness. Interrupted admission without a linked operation has unknown
+  do not prove executor liveness. Missing, removed or unverifiable linked history cannot confirm
+  completion. A cancellation request may race successful completion; the recorded outcome wins.
+  Resolved recovery is separate evidence and cannot turn an uncertain publication into success.
+  Interrupted admission without a linked operation has unknown
   disposition and cannot be replayed. The private request archive has a permanent 256-record
   capacity limit without automatic eviction or a request-removal UI; capacity recovery and broader
   crash/cloud qualification remain unfinished. Authenticated IPC and direct helper commits remain

@@ -706,7 +706,7 @@ struct AutomationPatchReviewTests {
         try await waitUntil { !model.isLoading }
         #expect(model.isApproved)
         model.applyApprovedPlanToPendingDraft()
-        try await waitUntil { !model.isLoading }
+        try await waitUntil { !model.isLoading && !model.isRefreshingNativeRequests }
         let operation = try #require(model.applicationResult)
         #expect(operation.outcome == .verified)
         let linked = try requests.inspect(request.requestID)
@@ -793,7 +793,7 @@ struct AutomationPatchReviewTests {
         #expect(model.isXMPPublicationApproved)
         #expect(try registry.records().isEmpty)
         model.publishApprovedXMP()
-        try await waitUntil { !model.isLoading }
+        try await waitUntil { !model.isLoading && !model.isRefreshingNativeRequests }
         let result = try #require(model.applicationResult)
         #expect(result.kind == .iptcPatch && result.outcome == .verified)
         #expect(try requests.inspect(request.requestID).operationID == result.id)
@@ -844,6 +844,237 @@ struct AutomationPatchReviewTests {
         #expect(try registry.inspect(operation.id).cancellationRequestedAt != nil)
         #expect(try requests.inspect(request.requestID).cancellationRequestedAt != nil)
         #expect(try registry.inspect(operation.id).state == .queued)
+    }
+
+    @Test("Linked requests project current durable evidence without treating a link as success",
+          arguments: ["queued", "running", "verified", "failed", "cancelled", "stale", "partialUncertain", "recoveryRequired", "missing", "wrongKind"])
+    @MainActor
+    func linkedRequestEvidence(scenario: String) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.admit(request.requestID)
+        let owner = UUID()
+        let operation = try registry.enqueue(kind: scenario == "wrongKind" ? .iptcPatch : .iptcDraft, ownerID: owner)
+        _ = try requests.link(request.requestID, operationID: operation.id)
+        switch scenario {
+        case "queued", "wrongKind": break
+        case "running": _ = try registry.start(operation.id, ownerID: owner)
+        case "cancelled":
+            _ = try registry.requestCancellation(operation.id)
+            _ = try registry.acknowledgeCancellation(operation.id, ownerID: owner)
+        case "missing":
+            _ = try registry.finish(operation.id, ownerID: owner, outcome: .failed)
+            try registry.removeTerminal(operation.id, ownerID: owner)
+        default:
+            _ = try registry.start(operation.id, ownerID: owner)
+            let outcome = try #require(AutomationOperationRegistry.Outcome(rawValue: scenario))
+            _ = try registry.finish(operation.id, ownerID: owner, outcome: outcome)
+        }
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, operationRegistry: registry, nativeRequests: requests))
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        let linked = try #require(model.nativeRequests.first)
+        #expect(linked.requestID == request.requestID && linked.operationID == operation.id)
+        let status = model.nativeRequestOperationStatus(linked)
+        switch scenario {
+        case "queued": #expect(status.hasPrefix("Queued:"))
+        case "running": #expect(status.hasPrefix("Running:"))
+        case "verified": #expect(status.hasPrefix("Verified: pending draft saved"))
+        case "failed": #expect(status.hasPrefix("Failed or refused."))
+        case "cancelled": #expect(status.hasPrefix("Cancelled:"))
+        case "stale": #expect(status.hasPrefix("Stale:"))
+        case "partialUncertain", "recoveryRequired": #expect(status.hasPrefix("Recovery required:"))
+        default:
+            #expect(status.hasPrefix("Operation confirmation unavailable."))
+            #expect(model.operation(for: linked) == nil)
+        }
+        #expect(model.canCancelNativeRequest(linked) == ["queued", "running", "missing"].contains(scenario))
+        #expect(!model.isApproved && !model.isXMPPublicationApproved && model.review == nil)
+    }
+
+    @Test("Linked cancellation is pending evidence until the operation owner confirms it") @MainActor
+    func linkedCancellationEvidence() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.admit(request.requestID)
+        let owner = UUID()
+        let operation = try registry.enqueue(kind: .iptcDraft, ownerID: owner)
+        _ = try registry.start(operation.id, ownerID: owner)
+        _ = try requests.link(request.requestID, operationID: operation.id)
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, operationRegistry: registry, nativeRequests: requests))
+        model.cancelNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        let linked = try #require(model.nativeRequests.first)
+        #expect(linked.operationID == operation.id && linked.state == .linked)
+        #expect(linked.cancellationRequestedAt != nil)
+        #expect(model.operation(for: linked)?.state == .running)
+        #expect(model.nativeRequestOperationStatus(linked).hasPrefix("Cancellation requested;"))
+        #expect(!model.canCancelNativeRequest(linked))
+        _ = try registry.acknowledgeCancellation(operation.id, ownerID: owner)
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        #expect(model.nativeRequestOperationStatus(linked).hasPrefix("Cancelled:"))
+    }
+
+    @Test("Terminal or mismatched links never receive a new cancellation request", arguments: [true, false])
+    func terminalOrMismatchedCancellation(terminal: Bool) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.admit(request.requestID)
+        let owner = UUID()
+        let operation = try registry.enqueue(kind: terminal ? .iptcDraft : .iptcPatch, ownerID: owner)
+        _ = try requests.link(request.requestID, operationID: operation.id)
+        if terminal {
+            _ = try registry.start(operation.id, ownerID: owner)
+            _ = try registry.finish(operation.id, ownerID: owner, outcome: .verified)
+        }
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, nativeRequests: requests)
+        if terminal {
+            try await service.cancelNativeReviewRequest(request.requestID)
+        } else {
+            await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+                try await service.cancelNativeReviewRequest(request.requestID)
+            }
+        }
+        #expect(try registry.inspect(operation.id).cancellationRequestedAt == nil)
+        #expect(try requests.inspect(request.requestID).cancellationRequestedAt == nil)
+        #expect(try requests.inspect(request.requestID).operationID == operation.id)
+    }
+
+    @Test("Evidence refresh failure removes old success while retaining request identity") @MainActor
+    func failedEvidenceRefresh() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let directory = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: directory)
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.admit(request.requestID)
+        let owner = UUID()
+        let operation = try registry.enqueue(kind: .iptcDraft, ownerID: owner)
+        _ = try registry.start(operation.id, ownerID: owner)
+        _ = try registry.finish(operation.id, ownerID: owner, outcome: .verified)
+        _ = try requests.link(request.requestID, operationID: operation.id)
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, operationRegistry: registry, nativeRequests: requests))
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        let linked = try #require(model.nativeRequests.first)
+        #expect(model.nativeRequestOperationStatus(linked).hasPrefix("Verified:"))
+        try FileManager.default.removeItem(at: directory)
+        try Data("unavailable".utf8).write(to: directory)
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isLoading }
+        #expect(model.nativeRequests.first?.operationID == operation.id)
+        #expect(model.nativeRequestMessage != nil)
+        #expect(model.nativeRequestOperationStatus(linked).hasPrefix("Operation confirmation unavailable."))
+        #expect(model.canCancelNativeRequest(linked))
+        model.cancelNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        let cancelled = try #require(model.nativeRequests.first)
+        #expect(cancelled.requestID == request.requestID && cancelled.operationID == operation.id)
+        #expect(cancelled.cancellationRequestedAt != nil)
+        #expect(model.nativeRequestOperationStatus(cancelled).hasPrefix("Cancellation requested; operation confirmation unavailable."))
+        #expect(model.nativeRequestMessage != nil)
+        #expect(!model.canCancelNativeRequest(cancelled))
+    }
+
+    @Test("Request refresh and cancellation remain available during native execution") @MainActor
+    func cancellationWhileRequestedPublicationRuns() async throws {
+        let fixture = try Fixture()
+        let directory = fixture.root.appendingPathComponent("operations")
+        let registry = AutomationOperationRegistry(storageDirectory: directory)
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .xmpPublication)
+        let gate = PublicationGate()
+        defer { gate.release() }
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade,
+            operationRegistry: registry, recoveryDirectory: directory, nativeRequests: requests,
+            publicationHooks: .init(afterRecovery: { try gate.wait() }))
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        model.inspectXMPCandidate()
+        try await waitUntil { !model.isLoading }
+        model.acknowledgesC2PA = true
+        model.approveReviewedXMPPublication()
+        try await waitUntil { !model.isLoading }
+        model.publishApprovedXMP()
+        try await waitUntil { gate.isWaiting }
+        model.refreshNativeRequests()
+        try await waitUntil { !model.isRefreshingNativeRequests }
+        #expect(model.isApplying && model.isLoading)
+        #expect(model.review?.planID == fixture.planID)
+        let linked = try #require(model.selectedRequest)
+        let operationID = try #require(linked.operationID)
+        #expect(model.canCancelNativeRequest(linked))
+        #expect(model.nativeRequestOperationStatus(linked).hasPrefix("Running:"))
+        model.cancelNativeRequest(request.requestID)
+        try await waitUntil { !model.isRefreshingNativeRequests }
+        #expect(model.isApplying && model.selectedRequest?.requestID == request.requestID)
+        #expect(model.review?.planID == fixture.planID)
+        #expect(model.nativeRequestOperationStatus(try #require(model.selectedRequest)).hasPrefix("Cancellation requested;"))
+        #expect(try registry.inspect(operationID).cancellationRequestedAt != nil)
+        gate.release()
+        try await waitUntil { !model.isLoading && !model.isRefreshingNativeRequests }
+        #expect(model.applicationResult?.id == operationID && model.applicationResult?.outcome == .cancelled)
+        #expect(model.selectedRequest?.operationID == operationID)
+        #expect(model.nativeRequestOperationStatus(try #require(model.selectedRequest)).hasPrefix("Cancelled:"))
+        #expect(!model.isXMPPublicationApproved)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+        #expect(!FileManager.default.fileExists(atPath: fixture.photo.deletingPathExtension().appendingPathExtension("xmp").path))
+    }
+
+    private nonisolated final class CancellationAuthorizationReads: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reads = 0
+        func next() -> Int { lock.withLock { reads += 1; return reads } }
+    }
+
+    @Test("Native cancellation rechecks exact authorization before intent and forwarding",
+          arguments: ["linked", "fallback", "forwarding", "unlinked"])
+    func cancellationAuthorizationRecheck(scenario: String) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let registry = AutomationOperationRegistry(storageDirectory: fixture.root.appendingPathComponent("operations"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        var operation: AutomationOperationRegistry.Record?
+        if scenario != "unlinked" {
+            _ = try requests.admit(request.requestID)
+            if scenario != "fallback" {
+                operation = try registry.enqueue(kind: .iptcDraft, ownerID: UUID())
+            }
+            _ = try requests.link(request.requestID, operationID: operation?.id ?? UUID())
+        }
+        let enabled = try fixture.authority.load()
+        var disabled = enabled
+        disabled.isEnabled = false
+        let enabledBytes = try JSONEncoder().encode(enabled)
+        let disabledBytes = try JSONEncoder().encode(disabled)
+        let reads = CancellationAuthorizationReads()
+        let revokeAt = scenario == "forwarding" ? 3 : 2
+        let authority = MCPAuthorizationStore(readConfigurationData: {
+            reads.next() < revokeAt ? enabledBytes : disabledBytes
+        }, writeConfigurationData: { _ in })
+        let service = AutomationPatchReviewService(plans: fixture.plans,
+            facade: MCPAutomationFacade(authorizationStore: authority), operationRegistry: registry, nativeRequests: requests)
+        await #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+            try await service.cancelNativeReviewRequest(request.requestID)
+        }
+        let retained = try requests.inspect(request.requestID)
+        // Intent saved while authorized remains durable if revocation then blocks
+        // forwarding. Earlier revocation forbids even the request-store mutation.
+        #expect((retained.cancellationRequestedAt != nil) == (scenario == "forwarding"))
+        if let operation { #expect(try registry.inspect(operation.id) == operation) }
+        #expect(retained.requestID == request.requestID && retained.planID == request.planID)
     }
 
 }

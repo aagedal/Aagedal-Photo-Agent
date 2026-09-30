@@ -73,6 +73,7 @@ nonisolated struct AutomationPatchReview: Sendable {
 nonisolated protocol AutomationPatchReviewServing: Sendable {
     func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record]
     func cancelNativeReviewRequest(_ id: UUID) async throws
+    func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record]
     func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
     func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
@@ -92,6 +93,7 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
 // identifier can never silently fall back to an unrelated manual execution path.
 extension AutomationPatchReviewServing {
     func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] { [] }
+    func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] { [] }
     func cancelNativeReviewRequest(_ id: UUID) async throws { throw MCPNativeReviewRequestStore.Failure.unknownRequest }
     func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record {
         throw MCPNativeReviewRequestStore.Failure.unknownRequest
@@ -158,13 +160,57 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         return try requestStore().records()
     }
 
+    func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] {
+        try Task.checkCancellation()
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        // Reuse history reconciliation: released owner leases and exact recovery receipts
+        // may settle uncertainty; loading a request never proves successful execution.
+        let records = try await AutomationOperationHistoryService(registry: registry()).records()
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load() == authorization else {
+            throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+        }
+        return records
+    }
+
     func cancelNativeReviewRequest(_ id: UUID) async throws {
         try Task.checkCancellation()
-        guard try facade.authorizationStore.load().isEnabled else { throw MCPAuthorizationError.disabled }
-        let record = try requestStore().cancel(id)
-        if let operationID = record.operationID {
-            let registry = try registry()
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        func recheckAuthorization() throws {
+            try Task.checkCancellation()
+            guard try facade.authorizationStore.load() == authorization else {
+                throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+            }
+        }
+        let requests = try requestStore()
+        let request = try requests.inspect(id)
+        if let operationID = request.operationID {
+            let registry: AutomationOperationRegistry
+            let operation: AutomationOperationRegistry.Record
+            do {
+                registry = try self.registry()
+                operation = try registry.inspect(operationID)
+            } catch {
+                // Persist intent even when history is missing, corrupt or temporarily
+                // locked. The retained executor checks this request at safe boundaries.
+                try recheckAuthorization()
+                _ = try requests.cancel(id)
+                throw error
+            }
+            let expectedKind: AutomationOperationRegistry.Kind = request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch
+            guard operation.kind == expectedKind else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+            // A terminal operation cannot be stopped again. Do not manufacture a
+            // cancellation timestamp on the request after its outcome is confirmed.
+            guard !operation.isTerminal else { return }
+            try recheckAuthorization()
+            _ = try requests.cancel(id)
+            try recheckAuthorization()
             _ = try registry.requestCancellation(operationID)
+        } else {
+            try recheckAuthorization()
+            _ = try requests.cancel(id)
         }
     }
 
@@ -393,6 +439,11 @@ final class AutomationPatchReviewModel {
     private(set) var review: AutomationPatchReview?
     private(set) var nativeRequests: [MCPNativeReviewRequestStore.Record] = []
     private(set) var selectedRequest: MCPNativeReviewRequestStore.Record?
+    private(set) var nativeRequestOperations: [UUID: AutomationOperationRegistry.Record] = [:]
+    private(set) var nativeRequestMessage: String?
+    private(set) var isRefreshingNativeRequests = false
+    private var nativeRequestTask: Task<Void, Never>?
+    private var nativeRequestGeneration = UUID()
     private(set) var message: String?
     private(set) var isLoading = false
     private(set) var isApproved = false
@@ -433,6 +484,7 @@ final class AutomationPatchReviewModel {
     }
 
     isolated deinit {
+        nativeRequestTask?.cancel()
         task?.cancel()
         if let receipt = publicationApproval {
             let service = service
@@ -445,6 +497,10 @@ final class AutomationPatchReviewModel {
     }
 
     func clear() {
+        nativeRequestGeneration = UUID()
+        nativeRequestTask?.cancel()
+        nativeRequestTask = nil
+        isRefreshingNativeRequests = false
         selectedRequest = nil
         revokeApproval()
         review = nil
@@ -623,6 +679,7 @@ final class AutomationPatchReviewModel {
                 self.isApplying = false
                 self.applicationResult = result
                 self.task = nil
+                if requestID != nil { self.refreshNativeRequestEvidence() }
             } catch {
                 await service.revokeXMPPublication(receipt)
                 guard let self, self.generation == expected, !Task.isCancelled else { return }
@@ -662,6 +719,7 @@ final class AutomationPatchReviewModel {
                 self.isApplying = false
                 self.applicationResult = result
                 self.task = nil
+                if requestID != nil { self.refreshNativeRequestEvidence() }
             } catch {
                 await service.revoke(receipt)
                 guard let self, self.generation == expected, !Task.isCancelled else { return }
@@ -675,47 +733,122 @@ final class AutomationPatchReviewModel {
         }
     }
 
+    /// Explicit refresh still clears idle consent. While an operation is admitted,
+    /// only refresh evidence; never cancel its presentation task or lose its request ID.
     func refreshNativeRequests() {
-        guard !isLoading, !isApplying else { return }
-        clear()
-        isLoading = true
-        let expected = generation
-        task = Task { [weak self, service] in
+        guard !isRefreshingNativeRequests, !isLoading || isApplying else { return }
+        let clearsConsent = !isApplying
+        if clearsConsent { clear(); isLoading = true }
+        loadNativeRequestEvidence(clearsConsent: clearsConsent)
+    }
+
+    /// The request list refreshes independently from review/approval/execution. This
+    /// read grants no consent and cannot replace the reviewed snapshot.
+    func refreshNativeRequestEvidence() {
+        guard !isRefreshingNativeRequests else { return }
+        loadNativeRequestEvidence(clearsConsent: false)
+    }
+
+    func cancelNativeRequest(_ id: UUID) {
+        guard !isRefreshingNativeRequests, !isLoading || isApplying else { return }
+        let clearsConsent = !isApplying
+        if clearsConsent { clear(); isLoading = true }
+        loadNativeRequestEvidence(clearsConsent: clearsConsent, cancelling: id)
+    }
+
+    private func loadNativeRequestEvidence(clearsConsent: Bool, cancelling id: UUID? = nil) {
+        isRefreshingNativeRequests = true
+        nativeRequestMessage = nil
+        let expected = nativeRequestGeneration
+        nativeRequestTask = Task { [weak self, service] in
+            var cancellationFailed = false
+            if let id {
+                do { try await service.cancelNativeReviewRequest(id) }
+                catch { cancellationFailed = true }
+            }
             do {
-                let records = try await service.nativeReviewRequests()
-                guard let self, self.generation == expected, !Task.isCancelled else { return }
-                self.nativeRequests = records
-                self.isLoading = false
-                self.task = nil
+                let requests = try await service.nativeReviewRequests()
+                var operations: [AutomationOperationRegistry.Record] = []
+                var operationsUnavailable = false
+                if requests.contains(where: { $0.operationID != nil }) {
+                    do { operations = try await service.nativeReviewOperations() }
+                    catch { operationsUnavailable = true }
+                }
+                guard let self, self.nativeRequestGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequests = requests
+                self.nativeRequestOperations = Dictionary(operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+                if let selected = self.selectedRequest,
+                   let current = requests.first(where: { $0.requestID == selected.requestID }),
+                   current.planID == selected.planID, current.purpose == selected.purpose {
+                    self.selectedRequest = current
+                }
+                if cancellationFailed {
+                    self.nativeRequestMessage = "Cancellation could not be confirmed. Refreshed evidence does not establish that work stopped."
+                } else if operationsUnavailable {
+                    self.nativeRequestMessage = "Operation evidence could not be refreshed. Linked request outcomes are unavailable; inspect retained operation history and recovery."
+                }
+                self.isRefreshingNativeRequests = false
+                if clearsConsent { self.isLoading = false }
+                self.nativeRequestTask = nil
             } catch {
-                guard let self, self.generation == expected, !Task.isCancelled else { return }
-                self.nativeRequests = []
-                self.message = "Review requests could not be loaded."
-                self.isLoading = false
-                self.task = nil
+                guard let self, self.nativeRequestGeneration == expected, !Task.isCancelled else { return }
+                // Old outcome evidence must not appear current after a failed read.
+                self.nativeRequestOperations = [:]
+                self.nativeRequestMessage = "Review requests could not be refreshed. Displayed requests may be out of date; linked outcomes are unavailable."
+                self.isRefreshingNativeRequests = false
+                if clearsConsent { self.isLoading = false }
+                self.nativeRequestTask = nil
             }
         }
     }
 
-    func cancelNativeRequest(_ id: UUID) {
-        guard !isLoading, !isApplying else { return }
-        clear()
-        isLoading = true
-        let expected = generation
-        task = Task { [weak self, service] in
-            do {
-                try await service.cancelNativeReviewRequest(id)
-                let records = try await service.nativeReviewRequests()
-                guard let self, self.generation == expected, !Task.isCancelled else { return }
-                self.nativeRequests = records
-                self.isLoading = false
-                self.task = nil
-            } catch {
-                guard let self, self.generation == expected, !Task.isCancelled else { return }
-                self.message = "Cancellation could not be confirmed. Refresh requests and inspect operation history."
-                self.isLoading = false
-                self.task = nil
+    func operation(for request: MCPNativeReviewRequestStore.Record) -> AutomationOperationRegistry.Record? {
+        guard let id = request.operationID, let operation = nativeRequestOperations[id],
+              operation.kind == (request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch) else { return nil }
+        return operation
+    }
+
+    func canCancelNativeRequest(_ request: MCPNativeReviewRequestStore.Record) -> Bool {
+        guard request.cancellationRequestedAt == nil else { return false }
+        if request.state == .awaitingReview { return true }
+        guard request.state == .linked, let id = request.operationID else { return false }
+        // Missing evidence cannot prove completion and must not block durable intent.
+        // A known wrong-kind link must never target an unrelated activity.
+        if let raw = nativeRequestOperations[id],
+           raw.kind != (request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch) { return false }
+        guard let operation = operation(for: request) else { return true }
+        return !operation.isTerminal && operation.cancellationRequestedAt == nil
+    }
+
+    func nativeRequestOperationStatus(_ request: MCPNativeReviewRequestStore.Record) -> String {
+        guard let operation = operation(for: request) else {
+            if request.cancellationRequestedAt != nil {
+                return "Cancellation requested; operation confirmation unavailable. Work is not confirmed stopped. Inspect operation history and recovery."
             }
+            return "Operation confirmation unavailable. A linked request does not prove completion or success. Inspect operation history and recovery before retrying."
+        }
+        switch operation.outcome {
+        case .verified:
+            return request.purpose == .pendingDraft
+                ? "Verified: pending draft saved; photo and XMP unchanged."
+                : "Verified: XMP published and local metadata history checked."
+        case .failed: return "Failed or refused. Inspect retained operation history before retrying."
+        case .cancelled: return "Cancelled: cancellation confirmed with no uncertain effects."
+        case .stale: return "Stale: prepare and inspect a fresh plan."
+        case .partialUncertain, .recoveryRequired:
+            if let resolution = operation.recoveryResolution {
+                return resolution.disposition == .restored
+                    ? "Recovery resolved: original metadata restored. Original publication was not verified."
+                    : "Recovery resolved: unchanged staging confirmed. Original publication was not verified."
+            }
+            return "Recovery required: effects are uncertain. Inspect retained recovery and metadata before retrying."
+        case nil:
+            if request.cancellationRequestedAt != nil || operation.cancellationRequestedAt != nil {
+                return "Cancellation requested; waiting for a confirmed outcome. Work may still finish."
+            }
+            return operation.state == .queued
+                ? "Queued: last recorded as waiting to execute. Current activity is not confirmed."
+                : "Running: last recorded as executing. Current activity is not confirmed."
         }
     }
 

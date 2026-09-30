@@ -89,7 +89,8 @@ struct MCPServerCoreTests {
         #expect(value["cancellationRequested"] == .bool(true))
         #expect(value["outcome"] == .null)
         #expect(value["executorLiveness"] == .string("unknown"))
-        #expect(Set(value.keys) == ["operationID", "kind", "state", "terminal", "outcome", "cancellationRequested", "createdAt", "updatedAt", "scope", "executorLiveness", "cancellationRequestedAt"])
+        #expect(value["recoveryResolution"] == .null)
+        #expect(Set(value.keys) == ["operationID", "kind", "state", "terminal", "outcome", "cancellationRequested", "createdAt", "updatedAt", "scope", "executorLiveness", "cancellationRequestedAt", "recoveryResolution"])
         let restarted = MCPFoundationTools(authorizationStore: store,
             operationRegistry: AutomationOperationRegistry(storageDirectory: root))
         #expect(restarted.callTool(name: "get_operation_status", arguments: arguments) == result)

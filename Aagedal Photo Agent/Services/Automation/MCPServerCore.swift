@@ -1961,7 +1961,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_native_review_request",
-                description: "Inspect a durable native review intent by lowercase canonical requestID. Requires Enable local automation. Reports recorded handoff state without revalidating an expired plan or implying consent, execution or executor liveness. A linked operationID can be inspected with get_operation_status. An unknown disposition must be reviewed in the app and cannot be replayed automatically.",
+                description: "Inspect a durable native review intent by lowercase canonical requestID. Requires Enable local automation. Reports recorded handoff state without revalidating an expired plan or implying consent, execution or executor liveness. Includes the matching linked operation snapshot when retained and verified; missing or unverifiable history reports confirmation-unavailable. Recovery resolution remains separate from the original execution outcome. A linked operationID can also be inspected with get_operation_status. An unknown disposition must be reviewed in the app and cannot be replayed automatically.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID"]
             ),
@@ -2213,21 +2213,36 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     record = try name == "cancel_native_review_request" ? requests.cancel(requestID) : requests.inspect(requestID)
                 }
                 var operationCancellationStatus: String? = nil
-                if name == "cancel_native_review_request", let operationID = record.operationID {
+                var operation: AutomationOperationRegistry.Record?
+                if let operationID = record.operationID {
                     do {
                         guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
                         let registry = try operationRegistry ?? AutomationOperationRegistry(
                             storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
-                        _ = try registry.requestCancellation(operationID)
-                        operationCancellationStatus = "requested"
+                        let inspected = try registry.inspect(operationID)
+                        let expectedKind: AutomationOperationRegistry.Kind = record.purpose == .pendingDraft ? .iptcDraft : .iptcPatch
+                        guard inspected.kind == expectedKind else { throw AutomationOperationRegistry.Failure.invalidStorage }
+                        if name == "cancel_native_review_request" {
+                            guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                            let cancelled = try registry.requestCancellation(operationID)
+                            operation = cancelled
+                            operationCancellationStatus = cancelled.isTerminal ? "already-terminal" : "requested"
+                        } else {
+                            operation = inspected
+                        }
                     } catch is AutomationOperationRegistry.Failure {
-                        // The durable request remains truthful even when its operation
-                        // record cannot be accessed. The owner also observes this intent.
-                        operationCancellationStatus = "confirmation-unavailable"
+                        // Missing, removed or unverifiable history cannot establish completion.
+                        // Durable cancellation intent remains visible to the execution owner.
+                        if name == "cancel_native_review_request" {
+                            operationCancellationStatus = "confirmation-unavailable"
+                        }
                     }
                 }
                 guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
                 var value = nativeReviewRequestValue(record)
+                value["operationStatus"] = .string(record.operationID == nil ? "not-linked" :
+                    (operation == nil ? "confirmation-unavailable" : "available"))
+                value["operation"] = operation.map { .object(operationStatusValue($0)) } ?? .null
                 if let operationCancellationStatus {
                     value["operationCancellationStatus"] = .string(operationCancellationStatus)
                 }
@@ -2245,20 +2260,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
                 let record = try name == "cancel_operation" ? registry.requestCancellation(id) : registry.inspect(id)
                 guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
-                var value: [String: MCPJSONValue] = [
-                    "operationID": .string(record.id.uuidString.lowercased()),
-                    "kind": .string(record.kind.rawValue),
-                    "state": .string(record.state.rawValue),
-                    "terminal": .bool(record.isTerminal),
-                    "outcome": record.outcome.map { .string($0.rawValue) } ?? .null,
-                    "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
-                    "createdAt": .string(record.createdAt.ISO8601Format()),
-                    "updatedAt": .string(record.updatedAt.ISO8601Format()),
-                    "scope": .string("durable-coordination-record"),
-                    "executorLiveness": .string("unknown"),
-                ]
-                value["cancellationRequestedAt"] = record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null
-                return success(value)
+                return success(operationStatusValue(record))
             case "create_team":
                 return success(try teamLibrary.create(arguments: arguments))
             case "get_server_capabilities":
@@ -2420,6 +2422,28 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         guard let raw = value?.stringValue, raw.utf8.count == 36,
               let id = UUID(uuidString: raw), id.uuidString.lowercased() == raw else { return nil }
         return id
+    }
+
+    /// A retained coordination snapshot does not prove that its executor is alive.
+    /// Recovery evidence is separate from the original publication outcome.
+    private func operationStatusValue(_ record: AutomationOperationRegistry.Record) -> [String: MCPJSONValue] {
+        var value: [String: MCPJSONValue] = [
+            "operationID": .string(record.id.uuidString.lowercased()),
+            "kind": .string(record.kind.rawValue), "state": .string(record.state.rawValue),
+            "terminal": .bool(record.isTerminal),
+            "outcome": record.outcome.map { .string($0.rawValue) } ?? .null,
+            "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
+            "cancellationRequestedAt": record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "createdAt": .string(record.createdAt.ISO8601Format()),
+            "updatedAt": .string(record.updatedAt.ISO8601Format()),
+            "scope": .string("durable-coordination-record"), "executorLiveness": .string("unknown"),
+        ]
+        value["recoveryResolution"] = record.recoveryResolution.map { resolution in
+            .object(["disposition": .string(resolution.disposition.rawValue),
+                "receiptSHA256": .string(resolution.receiptSHA256),
+                "resolvedAt": .string(resolution.resolvedAt.ISO8601Format())])
+        } ?? .null
+        return value
     }
 
     private func nativeReviewRequestValue(_ record: MCPNativeReviewRequestStore.Record) -> [String: MCPJSONValue] {
