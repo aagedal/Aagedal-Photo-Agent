@@ -72,11 +72,16 @@ nonisolated struct AutomationPatchReview: Sendable {
 
 nonisolated protocol AutomationPatchReviewServing: Sendable {
     func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record]
+    func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot
+    func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult
     func cancelNativeReviewRequest(_ id: UUID) async throws
+    func cancelNativeReviewRequest(_ id: UUID, requestEpoch: UUID?) async throws
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record]
     func inspectNativeReviewRequest(_ id: UUID) async throws -> MCPNativeReviewRequestStore.Record
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
     func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record
     func inspect(planID: String) async throws -> AutomationPatchReview
     func inspectXMPCandidate(planID: String) async throws -> MCPIPTCPatchXMPPreflightService.Report
     func reviewXMPPublication(_ report: MCPIPTCPatchXMPPreflightService.Report) async throws -> MCPIPTCPatchXMPPublicationApprovalStore.Review
@@ -92,6 +97,24 @@ nonisolated protocol AutomationPatchReviewServing: Sendable {
 // Alternate service implementations must explicitly support request binding; a helper
 // identifier can never silently fall back to an unrelated manual execution path.
 extension AutomationPatchReviewServing {
+    func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot {
+        throw MCPNativeReviewRequestStore.Failure.storageUnavailable
+    }
+    func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
+        throw MCPNativeReviewRequestStore.Failure.storageUnavailable
+    }
+    func cancelNativeReviewRequest(_ id: UUID, requestEpoch: UUID?) async throws {
+        guard requestEpoch == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        try await cancelNativeReviewRequest(id)
+    }
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record {
+        guard requestEpoch == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        return try await applyToPendingDraft(receipt, requestID: requestID)
+    }
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record {
+        guard requestEpoch == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+        return try await publishXMP(receipt, requestID: requestID)
+    }
     func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] { [] }
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] { [] }
     func cancelNativeReviewRequest(_ id: UUID) async throws { throw MCPNativeReviewRequestStore.Failure.unknownRequest }
@@ -160,6 +183,31 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         return try requestStore().records()
     }
 
+    /// Explicit inspection may create or migrate the request archive; passive list refresh does not call this.
+    func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot {
+        try Task.checkCancellation()
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        let requests = try requestStore()
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load() == authorization else {
+            throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+        }
+        return try requests.capacitySnapshot()
+    }
+
+    func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
+        try Task.checkCancellation()
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        let requests = try requestStore()
+        try Task.checkCancellation()
+        guard try facade.authorizationStore.load() == authorization else {
+            throw MCPIPTCPatchPlanStore.Failure.authorityChanged
+        }
+        return try requests.recoverCancelledCapacity(expectedEpoch: expectedEpoch)
+    }
+
     func nativeReviewOperations() async throws -> [AutomationOperationRegistry.Record] {
         try Task.checkCancellation()
         let authorization = try facade.authorizationStore.load()
@@ -175,6 +223,10 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     }
 
     func cancelNativeReviewRequest(_ id: UUID) async throws {
+        try await cancelNativeReviewRequest(id, requestEpoch: nil)
+    }
+
+    func cancelNativeReviewRequest(_ id: UUID, requestEpoch: UUID?) async throws {
         try Task.checkCancellation()
         let authorization = try facade.authorizationStore.load()
         guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
@@ -186,6 +238,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         }
         let requests = try requestStore()
         let request = try requests.inspect(id)
+        guard request.requestEpoch == requestEpoch else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
         if let operationID = request.operationID {
             let registry: AutomationOperationRegistry
             let operation: AutomationOperationRegistry.Record
@@ -196,7 +249,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
                 // Persist intent even when history is missing, corrupt or temporarily
                 // locked. The retained executor checks this request at safe boundaries.
                 try recheckAuthorization()
-                _ = try requests.cancel(id)
+                _ = try requests.cancel(id, requestEpoch: requestEpoch)
                 throw error
             }
             let expectedKind: AutomationOperationRegistry.Kind = request.purpose == .pendingDraft ? .iptcDraft : .iptcPatch
@@ -205,12 +258,12 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
             // cancellation timestamp on the request after its outcome is confirmed.
             guard !operation.isTerminal else { return }
             try recheckAuthorization()
-            _ = try requests.cancel(id)
+            _ = try requests.cancel(id, requestEpoch: requestEpoch)
             try recheckAuthorization()
             _ = try registry.requestCancellation(operationID)
         } else {
             try recheckAuthorization()
-            _ = try requests.cancel(id)
+            _ = try requests.cancel(id, requestEpoch: requestEpoch)
         }
     }
 
@@ -222,12 +275,15 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         return record
     }
 
-    private func boundRequest(_ id: UUID?, planID: String,
+    private func boundRequest(_ id: UUID?, requestEpoch: UUID?, planID: String,
                               purpose: MCPNativeReviewRequestStore.Purpose) throws -> MCPNativeReviewRequestStore? {
-        guard let id else { return nil }
+        guard let id else {
+            guard requestEpoch == nil else { throw MCPNativeReviewRequestStore.Failure.invalidTransition }
+            return nil
+        }
         let store = try requestStore()
         let request = try store.inspect(id)
-        guard request.planID == planID, request.purpose == purpose, request.state == .awaitingReview else {
+        guard request.requestEpoch == requestEpoch, request.planID == planID, request.purpose == purpose, request.state == .awaitingReview else {
             throw MCPNativeReviewRequestStore.Failure.invalidTransition
         }
         return store
@@ -318,8 +374,12 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     }
 
     func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
+        try await publishXMP(receipt, requestID: requestID, requestEpoch: nil)
+    }
+
+    func publishXMP(_ receipt: MCPIPTCPatchXMPPublicationApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record {
         try Task.checkCancellation()
-        let requests = try boundRequest(requestID, planID: receipt.planID, purpose: .xmpPublication)
+        let requests = try boundRequest(requestID, requestEpoch: requestEpoch, planID: receipt.planID, purpose: .xmpPublication)
         let directory = try recoveryDirectory ?? AutomationOperationRegistry.defaultStorageDirectory()
         let registry = try registry()
         try await reconcileRecoveryHistory(directory: directory)
@@ -335,7 +395,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         let accepted: AutomationOperationRegistry.Record
         do {
             accepted = try await coordinator.submit(kind: .iptcPatch, admission: {
-                if let requestID, let requests { _ = try requests.admit(requestID) }
+                if let requestID, let requests { _ = try requests.admit(requestID, requestEpoch: requestEpoch) }
             }, didEnqueue: { record in
                 if let requestID, let requests { _ = try requests.link(requestID, operationID: record.id) }
             }, cancellationCheck: { operationID in
@@ -352,7 +412,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
                 }
             }
         } catch {
-            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID) }
+            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID, requestEpoch: requestEpoch) }
             throw error
         }
         return try await withTaskCancellationHandler {
@@ -392,8 +452,12 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
     }
 
     func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?) async throws -> AutomationOperationRegistry.Record {
+        try await applyToPendingDraft(receipt, requestID: requestID, requestEpoch: nil)
+    }
+
+    func applyToPendingDraft(_ receipt: MCPIPTCPatchApprovalStore.Approval, requestID: UUID?, requestEpoch: UUID?) async throws -> AutomationOperationRegistry.Record {
         try Task.checkCancellation()
-        let requests = try boundRequest(requestID, planID: receipt.planID, purpose: .pendingDraft)
+        let requests = try boundRequest(requestID, requestEpoch: requestEpoch, planID: receipt.planID, purpose: .pendingDraft)
         let registry = try registry()
         let coordinator: AutomationOperationExecutionCoordinator
         if let existing = executionCoordinator { coordinator = existing }
@@ -405,7 +469,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
         let accepted: AutomationOperationRegistry.Record
         do {
             accepted = try await coordinator.submit(kind: .iptcDraft, admission: {
-                if let requestID, let requests { _ = try requests.admit(requestID) }
+                if let requestID, let requests { _ = try requests.admit(requestID, requestEpoch: requestEpoch) }
             }, didEnqueue: { record in
                 if let requestID, let requests { _ = try requests.link(requestID, operationID: record.id) }
             }, cancellationCheck: { operationID in
@@ -422,7 +486,7 @@ actor AutomationPatchReviewService: AutomationPatchReviewServing, AutomationReco
                 }
             }
         } catch {
-            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID) }
+            if let requestID, let requests { _ = try? requests.markUnknownDisposition(requestID, requestEpoch: requestEpoch) }
             throw error
         }
         return try await withTaskCancellationHandler {
@@ -444,6 +508,19 @@ final class AutomationPatchReviewModel {
     private(set) var isRefreshingNativeRequests = false
     private var nativeRequestTask: Task<Void, Never>?
     private var nativeRequestGeneration = UUID()
+    private(set) var nativeRequestCapacity: MCPNativeReviewRequestStore.CapacitySnapshot?
+    private(set) var nativeRequestCapacityMessage: String?
+    private(set) var isInspectingNativeRequestCapacity = false
+    private(set) var isRecoveringNativeRequestCapacity = false
+    private var capacityTask: Task<Void, Never>?
+    private var capacityGeneration = UUID()
+    var isBusyWithNativeRequestCapacity: Bool {
+        isInspectingNativeRequestCapacity || isRecoveringNativeRequestCapacity
+    }
+    var canRecoverCancelledNativeReviewCapacity: Bool {
+        (nativeRequestCapacity?.cancelledBeforeAdmissionCount ?? 0) > 0
+            && !isBusyWithNativeRequestCapacity && !isApplying && !isRefreshingNativeRequests
+    }
     private(set) var message: String?
     private(set) var isLoading = false
     private(set) var isApproved = false
@@ -458,7 +535,7 @@ final class AutomationPatchReviewModel {
     var canApproveXMPPublication: Bool {
         guard let xmpPublicationReview else { return false }
         return acknowledgesC2PA && (!xmpPublicationReview.report.publicationBinding.promotesPendingDraft || acknowledgesPendingDraft)
-            && !isLoading && !isApplying && !isExpired && !isXMPPublicationApproved && applicationResult == nil
+            && !isLoading && !isApplying && !isRecoveringNativeRequestCapacity && !isExpired && !isXMPPublicationApproved && applicationResult == nil
     }
     private var publicationApproval: MCPIPTCPatchXMPPublicationApprovalStore.Approval?
     private(set) var isExpired = false
@@ -484,6 +561,7 @@ final class AutomationPatchReviewModel {
     }
 
     isolated deinit {
+        capacityTask?.cancel()
         nativeRequestTask?.cancel()
         task?.cancel()
         if let receipt = publicationApproval {
@@ -497,10 +575,21 @@ final class AutomationPatchReviewModel {
     }
 
     func clear() {
+        capacityGeneration = UUID()
+        capacityTask?.cancel()
+        capacityTask = nil
+        isInspectingNativeRequestCapacity = false
+        isRecoveringNativeRequestCapacity = false
+        nativeRequestCapacity = nil
+        nativeRequestCapacityMessage = nil
         nativeRequestGeneration = UUID()
         nativeRequestTask?.cancel()
         nativeRequestTask = nil
         isRefreshingNativeRequests = false
+        clearReviewedConsent()
+    }
+
+    private func clearReviewedConsent() {
         selectedRequest = nil
         revokeApproval()
         review = nil
@@ -554,7 +643,7 @@ final class AutomationPatchReviewModel {
     /// A dry run grants no consent. Replace prior evidence, and reject a result that
     /// completes after navigation, expiry, cancellation or a different plan inspection.
     func inspectXMPCandidate() {
-        guard let review, !isLoading, !isApplying, !isExpired, applicationResult == nil else { return }
+        guard let review, !isRecoveringNativeRequestCapacity, !isLoading, !isApplying, !isExpired, applicationResult == nil else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         revokeApproval()
         xmpPreflight = nil
@@ -582,7 +671,7 @@ final class AutomationPatchReviewModel {
     }
 
     func approveReviewedPlan() {
-        guard let review, !isLoading, !isApplying, applicationResult == nil, !isApproved, !isExpired else { return }
+        guard let review, !isRecoveringNativeRequestCapacity, !isLoading, !isApplying, applicationResult == nil, !isApproved, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         revokeApproval()
         message = nil
@@ -654,18 +743,19 @@ final class AutomationPatchReviewModel {
     }
 
     func publishApprovedXMP() {
-        guard let receipt = publicationApproval, let review, isXMPPublicationApproved,
+        guard !isRecoveringNativeRequestCapacity, let receipt = publicationApproval, let review, isXMPPublicationApproved,
               !isLoading, !isApplying, applicationResult == nil, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         guard selectedRequest == nil || selectedRequest?.purpose == .xmpPublication else { return }
         let requestID = selectedRequest?.requestID
+        let requestEpoch = selectedRequest?.requestEpoch
         isApplying = true
         isLoading = true
         message = nil
         let expected = generation
         task = Task { [weak self, service] in
             do {
-                let result = try await service.publishXMP(receipt, requestID: requestID)
+                let result = try await service.publishXMP(receipt, requestID: requestID, requestEpoch: requestEpoch)
                 if result.outcome == .verified || result.outcome == .recoveryRequired {
                     NotificationCenter.default.post(name: .automationDraftDidChange,
                         object: URL(fileURLWithPath: review.path))
@@ -694,11 +784,12 @@ final class AutomationPatchReviewModel {
     }
 
     func applyApprovedPlanToPendingDraft() {
-        guard let receipt = approval, let review, !isLoading, !isApplying,
+        guard !isRecoveringNativeRequestCapacity, let receipt = approval, let review, !isLoading, !isApplying,
               applicationResult == nil, !isExpired else { return }
         guard now() < review.expiresAt else { expireReview(at: now()); return }
         guard selectedRequest == nil || selectedRequest?.purpose == .pendingDraft else { return }
         let requestID = selectedRequest?.requestID
+        let requestEpoch = selectedRequest?.requestEpoch
         isApplying = true
         xmpPublicationReview = nil
         xmpPreflight = nil
@@ -707,7 +798,7 @@ final class AutomationPatchReviewModel {
         let expected = generation
         task = Task { [weak self, service] in
             do {
-                let result = try await service.applyToPendingDraft(receipt, requestID: requestID)
+                let result = try await service.applyToPendingDraft(receipt, requestID: requestID, requestEpoch: requestEpoch)
                 if result.outcome == .verified {
                     NotificationCenter.default.post(name: .automationDraftDidChange,
                         object: URL(fileURLWithPath: review.path))
@@ -736,7 +827,7 @@ final class AutomationPatchReviewModel {
     /// Explicit refresh still clears idle consent. While an operation is admitted,
     /// only refresh evidence; never cancel its presentation task or lose its request ID.
     func refreshNativeRequests() {
-        guard !isRefreshingNativeRequests, !isLoading || isApplying else { return }
+        guard !isBusyWithNativeRequestCapacity, !isRefreshingNativeRequests, !isLoading || isApplying else { return }
         let clearsConsent = !isApplying
         if clearsConsent { clear(); isLoading = true }
         loadNativeRequestEvidence(clearsConsent: clearsConsent)
@@ -745,25 +836,26 @@ final class AutomationPatchReviewModel {
     /// The request list refreshes independently from review/approval/execution. This
     /// read grants no consent and cannot replace the reviewed snapshot.
     func refreshNativeRequestEvidence() {
-        guard !isRefreshingNativeRequests else { return }
+        guard !isRecoveringNativeRequestCapacity, !isRefreshingNativeRequests else { return }
         loadNativeRequestEvidence(clearsConsent: false)
     }
 
     func cancelNativeRequest(_ id: UUID) {
-        guard !isRefreshingNativeRequests, !isLoading || isApplying else { return }
+        guard !isBusyWithNativeRequestCapacity, !isRefreshingNativeRequests, !isLoading || isApplying else { return }
+        guard let request = nativeRequests.first(where: { $0.requestID == id }) else { return }
         let clearsConsent = !isApplying
         if clearsConsent { clear(); isLoading = true }
-        loadNativeRequestEvidence(clearsConsent: clearsConsent, cancelling: id)
+        loadNativeRequestEvidence(clearsConsent: clearsConsent, cancelling: request)
     }
 
-    private func loadNativeRequestEvidence(clearsConsent: Bool, cancelling id: UUID? = nil) {
+    private func loadNativeRequestEvidence(clearsConsent: Bool, cancelling request: MCPNativeReviewRequestStore.Record? = nil) {
         isRefreshingNativeRequests = true
         nativeRequestMessage = nil
         let expected = nativeRequestGeneration
         nativeRequestTask = Task { [weak self, service] in
             var cancellationFailed = false
-            if let id {
-                do { try await service.cancelNativeReviewRequest(id) }
+            if let request {
+                do { try await service.cancelNativeReviewRequest(request.requestID, requestEpoch: request.requestEpoch) }
                 catch { cancellationFailed = true }
             }
             do {
@@ -777,10 +869,15 @@ final class AutomationPatchReviewModel {
                 guard let self, self.nativeRequestGeneration == expected, !Task.isCancelled else { return }
                 self.nativeRequests = requests
                 self.nativeRequestOperations = Dictionary(operations.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-                if let selected = self.selectedRequest,
-                   let current = requests.first(where: { $0.requestID == selected.requestID }),
-                   current.planID == selected.planID, current.purpose == selected.purpose {
-                    self.selectedRequest = current
+                if let selected = self.selectedRequest {
+                    if let current = requests.first(where: { $0.requestID == selected.requestID }),
+                       current.requestEpoch == selected.requestEpoch, current.planID == selected.planID, current.purpose == selected.purpose,
+                       self.isApplying || self.applicationResult != nil || current.state == .awaitingReview {
+                        self.selectedRequest = current
+                    } else if !self.isApplying {
+                        // A helper cancellation or retirement invalidates the selected review and all consent.
+                        self.clearReviewedConsent()
+                    }
                 }
                 if cancellationFailed {
                     self.nativeRequestMessage = "Cancellation could not be confirmed. Refreshed evidence does not establish that work stopped."
@@ -800,6 +897,60 @@ final class AutomationPatchReviewModel {
                 self.nativeRequestTask = nil
             }
         }
+    }
+
+    /// Capacity inspection is opt-in and has a separate lifecycle from plan consent.
+    func inspectNativeRequestCapacity() {
+        guard !isBusyWithNativeRequestCapacity, !isApplying else { return }
+        nativeRequestCapacity = nil
+        nativeRequestCapacityMessage = nil
+        isInspectingNativeRequestCapacity = true
+        let expected = capacityGeneration
+        capacityTask = Task { [weak self, service] in
+            do {
+                let snapshot = try await service.nativeReviewCapacity()
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacity = snapshot
+                self.isInspectingNativeRequestCapacity = false
+                self.capacityTask = nil
+            } catch {
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacityMessage = "Request capacity could not be inspected. " + error.localizedDescription
+                self.isInspectingNativeRequestCapacity = false
+                self.capacityTask = nil
+            }
+        }
+    }
+
+    /// Called only after native confirmation. Cleanup never admits work or grants consent.
+    func recoverCancelledNativeReviewCapacity() {
+        guard canRecoverCancelledNativeReviewCapacity, let snapshot = nativeRequestCapacity else { return }
+        clear()
+        isRecoveringNativeRequestCapacity = true
+        let expected = capacityGeneration
+        capacityTask = Task { [weak self, service] in
+            do {
+                let result = try await service.recoverCancelledNativeReviewCapacity(expectedEpoch: snapshot.epoch)
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacityMessage = "Removed \(result.retiredCount) cancelled review request(s). Removed requests cannot be retried. New intents need a new request ID and current epoch; retained requests keep their original epoch. No consent was granted."
+                self.isRecoveringNativeRequestCapacity = false
+                self.capacityTask = nil
+                self.refreshNativeRequestEvidence()
+                self.inspectNativeRequestCapacityPreservingMessage()
+            } catch {
+                guard let self, self.capacityGeneration == expected, !Task.isCancelled else { return }
+                self.nativeRequestCapacityMessage = "Cleanup could not be confirmed. Review request capacity again before retrying. " + error.localizedDescription
+                self.isRecoveringNativeRequestCapacity = false
+                self.capacityTask = nil
+                self.refreshNativeRequestEvidence()
+            }
+        }
+    }
+
+    private func inspectNativeRequestCapacityPreservingMessage() {
+        let resultMessage = nativeRequestCapacityMessage
+        inspectNativeRequestCapacity()
+        nativeRequestCapacityMessage = resultMessage
     }
 
     func operation(for request: MCPNativeReviewRequestStore.Record) -> AutomationOperationRegistry.Record? {
@@ -853,7 +1004,7 @@ final class AutomationPatchReviewModel {
     }
 
     func inspectNativeRequest(_ id: UUID) {
-        guard !isApplying else { return }
+        guard !isApplying, !isBusyWithNativeRequestCapacity else { return }
         clear()
         isLoading = true
         let expected = generation
@@ -880,6 +1031,7 @@ final class AutomationPatchReviewModel {
     }
 
     func inspect() {
+        guard !isApplying, !isBusyWithNativeRequestCapacity else { return }
         clear()
         let id = planID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard UUID(uuidString: id)?.uuidString.lowercased() == id else {

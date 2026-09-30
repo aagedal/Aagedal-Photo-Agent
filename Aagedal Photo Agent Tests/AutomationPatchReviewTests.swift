@@ -66,7 +66,37 @@ struct AutomationPatchReviewTests {
         var hasPendingPreflight: Bool { pendingPreflight != nil }
         var hasPendingApproval: Bool { pending != nil }
 
-        init(_ underlying: AutomationPatchReviewService) { self.underlying = underlying }
+        private let holdsCapacityRecovery: Bool
+        private var pendingCapacityRecovery: CheckedContinuation<MCPNativeReviewRequestStore.CapacityRecoveryResult, Never>?
+        private var capacityRecoveryResult: MCPNativeReviewRequestStore.CapacityRecoveryResult?
+        var hasPendingCapacityRecovery: Bool { pendingCapacityRecovery != nil }
+
+        init(_ underlying: AutomationPatchReviewService, holdsCapacityRecovery: Bool = false) {
+            self.underlying = underlying
+            self.holdsCapacityRecovery = holdsCapacityRecovery
+        }
+
+        func nativeReviewRequests() async throws -> [MCPNativeReviewRequestStore.Record] {
+            try await underlying.nativeReviewRequests()
+        }
+
+        func nativeReviewCapacity() async throws -> MCPNativeReviewRequestStore.CapacitySnapshot {
+            try await underlying.nativeReviewCapacity()
+        }
+
+        func recoverCancelledNativeReviewCapacity(expectedEpoch: UUID) async throws -> MCPNativeReviewRequestStore.CapacityRecoveryResult {
+            let result = try await underlying.recoverCancelledNativeReviewCapacity(expectedEpoch: expectedEpoch)
+            guard holdsCapacityRecovery else { return result }
+            capacityRecoveryResult = result
+            return await withCheckedContinuation { pendingCapacityRecovery = $0 }
+        }
+
+        func finishCapacityRecovery() {
+            guard let pendingCapacityRecovery, let capacityRecoveryResult else { return }
+            self.pendingCapacityRecovery = nil
+            self.capacityRecoveryResult = nil
+            pendingCapacityRecovery.resume(returning: capacityRecoveryResult)
+        }
 
         func inspect(planID: String) async throws -> AutomationPatchReview {
             try await underlying.inspect(planID: planID)
@@ -908,6 +938,8 @@ struct AutomationPatchReviewTests {
         _ = try requests.link(request.requestID, operationID: operation.id)
         let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans,
             facade: fixture.facade, operationRegistry: registry, nativeRequests: requests))
+        model.refreshNativeRequestEvidence()
+        try await waitUntil { !model.isRefreshingNativeRequests }
         model.cancelNativeRequest(request.requestID)
         try await waitUntil { !model.isLoading }
         let linked = try #require(model.nativeRequests.first)
@@ -1075,6 +1107,173 @@ struct AutomationPatchReviewTests {
         #expect((retained.cancellationRequestedAt != nil) == (scenario == "forwarding"))
         if let operation { #expect(try registry.inspect(operation.id) == operation) }
         #expect(retained.requestID == request.requestID && retained.planID == request.planID)
+    }
+
+    @Test("Capacity maintenance requires enabled unchanged authorization", arguments: ["disabled", "inspection", "cleanup", "changed"])
+    func capacityAuthorization(scenario: String) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(request.requestID)
+        let snapshot = try requests.capacitySnapshot()
+        let enabled = try fixture.authority.load()
+        var disabled = enabled
+        disabled.isEnabled = scenario == "changed"
+        if scenario == "changed" { disabled.roots = [] }
+        let enabledBytes = try JSONEncoder().encode(enabled)
+        let disabledBytes = try JSONEncoder().encode(disabled)
+        let reads = CancellationAuthorizationReads()
+        let authority = MCPAuthorizationStore(readConfigurationData: {
+            scenario != "disabled" && reads.next() == 1 ? enabledBytes : disabledBytes
+        }, writeConfigurationData: { _ in })
+        let service = AutomationPatchReviewService(plans: fixture.plans,
+            facade: MCPAutomationFacade(authorizationStore: authority), nativeRequests: requests)
+        if scenario == "disabled" {
+            await #expect(throws: MCPAuthorizationError.disabled) { try await service.nativeReviewCapacity() }
+        } else if scenario == "inspection" {
+            await #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) { try await service.nativeReviewCapacity() }
+        } else {
+            await #expect(throws: MCPIPTCPatchPlanStore.Failure.authorityChanged) {
+                try await service.recoverCancelledNativeReviewCapacity(expectedEpoch: snapshot.epoch)
+            }
+        }
+        #expect(try requests.capacitySnapshot() == snapshot)
+        #expect(try requests.inspect(request.requestID).state == .cancelled)
+    }
+
+    @Test("Capacity cleanup refuses a stale inspection and refreshes without granting consent") @MainActor
+    func staleCapacityInspection() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(request.requestID)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequestCapacity()
+        try await waitUntil { !model.isInspectingNativeRequestCapacity }
+        let epoch = try #require(model.nativeRequestCapacity?.epoch)
+        _ = try requests.recoverCancelledCapacity(expectedEpoch: epoch)
+        model.recoverCancelledNativeReviewCapacity()
+        try await waitUntil { !model.isRecoveringNativeRequestCapacity && !model.isRefreshingNativeRequests }
+        #expect(model.nativeRequestCapacity == nil && model.nativeRequests.isEmpty)
+        #expect(model.nativeRequestCapacityMessage?.hasPrefix("Cleanup could not be confirmed.") == true)
+        #expect(model.review == nil && !model.isApproved && !model.isXMPPublicationApproved)
+    }
+
+    @Test("Cleanup revokes native consent and refreshes capacity independently", arguments: ["draft", "publication"]) @MainActor
+    func capacityCleanupConsent(purpose: String) async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(request.requestID)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspect()
+        try await waitUntil { !model.isLoading }
+        if purpose == "publication" {
+            model.inspectXMPCandidate()
+            try await waitUntil { !model.isLoading }
+            model.acknowledgesC2PA = true
+            model.approveReviewedXMPPublication()
+            try await waitUntil { !model.isLoading }
+            #expect(model.isXMPPublicationApproved)
+        } else {
+            model.approveReviewedPlan()
+            try await waitUntil { !model.isLoading }
+            #expect(model.isApproved)
+        }
+        model.inspectNativeRequestCapacity()
+        try await waitUntil { !model.isInspectingNativeRequestCapacity }
+        // Inspection is independent and retains the already reviewed native consent.
+        #expect(model.review != nil)
+        #expect(model.isApproved || model.isXMPPublicationApproved)
+        model.recoverCancelledNativeReviewCapacity()
+        #expect(model.review == nil && model.selectedRequest == nil)
+        #expect(!model.isApproved && !model.isXMPPublicationApproved)
+        try await waitUntil { !model.isBusyWithNativeRequestCapacity && !model.isRefreshingNativeRequests }
+        #expect(model.nativeRequests.isEmpty)
+        #expect(model.nativeRequestCapacity?.cancelledBeforeAdmissionCount == 0)
+        #expect(model.nativeRequestCapacityMessage?.hasPrefix("Removed 1") == true)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
+    }
+
+    @Test("Cleanup disables review and ignores completion after navigation") @MainActor
+    func capacityCleanupNavigation() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(request.requestID)
+        let service = HeldApprovalService(AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, nativeRequests: requests), holdsCapacityRecovery: true)
+        let model = AutomationPatchReviewModel(service: service)
+        model.planID = fixture.planID
+        model.inspectNativeRequestCapacity()
+        try await waitUntil { !model.isInspectingNativeRequestCapacity }
+        model.recoverCancelledNativeReviewCapacity()
+        try await waitUntil { await service.hasPendingCapacityRecovery }
+        model.inspect()
+        model.inspectNativeRequest(request.requestID)
+        model.approveReviewedPlan()
+        model.publishApprovedXMP()
+        #expect(model.review == nil && !model.isLoading && model.isRecoveringNativeRequestCapacity)
+        model.clear()
+        await service.finishCapacityRecovery()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(model.nativeRequestCapacity == nil && model.nativeRequestCapacityMessage == nil)
+        #expect(!model.isBusyWithNativeRequestCapacity && !model.isApproved && !model.isXMPPublicationApproved)
+    }
+
+    @Test("Passive helper cancellation revokes selected consent before cleanup") @MainActor
+    func selectedRequestCancellationRevokesConsent() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let request = try requests.request(requestID: UUID(), planID: fixture.planID, purpose: .pendingDraft)
+        let model = AutomationPatchReviewModel(service: AutomationPatchReviewService(plans: fixture.plans,
+            facade: fixture.facade, nativeRequests: requests))
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        model.approveReviewedPlan()
+        try await waitUntil { !model.isLoading }
+        #expect(model.selectedRequest != nil && model.isApproved)
+        _ = try requests.cancel(request.requestID)
+        model.refreshNativeRequestEvidence()
+        try await waitUntil { !model.isRefreshingNativeRequests }
+        #expect(model.review == nil && model.selectedRequest == nil && !model.isApproved)
+    }
+
+    @Test("Native consent and cancellation cannot target a recreated request in another epoch") @MainActor
+    func staleNativeRequestEpoch() async throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: fixture.root.appendingPathComponent("requests"))
+        let epoch = try requests.capacitySnapshot().epoch
+        let request = try requests.request(requestID: UUID(), requestEpoch: epoch, planID: fixture.planID, purpose: .pendingDraft)
+        let service = AutomationPatchReviewService(plans: fixture.plans, facade: fixture.facade, nativeRequests: requests)
+        let model = AutomationPatchReviewModel(service: service)
+        model.inspectNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading }
+        model.refreshNativeRequestEvidence()
+        try await waitUntil { !model.isRefreshingNativeRequests }
+        #expect(model.selectedRequest?.requestEpoch == epoch)
+        let review = try await service.inspect(planID: fixture.planID)
+        let receipt = try await service.approve(review)
+        _ = try requests.cancel(request.requestID, requestEpoch: epoch)
+        let next = try requests.recoverCancelledCapacity(expectedEpoch: epoch).epoch
+        let recreated = try requests.request(requestID: request.requestID, requestEpoch: next,
+            planID: request.planID, purpose: request.purpose)
+        await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try await service.applyToPendingDraft(receipt, requestID: request.requestID, requestEpoch: epoch)
+        }
+        await #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try await service.cancelNativeReviewRequest(request.requestID, requestEpoch: epoch)
+        }
+        // A click from the displayed old request captures its original epoch before the await.
+        model.cancelNativeRequest(request.requestID)
+        try await waitUntil { !model.isLoading && !model.isRefreshingNativeRequests }
+        #expect(model.nativeRequestMessage?.hasPrefix("Cancellation could not be confirmed.") == true)
+        #expect(model.selectedRequest == nil && model.review == nil)
+        #expect(try requests.inspect(request.requestID) == recreated)
+        #expect(try Data(contentsOf: fixture.photo) == fixture.original)
     }
 
 }

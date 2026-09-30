@@ -137,6 +137,77 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeReviewCapacityCleanupRequiresConfirmationAndPersistsEpoch() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.textFields["automation.patchPlanID"].waitForExistence(timeout: 8))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+            Data(contentsOf: fixtureRoot.appendingPathComponent("patch-review-fixture.json"))) as? [String: String])
+        let cancelledID = try XCTUnwrap(manifest["draftRequestID"])
+        let retainedID = try XCTUnwrap(manifest["xmpRequestID"])
+        let photo = URL(fileURLWithPath: try XCTUnwrap(manifest["photoPath"]))
+        let beforePhoto = try Data(contentsOf: photo)
+        let archiveURL = fixtureRoot.appendingPathComponent("patch-requests/operations.json")
+        func archive() throws -> [String: Any] {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archiveURL)) as? [String: Any])
+            let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        }
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        let cancel = app.buttons["automation.cancelReviewRequest." + cancelledID]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8))
+        cancel.click()
+        XCTAssertTrue(app.staticTexts["Cancelled before admission."].waitForExistence(timeout: 8))
+        let beforeArchive = try archive()
+        let beforeBytes = try Data(contentsOf: archiveURL)
+        let beforeRecords = try XCTUnwrap(beforeArchive["records"] as? [[String: Any]])
+        let retained = try XCTUnwrap(beforeRecords.first { $0["requestID"] as? String == retainedID }) as NSDictionary
+        app.buttons["automation.inspectReviewRequestCapacity"].click()
+        let capacity = app.staticTexts["automation.reviewRequestCapacity"]
+        XCTAssertTrue(capacity.waitForExistence(timeout: 8))
+        let cleanup = app.buttons["automation.removeCancelledReviewRequests"]
+        XCTAssertTrue(cleanup.isEnabled)
+        cleanup.click()
+        let dialog = app.sheets.firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+        dialog.buttons["Cancel"].click()
+        XCTAssertEqual(try Data(contentsOf: archiveURL), beforeBytes)
+        cleanup.click()
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+        dialog.buttons["Remove cancelled review requests"].click()
+        let message = app.staticTexts["automation.reviewRequestCapacityMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        XCTAssertTrue((message.label + ((message.value as? String) ?? "")).contains("Removed 1"))
+        let after = try archive()
+        XCTAssertNotEqual(after["currentEpoch"] as? String, beforeArchive["currentEpoch"] as? String)
+        XCTAssertEqual(after["legacyCreationAllowed"] as? Bool, false)
+        let remaining = try XCTUnwrap(after["records"] as? [[String: Any]])
+        XCTAssertFalse(remaining.contains { $0["requestID"] as? String == cancelledID })
+        XCTAssertEqual(try XCTUnwrap(remaining.first { $0["requestID"] as? String == retainedID }) as NSDictionary, retained)
+        XCTAssertEqual(try Data(contentsOf: photo), beforePhoto)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent("patch-operations/operations.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.deletingLastPathComponent().appendingPathComponent(".photo_metadata/review.jpg.meta.json").path))
+        let persisted = try Data(contentsOf: archiveURL)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, patchReviewFolder: fixtureRoot, resumePatchRecovery: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.showReviewRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.showReviewRequests"].click()
+        app.buttons["automation.refreshReviewRequests"].click()
+        XCTAssertTrue(app.buttons["automation.inspectRequestedPlan." + retainedID].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["automation.inspectRequestedPlan." + cancelledID].exists)
+        XCTAssertEqual(try Data(contentsOf: archiveURL), persisted)
+        XCTAssertEqual(try Data(contentsOf: photo), beforePhoto)
+    }
+
+    @MainActor
     func testNativeClientXMPRequestPublishesOnlyAfterSeparateConsentAndPersistsStatus() throws {
         try exerciseNativeClientXMPRequest(cancelAfterDryRun: false)
     }

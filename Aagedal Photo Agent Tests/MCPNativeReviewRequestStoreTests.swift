@@ -28,6 +28,265 @@ struct MCPNativeReviewRequestStoreTests {
         #expect(defaultRoot.lastPathComponent == ".aagedal-photo-agent-native-review-requests")
     }
 
+    @Test("Capacity snapshots durably initialize the epoch and clamp record bounds")
+    func durableCapacitySnapshot() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 1_000)
+        let snapshot = try store.capacitySnapshot()
+        #expect(snapshot.retainedCount == 0)
+        #expect(snapshot.maximumRecords == 256)
+        #expect(snapshot.cancelledBeforeAdmissionCount == 0)
+        let file = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: file)
+        #expect(try MCPNativeReviewRequestStore(storageDirectory: root).capacitySnapshot() == snapshot)
+        #expect(try store.records().isEmpty)
+        #expect(try Data(contentsOf: file) == bytes)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverCancelledCapacity(expectedEpoch: snapshot.epoch)
+        }
+        #expect(try Data(contentsOf: file) == bytes)
+        let zero = try directory()
+        defer { try? FileManager.default.removeItem(at: zero) }
+        let bounded = MCPNativeReviewRequestStore(storageDirectory: zero, maximumRecords: -1)
+        let capacity = try bounded.capacitySnapshot()
+        #expect(capacity.maximumRecords == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.capacity) {
+            try bounded.request(requestID: UUID(), requestEpoch: capacity.epoch,
+                                planID: planID, purpose: .pendingDraft, now: now)
+        }
+    }
+
+    @Test("V1 archives remain unchanged on inspection and migrate only under a durable mutation")
+    func legacyMigration() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let id = UUID()
+        let legacy = try store.request(requestID: id, planID: planID, purpose: .pendingDraft, now: now)
+        try replaceArchive(at: root) { archive in
+            archive["schemaVersion"] = 1
+            archive.removeValue(forKey: "currentEpoch")
+            archive.removeValue(forKey: "legacyCreationAllowed")
+        }
+        let file = root.appendingPathComponent("operations.json")
+        let v1 = try Data(contentsOf: file)
+        #expect(try store.records() == [legacy])
+        #expect(try store.inspect(id) == legacy)
+        #expect(try Data(contentsOf: file) == v1)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.unknownRequest) { try store.cancel(UUID(), now: now) }
+        #expect(try Data(contentsOf: file) == v1)
+        // V1 must refuse fields belonging only to V2, even with a valid checksum.
+        try replaceArchive(at: root) { archive in
+            var records = archive["records"] as! [[String: Any]]
+            records[0]["requestEpoch"] = UUID().uuidString.lowercased()
+            archive["records"] = records
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) { try store.capacitySnapshot() }
+        try v1.write(to: file)
+        let migrated = try store.capacitySnapshot()
+        #expect(migrated.retainedCount == 1)
+        #expect(try Data(contentsOf: file) != v1)
+        #expect(try MCPNativeReviewRequestStore(storageDirectory: root).capacitySnapshot() == migrated)
+        #expect(try store.inspect(id) == legacy)
+        #expect(try store.request(requestID: id, planID: planID, purpose: .pendingDraft, now: now) == legacy)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: id, requestEpoch: migrated.epoch,
+                              planID: planID, purpose: .pendingDraft, now: now)
+        }
+    }
+
+    @Test("Epoch requests retry exactly and reject unknown or mismatched epochs without changing storage")
+    func epochRequestValidation() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        let requested = try store.request(requestID: id, requestEpoch: epoch,
+                                          planID: planID, purpose: .pendingDraft, now: now)
+        #expect(requested.requestEpoch == epoch)
+        let file = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: file)
+        #expect(try store.request(requestID: id, requestEpoch: epoch, planID: planID,
+                                  purpose: .pendingDraft, now: now.addingTimeInterval(1)) == requested)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: UUID(), requestEpoch: UUID(), planID: planID, purpose: .pendingDraft, now: now)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: id, requestEpoch: UUID(), planID: planID, purpose: .pendingDraft, now: now)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: id, planID: planID, purpose: .pendingDraft, now: now)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.conflictingRequest) {
+            try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: .xmpPublication, now: now)
+        }
+        #expect(try Data(contentsOf: file) == bytes)
+    }
+
+    @Test("Cancelled-only recovery rotates atomically and preserves all admitted, linked and awaiting evidence")
+    func cancelledCapacityRecovery() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 8)
+        let competitor = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 8)
+        let oldEpoch = try store.capacitySnapshot().epoch
+        let retired = UUID()
+        let legacyRetired = UUID()
+        _ = try store.request(requestID: retired, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.cancel(retired, requestEpoch: oldEpoch, now: now)
+        _ = try store.request(requestID: legacyRetired, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.cancel(legacyRetired, now: now)
+        let awaitingID = UUID()
+        let awaiting = try store.request(requestID: awaitingID, requestEpoch: oldEpoch,
+                                         planID: planID, purpose: .pendingDraft, now: now)
+        let legacyID = UUID()
+        let legacy = try store.request(requestID: legacyID, planID: planID, purpose: .pendingDraft, now: now)
+        let admittedID = UUID()
+        _ = try store.request(requestID: admittedID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+        let admitted = try store.admit(admittedID, requestEpoch: oldEpoch, now: now)
+        let uncertainID = UUID()
+        _ = try store.request(requestID: uncertainID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.admit(uncertainID, requestEpoch: oldEpoch, now: now)
+        let uncertain = try store.cancel(uncertainID, requestEpoch: oldEpoch, now: now)
+        let linkedID = UUID()
+        _ = try store.request(requestID: linkedID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.admit(linkedID, requestEpoch: oldEpoch, now: now)
+        _ = try store.link(linkedID, operationID: UUID(), now: now)
+        let linked = try store.cancel(linkedID, requestEpoch: oldEpoch, now: now)
+        let snapshot = try store.capacitySnapshot()
+        #expect(snapshot.retainedCount == 7)
+        #expect(snapshot.cancelledBeforeAdmissionCount == 2)
+        let recovered = try competitor.recoverCancelledCapacity(expectedEpoch: oldEpoch)
+        #expect(recovered.epoch != oldEpoch)
+        #expect(recovered.retiredCount == 2)
+        #expect(try store.records() == [awaiting, legacy, admitted, uncertain, linked])
+        #expect(try store.capacitySnapshot().epoch == recovered.epoch)
+        #expect(try store.capacitySnapshot().cancelledBeforeAdmissionCount == 0)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.unknownRequest) { try store.inspect(retired) }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.unknownRequest) { try store.inspect(legacyRetired) }
+        let file = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: file)
+        for id in [retired, UUID()] {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.request(requestID: id, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+            }
+        }
+        for id in [legacyRetired, UUID()] {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.request(requestID: id, planID: planID, purpose: .pendingDraft, now: now)
+            }
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.recoverCancelledCapacity(expectedEpoch: snapshot.epoch)
+        }
+        #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) {
+            try store.recoverCancelledCapacity(expectedEpoch: recovered.epoch)
+        }
+        #expect(try store.request(requestID: awaitingID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now) == awaiting)
+        #expect(try store.request(requestID: admittedID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now) == admitted)
+        #expect(try store.request(requestID: uncertainID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now) == uncertain)
+        #expect(try store.request(requestID: linkedID, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now) == linked)
+        #expect(try store.request(requestID: legacyID, planID: planID, purpose: .pendingDraft, now: now) == legacy)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try store.request(requestID: awaitingID, requestEpoch: recovered.epoch, planID: planID, purpose: .pendingDraft, now: now)
+        }
+        #expect(try Data(contentsOf: file) == bytes)
+        // A retained historical request can still be cancelled and retired in a later epoch.
+        let cancelled = try store.cancel(awaitingID, requestEpoch: oldEpoch, now: now.addingTimeInterval(1))
+        #expect(cancelled.requestEpoch == oldEpoch)
+        #expect(try store.request(requestID: awaitingID, requestEpoch: oldEpoch,
+                                  planID: planID, purpose: .pendingDraft, now: now) == cancelled)
+        let next = try store.recoverCancelledCapacity(expectedEpoch: recovered.epoch)
+        #expect(next.retiredCount == 1)
+        let restarted = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 8)
+        _ = try restarted.request(requestID: UUID(), requestEpoch: next.epoch,
+                                   planID: planID, purpose: .pendingDraft, now: now)
+        #expect(try restarted.inspect(linkedID) == linked)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+            try restarted.request(requestID: legacyRetired, planID: planID, purpose: .pendingDraft, now: now)
+        }
+    }
+
+    @Test("A retired UUID reused in a new epoch rejects stale and epochless admission or cancellation")
+    func reusedRequestIDCannotAcceptStaleMutations() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root)
+        let oldEpoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        _ = try store.request(requestID: id, requestEpoch: oldEpoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.cancel(id, requestEpoch: oldEpoch, now: now)
+        let newEpoch = try store.recoverCancelledCapacity(expectedEpoch: oldEpoch).epoch
+        let current = try store.request(requestID: id, requestEpoch: newEpoch, planID: planID,
+                                       purpose: .pendingDraft, now: now.addingTimeInterval(1))
+        let file = root.appendingPathComponent("operations.json")
+        let bytes = try Data(contentsOf: file)
+        for epoch in [oldEpoch, nil] as [UUID?] {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.cancel(id, requestEpoch: epoch, now: now.addingTimeInterval(2))
+            }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.admit(id, requestEpoch: epoch, now: now.addingTimeInterval(2))
+            }
+        }
+        #expect(try store.inspect(id) == current)
+        #expect(try Data(contentsOf: file) == bytes)
+        let admitted = try store.admit(id, requestEpoch: newEpoch, now: now.addingTimeInterval(2))
+        #expect(admitted.state == .admitted)
+        let admittedBytes = try Data(contentsOf: file)
+        for epoch in [oldEpoch, nil] as [UUID?] {
+            #expect(throws: MCPNativeReviewRequestStore.Failure.staleEpoch) {
+                try store.markUnknownDisposition(id, requestEpoch: epoch, now: now.addingTimeInterval(3))
+            }
+        }
+        #expect(try store.inspect(id) == admitted)
+        #expect(try Data(contentsOf: file) == admittedBytes)
+        let uncertain = try store.markUnknownDisposition(id, requestEpoch: newEpoch, now: now.addingTimeInterval(3))
+        #expect(uncertain.state == .unknownDisposition)
+        #expect(uncertain.admittedAt == admitted.admittedAt)
+        let cancelled = try store.cancel(id, requestEpoch: newEpoch, now: now.addingTimeInterval(4))
+        #expect(cancelled.state == .unknownDisposition)
+        #expect(cancelled.cancellationRequestedAt == now.addingTimeInterval(4))
+    }
+
+    @Test("Recovery releases full capacity while byte failures and lock contention cannot rotate epochs")
+    func recoveryBoundsAndContention() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 1)
+        let competitor = MCPNativeReviewRequestStore(storageDirectory: root, maximumRecords: 1)
+        let epoch = try store.capacitySnapshot().epoch
+        let id = UUID()
+        _ = try store.request(requestID: id, requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        _ = try store.cancel(id, requestEpoch: epoch, now: now)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.capacity) {
+            try competitor.request(requestID: UUID(), requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+        }
+        let holder = AutomationOperationPersistence(directory: root, maximumBytes: 1_048_576)
+        try holder.transaction { bytes in
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) { try competitor.capacitySnapshot() }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                try competitor.recoverCancelledCapacity(expectedEpoch: epoch)
+            }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.storageUnavailable) {
+                try competitor.request(requestID: UUID(), requestEpoch: epoch, planID: planID, purpose: .pendingDraft, now: now)
+            }
+            return ((), try #require(bytes))
+        }
+        #expect(try competitor.capacitySnapshot().epoch == epoch)
+        let recovery = try competitor.recoverCancelledCapacity(expectedEpoch: epoch)
+        _ = try store.request(requestID: UUID(), requestEpoch: recovery.epoch, planID: planID, purpose: .pendingDraft, now: now)
+        #expect(try store.capacitySnapshot().retainedCount == 1)
+        let tinyRoot = try directory()
+        defer { try? FileManager.default.removeItem(at: tinyRoot) }
+        let tiny = MCPNativeReviewRequestStore(storageDirectory: tinyRoot, maximumBytes: 128)
+        #expect(throws: MCPNativeReviewRequestStore.Failure.capacity) { try tiny.capacitySnapshot() }
+        #expect(!FileManager.default.fileExists(atPath: tinyRoot.appendingPathComponent("operations.json").path))
+        #expect(try tiny.records().isEmpty)
+    }
+
     @Test("Exact retries survive restart and never revive cancelled intent")
     func durableIdempotency() throws {
         let root = try directory()
@@ -259,7 +518,21 @@ struct MCPNativeReviewRequestStoreTests {
         let file = root.appendingPathComponent("operations.json")
         let baseline = try Data(contentsOf: file)
         let mutations: [(inout [String: Any]) -> Void] = [
-            { $0["schemaVersion"] = 2 },
+            { $0["schemaVersion"] = 3 },
+            { $0["currentEpoch"] = UUID().uuidString.uppercased() },
+            { $0["currentEpoch"] = "invalid" },
+            { $0.removeValue(forKey: "currentEpoch") },
+            { $0["currentEpoch"] = NSNull() },
+            { $0["legacyCreationAllowed"] = 1 },
+            { $0.removeValue(forKey: "legacyCreationAllowed") },
+            { archive in
+                var records = archive["records"] as! [[String: Any]]
+                records[0]["requestEpoch"] = UUID().uuidString.uppercased(); archive["records"] = records
+            },
+            { archive in
+                var records = archive["records"] as! [[String: Any]]
+                records[0]["requestEpoch"] = NSNull(); archive["records"] = records
+            },
             { $0["authority"] = true },
             { archive in
                 var records = archive["records"] as! [[String: Any]]
@@ -316,6 +589,10 @@ struct MCPNativeReviewRequestStoreTests {
             let invalid = try Data(contentsOf: file)
             #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) { try store.records() }
             #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) { try store.cancel(id, now: now) }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) { try store.capacitySnapshot() }
+            #expect(throws: MCPNativeReviewRequestStore.Failure.invalidStorage) {
+                try store.recoverCancelledCapacity(expectedEpoch: UUID())
+            }
             #expect(try Data(contentsOf: file) == invalid)
         }
     }

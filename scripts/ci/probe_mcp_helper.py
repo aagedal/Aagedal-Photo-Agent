@@ -99,7 +99,7 @@ def probe(executable):
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
-                "create_team", "cancel_operation", "request_iptc_patch_review", "cancel_native_review_request",
+                "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request",
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
@@ -153,9 +153,9 @@ def probe(executable):
         requirements = connection.receive(11)["result"]
         require(requirements["isError"] is True and requirements["structuredContent"]["code"] == "invalid_arguments",
                 "Publication requirements accepted unexpected execution arguments")
-        require({"request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request"}.issubset(names),
+        require({"get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request"}.issubset(names),
                 "Missing durable native review intent tools")
-        for identifier, tool in [(12, "request_iptc_patch_review"), (13, "get_native_review_request"),
+        for identifier, tool in [(15, "get_native_review_request_capacity"), (12, "request_iptc_patch_review"), (13, "get_native_review_request"),
                                  (14, "cancel_native_review_request")]:
             connection.send(request(identifier, "tools/call", {
                 "name": tool, "arguments": {"requestID": "not-a-uuid", "execute": True},

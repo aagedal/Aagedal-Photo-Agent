@@ -1950,25 +1950,35 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
             definition(
+                name: "get_native_review_request_capacity",
+                description: "Initialize or migrate private native review coordination storage and return its current requestEpoch and bounded capacity. Requires Enable local automation. This may write coordination storage, grants no consent and changes no photos. Before creating a new review intent, get this epoch and supply it unchanged with a new lowercase canonical UUID requestID. Retries must retain their original epoch; never silently resubmit retired intent under a new epoch. Explicit cleanup is available only in the native app and preserves active, linked and uncertain requests.",
+                properties: [:], required: [], readOnly: false
+            ),
+            definition(
                 name: "request_iptc_patch_review",
-                description: "Persist intent to review one exact retained IPTC patch plan in Photo Agent's native app. Requires Enable local automation and a new lowercase canonical UUID requestID; reuse the same ID, planID and purpose for retries. New requests revalidate the retained plan, authority, expiry and carrier revisions. Exact retries report the durable request even after the plan expires. Purpose is pendingDraft or xmpPublication. Creates no approval or metadata write, grants no consent, and cannot commit through this helper. Open Photo Agent's Automation review to continue explicitly.",
+                description: "Persist intent to review one exact retained IPTC patch plan in Photo Agent's native app. Requires Enable local automation, the requestEpoch from get_native_review_request_capacity and a new lowercase canonical UUID requestID; reuse the same epoch, ID, planID and purpose for retries. Stale epochs refuse new creation. Legacy retained epochless requests remain retryable; retired requests must never be resubmitted under a new epoch. New requests revalidate the retained plan, authority, expiry and carrier revisions. Exact retries report the durable request even after the plan expires. Purpose is pendingDraft or xmpPublication. Creates no approval or metadata write, grants no consent, and cannot commit through this helper. Open Photo Agent's Automation review to continue explicitly.",
                 properties: [
                     "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
                     "planID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "purpose": .object(["type": .string("string"), "enum": .array([.string("pendingDraft"), .string("xmpPublication")])]),
                 ],
+                // Epoch is semantically required for new intent; the schema also permits
+                // exact retained legacy retries whose original epoch is absent.
                 required: ["requestID", "planID", "purpose"], readOnly: false
             ),
             definition(
                 name: "get_native_review_request",
-                description: "Inspect a durable native review intent by lowercase canonical requestID. Requires Enable local automation. Reports recorded handoff state without revalidating an expired plan or implying consent, execution or executor liveness. Includes the matching linked operation snapshot when retained and verified; missing or unverifiable history reports confirmation-unavailable. Recovery resolution remains separate from the original execution outcome. A linked operationID can also be inspected with get_operation_status. An unknown disposition must be reviewed in the app and cannot be replayed automatically.",
-                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")])],
+                description: "Inspect a durable native review intent by lowercase canonical requestID and its original requestEpoch. Omit the epoch only for retained legacy epochless requests. Requires Enable local automation. Reports recorded handoff state without revalidating an expired plan or implying consent, execution or executor liveness. Includes the matching linked operation snapshot when retained and verified; missing or unverifiable history reports confirmation-unavailable. Recovery resolution remains separate from the original execution outcome. A linked operationID can also be inspected with get_operation_status. An unknown disposition must be reviewed in the app and cannot be replayed automatically.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID"]
             ),
             definition(
                 name: "cancel_native_review_request",
-                description: "Persist cancellation intent for one native review request. Requires Enable local automation and a lowercase canonical requestID. Cancels an awaiting review request; after native admission, requests cooperative cancellation and forwards it to a linked operation when available. Cancellation intent is not verified completion or rollback. Repeated requests are harmless.",
-                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")])],
+                description: "Persist cancellation intent for one native review request. Requires Enable local automation, a lowercase canonical requestID and its original requestEpoch. Omit the epoch only for retained legacy epochless requests. Cancels an awaiting review request; after native admission, requests cooperative cancellation and forwards it to a linked operation when available. Cancellation intent is not verified completion or rollback. Repeated requests are harmless.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID"], readOnly: false
             ),
             definition(
@@ -2158,8 +2168,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         do {
             let acceptedArguments: Set<String>
             switch name {
-            case "request_iptc_patch_review": acceptedArguments = ["requestID", "planID", "purpose"]
-            case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID"]
+            case "request_iptc_patch_review": acceptedArguments = ["requestID", "requestEpoch", "planID", "purpose"]
+            case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
             case "create_team": acceptedArguments = Set(MCPTeamLibrary.properties.keys)
             case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata":
@@ -2177,11 +2187,28 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             let configuration = try authorizationStore.load()
             switch name {
+            case "get_native_review_request_capacity":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                let requests = try nativeReviewRequests ?? MCPNativeReviewRequestStore(
+                    storageDirectory: MCPNativeReviewRequestStore.defaultStorageDirectory())
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                let capacity = try requests.capacitySnapshot()
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                return success([
+                    "requestProtocolVersion": .integer(2),
+                    "requestEpoch": .string(capacity.epoch.uuidString.lowercased()),
+                    "retainedCount": .integer(Int64(capacity.retainedCount)),
+                    "maximumRecords": .integer(Int64(capacity.maximumRecords)),
+                    "cancelledBeforeAdmissionCount": .integer(Int64(capacity.cancelledBeforeAdmissionCount)),
+                    "cleanupAvailableInNativeApp": .bool(true),
+                    "commitAvailable": .bool(false), "consentGranted": .bool(false),
+                ])
             case "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 let expected: Set<String> = name == "request_iptc_patch_review"
                     ? ["requestID", "planID", "purpose"] : ["requestID"]
-                guard Set(arguments.keys) == expected,
+                let keys = Set(arguments.keys)
+                guard (keys == expected || keys == expected.union(["requestEpoch"])),
                       let requestID = canonicalUUID(arguments["requestID"]) else {
                     return failure(code: "invalid_arguments", message: "Provide the exact lowercase canonical requestID and required tool arguments")
                 }
@@ -2190,6 +2217,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
                 let record: MCPNativeReviewRequestStore.Record
                 if name == "request_iptc_patch_review" {
+                    let epoch = canonicalUUID(arguments["requestEpoch"])
+                    guard arguments["requestEpoch"] == nil || epoch != nil else {
+                        return failure(code: "invalid_arguments", message: "requestEpoch must be a lowercase canonical UUID")
+                    }
                     guard canonicalUUID(arguments["planID"]) != nil,
                           let planID = arguments["planID"]?.stringValue,
                           let rawPurpose = arguments["purpose"]?.stringValue,
@@ -2201,16 +2232,26 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         guard existing.planID == planID, existing.purpose == purpose else {
                             throw MCPNativeReviewRequestStore.Failure.conflictingRequest
                         }
+                        guard existing.requestEpoch == epoch else { throw MCPNativeReviewRequestStore.Failure.staleEpoch }
                         // This is status retrieval, not fresh admission. Never erase truthful
                         // cancellation/linkage because the original photo or plan expired.
                         record = existing
                     } catch MCPNativeReviewRequestStore.Failure.unknownRequest {
+                        guard let epoch else { throw MCPNativeReviewRequestStore.Failure.staleEpoch }
                         _ = try patchPlans.localApprovalBinding(planID: planID, facade: automationFacade, now: Date())
                         guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
-                        record = try requests.request(requestID: requestID, planID: planID, purpose: purpose)
+                        record = try requests.request(requestID: requestID, requestEpoch: epoch, planID: planID, purpose: purpose)
                     }
                 } else {
-                    record = try name == "cancel_native_review_request" ? requests.cancel(requestID) : requests.inspect(requestID)
+                    let epoch = canonicalUUID(arguments["requestEpoch"])
+                    guard arguments["requestEpoch"] == nil || epoch != nil else {
+                        return failure(code: "invalid_arguments", message: "requestEpoch must be a lowercase canonical UUID")
+                    }
+                    let inspected = try requests.inspect(requestID)
+                    guard inspected.requestEpoch == epoch else { throw MCPNativeReviewRequestStore.Failure.staleEpoch }
+                    guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                    record = try name == "cancel_native_review_request"
+                        ? requests.cancel(requestID, requestEpoch: epoch) : inspected
                 }
                 var operationCancellationStatus: String? = nil
                 var operation: AutomationOperationRegistry.Record?
@@ -2284,6 +2325,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "mutationToolsAvailable": .bool(true),
                     "operationExecutorsConnected": .bool(false),
                     "nativeReviewRequestsAvailable": .bool(true),
+                    "nativeReviewRequestProtocolVersion": .integer(2),
                     "helperCommitAvailable": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])
@@ -2449,6 +2491,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     private func nativeReviewRequestValue(_ record: MCPNativeReviewRequestStore.Record) -> [String: MCPJSONValue] {
         [
             "requestID": .string(record.requestID.uuidString.lowercased()),
+            "requestEpoch": record.requestEpoch.map { .string($0.uuidString.lowercased()) } ?? .null,
             "planID": .string(record.planID), "purpose": .string(record.purpose.rawValue),
             "state": .string(record.state.rawValue),
             "operationID": record.operationID.map { .string($0.uuidString.lowercased()) } ?? .null,

@@ -162,10 +162,11 @@ enum UITestPatchReviewFixture {
             guard let id = prepared.objectValue?["planID"]?.stringValue else { throw Failure.invalidPlan }
             let nativeRequests = MCPNativeReviewRequestStore(storageDirectory: folder.appendingPathComponent("patch-requests"))
             let tools = MCPFoundationTools(authorizationStore: authority, patchPlans: plans, nativeReviewRequests: nativeRequests)
+            let epoch = try nativeRequests.capacitySnapshot().epoch.uuidString.lowercased()
             let draftID = UUID().uuidString.lowercased(), xmpID = UUID().uuidString.lowercased()
             for (requestID, purpose) in [(draftID, "pendingDraft"), (xmpID, "xmpPublication")] {
                 let response = tools.callTool(name: "request_iptc_patch_review", arguments: [
-                    "requestID": .string(requestID), "planID": .string(id), "purpose": .string(purpose)])
+                    "requestID": .string(requestID), "requestEpoch": .string(epoch), "planID": .string(id), "purpose": .string(purpose)])
                 guard response.objectValue?["isError"] == .bool(false) else { throw Failure.invalidPlan }
             }
             let manifest = Manifest(planID: id, photoPath: photo.path, beforeTitle: beforeTitle,

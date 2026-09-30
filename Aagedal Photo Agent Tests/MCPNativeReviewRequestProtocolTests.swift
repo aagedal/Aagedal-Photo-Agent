@@ -15,8 +15,15 @@ struct MCPNativeReviewRequestProtocolTests {
     private let statusTool = "get_native_review_request"
     private let cancelTool = "cancel_native_review_request"
 
-    private func arguments(_ fixture: Fixture, id: UUID, purpose: String = "pendingDraft") -> [String: MCPJSONValue] {
-        ["requestID": .string(id.uuidString.lowercased()), "planID": .string(fixture.planID), "purpose": .string(purpose)]
+    private func arguments(_ fixture: Fixture, id: UUID, purpose: String = "pendingDraft") throws -> [String: MCPJSONValue] {
+        let requests = MCPNativeReviewRequestStore(storageDirectory: try physicalRoot(fixture).appendingPathComponent("requests"))
+        let epoch = try requests.capacitySnapshot().epoch
+        return ["requestID": .string(id.uuidString.lowercased()), "requestEpoch": .string(epoch.uuidString.lowercased()),
+                "planID": .string(fixture.planID), "purpose": .string(purpose)]
+    }
+
+    private func handle(_ args: [String: MCPJSONValue]) -> [String: MCPJSONValue] {
+        args.filter { ["requestID", "requestEpoch"].contains($0.key) }
     }
 
     private func structured(_ value: MCPJSONValue) throws -> [String: MCPJSONValue] {
@@ -38,15 +45,15 @@ struct MCPNativeReviewRequestProtocolTests {
         let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
             patchPlans: fixture.plans, nativeReviewRequests: requests)
         let id = UUID()
-        let args = arguments(fixture, id: id)
+        let args = try arguments(fixture, id: id)
         try fixture.facade.authorizationStore.setEnabled(false)
-        for (name, value) in [(requestTool, args), (statusTool, ["requestID": args["requestID"]!]),
-                              (cancelTool, ["requestID": args["requestID"]!])] {
+        for (name, value) in [(requestTool, args), (statusTool, handle(args)),
+                              (cancelTool, handle(args))] {
             #expect(try structured(tools.callTool(name: name, arguments: value))["code"] == .string("disabled"))
         }
         try fixture.facade.authorizationStore.setEnabled(true)
         for name in [requestTool, statusTool, cancelTool] {
-            let minimal = name == requestTool ? args : ["requestID": args["requestID"]!]
+            let minimal = name == requestTool ? args : handle(args)
             var invalid = minimal; invalid["execute"] = .bool(true)
             #expect(try structured(tools.callTool(name: name, arguments: invalid))["code"] == .string("invalid_arguments"))
             for value in [MCPJSONValue.string(id.uuidString.uppercased()), .integer(1), .null, .string("not-a-uuid")] {
@@ -56,12 +63,13 @@ struct MCPNativeReviewRequestProtocolTests {
             #expect(try structured(tools.callTool(name: name, arguments: [:]))["code"] == .string("invalid_arguments"))
         }
         for (key, value) in [("purpose", MCPJSONValue.string("commit")), ("purpose", .bool(true)),
-                             ("planID", .string(fixture.planID.uppercased()))] {
+                             ("planID", .string(fixture.planID.uppercased())), ("requestEpoch", .null),
+                             ("requestEpoch", .string(args["requestEpoch"]!.stringValue!.uppercased()))] {
             var invalid = args; invalid[key] = value
             #expect(try structured(tools.callTool(name: requestTool, arguments: invalid))["code"] == .string("invalid_arguments"))
         }
         for name in [statusTool, cancelTool] {
-            #expect(try structured(tools.callTool(name: name, arguments: ["requestID": args["requestID"]!]))["code"] == .string("unknown_native_review_request"))
+            #expect(try structured(tools.callTool(name: name, arguments: handle(args)))["code"] == .string("unknown_native_review_request"))
         }
         #expect(try requests.records().isEmpty)
     }
@@ -74,7 +82,7 @@ struct MCPNativeReviewRequestProtocolTests {
         let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
             patchPlans: fixture.plans, nativeReviewRequests: requests)
         let original = try fixture.facade.withPhotoSnapshot(path: fixture.photo.path) { $0 }
-        let args = arguments(fixture, id: UUID(), purpose: purpose)
+        let args = try arguments(fixture, id: UUID(), purpose: purpose)
         let result = tools.callTool(name: requestTool, arguments: args)
         #expect(result.objectValue?["isError"] == .bool(false))
         let value = try structured(result)
@@ -94,7 +102,7 @@ struct MCPNativeReviewRequestProtocolTests {
         #expect(tools.callTool(name: requestTool, arguments: args) == result)
 
         try Data("changed".utf8).write(to: fixture.photo)
-        let stale = tools.callTool(name: requestTool, arguments: arguments(fixture, id: UUID(), purpose: purpose))
+        let stale = tools.callTool(name: requestTool, arguments: try arguments(fixture, id: UUID(), purpose: purpose))
         #expect(stale.objectValue?["isError"] == .bool(true))
         #expect(try requests.records().count == 1)
         // Retrieving the existing intent never claims current validity or loses status.
@@ -109,14 +117,14 @@ struct MCPNativeReviewRequestProtocolTests {
         let authority = fixture.facade.authorizationStore
         let tools = MCPFoundationTools(authorizationStore: authority, patchPlans: fixture.plans, nativeReviewRequests: requests)
         let id = UUID()
-        let args = arguments(fixture, id: id)
+        let args = try arguments(fixture, id: id)
         _ = tools.callTool(name: requestTool, arguments: args)
         let binding = try fixture.plans.localApprovalBinding(planID: fixture.planID, facade: fixture.facade, now: Date())
         #expect(throws: MCPIPTCPatchPlanStore.Failure.expiredPlan) {
             try fixture.plans.inspect(arguments: ["planID": .string(fixture.planID)], facade: fixture.facade, now: binding.expiresAt)
         }
         #expect(try structured(tools.callTool(name: requestTool, arguments: args))["state"] == .string("awaitingReview"))
-        let cancelled = tools.callTool(name: cancelTool, arguments: ["requestID": args["requestID"]!])
+        let cancelled = tools.callTool(name: cancelTool, arguments: handle(args))
         #expect(try structured(cancelled)["state"] == .string("cancelled"))
         #expect(try structured(cancelled)["cancellationRequested"] == .bool(true))
         #expect(try structured(cancelled)["consentGranted"] == .bool(false))
@@ -124,8 +132,8 @@ struct MCPNativeReviewRequestProtocolTests {
         let restarted = MCPFoundationTools(authorizationStore: authority, patchPlans: MCPIPTCPatchPlanStore(),
             nativeReviewRequests: MCPNativeReviewRequestStore(storageDirectory: directory))
         #expect(restarted.callTool(name: requestTool, arguments: args) == cancelled)
-        #expect(restarted.callTool(name: statusTool, arguments: ["requestID": args["requestID"]!]) == cancelled)
-        #expect(restarted.callTool(name: cancelTool, arguments: ["requestID": args["requestID"]!]) == cancelled)
+        #expect(restarted.callTool(name: statusTool, arguments: handle(args)) == cancelled)
+        #expect(restarted.callTool(name: cancelTool, arguments: handle(args)) == cancelled)
         var conflicting = args; conflicting["purpose"] = .string("xmpPublication")
         #expect(try structured(restarted.callTool(name: requestTool, arguments: conflicting))["code"] == .string("conflicting_native_review_request"))
         conflicting = args; conflicting["planID"] = .string(UUID().uuidString.lowercased())
@@ -147,7 +155,7 @@ struct MCPNativeReviewRequestProtocolTests {
             readConfigurationData: { counter.next() == 1 ? enabledBytes : disabledBytes },
             writeConfigurationData: { _ in })
         let tools = MCPFoundationTools(authorizationStore: authority, patchPlans: fixture.plans, nativeReviewRequests: requests)
-        let result = tools.callTool(name: requestTool, arguments: arguments(fixture, id: UUID()))
+        let result = tools.callTool(name: requestTool, arguments: try arguments(fixture, id: UUID()))
         #expect(try structured(result)["code"] == .string("rootChanged"))
         #expect(try requests.records().isEmpty)
     }
@@ -161,26 +169,26 @@ struct MCPNativeReviewRequestProtocolTests {
         let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
             patchPlans: fixture.plans, operationRegistry: registry, nativeReviewRequests: requests)
         let id = UUID()
-        let args = arguments(fixture, id: id)
+        let args = try arguments(fixture, id: id)
         _ = tools.callTool(name: requestTool, arguments: args)
-        _ = try requests.admit(id)
+        _ = try requests.admit(id, requestEpoch: UUID(uuidString: args["requestEpoch"]!.stringValue!))
         let owner = UUID()
         let operation = try registry.enqueue(kind: .iptcDraft, ownerID: owner)
         _ = try registry.start(operation.id, ownerID: owner)
         _ = try requests.link(id, operationID: operation.id)
-        let status = try structured(tools.callTool(name: statusTool, arguments: ["requestID": args["requestID"]!]))
+        let status = try structured(tools.callTool(name: statusTool, arguments: handle(args)))
         #expect(status["state"] == .string("linked"))
         #expect(status["operationID"] == .string(operation.id.uuidString.lowercased()))
         #expect(status["consentGranted"] == .bool(false))
         #expect(status["operationStatus"] == .string("available"))
         #expect(status["operation"]?.objectValue?["state"] == .string("running"))
         #expect(status["operation"]?.objectValue?["outcome"] == .null)
-        let cancelled = tools.callTool(name: cancelTool, arguments: ["requestID": args["requestID"]!])
+        let cancelled = tools.callTool(name: cancelTool, arguments: handle(args))
         #expect(try structured(cancelled)["operationCancellationStatus"] == .string("requested"))
         #expect(try structured(cancelled)["state"] == .string("linked"))
         #expect(try registry.inspect(operation.id).state == .running)
         #expect(try registry.inspect(operation.id).cancellationRequestedAt != nil)
-        #expect(tools.callTool(name: cancelTool, arguments: ["requestID": args["requestID"]!]) == cancelled)
+        #expect(tools.callTool(name: cancelTool, arguments: handle(args)) == cancelled)
         #expect(try structured(tools.callTool(name: "get_operation_status",
             arguments: ["operationID": status["operationID"]!]))["state"] == .string("running"))
     }
@@ -360,7 +368,8 @@ struct MCPNativeReviewRequestProtocolTests {
         _ = try requests.reconcileUnlinkedAdmissions()
         let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
             patchPlans: MCPIPTCPatchPlanStore(), nativeReviewRequests: requests)
-        let result = tools.callTool(name: requestTool, arguments: arguments(fixture, id: id))
+        var legacy = try arguments(fixture, id: id); legacy.removeValue(forKey: "requestEpoch")
+        let result = tools.callTool(name: requestTool, arguments: legacy)
         #expect(try structured(result)["state"] == .string("unknownDisposition"))
         #expect(try structured(result)["operationID"] == .null)
         #expect(throws: MCPNativeReviewRequestStore.Failure.invalidTransition) { try requests.admit(id) }
@@ -376,10 +385,92 @@ struct MCPNativeReviewRequestProtocolTests {
             #expect(tool["annotations"]?.objectValue?["idempotentHint"] == .bool(true))
             #expect(tool["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
         }
+        let requestSchema = try #require(definitions.first { $0.objectValue?["name"] == .string(requestTool) }?
+            .objectValue?["inputSchema"]?.objectValue)
+        #expect(requestSchema["required"] == .array([.string("requestID"), .string("planID"), .string("purpose")]))
+        #expect(requestSchema["properties"]?.objectValue?["requestEpoch"] != nil)
         let capabilities = try structured(tools.callTool(name: "get_server_capabilities", arguments: [:]))
+        #expect(capabilities["nativeReviewRequestProtocolVersion"] == .integer(2))
         #expect(capabilities["nativeReviewRequestsAvailable"] == .bool(true))
         #expect(capabilities["helperCommitAvailable"] == .bool(false))
         #expect(capabilities["operationExecutorsConnected"] == .bool(false))
+    }
+
+    @Test("Capacity initializes a durable epoch without photo writes and requires exact authorization")
+    func capacityProtocol() throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: try physicalRoot(fixture).appendingPathComponent("requests"))
+        let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
+            patchPlans: fixture.plans, nativeReviewRequests: requests)
+        let photo = try Data(contentsOf: fixture.photo)
+        let tool = "get_native_review_request_capacity"
+        let first = tools.callTool(name: tool, arguments: [:])
+        let value = try structured(first)
+        #expect(value["requestProtocolVersion"] == .integer(2))
+        #expect(value["retainedCount"] == .integer(0))
+        #expect(value["maximumRecords"] == .integer(256))
+        #expect(value["cancelledBeforeAdmissionCount"] == .integer(0))
+        #expect(value["consentGranted"] == .bool(false))
+        #expect(value["commitAvailable"] == .bool(false))
+        #expect(try requests.capacitySnapshot().epoch.uuidString.lowercased() == value["requestEpoch"]?.stringValue)
+        #expect(tools.callTool(name: tool, arguments: [:]) == first)
+        #expect(try Data(contentsOf: fixture.photo) == photo)
+        #expect(try structured(tools.callTool(name: tool, arguments: ["execute": .bool(true)]))["code"] == .string("invalid_arguments"))
+        try fixture.facade.authorizationStore.setEnabled(false)
+        #expect(try structured(tools.callTool(name: tool, arguments: [:]))["code"] == .string("disabled"))
+    }
+
+    @Test("Retired intent refuses old epochs and epochless replay; old handles cannot cancel a recreated UUID")
+    func retiredEpochProtocol() throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: try physicalRoot(fixture).appendingPathComponent("requests"))
+        let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
+            patchPlans: fixture.plans, nativeReviewRequests: requests)
+        let id = UUID()
+        let original = try arguments(fixture, id: id)
+        #expect(tools.callTool(name: requestTool, arguments: original).objectValue?["isError"] == .bool(false))
+        let cancelled = try structured(tools.callTool(name: cancelTool, arguments: handle(original)))
+        #expect(cancelled["state"] == .string("cancelled"))
+        let oldEpoch = try #require(UUID(uuidString: original["requestEpoch"]!.stringValue!))
+        let recovered = try requests.recoverCancelledCapacity(expectedEpoch: oldEpoch)
+        #expect(recovered.retiredCount == 1)
+        #expect(recovered.epoch != oldEpoch)
+        #expect(try structured(tools.callTool(name: requestTool, arguments: original))["code"] == .string("stale_native_review_request_epoch"))
+        var legacy = original; legacy.removeValue(forKey: "requestEpoch")
+        #expect(try structured(tools.callTool(name: requestTool, arguments: legacy))["code"] == .string("stale_native_review_request_epoch"))
+        #expect(try requests.records().isEmpty)
+        let current = try arguments(fixture, id: id)
+        // Deliberate new-epoch creation is a separate intent, never an automatic retry.
+        #expect(tools.callTool(name: requestTool, arguments: current).objectValue?["isError"] == .bool(false))
+        for name in [requestTool, statusTool, cancelTool] {
+            let input = name == requestTool ? original : handle(original)
+            #expect(try structured(tools.callTool(name: name, arguments: input))["code"] == .string("stale_native_review_request_epoch"))
+        }
+        #expect(try requests.inspect(id).state == .awaitingReview)
+        #expect(try requests.inspect(id).cancellationRequestedAt == nil)
+        #expect(try structured(tools.callTool(name: statusTool, arguments: handle(current)))["requestEpoch"] == current["requestEpoch"])
+        #expect(try structured(tools.callTool(name: cancelTool, arguments: handle(current)))["state"] == .string("cancelled"))
+    }
+
+    @Test("New helper intent requires an epoch; retained legacy retries survive native capacity rotation")
+    func legacyEpochProtocol() throws {
+        let fixture = try Fixture()
+        let requests = MCPNativeReviewRequestStore(storageDirectory: try physicalRoot(fixture).appendingPathComponent("requests"))
+        let tools = MCPFoundationTools(authorizationStore: fixture.facade.authorizationStore,
+            patchPlans: fixture.plans, nativeReviewRequests: requests)
+        let id = UUID()
+        var args = try arguments(fixture, id: id); args.removeValue(forKey: "requestEpoch")
+        #expect(try structured(tools.callTool(name: requestTool, arguments: args))["code"] == .string("stale_native_review_request_epoch"))
+        _ = try requests.request(requestID: id, planID: fixture.planID, purpose: .pendingDraft)
+        let before = tools.callTool(name: requestTool, arguments: args)
+        #expect(try structured(before)["requestEpoch"] == .null)
+        let cancelledID = UUID()
+        _ = try requests.request(requestID: cancelledID, planID: fixture.planID, purpose: .pendingDraft)
+        _ = try requests.cancel(cancelledID)
+        _ = try requests.recoverCancelledCapacity(expectedEpoch: requests.capacitySnapshot().epoch)
+        #expect(tools.callTool(name: requestTool, arguments: args) == before)
+        #expect(try structured(tools.callTool(name: statusTool, arguments: handle(args)))["state"] == .string("awaitingReview"))
+        #expect(try structured(tools.callTool(name: cancelTool, arguments: handle(args)))["state"] == .string("cancelled"))
     }
 
     @Test("Default private review subtree cannot become a photo root through an authorized ancestor")

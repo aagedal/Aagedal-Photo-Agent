@@ -11,6 +11,7 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         case conflictingRequest = "conflicting_native_review_request"
         case invalidTransition = "invalid_native_review_request_transition"
         case capacity = "native_review_request_capacity"
+        case staleEpoch = "stale_native_review_request_epoch"
         case storageUnavailable = "native_review_request_storage_unavailable"
         case invalidStorage = "invalid_native_review_request_storage"
 
@@ -21,6 +22,7 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
             case .conflictingRequest: "The request identifier already names a different review intent."
             case .invalidTransition: "This native review request cannot enter the requested state."
             case .capacity: "The native review request archive is full."
+            case .staleEpoch: "Refresh native review capacity and use its current epoch for new requests."
             case .storageUnavailable: "Private native review request storage is unavailable."
             case .invalidStorage: "The native review request archive cannot be verified."
             }
@@ -33,6 +35,7 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
 
     struct Record: Codable, Equatable, Sendable {
         let requestID: UUID
+        let requestEpoch: UUID?
         let planID: String
         let purpose: Purpose
         let createdAt: Date
@@ -43,12 +46,13 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         fileprivate(set) var cancellationRequestedAt: Date?
 
         private enum CodingKeys: String, CodingKey {
-            case requestID, planID, purpose, createdAt, updatedAt, state
+            case requestID, requestEpoch, planID, purpose, createdAt, updatedAt, state
             case admittedAt, operationID, cancellationRequestedAt
         }
 
-        fileprivate init(requestID: UUID, planID: String, purpose: Purpose, createdAt: Date) {
+        fileprivate init(requestID: UUID, requestEpoch: UUID?, planID: String, purpose: Purpose, createdAt: Date) {
             self.requestID = requestID
+            self.requestEpoch = requestEpoch
             self.planID = planID
             self.purpose = purpose
             self.createdAt = createdAt
@@ -63,6 +67,12 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
                 throw Failure.invalidStorage
             }
             requestID = id
+            if let epoch = try fields.decodeIfPresent(String.self, forKey: .requestEpoch) {
+                guard let id = UUID(uuidString: epoch), id.uuidString.lowercased() == epoch else {
+                    throw Failure.invalidStorage
+                }
+                requestEpoch = id
+            } else { requestEpoch = nil }
             planID = try fields.decode(String.self, forKey: .planID)
             purpose = try fields.decode(Purpose.self, forKey: .purpose)
             createdAt = try fields.decode(Date.self, forKey: .createdAt)
@@ -81,6 +91,7 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         func encode(to encoder: Encoder) throws {
             var fields = encoder.container(keyedBy: CodingKeys.self)
             try fields.encode(requestID.uuidString.lowercased(), forKey: .requestID)
+            try fields.encodeIfPresent(requestEpoch?.uuidString.lowercased(), forKey: .requestEpoch)
             try fields.encode(planID, forKey: .planID)
             try fields.encode(purpose, forKey: .purpose)
             try fields.encode(createdAt, forKey: .createdAt)
@@ -92,7 +103,62 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         }
     }
 
-    private struct Archive: Codable { let schemaVersion: Int; let records: [Record] }
+    struct CapacitySnapshot: Equatable, Sendable {
+        let epoch: UUID
+        let retainedCount: Int
+        let maximumRecords: Int
+        let cancelledBeforeAdmissionCount: Int
+    }
+
+    struct CapacityRecoveryResult: Equatable, Sendable {
+        let epoch: UUID
+        let retiredCount: Int
+    }
+
+    private struct Archive: Codable {
+        var schemaVersion: Int
+        var currentEpoch: UUID?
+        var legacyCreationAllowed: Bool
+        var records: [Record]
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion, currentEpoch, legacyCreationAllowed, records
+        }
+
+        init(schemaVersion: Int = 1, currentEpoch: UUID? = nil,
+             legacyCreationAllowed: Bool = true, records: [Record] = []) {
+            self.schemaVersion = schemaVersion
+            self.currentEpoch = currentEpoch
+            self.legacyCreationAllowed = legacyCreationAllowed
+            self.records = records
+        }
+
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try fields.decode(Int.self, forKey: .schemaVersion)
+            records = try fields.decode([Record].self, forKey: .records)
+            if schemaVersion == 1 {
+                currentEpoch = nil
+                legacyCreationAllowed = true
+            } else if schemaVersion == 2 {
+                let epoch = try fields.decode(String.self, forKey: .currentEpoch)
+                guard let id = UUID(uuidString: epoch), id.uuidString.lowercased() == epoch else {
+                    throw Failure.invalidStorage
+                }
+                currentEpoch = id
+                legacyCreationAllowed = try fields.decode(Bool.self, forKey: .legacyCreationAllowed)
+            } else { throw Failure.invalidStorage }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            guard schemaVersion == 2, let currentEpoch else { throw Failure.invalidStorage }
+            var fields = encoder.container(keyedBy: CodingKeys.self)
+            try fields.encode(schemaVersion, forKey: .schemaVersion)
+            try fields.encode(currentEpoch.uuidString.lowercased(), forKey: .currentEpoch)
+            try fields.encode(legacyCreationAllowed, forKey: .legacyCreationAllowed)
+            try fields.encode(records, forKey: .records)
+        }
+    }
     private struct Envelope: Codable { let payload: Data; let sha256: String }
     private let persistence: AutomationOperationPersistence
     let storageDirectory: URL
@@ -116,19 +182,65 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
             .appendingPathComponent(".aagedal-photo-agent-native-review-requests", isDirectory: true)
     }
 
-    /// Capacity never evicts an idempotency record, including cancelled requests.
+    /// This is a durable mutation: the first snapshot initializes or migrates the epoch.
+    func capacitySnapshot() throws -> CapacitySnapshot {
+        try archiveTransaction { archive in
+            CapacitySnapshot(epoch: archive.currentEpoch!, retainedCount: archive.records.count,
+                             maximumRecords: maximumRecords,
+                             cancelledBeforeAdmissionCount: archive.records.filter(Self.canRetire).count)
+        }
+    }
+
+    /// Recovery is explicit native maintenance. No admitted or linked evidence is retired.
+    func recoverCancelledCapacity(expectedEpoch: UUID) throws -> CapacityRecoveryResult {
+        try archiveTransaction { archive in
+            guard archive.currentEpoch == expectedEpoch else { throw Failure.staleEpoch }
+            let retiredCount = archive.records.filter(Self.canRetire).count
+            guard retiredCount > 0 else { throw Failure.invalidTransition }
+            archive.records.removeAll(where: Self.canRetire)
+            archive.currentEpoch = UUID()
+            archive.legacyCreationAllowed = false
+            return CapacityRecoveryResult(epoch: archive.currentEpoch!, retiredCount: retiredCount)
+        }
+    }
+
+    private static func canRetire(_ record: Record) -> Bool {
+        record.state == .cancelled && record.admittedAt == nil && record.operationID == nil
+    }
+
+    /// New helper requests bind their UUID to the epoch observed before submission.
+    /// Exact retained retries remain valid across rotations of the current epoch.
+    func request(requestID: UUID, requestEpoch: UUID, planID: String,
+                 purpose: Purpose, now: Date = Date()) throws -> Record {
+        try request(requestID: requestID, epoch: requestEpoch, planID: planID, purpose: purpose, now: now)
+    }
+
+    /// Compatibility for native fixtures and retained legacy requests. Rotation permanently
+    /// disables new epochless creation so a retired legacy UUID cannot be replayed.
     func request(requestID: UUID, planID: String, purpose: Purpose, now: Date = Date()) throws -> Record {
+        try request(requestID: requestID, epoch: nil, planID: planID, purpose: purpose, now: now)
+    }
+
+    private func request(requestID: UUID, epoch: UUID?, planID: String,
+                         purpose: Purpose, now: Date) throws -> Record {
         guard Self.canonicalUUID(planID), now.timeIntervalSinceReferenceDate.isFinite else {
             throw Failure.invalidArguments
         }
-        return try transaction { records in
-            if let existing = records.first(where: { $0.requestID == requestID }) {
+        return try archiveTransaction { archive in
+            if let existing = archive.records.first(where: { $0.requestID == requestID }) {
+                guard existing.requestEpoch == epoch else { throw Failure.staleEpoch }
                 guard existing.planID == planID, existing.purpose == purpose else { throw Failure.conflictingRequest }
                 return existing
             }
-            guard records.count < maximumRecords else { throw Failure.capacity }
-            let record = Record(requestID: requestID, planID: planID, purpose: purpose, createdAt: now)
-            records.append(record)
+            if let epoch {
+                guard epoch == archive.currentEpoch else { throw Failure.staleEpoch }
+            } else {
+                guard archive.legacyCreationAllowed else { throw Failure.staleEpoch }
+            }
+            guard archive.records.count < maximumRecords else { throw Failure.capacity }
+            let record = Record(requestID: requestID, requestEpoch: epoch, planID: planID,
+                                purpose: purpose, createdAt: now)
+            archive.records.append(record)
             return record
         }
     }
@@ -144,8 +256,9 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
 
     /// The caller separately obtains current native consent and revalidates the plan.
     /// Persisting this transition must succeed before entering any executor.
-    func admit(_ requestID: UUID, now: Date = Date()) throws -> Record {
+    func admit(_ requestID: UUID, requestEpoch: UUID? = nil, now: Date = Date()) throws -> Record {
         try update(requestID, now: now) { record in
+            guard record.requestEpoch == requestEpoch else { throw Failure.staleEpoch }
             guard record.state == .awaitingReview else { throw Failure.invalidTransition }
             record.state = .admitted
             record.admittedAt = now
@@ -170,8 +283,9 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
     /// Cancellation before admission proves no native execution was admitted. After
     /// admission a missing link cannot prove whether execution created any effects.
     /// A linked record retains its operation identity for cooperative cancellation.
-    func cancel(_ requestID: UUID, now: Date = Date()) throws -> Record {
+    func cancel(_ requestID: UUID, requestEpoch: UUID? = nil, now: Date = Date()) throws -> Record {
         try update(requestID, now: now) { record in
+            guard record.requestEpoch == requestEpoch else { throw Failure.staleEpoch }
             if record.cancellationRequestedAt != nil { return }
             record.cancellationRequestedAt = now
             switch record.state {
@@ -200,8 +314,9 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
 
     /// A submission failure after admission cannot establish whether an operation
     /// was durably enqueued. Retain the one-way admission without permitting replay.
-    func markUnknownDisposition(_ requestID: UUID, now: Date = Date()) throws -> Record {
+    func markUnknownDisposition(_ requestID: UUID, requestEpoch: UUID? = nil, now: Date = Date()) throws -> Record {
         try update(requestID, now: now) { record in
+            guard record.requestEpoch == requestEpoch else { throw Failure.staleEpoch }
             switch record.state {
             case .admitted: record.state = .unknownDisposition
             case .unknownDisposition, .linked: break
@@ -222,14 +337,22 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
     }
 
     private func transaction<T>(readOnly: Bool = false, _ body: (inout [Record]) throws -> T) throws -> T {
+        try archiveTransaction(readOnly: readOnly) { archive in try body(&archive.records) }
+    }
+
+    private func archiveTransaction<T>(readOnly: Bool = false, _ body: (inout Archive) throws -> T) throws -> T {
         do {
             return try persistence.transaction(readOnly: readOnly) { data in
-                var records = try data.map(decode) ?? []
-                let result = try body(&records)
+                var archive = try data.map(decode) ?? Archive()
+                if !readOnly, archive.schemaVersion == 1 {
+                    archive.schemaVersion = 2
+                    archive.currentEpoch = UUID()
+                }
+                let result = try body(&archive)
                 if readOnly { return (result, data ?? Data()) }
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
-                let payload = try encoder.encode(Archive(schemaVersion: 1, records: records))
+                let payload = try encoder.encode(archive)
                 let bytes = try encoder.encode(Envelope(payload: payload, sha256: Self.digest(payload)))
                 guard bytes.count <= maximumBytes else { throw Failure.capacity }
                 return (result, bytes)
@@ -243,24 +366,30 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
         }
     }
 
-    private func decode(_ data: Data) throws -> [Record] {
+    private func decode(_ data: Data) throws -> Archive {
         do {
             guard let outer = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   Set(outer.keys) == ["payload", "sha256"] else { throw Failure.invalidStorage }
             let envelope = try JSONDecoder().decode(Envelope.self, from: data)
             guard Self.digest(envelope.payload) == envelope.sha256,
                   let object = try JSONSerialization.jsonObject(with: envelope.payload) as? [String: Any],
-                  Set(object.keys) == ["schemaVersion", "records"],
+                  let version = object["schemaVersion"] as? Int,
+                  [1, 2].contains(version),
+                  Set(object.keys) == (version == 1 ? ["schemaVersion", "records"] :
+                      ["schemaVersion", "currentEpoch", "legacyCreationAllowed", "records"]),
+                  !object.values.contains(where: { $0 is NSNull }),
                   let objects = object["records"] as? [[String: Any]] else { throw Failure.invalidStorage }
             let required: Set<String> = ["requestID", "planID", "purpose", "createdAt", "updatedAt", "state"]
-            let optional: Set<String> = ["admittedAt", "operationID", "cancellationRequestedAt"]
+            let optional: Set<String> = version == 1
+                ? ["admittedAt", "operationID", "cancellationRequestedAt"]
+                : ["requestEpoch", "admittedAt", "operationID", "cancellationRequestedAt"]
             for record in objects {
                 guard required.isSubset(of: Set(record.keys)),
                       Set(record.keys).isSubset(of: required.union(optional)),
                       !record.values.contains(where: { $0 is NSNull }) else { throw Failure.invalidStorage }
             }
             let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
-            guard archive.schemaVersion == 1, archive.records.count <= maximumRecords,
+            guard archive.records.count <= maximumRecords,
                   Set(archive.records.map(\.requestID)).count == archive.records.count else { throw Failure.invalidStorage }
             let operationIDs = archive.records.compactMap(\.operationID)
             guard Set(operationIDs).count == operationIDs.count else { throw Failure.invalidStorage }
@@ -288,7 +417,7 @@ nonisolated final class MCPNativeReviewRequestStore: Sendable {
                     }
                 }
             }
-            return archive.records
+            return archive
         } catch { throw Failure.invalidStorage }
     }
 
