@@ -2234,18 +2234,21 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let teamLibrary: MCPTeamLibrary
     let operationRegistry: AutomationOperationRegistry?
     let nativeReviewRequests: MCPNativeReviewRequestStore?
+    let voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore?
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
          patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(),
          voiceTranscriptionPlans: MCPVoiceTranscriptionPlanStore = MCPVoiceTranscriptionPlanStore(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory()),
          teamLibrary: MCPTeamLibrary? = nil,
          operationRegistry: AutomationOperationRegistry? = nil,
-         nativeReviewRequests: MCPNativeReviewRequestStore? = nil) {
+         nativeReviewRequests: MCPNativeReviewRequestStore? = nil,
+         voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore? = nil) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
         self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
         self.operationRegistry = operationRegistry
         self.nativeReviewRequests = nativeReviewRequests
+        self.voiceTranscriptionReviewRequests = voiceTranscriptionReviewRequests
         self.patchPlans = patchPlans
         self.voiceTranscriptionPlans = voiceTranscriptionPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
@@ -2272,6 +2275,38 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 name: "get_voice_transcription_plan",
                 description: "Inspect only the returned lowercase canonical planID. Revalidates every retained photo, metadata carrier, WAV relationship, WAV and exact authorization configuration, language/options and expiry while holding the whole set's reservations. Returns the unchanged immutable preview. Reads private preview storage and may acquire private coordination locks; grants no consent, transcription, download, draft or execution authority.",
                 properties: ["planID": .object(["type": .string("string"), "format": .string("uuid")])], required: ["planID"]
+            ),
+            definition(
+                name: "get_voice_transcription_review_capacity",
+                description: "Initialize private transcription review intent storage and return its mandatory requestEpoch and bounded capacity. Requires Enable local automation. Creates coordination storage only. Get this epoch before submitting a new transcription intent; retries keep the original epoch. Native execution, consent and operation linkage remain unavailable. No automatic eviction or replay.",
+                properties: [:], required: [], readOnly: false
+            ),
+            definition(
+                name: "list_voice_transcription_review_requests",
+                description: "List retained bounded transcription review intent status without revalidating expired plans. Requires Enable local automation. Reports canonical requestID/requestEpoch handles and immutable intent digests; grants no consent or execution and creates no transcript draft. Native execution and operation linkage remain unavailable.",
+                properties: [:], required: []
+            ),
+            definition(
+                name: "request_voice_transcription_review",
+                description: "Persist intent to review one exact five-minute retained transcription preview. Requires Enable local automation and canonical lowercase requestID, requestEpoch from get_voice_transcription_review_capacity, and planID. New intent revalidates the whole ordered photo/WAV/relationship set and authorization while its reservations remain held. Exact retries return retained status after plan expiry; reuse the same ID, epoch and plan. Stores immutable options and revisions, grants no consent, downloads no model, saves no draft and executes no transcription. Native inspection is available in Automation settings; consent, native execution and operation linkage for these requests remain unavailable.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "planID": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID", "requestEpoch", "planID"], readOnly: false
+            ),
+            definition(
+                name: "get_voice_transcription_review_request",
+                description: "Inspect retained transcription intent with its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Does not revalidate a plan, infer executor liveness or grant consent. Native admission, execution and operation linkage remain unavailable.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID", "requestEpoch"]
+            ),
+            definition(
+                name: "cancel_voice_transcription_review_request",
+                description: "Cancel an awaiting transcription review intent using its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Cancellation is durable and idempotent; no executor has been admitted through this protocol. Retains immutable intent and grants no consent or execution. Epoch protects stale handles after explicit native capacity retirement.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID", "requestEpoch"], readOnly: false
             ),
             definition(
                 name: "get_native_review_request_capacity",
@@ -2499,6 +2534,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         do {
             let acceptedArguments: Set<String>
             switch name {
+            case "request_voice_transcription_review": acceptedArguments = ["requestID", "requestEpoch", "planID"]
+            case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "request_iptc_patch_review": acceptedArguments = ["requestID", "requestEpoch", "planID", "purpose"]
             case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
@@ -2520,6 +2557,43 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             let configuration = try authorizationStore.load()
             switch name {
+            case "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests",
+                 "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                let requests = try voiceTranscriptionReviewRequests ?? MCPVoiceTranscriptionReviewRequestStore(
+                    storageDirectory: MCPVoiceTranscriptionReviewRequestStore.defaultStorageDirectory())
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                let value: [String: MCPJSONValue]
+                if name == "get_voice_transcription_review_capacity" {
+                    let capacity = try requests.capacitySnapshot()
+                    value = ["requestProtocolVersion": .integer(1), "requestEpoch": .string(capacity.epoch.uuidString.lowercased()),
+                        "retainedCount": .integer(Int64(capacity.retainedCount)), "maximumRecords": .integer(Int64(capacity.maximumRecords)),
+                        "cancelledBeforeAdmissionCount": .integer(Int64(capacity.cancelledBeforeAdmissionCount)),
+                        "cleanupAvailableInNativeApp": .bool(false), "nativeAdmissionAvailable": .bool(false),
+                        "executionAvailable": .bool(false), "consentGranted": .bool(false), "commitAvailable": .bool(false)]
+                } else if name == "list_voice_transcription_review_requests" {
+                    value = ["requestProtocolVersion": .integer(1),
+                        "requests": .array(try requests.records().map { .object(voiceTranscriptionReviewRequestValue($0)) }),
+                        "nativeAdmissionAvailable": .bool(false), "executionAvailable": .bool(false), "consentGranted": .bool(false)]
+                } else {
+                    let expected: Set<String> = name == "request_voice_transcription_review" ? ["requestID", "requestEpoch", "planID"] : ["requestID", "requestEpoch"]
+                    guard Set(arguments.keys) == expected, let id = canonicalUUID(arguments["requestID"]),
+                          let epoch = canonicalUUID(arguments["requestEpoch"]) else { throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidArguments }
+                    let record: MCPVoiceTranscriptionReviewRequestStore.Record
+                    if name == "request_voice_transcription_review" {
+                        guard canonicalUUID(arguments["planID"]) != nil, let planID = arguments["planID"]?.stringValue else {
+                            throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidArguments
+                        }
+                        record = try requests.request(requestID: id, requestEpoch: epoch, planID: planID,
+                            plans: voiceTranscriptionPlans, facade: automationFacade)
+                    } else {
+                        record = try name == "cancel_voice_transcription_review_request"
+                            ? requests.cancelBeforeAdmission(id, requestEpoch: epoch) : requests.inspect(id, requestEpoch: epoch)
+                    }
+                    value = voiceTranscriptionReviewRequestValue(record)
+                }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                return success(value)
             case "get_native_review_request_capacity":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 let requests = try nativeReviewRequests ?? MCPNativeReviewRequestStore(
@@ -2651,6 +2725,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("literal-metadata-template-batch-preview"),
                         .string("transcription-provider-discovery"), .string("persisted-voice-memo-inspection"),
                         .string("immutable-voice-transcription-batch-preview"), .string("voice-transcription-preview-revalidation"),
+                        .string("durable-voice-transcription-review-intent"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
@@ -2660,6 +2735,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "operationExecutorsConnected": .bool(false),
                     "nativeReviewRequestsAvailable": .bool(true),
                     "nativeReviewRequestProtocolVersion": .integer(2),
+                    "voiceTranscriptionReviewRequestsAvailable": .bool(true),
+                    "voiceTranscriptionReviewRequestProtocolVersion": .integer(1),
+                    "voiceTranscriptionReviewNativeAdmissionAvailable": .bool(false),
+                    "voiceTranscriptionReviewOperationLinkageAvailable": .bool(false),
                     "helperCommitAvailable": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])
@@ -2776,6 +2855,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPVoiceTranscriptionReviewRequestStore.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPNativeReviewRequestStore.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as AutomationOperationRegistry.Failure {
@@ -2857,6 +2938,22 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ])
         } ?? .null
         return value
+    }
+
+    private func voiceTranscriptionReviewRequestValue(_ record: MCPVoiceTranscriptionReviewRequestStore.Record) -> [String: MCPJSONValue] {
+        ["requestProtocolVersion": .integer(1), "requestID": .string(record.requestID),
+            "requestEpoch": .string(record.requestEpoch), "planID": .string(record.planID),
+            "intentSchemaVersion": .integer(Int64(record.intent.schemaVersion)), "intentSHA256": .string(record.intentSHA256),
+            "batchIdentity": .string(record.batchIdentity), "photoCount": .integer(Int64(record.intent.photoCount)),
+            "options": .object(record.intent.options), "state": .string(record.state.rawValue),
+            "createdAt": .string(record.createdAt.ISO8601Format()), "updatedAt": .string(record.updatedAt.ISO8601Format()),
+            "planExpiresAt": .string(record.intent.planExpiresAt),
+            "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
+            "cancellationRequestedAt": record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "scope": .string("durable-voice-transcription-review-intent"), "executionDisposition": .string("not-admitted"),
+            "nativeAdmissionAvailable": .bool(false), "executionAvailable": .bool(false),
+            "operationLinkageAvailable": .bool(false), "operationID": .null,
+            "commitAvailable": .bool(false), "consentGranted": .bool(false)]
     }
 
     private func nativeReviewRequestValue(_ record: MCPNativeReviewRequestStore.Record) -> [String: MCPJSONValue] {

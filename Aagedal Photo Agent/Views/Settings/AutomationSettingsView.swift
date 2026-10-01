@@ -195,6 +195,11 @@ struct AutomationSettingsView: View {
                     .id(model.configuration.authorizationRevision)
             }
 
+            Section("Transcription Intent Review") {
+                AutomationTranscriptionReviewView()
+                    .id(model.configuration.authorizationRevision)
+            }
+
             Section("Operation History") {
                 AutomationOperationHistoryView()
             }

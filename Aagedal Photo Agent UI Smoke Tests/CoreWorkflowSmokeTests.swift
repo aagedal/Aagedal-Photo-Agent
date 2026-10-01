@@ -71,6 +71,86 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeTranscriptionReviewInspectionCancellationAndRelaunch() throws {
+        try exerciseTranscriptionReview(changedRelationship: false)
+    }
+
+    @MainActor
+    func testNativeTranscriptionReviewRefusesChangedRelationshipAndRetainsCancellation() throws {
+        try exerciseTranscriptionReview(changedRelationship: true)
+    }
+
+    @MainActor
+    private func exerciseTranscriptionReview(changedRelationship: Bool) throws {
+        let folder = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        let refresh = app.buttons["automation.refreshTranscriptionRequests"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8)); refresh.click()
+        let manifestURL = folder.appendingPathComponent("transcription-review-manifest.json")
+        let manifestReady = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: manifestURL.path) }, evaluatedWith: nil)
+        wait(for: [manifestReady], timeout: 10)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        let requestID = try XCTUnwrap(manifest["requestID"] as? String), paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        let requestURL = folder.appendingPathComponent("transcription-review-requests/operations.json")
+        let retained = try Data(contentsOf: requestURL)
+        let originals = try paths.map { path -> (URL, Data, URL, Data, URL, Data) in
+            let photo = URL(fileURLWithPath: path)
+            let memo = folder.appendingPathComponent(photo.lastPathComponent.contains("-2-") ? "transcription-review-2.wav" : "transcription-review-1.wav")
+            let relationship = folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")
+            return (photo, try Data(contentsOf: photo), memo, try Data(contentsOf: memo), relationship, try Data(contentsOf: relationship))
+        }
+        let inspect = app.buttons["automation.inspectTranscriptionRequest." + requestID]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        XCTAssertTrue(visibleText(app.staticTexts["Transcription request identifier"]).contains(requestID))
+        if changedRelationship {
+            try (originals[0].5 + Data("\n ".utf8)).write(to: originals[0].4)
+            inspect.click()
+            XCTAssertTrue(app.staticTexts["automation.transcriptionReviewError"].waitForExistence(timeout: 8))
+            XCTAssertFalse(app.staticTexts["automation.transcriptionReviewProvider"].exists)
+            XCTAssertEqual(try Data(contentsOf: requestURL), retained)
+            refresh.click()
+        } else {
+            inspect.click()
+            let provider = app.staticTexts["automation.transcriptionReviewProvider"]
+            XCTAssertTrue(provider.waitForExistence(timeout: 8)); XCTAssertTrue(visibleText(provider).contains("Whisper"))
+            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewLanguage"]).contains("auto"))
+            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewTranslate"]).contains("Requested"))
+            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewGPU"]).contains("Requested"))
+            for index in paths.indices {
+                let photo = app.staticTexts["automation.transcriptionReviewPhoto.\(index)"]
+                XCTAssertTrue(photo.exists)
+                XCTAssertEqual(photo.label, "Photo \(index + 1) path")
+                XCTAssertTrue(visibleText(photo).contains(URL(fileURLWithPath: paths[index]).standardizedFileURL.path))
+            }
+            XCTAssertEqual(try Data(contentsOf: requestURL), retained)
+        }
+        let cancel = app.buttons["automation.cancelTranscriptionRequest." + requestID]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.click()
+        let status = app.staticTexts["automation.transcriptionRequestStatus." + requestID]
+        let cancelled = expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("Cancelled") }, evaluatedWith: nil)
+        wait(for: [cancelled], timeout: 8)
+        XCTAssertFalse(inspect.exists)
+        let cancelledBytes = try Data(contentsOf: requestURL)
+        app.terminate(); app.launch()
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8)); app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.refreshTranscriptionRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.refreshTranscriptionRequests"].click()
+        XCTAssertTrue(app.staticTexts["automation.transcriptionRequestStatus." + requestID].waitForExistence(timeout: 8))
+        XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionRequestStatus." + requestID]).contains("Cancelled"))
+        XCTAssertEqual(try Data(contentsOf: requestURL), cancelledBytes)
+        for item in originals {
+            XCTAssertEqual(try Data(contentsOf: item.0), item.1); XCTAssertEqual(try Data(contentsOf: item.2), item.3)
+            if item.4 != originals[0].4 || !changedRelationship { XCTAssertEqual(try Data(contentsOf: item.4), item.5) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata/\(item.0.lastPathComponent).meta.json").path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("batch-operations").path))
+    }
+
+    @MainActor
     func testNativeTranscriptionBatchConsentDraftRefreshAndRelaunch() throws {
         let fixture = try makeVoiceMemoBatch(authorities: [.missing, .missing])
         let originals = try fixture.items.map { item in
@@ -2406,9 +2486,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         existingRecoveryCarriers: Bool = false,
         removalReceiptInterruption: String? = nil,
         resumePatchRecovery: Bool = false,
-        transcriptionBatchMode: String? = nil
+        transcriptionBatchMode: String? = nil,
+        transcriptionReview: Bool = false
     ) {
         app = XCUIApplication()
+        if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",

@@ -235,6 +235,9 @@
 		D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */; };
 		D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */; };
 		D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */; };
+		C11700000000000000000002 /* MCPVoiceTranscriptionReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */; };
+		C11700000000000000000102 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */; };
+		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -506,6 +509,9 @@
 		D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionBatchTests.swift; sourceTree = "<group>"; };
 		D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationBatchProgressTests.swift; sourceTree = "<group>"; };
 		D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoBatchTranscriptionModelTests.swift; sourceTree = "<group>"; };
+		C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
+		C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStoreTests.swift; path = "MCPVoiceTranscriptionReviewRequestStoreTests.swift"; sourceTree = "<group>"; };
+		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationTranscriptionReviewModelTests.swift; path = "AutomationTranscriptionReviewModelTests.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -582,6 +588,8 @@
 				C7900000000000000000021 /* FFmpegWhisperArtifactAdmissionServiceTests.swift */,
 				C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */,
 				C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */,
+				C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */,
+				C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */,
 				C88000000000000000000101 /* AutomationOperationExecutionCoordinatorTests.swift */,
 				C90000000000000000000001 /* MCPIPTCPatchXMPPreflightServiceTests.swift */,
 				C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */,
@@ -799,6 +807,7 @@
 				C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */,
 				C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */,
 				C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */,
+				C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */,
 				C84000000000000000000011 /* AutomationOperationRegistry.swift */,
 				C84000000000000000000021 /* AutomationOperationPersistence.swift */,
 				C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */,
@@ -1028,6 +1037,8 @@
 				C7900000000000000000022 /* FFmpegWhisperArtifactAdmissionServiceTests.swift in Sources */,
 				C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */,
 				C96000000000000000000102 /* MCPVoiceTranscriptionPlanStoreTests.swift in Sources */,
+				C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */,
+				C11700000000000000000102 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift in Sources */,
 				C88000000000000000000102 /* AutomationOperationExecutionCoordinatorTests.swift in Sources */,
 				C90000000000000000000002 /* MCPIPTCPatchXMPPreflightServiceTests.swift in Sources */,
 				C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */,
@@ -1228,6 +1239,7 @@
 				C78000000000000000000202 /* FFmpegWhisperTranscriptProvenance.swift in Sources */,
 				C77000000000000000000002 /* MCPIPTCPatchPlanStore.swift in Sources */,
 				C96000000000000000000002 /* MCPVoiceTranscriptionPlanStore.swift in Sources */,
+				C11700000000000000000002 /* MCPVoiceTranscriptionReviewRequestStore.swift in Sources */,
 				C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */,
 				C84000000000000000000012 /* AutomationOperationRegistry.swift in Sources */,
 				C84000000000000000000022 /* AutomationOperationPersistence.swift in Sources */,

@@ -117,6 +117,14 @@ nonisolated final class MCPVoiceTranscriptionPlanStore: @unchecked Sendable {
     func inspect(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade, now: Date = Date()) throws -> MCPJSONValue {
         guard Set(arguments.keys) == ["planID"], let id = arguments["planID"]?.stringValue,
               UUID(uuidString: id)?.uuidString.lowercased() == id else { throw Failure.invalidArguments }
+        return try withValidatedPreview(planID: id, facade: facade, now: now) { $0 }
+    }
+
+    /// Retains whole-set rooted reservations and witnesses across private handoff publication.
+    /// The callback grants no execution authority and must not mutate photo inputs.
+    func withValidatedPreview<Value>(planID id: String, facade: MCPAutomationFacade,
+                                     now: Date = Date(), _ body: (MCPJSONValue) throws -> Value) throws -> Value {
+        guard UUID(uuidString: id)?.uuidString.lowercased() == id else { throw Failure.invalidArguments }
         let record = try lookup(id: id, now: now)
         guard try facade.authorizationStore.load() == record.configuration else { throw Failure.authorityChanged }
         let request = try Request(arguments: record.arguments)
@@ -127,7 +135,9 @@ nonisolated final class MCPVoiceTranscriptionPlanStore: @unchecked Sendable {
                 expiresAt: record.expiresAt, durable: storage != nil)
             guard current == record.preview else { throw Failure.stalePlan }
             _ = try lookup(id: id, now: max(now, Date()))
-            return record.preview
+            let value = try body(record.preview)
+            _ = try lookup(id: id, now: max(now, Date()))
+            return value
         }
         _ = try lookup(id: id, now: max(now, Date()))
         return result

@@ -100,6 +100,7 @@ def probe(executable):
         for tool in tools:
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
                 "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
+                "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request",
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
@@ -205,6 +206,20 @@ def probe(executable):
             result = connection.receive(identifier)["result"]
             require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
                     "Transcription plan tool accepted invalid or execution arguments")
+        review_tools = {"get_voice_transcription_review_capacity", "list_voice_transcription_review_requests",
+                        "request_voice_transcription_review", "get_voice_transcription_review_request",
+                        "cancel_voice_transcription_review_request"}
+        require(review_tools.issubset(names), "Missing separate transcription review intent tools")
+        require(capabilities["voiceTranscriptionReviewRequestsAvailable"] is True and
+                capabilities["voiceTranscriptionReviewNativeAdmissionAvailable"] is False,
+                "Transcription review overclaims execution authority")
+        for identifier, tool in enumerate(sorted(review_tools), start=23):
+            connection.send(request(identifier, "tools/call", {
+                "name": tool, "arguments": {"execute": True},
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Transcription review accepted execution arguments")
         connection.finish()
         return {"helperSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
                 "toolCount": len(tools), "toolNames": names, "beforeEOF": True,
@@ -214,6 +229,7 @@ def probe(executable):
                 "nativeReviewRequestArgumentRefusal": True, "honestExecutorBoundary": True,
                 "associatedAudioArgumentRefusal": True,
                 "transcriptionPreviewArgumentRefusal": True,
+                "transcriptionReviewArgumentRefusal": True,
                 "exit": 0, "stderrBytes": 0}
     finally:
         connection.close()

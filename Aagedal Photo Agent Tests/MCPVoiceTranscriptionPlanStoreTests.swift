@@ -64,6 +64,28 @@ struct MCPVoiceTranscriptionPlanStoreTests {
         #expect(try Data(contentsOf: f.storage.appendingPathComponent("plans.json")) == bytes)
         #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
     }
+    @Test("Handoff callback retains whole-set reservations and rejects publication-time carrier drift")
+    func retainedHandoff() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let plans = MCPVoiceTranscriptionPlanStore(), value = try plans.prepare(arguments: f.arguments, facade: f.facade)
+        let id = try #require(value.objectValue?["planID"]?.stringValue)
+        var collisions = 0, observedPreview: MCPJSONValue?
+        #expect(throws: (any Error).self) {
+            try plans.withValidatedPreview(planID: id, facade: f.facade) { preview in
+                observedPreview = preview
+                for photo in f.photos {
+                    do { let unexpected = try MCPProcessReservation.acquirePhoto(photo); unexpected.release() }
+                    catch { collisions += 1 }
+                }
+                try (Data(contentsOf: f.relationships[0]) + Data("\n ".utf8)).write(to: f.relationships[0])
+                return preview
+            }
+        }
+        #expect(observedPreview == value)
+        #expect(collisions == f.photos.count)
+        // No leaked reservation after the callback and final witness refusal.
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
     @Test("Each exact carrier revision invalidates preparation and retained inspection", arguments: ["source", "wav", "relationship", "xmp", "draft"])
     func carrierDrift(kind: String) throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
