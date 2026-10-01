@@ -25,6 +25,16 @@ actor AutomationVoiceTranscriptionBatchService {
         var imageURLs: [URL] { inputs.map(\.imageURL) }
     }
 
+    /// Internal coordination hooks for an explicitly reviewed native caller. They do
+    /// not supply provider consent or root authority. The caller reserves the exact
+    /// operation ID before admission; durable linkage finishes before work is scheduled.
+    nonisolated struct LifecycleHooks: Sendable {
+        let operationID: UUID
+        let admission: @Sendable (UUID) throws -> Void
+        let didEnqueue: @Sendable (AutomationOperationRegistry.Record) throws -> Void
+        let cancellationCheck: @Sendable (UUID) throws -> Void
+    }
+
     nonisolated struct Dependencies: Sendable {
         let capture: @Sendable (URL) async throws -> Input
         let generate: @Sendable (URL, Provider) async throws -> VoiceMemoTranscriptDraft
@@ -83,7 +93,8 @@ actor AutomationVoiceTranscriptionBatchService {
 
     /// Revalidate the entire consented set before any operation can run. A changed
     /// photo, WAV or relationship requires a fresh preview and fresh consent.
-    func submit(prepared: PreparedBatch, provider: Provider) async throws -> AutomationOperationRegistry.Record {
+    func submit(prepared: PreparedBatch, provider: Provider,
+                lifecycle: LifecycleHooks? = nil) async throws -> AutomationOperationRegistry.Record {
         for input in prepared.inputs {
             try Task.checkCancellation()
             guard Self.matches(input, try await dependencies.capture(input.imageURL)) else {
@@ -91,15 +102,22 @@ actor AutomationVoiceTranscriptionBatchService {
             }
         }
         try Task.checkCancellation()
-        return try await enqueue(prepared.inputs, provider: provider)
+        return try await enqueue(prepared.inputs, provider: provider, lifecycle: lifecycle)
     }
 
-    private func enqueue(_ inputs: [Input], provider: Provider) async throws -> AutomationOperationRegistry.Record {
+    private func enqueue(_ inputs: [Input], provider: Provider,
+                         lifecycle: LifecycleHooks? = nil) async throws -> AutomationOperationRegistry.Record {
         let retained = inputs
         let registry = registry, dependencies = dependencies
         let owner = await coordinator.ownerID
-        return try await coordinator.submit(kind: .voiceTranscription, didEnqueue: { record in
-            _ = try registry.configureBatch(record.id, ownerID: owner, itemCount: retained.count)
+        return try await coordinator.submit(kind: .voiceTranscription,
+            operationID: lifecycle?.operationID ?? UUID(), admission: {
+                try lifecycle?.admission(owner)
+            }, didEnqueue: { record in
+            let configured = try registry.configureBatch(record.id, ownerID: owner, itemCount: retained.count)
+            try lifecycle?.didEnqueue(configured)
+        }, cancellationCheck: { id in
+            try lifecycle?.cancellationCheck(id)
         }) { context in
             try await Self.execute(retained, provider: provider, dependencies: dependencies,
                                    context: context, registry: registry, owner: owner)

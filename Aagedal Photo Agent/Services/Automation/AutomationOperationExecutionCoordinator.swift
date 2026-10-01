@@ -56,6 +56,7 @@ actor AutomationOperationExecutionCoordinator {
     /// Admission and durable enqueue finish before execution can begin. A returned
     /// record is an acceptance receipt, never a promise that mutation succeeded.
     func submit(kind: AutomationOperationRegistry.Kind,
+                operationID: UUID = UUID(),
                 admission: @Sendable () throws -> Void = {},
                 didEnqueue: @Sendable (AutomationOperationRegistry.Record) throws -> Void = { _ in },
                 cancellationCheck: @escaping @Sendable (UUID) throws -> Void = { _ in },
@@ -66,7 +67,7 @@ actor AutomationOperationExecutionCoordinator {
         // Persist intent admission before enqueue, then persist its operation link before
         // scheduling work. A failure at either boundary never schedules the closure.
         try admission()
-        let record = try registry.enqueue(kind: kind, ownerID: ownerID, ownerLease: ownerLease)
+        let record = try registry.enqueue(kind: kind, ownerID: ownerID, operationID: operationID, ownerLease: ownerLease)
         do { try didEnqueue(record) }
         catch {
             _ = try? registry.finish(record.id, ownerID: ownerID, outcome: .failed)

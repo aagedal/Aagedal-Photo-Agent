@@ -105,6 +105,54 @@ struct AutomationVoiceTranscriptionBatchTests {
     private var photos: [URL] { ["first", "second", "third"].map { URL(fileURLWithPath: "/fixture/\($0).JPG") } }
     private var provider: AutomationVoiceTranscriptionBatchService.Provider { .apple(Locale(identifier: "en-US")) }
 
+    @Test("Reserved native lifecycle links configured history before recognition")
+    func nativeLifecycleOrdering() async throws {
+        let f = try Fixture()
+        let prepared = try await f.service.prepare(imageURLs: photos)
+        let id = UUID(), photoCount = photos.count
+        let registry = f.registry
+        let hooks = AutomationVoiceTranscriptionBatchService.LifecycleHooks(operationID: id,
+            admission: { _ in
+                try registry.withAvailableOperationID(id) {}
+                let records = try registry.records()
+                #expect(records.isEmpty)
+            }, didEnqueue: { record in
+                #expect(record.id == id && record.state == .queued)
+                #expect(record.batchProgress?.itemCount == photoCount)
+                #expect(try registry.inspect(id) == record)
+                // A durable cancellation after linkage must stop recognition entirely.
+                _ = try registry.requestCancellation(id)
+            }, cancellationCheck: { operationID in #expect(operationID == id) })
+        let accepted = try await f.service.submit(prepared: prepared, provider: provider, lifecycle: hooks)
+        #expect(accepted.id == id)
+        let completed = try await f.service.waitForCompletion(id)
+        #expect(completed.outcome == .cancelled)
+        #expect(await f.io.generated.isEmpty)
+        #expect(await f.io.saved.isEmpty)
+    }
+
+    @Test("Native admission or linkage failure never schedules inference", arguments: [false, true])
+    func nativeLifecycleRefusal(atLink: Bool) async throws {
+        let f = try Fixture()
+        let prepared = try await f.service.prepare(imageURLs: photos)
+        let id = UUID()
+        let registry = f.registry
+        let hooks = AutomationVoiceTranscriptionBatchService.LifecycleHooks(operationID: id,
+            admission: { _ in
+                try registry.withAvailableOperationID(id) {}
+                if !atLink { throw Injected.inference }
+            },
+            didEnqueue: { _ in throw Injected.save }, cancellationCheck: { _ in })
+        await #expect(throws: (any Error).self) {
+            try await f.service.submit(prepared: prepared, provider: provider, lifecycle: hooks)
+        }
+        let history = try f.registry.records()
+        #expect(history.count == (atLink ? 1 : 0))
+        if atLink { #expect(history.first?.id == id && history.first?.outcome == .failed) }
+        #expect(await f.io.generated.isEmpty)
+        #expect(await f.io.saved.isEmpty)
+    }
+
     @Test("Native preparation creates no history or drafts and retains exact ordered targets")
     func prepareWithoutEffects() async throws {
         let f = try Fixture()

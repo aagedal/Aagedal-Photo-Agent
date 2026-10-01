@@ -59,8 +59,19 @@ struct AutomationTranscriptionReviewModelTests {
         var inspectionPending: Bool { heldInspection != nil }
         var listPending: Bool { heldList != nil }
         var cancellations = 0
+        var cleanupEpochs: [UUID] = []
+        var snapshot: MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot
+        var holdCapacity = false
+        var heldCapacity: CheckedContinuation<MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot, Never>?
+        var capacityPending: Bool { heldCapacity != nil }
+        var capacityReadSnapshot: MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot?
+        var holdCleanup = false
+        var heldCleanup: CheckedContinuation<UUID, Never>?
+        var cleanupPending: Bool { heldCleanup != nil }
         init(record: MCPVoiceTranscriptionReviewRequestStore.Record, review: AutomationTranscriptionReview) {
             retained = [record]; self.review = review
+            snapshot = .init(epoch: UUID(uuidString: record.requestEpoch)!, retainedCount: 1,
+                maximumRecords: 64, cancelledBeforeAdmissionCount: record.state == .cancelled ? 1 : 0)
         }
         func configure(failList: Bool = false, holdInspection: Bool = false, holdNextList: Bool = false) {
             self.failList = failList; self.holdInspection = holdInspection; self.holdNextList = holdNextList
@@ -72,6 +83,33 @@ struct AutomationTranscriptionReviewModelTests {
                 return await withCheckedContinuation { heldList = $0 }
             }
             return retained
+        }
+        func setRecords(_ records: [MCPVoiceTranscriptionReviewRequestStore.Record]) { retained = records }
+        func setCapacity(_ snapshot: MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot, hold: Bool = false) {
+            self.snapshot = snapshot; holdCapacity = hold
+        }
+        func requestCapacity() async throws -> MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot {
+            guard holdCapacity else { return snapshot }
+            holdCapacity = false; capacityReadSnapshot = snapshot
+            return await withCheckedContinuation { heldCapacity = $0 }
+        }
+        func configureCleanup(hold: Bool) { holdCleanup = hold }
+        func recoverCancelledCapacity(expectedEpoch: UUID) async throws -> UUID {
+            cleanupEpochs.append(expectedEpoch)
+            guard snapshot.epoch == expectedEpoch else { throw MCPVoiceTranscriptionReviewRequestStore.Failure.staleEpoch }
+            guard retained.contains(where: { $0.state == .cancelled }) else {
+                throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+            }
+            retained.removeAll { $0.state == .cancelled }
+            snapshot = .init(epoch: UUID(), retainedCount: retained.count, maximumRecords: snapshot.maximumRecords,
+                cancelledBeforeAdmissionCount: 0)
+            if holdCleanup { return await withCheckedContinuation { heldCleanup = $0 } }
+            return snapshot.epoch
+        }
+        func finishCleanup() { heldCleanup?.resume(returning: snapshot.epoch); heldCleanup = nil }
+        func finishCapacity() {
+            if let snapshot = capacityReadSnapshot { heldCapacity?.resume(returning: snapshot) }
+            heldCapacity = nil; capacityReadSnapshot = nil
         }
         func inspect(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws -> AutomationTranscriptionReview {
             guard holdInspection else { return review }
@@ -203,6 +241,244 @@ struct AutomationTranscriptionReviewModelTests {
         #expect(model.requests.isEmpty)
         await service.finishList(); try await Task.sleep(for: .milliseconds(50))
         #expect(model.requests.isEmpty && model.review == nil && model.message == nil)
+    }
+
+    @Test("Native cleanup rotates capacity and preserves exact awaiting intent and source evidence")
+    func nativeCapacityPreservation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let awaiting = try f.requests.request(requestID: UUID(), requestEpoch: epoch, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        let sourceBytes = try (f.photos + f.memos).map { try Data(contentsOf: $0) }
+        try await f.service.cancel(f.record)
+        let capacity = try await f.service.requestCapacity()
+        #expect(capacity.retainedCount == 2 && capacity.maximumRecords == 64 && capacity.cancelledBeforeAdmissionCount == 1)
+        let rotated = try await f.service.recoverCancelledCapacity(expectedEpoch: capacity.epoch)
+        #expect(rotated != epoch)
+        #expect(try f.requests.records() == [awaiting])
+        #expect(try (f.photos + f.memos).map { try Data(contentsOf: $0) } == sourceBytes)
+        #expect(try await f.service.inspect(awaiting).planID == awaiting.planID)
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.staleEpoch) {
+            try await f.service.recoverCancelledCapacity(expectedEpoch: epoch)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
+    }
+
+    @Test("Native cleanup preserves cancelled-after-admission and linked uncertain evidence")
+    func preserveAdmittedAndUncertainEvidence() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let owner = UUID(), operation = UUID()
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let admittedIntent = try f.requests.request(requestID: UUID(), requestEpoch: epoch, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        let admittedID = UUID(uuidString: admittedIntent.requestID)!
+        _ = try f.requests.admit(admittedID, requestEpoch: epoch, expected: admittedIntent,
+            operationID: UUID(), ownerID: UUID(), registry: registry)
+        let admitted = try f.requests.cancel(admittedID, requestEpoch: epoch)
+        let linkedIntent = try f.requests.request(requestID: UUID(), requestEpoch: epoch, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        let linkedID = UUID(uuidString: linkedIntent.requestID)!
+        _ = try f.requests.admit(linkedID, requestEpoch: epoch, expected: linkedIntent,
+            operationID: operation, ownerID: owner, registry: registry)
+        let lease = try registry.acquireOwnerLease(ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, operationID: operation, ownerLease: lease)
+        _ = try registry.configureBatch(operation, ownerID: owner, itemCount: f.record.intent.photoCount)
+        _ = try f.requests.link(linkedID, requestEpoch: epoch, operationID: operation, registry: registry)
+        let linked = try f.requests.cancel(linkedID, requestEpoch: epoch)
+        _ = try registry.finish(operation, ownerID: owner, outcome: .partialUncertain)
+        let operations = try registry.records()
+        try await f.service.cancel(f.record)
+        let capacity = try await f.service.requestCapacity()
+        #expect(capacity.retainedCount == 3 && capacity.cancelledBeforeAdmissionCount == 1)
+        _ = try await f.service.recoverCancelledCapacity(expectedEpoch: epoch)
+        #expect(try f.requests.records() == [admitted, linked])
+        #expect(try registry.records() == operations)
+        #expect(admitted.state == .admitted && linked.state == .linked)
+        #expect(AutomationTranscriptionReviewModel.status(linked).contains("not confirmed stopped"))
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try await f.service.inspect(admitted)
+        }
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try await f.service.cancel(linked)
+        }
+        #expect(try f.requests.records() == [admitted, linked])
+    }
+
+    @Test("Disabled authority refuses native capacity inspection and cleanup")
+    func capacityAuthority() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        try await f.service.cancel(f.record)
+        let capacity = try await f.service.requestCapacity()
+        let before = try f.requests.records()
+        try f.authority.setEnabled(false)
+        await #expect(throws: MCPAuthorizationError.disabled) { try await f.service.requestCapacity() }
+        await #expect(throws: MCPAuthorizationError.disabled) { try await f.service.recoverCancelledCapacity(expectedEpoch: capacity.epoch) }
+        #expect(try f.requests.records() == before)
+        #expect(try f.requests.capacitySnapshot() == capacity)
+    }
+
+    @Test("Evidence polling preserves exact selection and clears a helper-cancelled review") @MainActor
+    func selectedEvidenceRefresh() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.refreshRequestEvidence(); try await waitUntil { !model.isRefreshingEvidence }
+        #expect(model.selectedRequest == f.record && model.review != nil)
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!,
+            requestEpoch: UUID(uuidString: f.record.requestEpoch)!)
+        await service.setRecords([cancelled])
+        model.refreshRequestEvidence(); try await waitUntil { !model.isRefreshingEvidence }
+        #expect(model.requests == [cancelled] && model.selectedRequest == nil && model.review == nil)
+    }
+
+    @Test("Successful status polling preserves a rejected source-review message") @MainActor
+    func pollingPreservesSourceRefusal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let model = AutomationTranscriptionReviewModel(service: f.service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        try Data("changed WAV".utf8).write(to: f.memos[0])
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        let refusal = try #require(model.message)
+        #expect(model.review == nil && model.selectedRequest == nil)
+        model.refreshRequestEvidence(); try await waitUntil { !model.isRefreshingEvidence }
+        #expect(model.message == refusal && model.requests == [f.record])
+        #expect(model.review == nil && model.selectedRequest == nil)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        #expect(model.message == nil)
+    }
+
+    @Test("Polling cancellation invalidates a late selected-source inspection") @MainActor
+    func pollInvalidatesInspection() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        await service.configure(holdInspection: true)
+        model.inspect(f.record); try await waitUntil { await service.inspectionPending }
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!,
+            requestEpoch: UUID(uuidString: f.record.requestEpoch)!)
+        await service.setRecords([cancelled])
+        model.refreshRequestEvidence(); try await waitUntil { !model.isRefreshingEvidence }
+        await service.finishInspection(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.requests == [cancelled] && model.selectedRequest == nil && model.review == nil && !model.isLoading)
+    }
+
+    @Test("Confirmed cleanup cancels a late evidence poll and clears selected intent") @MainActor
+    func cleanupInvalidatesLatePoll() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!, requestEpoch: epoch)
+        let awaiting = try f.requests.request(requestID: UUID(), requestEpoch: epoch, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        let service = ControlledService(record: cancelled, review: try .init(f.preview))
+        await service.setRecords([cancelled, awaiting])
+        await service.setCapacity(.init(epoch: epoch, retainedCount: 2, maximumRecords: 64, cancelledBeforeAdmissionCount: 1))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(awaiting); try await waitUntil { !model.isLoading }
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        #expect(model.canRecoverCancelledCapacity && model.review != nil)
+        await service.configure(holdNextList: true)
+        model.refreshRequestEvidence(); try await waitUntil { await service.listPending }
+        model.recoverCancelledCapacity(expectedEpoch: epoch)
+        try await waitUntil { !model.isRecoveringCapacity && !model.isRefreshingEvidence && !model.isInspectingCapacity }
+        #expect(model.requests == [awaiting] && model.review == nil && model.selectedRequest == nil)
+        #expect(model.capacity?.retainedCount == 1 && model.capacity?.cancelledBeforeAdmissionCount == 0 && model.capacity?.epoch != epoch)
+        await service.finishList(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.requests == [awaiting] && model.capacityMessage?.contains("Removed") == true)
+        #expect(await service.cleanupEpochs == [epoch])
+    }
+
+    @Test("Confirmed cleanup rejects a late selected-source completion") @MainActor
+    func cleanupInvalidatesInspection() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!, requestEpoch: epoch)
+        let awaiting = try f.requests.request(requestID: UUID(), requestEpoch: epoch, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        let service = ControlledService(record: cancelled, review: try .init(f.preview))
+        await service.setRecords([cancelled, awaiting])
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        await service.configure(holdInspection: true)
+        model.inspect(awaiting); try await waitUntil { await service.inspectionPending }
+        model.recoverCancelledCapacity(expectedEpoch: epoch)
+        try await waitUntil { !model.isRecoveringCapacity && !model.isRefreshingEvidence && !model.isInspectingCapacity }
+        await service.finishInspection(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.requests == [awaiting] && model.review == nil && model.selectedRequest == nil && !model.isLoading)
+    }
+
+    @Test("Navigation rejects late maintenance presentation and follow-up reads") @MainActor
+    func lateCleanupCompletion() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!, requestEpoch: epoch)
+        let service = ControlledService(record: cancelled, review: try .init(f.preview))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        await service.configureCleanup(hold: true)
+        model.recoverCancelledCapacity(expectedEpoch: epoch); try await waitUntil { await service.cleanupPending }
+        model.clear()
+        await service.finishCleanup(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.capacity == nil && model.capacityMessage == nil && model.requests == [cancelled])
+        #expect(!model.isRecoveringCapacity && !model.isRefreshingEvidence && !model.isInspectingCapacity)
+    }
+
+    @Test("Confirmation cannot rebind to a newer displayed capacity epoch") @MainActor
+    func displayedEpochDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        let cancelled = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.record.requestID)!, requestEpoch: epoch)
+        let service = ControlledService(record: cancelled, review: try .init(f.preview))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        let next = UUID()
+        await service.setCapacity(.init(epoch: next, retainedCount: 1, maximumRecords: 64, cancelledBeforeAdmissionCount: 1))
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        model.recoverCancelledCapacity(expectedEpoch: epoch)
+        #expect(await service.cleanupEpochs.isEmpty)
+        #expect(model.capacity?.epoch == next && !model.isRecoveringCapacity)
+    }
+
+    @Test("A stale store epoch refuses confirmed cleanup and preserves new cancellation evidence") @MainActor
+    func storeEpochDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let epoch = try f.requests.capacitySnapshot().epoch
+        try await f.service.cancel(f.record)
+        let model = AutomationTranscriptionReviewModel(service: f.service)
+        model.inspectRequestCapacity(); try await waitUntil { !model.isInspectingCapacity }
+        let next = try f.requests.recoverCancelledCapacity(expectedEpoch: epoch)
+        let fresh = try f.requests.request(requestID: UUID(), requestEpoch: next, planID: f.record.planID,
+            plans: f.plans, facade: f.facade)
+        try await f.service.cancel(fresh)
+        let retained = try f.requests.records()
+        model.recoverCancelledCapacity(expectedEpoch: epoch)
+        try await waitUntil { !model.isRecoveringCapacity && !model.isRefreshingEvidence }
+        #expect(try f.requests.records() == retained)
+        #expect(model.requests == retained && model.capacity == nil)
+        #expect(model.capacityMessage?.contains("could not be confirmed") == true)
+    }
+
+    @Test("Cancellation or navigation rejects a late capacity completion", arguments: ["cancel", "clear"]) @MainActor
+    func lateCapacityRead(action: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        let capacity = MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot(epoch: UUID(uuidString: f.record.requestEpoch)!,
+            retainedCount: 1, maximumRecords: 64, cancelledBeforeAdmissionCount: 0)
+        await service.setCapacity(capacity, hold: true)
+        model.inspectRequestCapacity(); try await waitUntil { await service.capacityPending }
+        if action == "cancel" { model.cancel(f.record); try await waitUntil { !model.isLoading } }
+        else { model.clear() }
+        await service.finishCapacity(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.capacity == nil && !model.isInspectingCapacity && !model.isRecoveringCapacity)
     }
 
     @Test("UI fixture requires both explicit opt-in gates")

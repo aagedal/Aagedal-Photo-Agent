@@ -96,12 +96,13 @@ nonisolated final class AutomationOperationRegistry: Sendable {
     }
 
     /// No implicit eviction: retained records remain inspectable until explicitly removed.
-    func enqueue(kind: Kind, ownerID: UUID, now: Date = Date(), ownerLease: AutomationOperationPersistence.OwnerLease? = nil) throws -> Record {
+    func enqueue(kind: Kind, ownerID: UUID, operationID: UUID = UUID(), now: Date = Date(), ownerLease: AutomationOperationPersistence.OwnerLease? = nil) throws -> Record {
         guard now.timeIntervalSinceReferenceDate.isFinite else { throw Failure.invalidArguments }
         if let ownerLease { try persistence.validateOwnerLease(ownerLease, ownerID: ownerID) }
         return try transaction { records in
+            guard !records.contains(where: { $0.id == operationID }) else { throw Failure.invalidArguments }
             guard records.count < maximumRecords else { throw Failure.capacity }
-            let record = Record(id: UUID(), ownerID: ownerID, kind: kind, createdAt: now,
+            let record = Record(id: operationID, ownerID: ownerID, kind: kind, createdAt: now,
                 ownerLeaseManaged: ownerLease == nil ? nil : true, updatedAt: now, state: .queued)
             records.append(record)
             return record
@@ -116,6 +117,16 @@ nonisolated final class AutomationOperationRegistry: Sendable {
     /// never reenter this registry or launch work that outlives the callback.
     func withLockedRecords<T>(_ body: ([Record]) throws -> T) throws -> T {
         try transaction(readOnly: true) { records in try body(records) }
+    }
+
+    /// Admission requires a real history lock even before the first operation exists.
+    /// This may initialize empty coordination storage, but never enqueues work. Retain
+    /// history ownership through request admission; callbacks must not reenter history.
+    func withAvailableOperationID<T>(_ id: UUID, _ body: () throws -> T) throws -> T {
+        try transaction { records in
+            guard !records.contains(where: { $0.id == id }) else { throw Failure.invalidArguments }
+            return try body()
+        }
     }
 
     func inspect(_ id: UUID) throws -> Record {

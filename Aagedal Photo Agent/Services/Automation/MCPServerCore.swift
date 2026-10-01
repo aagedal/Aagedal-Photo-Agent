@@ -2569,7 +2569,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     value = ["requestProtocolVersion": .integer(1), "requestEpoch": .string(capacity.epoch.uuidString.lowercased()),
                         "retainedCount": .integer(Int64(capacity.retainedCount)), "maximumRecords": .integer(Int64(capacity.maximumRecords)),
                         "cancelledBeforeAdmissionCount": .integer(Int64(capacity.cancelledBeforeAdmissionCount)),
-                        "cleanupAvailableInNativeApp": .bool(false), "nativeAdmissionAvailable": .bool(false),
+                        "cleanupAvailableInNativeApp": .bool(true), "nativeAdmissionAvailable": .bool(false),
                         "executionAvailable": .bool(false), "consentGranted": .bool(false), "commitAvailable": .bool(false)]
                 } else if name == "list_voice_transcription_review_requests" {
                     value = ["requestProtocolVersion": .integer(1),
@@ -2950,9 +2950,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             "planExpiresAt": .string(record.intent.planExpiresAt),
             "cancellationRequested": .bool(record.cancellationRequestedAt != nil),
             "cancellationRequestedAt": record.cancellationRequestedAt.map { .string($0.ISO8601Format()) } ?? .null,
-            "scope": .string("durable-voice-transcription-review-intent"), "executionDisposition": .string("not-admitted"),
+            "scope": .string("durable-voice-transcription-review-intent"),
+            "executionDisposition": .string(record.operationID != nil ? "inspect-linked-operation" :
+                (record.state == .admitted ? "unknown" : "not-admitted")),
+            "admittedAt": record.admittedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "linkedAt": record.linkedAt.map { .string($0.ISO8601Format()) } ?? .null,
             "nativeAdmissionAvailable": .bool(false), "executionAvailable": .bool(false),
-            "operationLinkageAvailable": .bool(false), "operationID": .null,
+            "operationLinkageAvailable": .bool(false), "operationID": record.operationID.map { .string($0) } ?? .null,
             "commitAvailable": .bool(false), "consentGranted": .bool(false)]
     }
 

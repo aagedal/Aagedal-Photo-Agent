@@ -81,6 +81,103 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeTranscriptionCancelledCapacityPreservesIntentAndRelaunches() throws {
+        try exerciseTranscriptionCapacity(changedEpoch: false)
+    }
+
+    @MainActor
+    func testNativeTranscriptionCancelledCapacityRefusesChangedConfirmationEpoch() throws {
+        try exerciseTranscriptionCapacity(changedEpoch: true)
+    }
+
+    @MainActor
+    private func exerciseTranscriptionCapacity(changedEpoch: Bool) throws {
+        let folder = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true, transcriptionReviewCapacity: true)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
+        app.staticTexts["Automation"].click()
+        let refresh = app.buttons["automation.refreshTranscriptionRequests"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8)); refresh.click()
+        let manifestURL = folder.appendingPathComponent("transcription-review-manifest.json")
+        let ready = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: manifestURL.path) }, evaluatedWith: nil)
+        wait(for: [ready], timeout: 10)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        let cancelledID = try XCTUnwrap(manifest["requestID"] as? String)
+        let retainedID = try XCTUnwrap(manifest["retainedRequestID"] as? String)
+        let archiveURL = folder.appendingPathComponent("transcription-review-requests/operations.json")
+        func archive() throws -> [String: Any] {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archiveURL)) as? [String: Any])
+            let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        }
+        let paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        let carrierURLs = paths.flatMap { path -> [URL] in
+            let photo = URL(fileURLWithPath: path)
+            return [photo, folder.appendingPathComponent(photo.lastPathComponent.contains("-2-") ? "transcription-review-2.wav" : "transcription-review-1.wav"),
+                folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")]
+        }
+        let originalBytes = try carrierURLs.map { try Data(contentsOf: $0) }
+        let cancel = app.buttons["automation.cancelTranscriptionRequest." + cancelledID]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.click()
+        let status = app.staticTexts["automation.transcriptionRequestStatus." + cancelledID]
+        let cancelled = expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("Cancelled") }, evaluatedWith: nil)
+        wait(for: [cancelled], timeout: 8)
+        let before = try archive(), beforeBytes = try Data(contentsOf: archiveURL)
+        let beforeRecords = try XCTUnwrap(before["records"] as? [[String: Any]])
+        let retained = try XCTUnwrap(beforeRecords.first { $0["requestID"] as? String == retainedID }) as NSDictionary
+        let capacityButton = app.buttons["automation.inspectTranscriptionRequestCapacity"]
+        XCTAssertTrue(capacityButton.waitForExistence(timeout: 8)); capacityButton.click()
+        let capacity = app.staticTexts["automation.transcriptionRequestCapacity"]
+        XCTAssertTrue(capacity.waitForExistence(timeout: 8))
+        XCTAssertTrue(visibleText(capacity).contains("Cancelled before admission: 1"))
+        let cleanup = app.buttons["automation.removeCancelledTranscriptionRequests"]
+        XCTAssertTrue(cleanup.isEnabled); cleanup.click()
+        let dialog = app.sheets.firstMatch
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5)); dialog.buttons["Cancel"].click()
+        XCTAssertEqual(try Data(contentsOf: archiveURL), beforeBytes)
+        cleanup.click(); XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+        var expectedPreserved = beforeBytes
+        if changedEpoch {
+            var replacement = before
+            replacement["currentEpoch"] = UUID().uuidString.lowercased()
+            let payload = try JSONSerialization.data(withJSONObject: replacement, options: [.sortedKeys])
+            expectedPreserved = try JSONSerialization.data(withJSONObject: ["payload": payload.base64EncodedString(),
+                "sha256": SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()], options: [.sortedKeys])
+            try expectedPreserved.write(to: archiveURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archiveURL.path)
+        }
+        dialog.buttons["Remove cancelled transcription requests"].click()
+        let message = app.staticTexts["automation.transcriptionRequestCapacityMessage"]
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        if changedEpoch {
+            XCTAssertTrue(visibleText(message).contains("Cleanup could not be confirmed"))
+            XCTAssertTrue(visibleText(message).contains("current transcription review epoch"))
+            XCTAssertEqual(try Data(contentsOf: archiveURL), expectedPreserved)
+        } else {
+            XCTAssertTrue(visibleText(message).contains("Removed transcription requests"))
+            let after = try archive(), records = try XCTUnwrap(after["records"] as? [[String: Any]])
+            XCTAssertNotEqual(after["currentEpoch"] as? String, before["currentEpoch"] as? String)
+            XCTAssertEqual(records.count, 1)
+            XCTAssertEqual(try XCTUnwrap(records.first) as NSDictionary, retained)
+        }
+        let persisted = try Data(contentsOf: archiveURL)
+        app.terminate(); app.launch()
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8)); app.staticTexts["Automation"].click()
+        XCTAssertTrue(app.buttons["automation.refreshTranscriptionRequests"].waitForExistence(timeout: 8))
+        app.buttons["automation.refreshTranscriptionRequests"].click()
+        XCTAssertTrue(app.staticTexts["automation.transcriptionRequestStatus." + retainedID].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.staticTexts["automation.transcriptionRequestStatus." + cancelledID].exists, changedEpoch)
+        XCTAssertEqual(try Data(contentsOf: archiveURL), persisted)
+        XCTAssertEqual(try carrierURLs.map { try Data(contentsOf: $0) }, originalBytes)
+        for path in paths {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json").path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("batch-operations").path))
+    }
+
+    @MainActor
     private func exerciseTranscriptionReview(changedRelationship: Bool) throws {
         let folder = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: folder, transcriptionReview: true)
@@ -2487,10 +2584,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         removalReceiptInterruption: String? = nil,
         resumePatchRecovery: Bool = false,
         transcriptionBatchMode: String? = nil,
-        transcriptionReview: Bool = false
+        transcriptionReview: Bool = false,
+        transcriptionReviewCapacity: Bool = false
     ) {
         app = XCUIApplication()
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
+        if transcriptionReviewCapacity { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] = "1" }
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",

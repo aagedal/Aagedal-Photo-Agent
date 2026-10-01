@@ -17,6 +17,7 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         let planID: String
         let epoch: UUID
         var archive: URL { root.appendingPathComponent("requests/operations.json") }
+        nonisolated var operations: AutomationOperationRegistry { AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations")) }
         var tools: MCPFoundationTools { MCPFoundationTools(authorizationStore: authority,
             voiceTranscriptionPlans: plans, voiceTranscriptionReviewRequests: requests) }
     }
@@ -151,7 +152,7 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         _ = try request(f)
         try mutateArchive(f) { archive in
-            if kind == "future" { archive["schemaVersion"] = 2; return }
+            if kind == "future" { archive["schemaVersion"] = 3; return }
             var records = archive["records"] as! [[String: Any]], record = records[0]
             switch kind {
             case "purpose": record["purpose"] = "pendingDraft"
@@ -249,4 +250,358 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         }
         #expect(try Data(contentsOf: f.archive) == damaged)
     }
+    @Test("Version one intent archives migrate on mutation without changing original handles")
+    func migration() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), retained = try request(f, id: id)
+        try mutateArchive(f) { $0["schemaVersion"] = 1 }
+        let before = try Data(contentsOf: f.archive)
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch) == retained)
+        #expect(try request(f, id: id) == retained)
+        #expect(try Data(contentsOf: f.archive) == before)
+        let admitted = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: UUID(), ownerID: UUID(), registry: f.operations)
+        #expect(admitted.state == .admitted)
+        #expect(admitted.requestEpoch == retained.requestEpoch)
+        #expect(admitted.intent == retained.intent)
+        let envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: f.archive)) as? [String: Any])
+        let payload = try #require(Data(base64Encoded: envelope["payload"] as! String))
+        let archive = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(archive["schemaVersion"] as? Int == 2)
+        #expect(try f.requests.records() == [admitted])
+    }
+
+    @Test("Admission binds exact intent, owner and reserved operation, and cannot replay after restart")
+    func admissionIdentity() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        let secondID = UUID(), second = try request(f, id: secondID)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.conflictingRequest) {
+            try f.requests.admit(id, requestEpoch: f.epoch, expected: second, operationID: operation, ownerID: owner, registry: f.operations)
+        }
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.staleEpoch) {
+            try f.requests.admit(id, requestEpoch: UUID(), expected: retained, operationID: operation, ownerID: owner, registry: f.operations)
+        }
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidArguments) {
+            try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation, ownerID: owner, registry: f.operations,
+                                 now: Date().addingTimeInterval(301))
+        }
+        let admitted = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation, ownerID: owner, registry: f.operations)
+        #expect(admitted.operationID == nil)
+        #expect(admitted.admission?.operationID == operation.uuidString.lowercased())
+        #expect(admitted.admission?.ownerID == owner.uuidString.lowercased())
+        #expect(admitted.admission?.intentSHA256 == retained.intentSHA256)
+        #expect(admitted.admission?.batchIdentity == retained.batchIdentity)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.conflictingRequest) {
+            try f.requests.admit(secondID, requestEpoch: f.epoch, expected: second, operationID: operation, ownerID: owner, registry: f.operations)
+        }
+        let restarted = MCPVoiceTranscriptionReviewRequestStore(storageDirectory: f.root.appendingPathComponent("requests"))
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try restarted.admit(id, requestEpoch: f.epoch, expected: admitted, operationID: operation, ownerID: owner, registry: f.operations)
+        }
+        #expect(try request(f, id: id) == admitted)
+        let cancelled = try restarted.cancel(id, requestEpoch: f.epoch)
+        #expect(cancelled.state == .admitted)
+        #expect(cancelled.cancellationRequestedAt != nil)
+        #expect(try restarted.capacitySnapshot().cancelledBeforeAdmissionCount == 0)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try restarted.recoverCancelledCapacity(expectedEpoch: f.epoch)
+        }
+    }
+
+    private func queuedOperation(_ f: Fixture, operationID: UUID, ownerID: UUID,
+                                 kind: AutomationOperationRegistry.Kind = .voiceTranscription,
+                                 count: Int = 1, managed: Bool = true) throws -> (AutomationOperationRegistry, AutomationOperationPersistence.OwnerLease?) {
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let lease = managed ? try registry.acquireOwnerLease(ownerID: ownerID) : nil
+        _ = try registry.enqueue(kind: kind, ownerID: ownerID, operationID: operationID, ownerLease: lease)
+        if kind == .voiceTranscription { _ = try registry.configureBatch(operationID, ownerID: ownerID, itemCount: count) }
+        return (registry, lease)
+    }
+
+    @Test("Only the exact live reserved operation can link", arguments: ["foreign", "owner", "kind", "count", "unmanaged", "cancelled", "running", "missing", "expired"])
+    func wrongOperation(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), reserved = UUID(), owner = UUID(), retained = try request(f, id: id)
+        _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: reserved, ownerID: owner, registry: f.operations)
+        let operation = kind == "foreign" || kind == "missing" ? UUID() : reserved
+        let actualOwner = kind == "owner" ? UUID() : owner
+        let (registry, lease) = try queuedOperation(f, operationID: operation, ownerID: actualOwner,
+            kind: kind == "kind" ? .iptcDraft : .voiceTranscription, count: kind == "count" ? 2 : 1, managed: kind != "unmanaged")
+        defer { withExtendedLifetime(lease) {} }
+        if kind == "cancelled" { _ = try registry.requestCancellation(operation) }
+        if kind == "running" { _ = try registry.start(operation, ownerID: actualOwner) }
+        #expect(throws: (any Error).self) {
+            try f.requests.link(id, requestEpoch: f.epoch, operationID: kind == "missing" ? reserved : operation,
+                                registry: registry, now: kind == "expired" ? Date().addingTimeInterval(301) : Date())
+        }
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch).state == .admitted)
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch).operationID == nil)
+    }
+
+    @Test("Linkage and post-admission cancellation preserve exact handles across epoch rotation")
+    func linkedCancellation() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation, ownerID: owner, registry: f.operations)
+        let (registry, lease) = try queuedOperation(f, operationID: operation, ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        let linked = try f.requests.link(id, requestEpoch: f.epoch, operationID: operation, registry: registry)
+        #expect(linked.state == .linked); #expect(linked.operationID == operation.uuidString.lowercased())
+        #expect(try f.requests.link(id, requestEpoch: f.epoch, operationID: operation, registry: registry) == linked)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try f.requests.checkCancellation(id, requestEpoch: f.epoch, operationID: UUID())
+        }
+        try f.requests.checkCancellation(id, requestEpoch: f.epoch, operationID: operation)
+        let cancelledID = UUID(); _ = try request(f, id: cancelledID)
+        _ = try f.requests.cancelBeforeAdmission(cancelledID, requestEpoch: f.epoch)
+        let epoch = try f.requests.recoverCancelledCapacity(expectedEpoch: f.epoch)
+        #expect(epoch != f.epoch)
+        let cancelled = try f.requests.cancel(id, requestEpoch: f.epoch)
+        #expect(cancelled.state == .linked); #expect(cancelled.operationID == linked.operationID)
+        #expect(try f.requests.cancel(id, requestEpoch: f.epoch) == cancelled)
+        #expect(try request(f, id: id) == cancelled)
+        #expect(throws: CancellationError.self) { try f.requests.checkCancellation(id, requestEpoch: f.epoch, operationID: operation) }
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.staleEpoch) {
+            try f.requests.cancel(id, requestEpoch: epoch)
+        }
+        #expect(try f.requests.capacitySnapshot().cancelledBeforeAdmissionCount == 0)
+    }
+
+    @Test("Cancelled admission cannot acquire a link or be retired")
+    func cancellationBeforeLink() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation, ownerID: owner, registry: f.operations)
+        _ = try f.requests.cancel(id, requestEpoch: f.epoch)
+        let (registry, lease) = try queuedOperation(f, operationID: operation, ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try f.requests.link(id, requestEpoch: f.epoch, operationID: operation, registry: registry)
+        }
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try f.requests.cancelBeforeAdmission(id, requestEpoch: f.epoch)
+        }
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch).state == .admitted)
+    }
+
+    @Test("Admission and linkage archive fields remain closed and fully bound", arguments: ["future", "field", "epoch", "request", "digest", "owner", "operation", "null", "missing", "state", "date", "linked-date", "duplicate"])
+    func malformedAdmission(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation, ownerID: owner, registry: f.operations)
+        let (registry, lease) = try queuedOperation(f, operationID: operation, ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try f.requests.link(id, requestEpoch: f.epoch, operationID: operation, registry: registry)
+        try mutateArchive(f) { archive in
+            var records = archive["records"] as! [[String: Any]], record = records[0]
+            var admission = record["admission"] as! [String: Any]
+            switch kind {
+            case "future": admission["schemaVersion"] = 2
+            case "field": admission["consentGranted"] = true
+            case "epoch": admission["requestEpoch"] = UUID().uuidString.lowercased()
+            case "request": admission["requestID"] = UUID().uuidString.lowercased()
+            case "digest": admission["intentSHA256"] = String(repeating: "0", count: 64)
+            case "owner": admission["ownerID"] = UUID().uuidString.uppercased()
+            case "operation": admission["operationID"] = "not-an-id"
+            case "null": admission["admissionID"] = NSNull()
+            case "missing": admission.removeValue(forKey: "admissionID")
+            case "state": record["state"] = "awaitingReview"
+            case "date": record["admittedAt"] = (record["createdAt"] as! Double) - 1
+            case "linked-date": record["linkedAt"] = (record["admittedAt"] as! Double) - 1
+            default:
+                var duplicate = record; duplicate["requestID"] = UUID().uuidString.lowercased()
+                var identity = admission; identity["requestID"] = duplicate["requestID"]
+                duplicate["admission"] = identity; records.append(duplicate)
+            }
+            record["admission"] = admission; records[0] = record; archive["records"] = records
+        }
+        let before = try Data(contentsOf: f.archive)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidStorage) { try f.requests.records() }
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Failed exact admission never enqueues or runs work")
+    func failedAdmissionNeverRuns() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), reserved = UUID(), retained = try request(f, id: id)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let owner = await runner.ownerID
+        _ = try f.requests.cancelBeforeAdmission(id, requestEpoch: f.epoch)
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.conflictingRequest) {
+            try await runner.submit(kind: .voiceTranscription, operationID: reserved, admission: {
+                _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: reserved, ownerID: owner, registry: f.operations)
+            }) { _ in
+                Issue.record("Work ran after refused transcription admission")
+                return .verified
+            }
+        }
+        #expect(try registry.records().isEmpty)
+        _ = try await runner.shutdown()
+    }
+
+    @Test("Failed linkage never runs work, and interrupted admission cannot replay", arguments: [false, true])
+    func failedLinkNeverRuns(cancelBeforeLink: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), reserved = UUID(), retained = try request(f, id: id)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let owner = await runner.ownerID
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try await runner.submit(kind: .voiceTranscription, operationID: reserved, admission: {
+                _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: reserved, ownerID: owner, registry: f.operations)
+            }, didEnqueue: { operation in
+                _ = try registry.configureBatch(operation.id, ownerID: owner, itemCount: 1)
+                if cancelBeforeLink { _ = try f.requests.cancel(id, requestEpoch: f.epoch) }
+                _ = try f.requests.link(id, requestEpoch: f.epoch,
+                    operationID: cancelBeforeLink ? reserved : UUID(), registry: registry)
+            }) { _ in
+                Issue.record("Work ran after refused transcription linkage")
+                return .verified
+            }
+        }
+        #expect(try registry.records().count == 1)
+        #expect(try registry.inspect(reserved).outcome == .failed)
+        let restarted = MCPVoiceTranscriptionReviewRequestStore(storageDirectory: f.root.appendingPathComponent("requests"))
+        let admitted = try restarted.inspect(id, requestEpoch: f.epoch)
+        #expect(admitted.state == .admitted); #expect(admitted.operationID == nil)
+        await #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition) {
+            try await runner.submit(kind: .voiceTranscription, admission: {
+                _ = try restarted.admit(id, requestEpoch: f.epoch, expected: admitted, operationID: UUID(), ownerID: owner, registry: f.operations)
+            }) { _ in
+                Issue.record("Interrupted transcription admission was replayed")
+                return .verified
+            }
+        }
+        #expect(try registry.records().count == 1)
+        _ = try await runner.shutdown()
+    }
+
+    private enum IntegrationFailure: Error { case inference }
+    private actor IntegrationProbe {
+        var generationCount = 0
+        var saveCount = 0
+        func generated() { generationCount += 1 }
+        func saved() { saveCount += 1 }
+    }
+
+    @Test("Exact request admission and batch hooks link before recognition and bridge cancellation", arguments: ["linked", "wrong-owner", "wrong-intent", "cancelled"])
+    func batchIntegration(mode: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operationID = UUID(), retained = try request(f, id: id)
+        let secondID = UUID(), second = try request(f, id: secondID)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let probe = IntegrationProbe(), requests = f.requests, epoch = f.epoch
+        let dependencies = AutomationVoiceTranscriptionBatchService.Dependencies(capture: { image in
+            guard case .available(let association) = try VoiceMemoTranscriptionService.lookupRegularAssociation(for: image) else {
+                throw VoiceMemoTranscriptionError.relationshipUnavailable
+            }
+            return .init(imageURL: image, sourceRevision: try await SourceImageRevision.capture(at: image),
+                         association: association, memoRevision: try await SourceImageRevision.capture(at: association.memoURL),
+                         relationshipRevision: try VoiceMemoRelationshipRevision.capture(for: image))
+        }, generate: { _, _ in
+            await probe.generated()
+            let record = try requests.inspect(id, requestEpoch: epoch)
+            #expect(record.state == .linked)
+            #expect(record.operationID == operationID.uuidString.lowercased())
+            #expect(try registry.inspect(operationID).state == .running)
+            throw IntegrationFailure.inference
+        }, save: { draft, _ in
+            await probe.saved()
+            Issue.record("Synthetic integration inference must never save a draft")
+            return draft
+        })
+        let service = AutomationVoiceTranscriptionBatchService(registry: registry, dependencies: dependencies)
+        let prepared = try await service.prepare(imageURLs: [f.photo])
+        let hooks = AutomationVoiceTranscriptionBatchService.LifecycleHooks(operationID: operationID,
+            admission: { owner in
+                _ = try requests.admit(id, requestEpoch: epoch, expected: mode == "wrong-intent" ? second : retained,
+                                       operationID: operationID, ownerID: mode == "wrong-owner" ? UUID() : owner, registry: registry)
+            }, didEnqueue: { operation in
+                #expect(operation.id == operationID)
+                #expect(operation.batchProgress?.itemCount == retained.intent.photoCount)
+                _ = try requests.link(id, requestEpoch: epoch, operationID: operation.id, registry: registry)
+                if mode == "cancelled" { _ = try requests.cancel(id, requestEpoch: epoch) }
+            }, cancellationCheck: { operation in
+                do { try requests.checkCancellation(id, requestEpoch: epoch, operationID: operation) }
+                catch is CancellationError {
+                    _ = try registry.requestCancellation(operation)
+                    throw CancellationError()
+                }
+            })
+        if ["wrong-owner", "wrong-intent"].contains(mode) {
+            await #expect(throws: (any Error).self) {
+                try await service.submit(prepared: prepared, provider: .apple(Locale(identifier: "en-US")), lifecycle: hooks)
+            }
+            #expect(try registry.records().count == (mode == "wrong-owner" ? 1 : 0))
+            if mode == "wrong-owner" { #expect(try registry.inspect(operationID).outcome == .failed) }
+        } else {
+            let accepted = try await service.submit(prepared: prepared, provider: .apple(Locale(identifier: "en-US")), lifecycle: hooks)
+            #expect(accepted.id == operationID)
+            let terminal = try await service.waitForCompletion(operationID)
+            #expect(terminal.outcome == (mode == "cancelled" ? .cancelled : .failed))
+            #expect((terminal.cancellationRequestedAt != nil) == (mode == "cancelled"))
+        }
+        #expect(await probe.generationCount == (mode == "linked" ? 1 : 0))
+        #expect(await probe.saveCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
+        try await service.shutdown()
+    }
+
+    @Test("A preexisting operation cannot be admitted even with equal timestamps")
+    func reusedOperationWithEqualClock() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        let registry = f.operations
+        let lease = try registry.acquireOwnerLease(ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, operationID: operation,
+                                 now: retained.updatedAt, ownerLease: lease)
+        let before = try Data(contentsOf: f.archive)
+        #expect(throws: MCPVoiceTranscriptionReviewRequestStore.Failure.conflictingRequest) {
+            try f.requests.admit(id, requestEpoch: f.epoch, expected: retained, operationID: operation,
+                                 ownerID: owner, registry: registry, now: retained.updatedAt)
+        }
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch) == retained)
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Cold admission initializes locked empty history without enqueuing work")
+    func coldAdmissionHistory() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operationID = UUID(), retained = try request(f, id: id)
+        let directory = f.root.appendingPathComponent("operations")
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        let registry = f.operations
+        let admitted = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained,
+            operationID: operationID, ownerID: UUID(), registry: registry)
+        #expect(admitted.state == .admitted)
+        #expect(admitted.operationID == nil)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("operations.json").path))
+        #expect(try registry.records().isEmpty)
+        #expect(try AutomationOperationRegistry(storageDirectory: directory).records().isEmpty)
+        #expect(try f.requests.inspect(id, requestEpoch: f.epoch) == admitted)
+    }
+
+    @Test("A held cold history lock refuses admission without publishing request evidence")
+    func heldColdHistoryLock() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operationID = UUID(), retained = try request(f, id: id)
+        let before = try Data(contentsOf: f.archive)
+        let holder = f.operations, contender = f.operations
+        try holder.withAvailableOperationID(UUID()) { () throws in
+            #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+                try f.requests.admit(id, requestEpoch: f.epoch, expected: retained,
+                    operationID: operationID, ownerID: UUID(), registry: contender)
+            }
+            #expect(try f.requests.inspect(id, requestEpoch: f.epoch) == retained)
+            #expect(try Data(contentsOf: f.archive) == before)
+        }
+        #expect(try holder.records().isEmpty)
+        let admitted = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained,
+            operationID: operationID, ownerID: UUID(), registry: contender)
+        #expect(admitted.state == .admitted)
+        #expect(try contender.records().isEmpty)
+    }
+
 }

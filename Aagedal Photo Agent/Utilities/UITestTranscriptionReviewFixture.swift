@@ -9,7 +9,8 @@ enum UITestTranscriptionReviewFixture {
 
     static func service(configuration: UITestLaunchConfiguration, environment: [String: String]) -> (any AutomationTranscriptionReviewServing)? {
         guard configuration.isEnabled, environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] == "1" else { return nil }
-        return Worker(folder: configuration.folderURL)
+        return Worker(folder: configuration.folderURL,
+            includesRetainedIntent: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] == "1")
     }
 
     nonisolated final class ConfigurationBox: @unchecked Sendable {
@@ -23,6 +24,7 @@ enum UITestTranscriptionReviewFixture {
         let requestEpoch: String
         let planID: String
         let photoPaths: [String]
+        let retainedRequestID: String?
     }
     enum Failure: Error { case invalidFolder, invalidPlan }
 
@@ -32,8 +34,11 @@ enum UITestTranscriptionReviewFixture {
             label: "com.aagedal.photo-agent.ui-test-transcription-review", qos: .utility)
         nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
         let folder: URL?
+        let includesRetainedIntent: Bool
         private var underlying: AutomationTranscriptionReviewService?
-        init(folder: URL?) { self.folder = folder }
+        init(folder: URL?, includesRetainedIntent: Bool) {
+            self.folder = folder; self.includesRetainedIntent = includesRetainedIntent
+        }
 
         private func service() throws -> AutomationTranscriptionReviewService {
             if let underlying { return underlying }
@@ -75,10 +80,15 @@ enum UITestTranscriptionReviewFixture {
                 guard let planID = preview.objectValue?["planID"]?.stringValue else { throw Failure.invalidPlan }
                 let epoch = try requests.capacitySnapshot().epoch, requestID = UUID()
                 _ = try requests.request(requestID: requestID, requestEpoch: epoch, planID: planID, plans: plans, facade: facade)
+                let retainedID = includesRetainedIntent ? UUID() : nil
+                if let retainedID {
+                    _ = try requests.request(requestID: retainedID, requestEpoch: epoch, planID: planID, plans: plans, facade: facade)
+                }
                 guard let data = box.read() else { throw Failure.invalidPlan }
                 try data.write(to: authorityURL, options: .withoutOverwriting)
                 try JSONEncoder().encode(Manifest(requestID: requestID.uuidString.lowercased(), requestEpoch: epoch.uuidString.lowercased(),
-                    planID: planID, photoPaths: Array(paths.reversed()))).write(to: manifestURL, options: .withoutOverwriting)
+                    planID: planID, photoPaths: Array(paths.reversed()),
+                    retainedRequestID: retainedID?.uuidString.lowercased())).write(to: manifestURL, options: .withoutOverwriting)
             }
             let result = AutomationTranscriptionReviewService(plans: plans, facade: facade, requests: requests)
             underlying = result; return result
@@ -88,5 +98,11 @@ enum UITestTranscriptionReviewFixture {
             try await service().inspect(request)
         }
         func cancel(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws { try await service().cancel(request) }
+        func requestCapacity() async throws -> MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot {
+            try await service().requestCapacity()
+        }
+        func recoverCancelledCapacity(expectedEpoch: UUID) async throws -> UUID {
+            try await service().recoverCancelledCapacity(expectedEpoch: expectedEpoch)
+        }
     }
 }

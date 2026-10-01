@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 /// Separate transcription intent domain. Checksums detect corruption; they never
-/// authenticate consent. Native admission and operation linkage remain unavailable.
+/// authenticate consent. Internal admission/linkage are coordination evidence only;
+/// no helper or native review UI can grant provider consent through this store.
 nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
     enum Failure: String, Error, Equatable, LocalizedError {
         case invalidArguments = "invalid_arguments"
@@ -26,7 +27,27 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
             }
         }
     }
-    enum State: String, Codable, Sendable { case awaitingReview, cancelled }
+    enum State: String, Codable, Sendable { case awaitingReview, admitted, linked, cancelled }
+
+    /// Immutable internal coordination identity. The executor reserves the exact operation
+    /// before its pre-start admission hook; this is never provider consent or root authority.
+    struct Admission: Codable, Equatable, Sendable {
+        let schemaVersion: Int
+        let admissionID: String
+        let requestID: String
+        let requestEpoch: String
+        let intentSHA256: String
+        let batchIdentity: String
+        let operationID: String
+        let ownerID: String
+
+        fileprivate func validate(for record: Record) throws {
+            guard schemaVersion == 1,
+                  [admissionID, requestID, requestEpoch, operationID, ownerID].allSatisfy(MCPVoiceTranscriptionReviewRequestStore.canonicalUUID),
+                  requestID == record.requestID, requestEpoch == record.requestEpoch,
+                  intentSHA256 == record.intentSHA256, batchIdentity == record.batchIdentity else { throw Failure.invalidStorage }
+        }
+    }
 
     /// Ordered, versioned immutable intent. Native runtime/model identities and consent
     /// are deliberately absent: those require fresh native review before admission.
@@ -96,6 +117,12 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
         fileprivate(set) var updatedAt: Date
         fileprivate(set) var state: State
         fileprivate(set) var cancellationRequestedAt: Date?
+        fileprivate(set) var admission: Admission?
+        fileprivate(set) var admittedAt: Date?
+        fileprivate(set) var linkedAt: Date?
+        /// Only durable linkage exposes an operation handle. Reserved admission IDs are
+        /// not acceptance receipts and never authorize work after an interrupted enqueue.
+        var operationID: String? { state == .linked ? admission?.operationID : nil }
         var planID: String { intent.planID }
     }
     struct CapacitySnapshot: Equatable, Sendable {
@@ -104,7 +131,7 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
         let maximumRecords: Int
         let cancelledBeforeAdmissionCount: Int
     }
-    private struct Archive: Codable { let schemaVersion: Int; var currentEpoch: String; var records: [Record] }
+    private struct Archive: Codable { var schemaVersion: Int; var currentEpoch: String; var records: [Record] }
     private struct Envelope: Codable { let payload: Data; let sha256: String }
     let storageDirectory: URL
     private let persistence: AutomationOperationPersistence
@@ -168,7 +195,84 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
             }
         }
     }
-    /// This milestone has no admission API. Cancellation retains intent without execution.
+    /// Admission is one-way. Even an exact retry cannot reopen an interrupted admission.
+    /// The expected native snapshot binds the hook to the entire retained immutable intent.
+    func admit(_ requestID: UUID, requestEpoch: UUID, expected: Record,
+               operationID: UUID, ownerID: UUID, registry: AutomationOperationRegistry, now: Date = Date()) throws -> Record {
+        do {
+            return try registry.withAvailableOperationID(operationID) {
+                return try transaction { archive in
+                    guard let index = archive.records.firstIndex(where: { $0.requestID == requestID.uuidString.lowercased() }) else { throw Failure.unknownRequest }
+                    let record = archive.records[index]
+                    guard record.requestEpoch == requestEpoch.uuidString.lowercased() else { throw Failure.staleEpoch }
+                    guard record == expected else { throw Failure.conflictingRequest }
+                    guard record.state == .awaitingReview, record.cancellationRequestedAt == nil else { throw Failure.invalidTransition }
+                    try Self.validateFreshBoundary(record, now: now)
+                    let operation = operationID.uuidString.lowercased()
+                    guard !archive.records.contains(where: { $0.admission?.operationID == operation }) else { throw Failure.conflictingRequest }
+                    archive.records[index].admission = Admission(schemaVersion: 1, admissionID: UUID().uuidString.lowercased(),
+                        requestID: record.requestID, requestEpoch: record.requestEpoch,
+                        intentSHA256: record.intentSHA256, batchIdentity: record.batchIdentity,
+                        operationID: operation, ownerID: ownerID.uuidString.lowercased())
+                    archive.records[index].admittedAt = now
+                    archive.records[index].state = .admitted
+                    archive.records[index].updatedAt = now
+                    return archive.records[index]
+                }
+            }
+        } catch AutomationOperationRegistry.Failure.invalidArguments {
+            throw Failure.conflictingRequest
+        }
+    }
+
+    /// History is locked before request storage. Verify the actual exact reserved record,
+    /// never a caller-supplied snapshot or a kind/count/time-only candidate operation.
+    func link(_ requestID: UUID, requestEpoch: UUID, operationID: UUID,
+              registry: AutomationOperationRegistry, now: Date = Date()) throws -> Record {
+        try registry.withLockedRecords { operations in
+            try update(requestID, requestEpoch: requestEpoch, now: now) { record in
+                guard let admission = record.admission,
+                      admission.operationID == operationID.uuidString.lowercased(),
+                      let operation = operations.first(where: { $0.id == operationID }),
+                      admission.ownerID == operation.ownerID.uuidString.lowercased(),
+                      operation.kind == .voiceTranscription, operation.ownerLeaseManaged == true,
+                      let admittedAt = record.admittedAt, operation.createdAt >= admittedAt else { throw Failure.invalidTransition }
+                // An exact linkage retry retrieves retained status; it never schedules work.
+                if record.state == .linked { return }
+                guard record.state == .admitted, record.cancellationRequestedAt == nil,
+                      operation.state == .queued, operation.cancellationRequestedAt == nil,
+                      let progress = operation.batchProgress, progress.itemCount == record.intent.photoCount,
+                      progress.items.allSatisfy({ $0.state == .queued && $0.outcome == nil }),
+                      now >= operation.updatedAt else { throw Failure.invalidTransition }
+                try Self.validateFreshBoundary(record, now: now)
+                record.state = .linked; record.linkedAt = now
+            }
+        }
+    }
+
+    /// Called by the retained executor at safe effect boundaries. Storage failure or an
+    /// incorrect operation link refuses work; request cancellation is durable evidence.
+    func checkCancellation(_ requestID: UUID, requestEpoch: UUID, operationID: UUID) throws {
+        let record = try inspect(requestID, requestEpoch: requestEpoch)
+        guard record.state == .linked, record.operationID == operationID.uuidString.lowercased() else { throw Failure.invalidTransition }
+        if record.cancellationRequestedAt != nil { throw CancellationError() }
+    }
+
+    /// Post-admission cancellation preserves uncertain evidence and cannot free capacity.
+    func cancel(_ requestID: UUID, requestEpoch: UUID, now: Date = Date()) throws -> Record {
+        try update(requestID, requestEpoch: requestEpoch, now: now) { record in
+            if record.cancellationRequestedAt != nil { return }
+            if record.state == .awaitingReview { record.state = .cancelled }
+            record.cancellationRequestedAt = now
+        }
+    }
+
+    private static func validateFreshBoundary(_ record: Record, now: Date) throws {
+        guard now.timeIntervalSinceReferenceDate.isFinite, now >= record.updatedAt,
+              let expiry = ISO8601DateFormatter().date(from: record.intent.planExpiresAt), now < expiry else { throw Failure.invalidArguments }
+    }
+
+    /// Proven pre-admission cancellation retains intent without execution.
     func cancelBeforeAdmission(_ requestID: UUID, requestEpoch: UUID, now: Date = Date()) throws -> Record {
         try update(requestID, requestEpoch: requestEpoch, now: now) { record in
             if record.state == .cancelled { return }
@@ -199,9 +303,10 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
     private func transaction<T>(readOnly: Bool = false, _ body: (inout Archive) throws -> T) throws -> T {
         do {
             return try persistence.transaction(readOnly: readOnly) { data in
-                var archive = try data.map(decode) ?? Archive(schemaVersion: 1, currentEpoch: UUID().uuidString.lowercased(), records: [])
+                var archive = try data.map(decode) ?? Archive(schemaVersion: 2, currentEpoch: UUID().uuidString.lowercased(), records: [])
                 let result = try body(&archive)
                 if readOnly { return (result, data ?? Data()) }
+                archive.schemaVersion = 2
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
                 let payload = try encoder.encode(archive)
                 let bytes = try encoder.encode(Envelope(payload: payload, sha256: Self.digest(payload)))
@@ -219,17 +324,27 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
             guard Self.digest(envelope.payload) == envelope.sha256,
                   let object = try JSONSerialization.jsonObject(with: envelope.payload) as? [String: Any],
                   Set(object.keys) == ["schemaVersion", "currentEpoch", "records"],
+                  let version = object["schemaVersion"] as? Int, [1, 2].contains(version),
                   let records = object["records"] as? [[String: Any]] else { throw Failure.invalidStorage }
             for record in records {
                 let required: Set<String> = ["requestID", "requestEpoch", "intent", "intentSHA256", "batchIdentity", "createdAt", "updatedAt", "state"]
-                guard required.isSubset(of: Set(record.keys)), Set(record.keys).isSubset(of: required.union(["cancellationRequestedAt"])),
+                guard required.isSubset(of: Set(record.keys)), Set(record.keys).isSubset(of: required.union(version == 1 ? ["cancellationRequestedAt"] : ["cancellationRequestedAt", "admission", "admittedAt", "linkedAt"])),
                       !record.values.contains(where: { $0 is NSNull }),
                       let intent = record["intent"] as? [String: Any],
                       Set(intent.keys) == ["schemaVersion", "planID", "planCreatedAt", "planExpiresAt", "options", "photos"] else { throw Failure.invalidStorage }
+                if let admission = record["admission"] as? [String: Any] {
+                    guard Set(admission.keys) == ["schemaVersion", "admissionID", "requestID", "requestEpoch", "intentSHA256", "batchIdentity", "operationID", "ownerID"],
+                          !admission.values.contains(where: { $0 is NSNull }) else { throw Failure.invalidStorage }
+                }
+                if version == 1 {
+                    guard ["awaitingReview", "cancelled"].contains(record["state"] as? String ?? "") else { throw Failure.invalidStorage }
+                }
             }
             let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
-            guard archive.schemaVersion == 1, Self.canonicalUUID(archive.currentEpoch),
-                  archive.records.count <= maximumRecords, Set(archive.records.map(\.requestID)).count == archive.records.count else { throw Failure.invalidStorage }
+            guard [1, 2].contains(archive.schemaVersion), Self.canonicalUUID(archive.currentEpoch),
+                  archive.records.count <= maximumRecords, Set(archive.records.map(\.requestID)).count == archive.records.count,
+                  Set(archive.records.compactMap { $0.admission?.admissionID }).count == archive.records.filter { $0.admission != nil }.count,
+                  Set(archive.records.compactMap { $0.admission?.operationID }).count == archive.records.filter { $0.admission != nil }.count else { throw Failure.invalidStorage }
             for record in archive.records {
                 try record.intent.validate()
                 guard Self.canonicalUUID(record.requestID), Self.canonicalUUID(record.requestEpoch),
@@ -242,9 +357,26 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
                 if let time = record.cancellationRequestedAt {
                     guard time.timeIntervalSinceReferenceDate.isFinite, time >= record.createdAt, time <= record.updatedAt else { throw Failure.invalidStorage }
                 }
+                if let admission = record.admission {
+                    try admission.validate(for: record)
+                    guard let admittedAt = record.admittedAt, admittedAt.timeIntervalSinceReferenceDate.isFinite,
+                          admittedAt >= record.createdAt, admittedAt <= record.updatedAt, admittedAt < planExpiry,
+                          record.cancellationRequestedAt.map({ $0 >= admittedAt }) ?? true else { throw Failure.invalidStorage }
+                } else { guard record.admittedAt == nil else { throw Failure.invalidStorage } }
+                if let linkedAt = record.linkedAt {
+                    guard let admittedAt = record.admittedAt, linkedAt.timeIntervalSinceReferenceDate.isFinite,
+                          linkedAt >= admittedAt, linkedAt <= record.updatedAt, linkedAt < planExpiry,
+                          record.cancellationRequestedAt.map({ $0 >= linkedAt }) ?? true else { throw Failure.invalidStorage }
+                }
                 switch record.state {
-                case .awaitingReview: guard record.cancellationRequestedAt == nil else { throw Failure.invalidStorage }
-                case .cancelled: guard record.cancellationRequestedAt != nil else { throw Failure.invalidStorage }
+                case .awaitingReview:
+                    guard record.cancellationRequestedAt == nil, record.admission == nil, record.linkedAt == nil else { throw Failure.invalidStorage }
+                case .cancelled:
+                    guard record.cancellationRequestedAt != nil, record.admission == nil, record.linkedAt == nil else { throw Failure.invalidStorage }
+                case .admitted:
+                    guard record.admission != nil, record.linkedAt == nil else { throw Failure.invalidStorage }
+                case .linked:
+                    guard record.admission != nil, record.linkedAt != nil else { throw Failure.invalidStorage }
                 }
             }
             return archive

@@ -18,6 +18,24 @@ struct AutomationOperationRegistryTests {
             .appendingPathComponent("operation-registry-\(UUID().uuidString)", isDirectory: true)
     }
 
+    @Test("Reserved operation IDs reject reuse without replacing retained history")
+    func reservedOperationIdentity() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let id = UUID(), owner = UUID()
+        let record = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, operationID: id, now: now)
+        #expect(record.id == id)
+        _ = try registry.start(id, ownerID: owner, now: now)
+        _ = try registry.finish(id, ownerID: owner, outcome: .verified, now: now)
+        let archive = root.appendingPathComponent("operations.json"), before = try Data(contentsOf: archive)
+        #expect(throws: AutomationOperationRegistry.Failure.invalidArguments) {
+            try registry.enqueue(kind: .voiceTranscription, ownerID: UUID(), operationID: id, now: now)
+        }
+        #expect(try Data(contentsOf: archive) == before)
+        #expect(try registry.records().count == 1)
+    }
+
     @Test("Same-instance inspection waits for a held transaction and observes its committed bytes")
     func sameInstanceTransactionSerialization() async throws {
         let root = try directory()

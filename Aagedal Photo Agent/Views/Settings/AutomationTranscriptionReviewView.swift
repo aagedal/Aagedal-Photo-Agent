@@ -2,6 +2,8 @@ import SwiftUI
 
 struct AutomationTranscriptionReviewView: View {
     @State private var model: AutomationTranscriptionReviewModel
+    @State private var confirmsRequestCleanup = false
+    @State private var cancelledRequestCleanupEpoch: UUID?
 
     init(service: (any AutomationTranscriptionReviewServing)? = nil) {
         _model = State(initialValue: AutomationTranscriptionReviewModel(service:
@@ -15,10 +17,32 @@ struct AutomationTranscriptionReviewView: View {
                 .accessibilityIdentifier("automation.transcriptionReviewNotice")
             HStack {
                 Button("Refresh Transcription Requests") { model.refresh() }
+                    .disabled(model.isRecoveringCapacity || model.isCancelling)
                     .accessibilityIdentifier("automation.refreshTranscriptionRequests")
                 if model.isLoading { ProgressView().controlSize(.small) }
             }
             .accessibilityElement(children: .contain)
+            Button("Review transcription request capacity") { model.inspectRequestCapacity() }
+                .disabled(model.isBusyWithCapacity || model.isCancelling)
+                .accessibilityIdentifier("automation.inspectTranscriptionRequestCapacity")
+            if model.isBusyWithCapacity { ProgressView().controlSize(.small) }
+            if let capacity = model.capacity {
+                Text("Retained transcription requests: \(capacity.retainedCount) of \(capacity.maximumRecords). Cancelled before admission: \(capacity.cancelledBeforeAdmissionCount).")
+                    .font(.caption)
+                    .accessibilityIdentifier("automation.transcriptionRequestCapacity")
+                Button("Remove cancelled transcription requests", role: .destructive) {
+                    cancelledRequestCleanupEpoch = capacity.epoch
+                    confirmsRequestCleanup = true
+                }
+                .disabled(!model.canRecoverCancelledCapacity)
+                .accessibilityIdentifier("automation.removeCancelledTranscriptionRequests")
+                Text("Removes only transcription requests cancelled before admission. Awaiting intent, admitted, linked and uncertain evidence remains retained. Removed requests cannot be retried. New intents need a new request ID and current epoch; retained requests keep their original epoch. Cleanup grants no consent.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let message = model.capacityMessage {
+                Text(verbatim: message).font(.caption)
+                    .accessibilityIdentifier("automation.transcriptionRequestCapacityMessage")
+            }
             if let message = model.message {
                 Text(verbatim: message).foregroundStyle(.red)
                     .accessibilityIdentifier("automation.transcriptionReviewError")
@@ -41,7 +65,7 @@ struct AutomationTranscriptionReviewView: View {
                                 .accessibilityIdentifier("automation.cancelTranscriptionRequest.\(request.requestID)")
                         }
                         .accessibilityElement(children: .contain)
-                        .disabled(model.message != nil)
+                        .disabled(model.message != nil || model.isRecoveringCapacity || model.isCancelling)
                     }
                     Divider()
                 }
@@ -81,7 +105,23 @@ struct AutomationTranscriptionReviewView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .task { model.refresh() }
+        .task {
+            model.refresh()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                model.refreshRequestEvidence()
+            }
+        }
+        .confirmationDialog("Remove cancelled transcription requests?", isPresented: $confirmsRequestCleanup) {
+            Button("Remove cancelled transcription requests", role: .destructive) {
+                if let epoch = cancelledRequestCleanupEpoch { model.recoverCancelledCapacity(expectedEpoch: epoch) }
+                cancelledRequestCleanupEpoch = nil
+            }
+        } message: {
+            Text("Only transcription requests cancelled before admission will be removed. Awaiting intent, admitted, linked and uncertain evidence stays retained. Removed requests cannot be retried; new intents need a new request ID and current epoch. Retained requests keep their original epoch. Current intent reviews will be cleared. This grants no consent, starts no transcription and changes no photo metadata.")
+        }
         .onDisappear { model.clear() }
     }
 
