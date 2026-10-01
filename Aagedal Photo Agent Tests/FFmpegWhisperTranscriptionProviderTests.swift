@@ -207,6 +207,98 @@ struct FFmpegWhisperTranscriptionProviderTests {
             .appendingPathComponent("\(photo.lastPathComponent).meta.json").path))
     }
 
+    @Test("Native confirmation rejects semantically equivalent relationship rewrites and equal-byte replacements", arguments: [false, true])
+    func exactRelationshipConsent(replace: Bool) async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("RelationshipConsent-\(UUID())").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg"), audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo); try Data("audio".utf8).write(to: audio)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let relationship = repository.recordURL(for: photo)
+        let bytes = try Data(contentsOf: relationship)
+        let originalAssociation = try VoiceMemoTranscriptionService.lookupRegularAssociation(for: photo)
+        let registry = AutomationOperationRegistry(storageDirectory: folder.appendingPathComponent("operations"))
+        let batch = AutomationVoiceTranscriptionBatchService(registry: registry)
+        let prepared = try await batch.prepare(imageURLs: [photo])
+        if replace { try bytes.write(to: relationship, options: .atomic) }
+        else { try (bytes + Data("\n ".utf8)).write(to: relationship) }
+        #expect(try VoiceMemoTranscriptionService.lookupRegularAssociation(for: photo) == originalAssociation)
+        await #expect(throws: AutomationVoiceTranscriptionBatchService.Failure.sourceChanged) {
+            try await batch.submit(prepared: prepared, provider: .apple(Locale(identifier: "en-US")))
+        }
+        #expect(try registry.records().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path))
+    }
+
+    @Test("Relationship drift at create-only commit refuses before any transcript carrier write", arguments: [false, true])
+    func exactRelationshipAtCreation(replace: Bool) async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("RelationshipCommit-\(UUID())").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg"), audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo); try Data("audio".utf8).write(to: audio)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let relationship = repository.recordURL(for: photo), bytes = try Data(contentsOf: relationship)
+        let witness = try VoiceMemoRelationshipRevision.capture(for: photo)
+        let source = try await SourceImageRevision.capture(at: photo), memo = try await SourceImageRevision.capture(at: audio)
+        let record = VoiceMemoTranscriptRecord(sourceImageFilename: "a.jpg", sourceMemoFilename: "a.wav",
+            memoByteCount: memo.byteCount, memoSHA256: memo.sha256, associationProfileIdentifier: "test",
+            localeIdentifier: "en", provider: "Apple on-device speech", providerModel: "System managed",
+            generatedAt: Date(), generatedText: "hello", reviewedText: "hello")
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            try await MetadataSidecarService().createVoiceMemoTranscriptSerialized(record, for: photo, in: folder,
+                expectedSourceRevision: source, expectedMemoURL: audio, expectedRelationshipRevision: witness,
+                beforeCommit: {
+                    if replace { try bytes.write(to: relationship, options: .atomic) }
+                    else { try (bytes + Data("\n ".utf8)).write(to: relationship) }
+                })
+        }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path))
+    }
+
+    @Test("A parse-equivalent relationship rewrite during recognition leaves no generated draft")
+    func relationshipDriftDuringRecognition() async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("RelationshipInference-\(UUID())").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg"), audio = folder.appendingPathComponent("a.wav")
+        try Data("photo".utf8).write(to: photo); try Data("audio".utf8).write(to: audio)
+        let repository = VoiceMemoCompanionRepository()
+        try repository.save(.init(profileIdentifier: "test", imageURL: photo, memoURL: audio))
+        let relationship = repository.recordURL(for: photo), bytes = try Data(contentsOf: relationship)
+        let locale = Locale(identifier: "en-US")
+        let runtime = VoiceMemoTranscriptionRuntime(isAvailable: { true }, supportedLocales: { [locale] },
+            resolveLocale: { _ in locale }, assetStatus: { _ in .installed }, installAssets: { _ in },
+            transcribe: { _, _ in try (bytes + Data("\n ".utf8)).write(to: relationship); return "hello" })
+        let registry = AutomationOperationRegistry(storageDirectory: folder.appendingPathComponent("operations"))
+        let service = AutomationVoiceTranscriptionBatchService(registry: registry,
+            dependencies: .live(service: VoiceMemoTranscriptionService(runtime: runtime)))
+        let admitted = try await service.submit(imageURLs: [photo], provider: .apple(locale))
+        let completed = try await service.waitForCompletion(admitted.id)
+        #expect(completed.outcome == .failed)
+        #expect(completed.batchProgress?.items.map(\.outcome) == [.stale])
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path))
+    }
+
+    @Test("Native relationship evidence refuses symlinks, hard links and oversized records", arguments: ["symlink", "hardlink", "oversized"])
+    func unsafeRelationshipEvidence(kind: String) throws {
+        let folder = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("RelationshipUnsafe-\(UUID())").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("a.jpg"), relationship = VoiceMemoCompanionRepository().recordURL(for: photo)
+        let target = folder.appendingPathComponent("target.json")
+        try Data("{}".utf8).write(to: target)
+        switch kind {
+        case "symlink": try FileManager.default.createSymbolicLink(at: relationship, withDestinationURL: target)
+        case "hardlink": try FileManager.default.linkItem(at: target, to: relationship)
+        default: try Data(repeating: 32, count: 1_048_577).write(to: relationship)
+        }
+        #expect(throws: VoiceMemoTranscriptionError.sourceChanged) { try VoiceMemoRelationshipRevision.capture(for: photo) }
+    }
+
     @Test("external title edits during transcript admission preserve exact edited carrier bytes", arguments: [false, true])
     func externalTitleDriftDuringAdmission(createOnly: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("DraftTitleDrift-\(UUID().uuidString)")

@@ -1,6 +1,57 @@
 import AVFAudio
 import Foundation
+import CryptoKit
+import Darwin
 import Speech
+
+/// Session-only exact relationship carrier evidence, separate from portable source content identity.
+/// Bounded no-follow reads include inode and nanosecond mtime/ctime so even equal-byte replacement
+/// invalidates native confirmation. This token is never consent or helper root authority.
+nonisolated struct VoiceMemoRelationshipRevision: Equatable, Sendable {
+    let url: URL
+    let revision: String
+
+    static func capture(for image: URL) throws -> Self {
+        try capture(at: VoiceMemoCompanionRepository().recordURL(for: image))
+    }
+
+    private static func capture(at url: URL) throws -> Self {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw VoiceMemoTranscriptionError.sourceChanged }
+        defer { Darwin.close(descriptor) }
+        var before = stat(), after = stat(), named = stat()
+        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_nlink == 1, before.st_size >= 0, before.st_size <= 1_048_576 else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        var bytes = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            try Task.checkCancellation()
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0, count <= 1_048_576 - bytes.count else { throw VoiceMemoTranscriptionError.sourceChanged }
+            if count == 0 { break }
+            bytes.append(contentsOf: buffer.prefix(count))
+        }
+        func facts(_ value: stat) -> [String] {
+            [String(value.st_dev), String(value.st_ino), String(value.st_mode), String(value.st_nlink),
+             String(value.st_size), String(value.st_mtimespec.tv_sec), String(value.st_mtimespec.tv_nsec),
+             String(value.st_ctimespec.tv_sec), String(value.st_ctimespec.tv_nsec)]
+        }
+        guard fstat(descriptor, &after) == 0, lstat(url.path, &named) == 0,
+              facts(before) == facts(after), facts(after) == facts(named), bytes.count == before.st_size else {
+            throw VoiceMemoTranscriptionError.sourceChanged
+        }
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let evidence = try JSONEncoder().encode([url.standardizedFileURL.path, digest] + facts(after))
+        return Self(url: url.standardizedFileURL,
+                    revision: SHA256.hash(data: evidence).map { String(format: "%02x", $0) }.joined())
+    }
+
+    func requireUnchanged() throws {
+        guard try Self.capture(at: url) == self else { throw VoiceMemoTranscriptionError.sourceChanged }
+    }
+}
 
 nonisolated enum VoiceMemoTranscriptionAssetStatus: Equatable, Sendable {
     case unsupported
@@ -411,7 +462,7 @@ actor VoiceMemoTranscriptionService {
         VoiceMemoTranscriptRecord, URL, URL
     ) async throws -> VoiceMemoTranscriptRecord
 
-    typealias CreateTranscript = @Sendable (VoiceMemoTranscriptRecord, URL, URL, SourceImageRevision, URL) async throws -> VoiceMemoTranscriptRecord
+    typealias CreateTranscript = @Sendable (VoiceMemoTranscriptRecord, URL, URL, SourceImageRevision, URL, VoiceMemoRelationshipRevision?) async throws -> VoiceMemoTranscriptRecord
 
     private let createTranscript: CreateTranscript
     private let runtime: VoiceMemoTranscriptionRuntime
@@ -443,9 +494,10 @@ actor VoiceMemoTranscriptionService {
                 transcript, for: imageURL, in: folderURL
             )
         },
-        createTranscript: @escaping CreateTranscript = { record, image, folder, source, memo in
+        createTranscript: @escaping CreateTranscript = { record, image, folder, source, memo, relationship in
             try await MetadataSidecarService().createVoiceMemoTranscriptSerialized(
-                record, for: image, in: folder, expectedSourceRevision: source, expectedMemoURL: memo
+                record, for: image, in: folder, expectedSourceRevision: source, expectedMemoURL: memo,
+                expectedRelationshipRevision: relationship
             )
         },
         now: @escaping @Sendable () -> Date = Date.init,
@@ -629,7 +681,8 @@ actor VoiceMemoTranscriptionService {
     /// Human review and replacement remain explicit native actions.
     func persistGeneratedDraft(
         _ draft: VoiceMemoTranscriptDraft,
-        expectedSourceRevision: SourceImageRevision
+        expectedSourceRevision: SourceImageRevision,
+        expectedRelationshipRevision: VoiceMemoRelationshipRevision? = nil
     ) async throws -> VoiceMemoTranscriptDraft {
         try Task.checkCancellation()
         guard !draft.isApproved else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
@@ -655,7 +708,7 @@ actor VoiceMemoTranscriptionService {
             generatedAt: draft.generatedAt, generatedText: text, reviewedText: text, approvedAt: nil,
             whisperProvenance: draft.whisperProvenance)
         try Task.checkCancellation()
-        let installed = try await createTranscript(record, image, folder, expectedSourceRevision, association.memoURL)
+        let installed = try await createTranscript(record, image, folder, expectedSourceRevision, association.memoURL, expectedRelationshipRevision)
         // Creation verifies its saved bytes before returning. A cancellation after that durable
         // boundary must not turn the successful save into a no-effects cancellation claim.
         return VoiceMemoTranscriptDraft(imageURL: image, memoURL: association.memoURL,

@@ -431,14 +431,21 @@ struct MetadataSidecarService: Sendable {
         in folderURL: URL,
         expectedSourceRevision: SourceImageRevision,
         expectedMemoURL: URL,
+        expectedRelationshipRevision: VoiceMemoRelationshipRevision? = nil,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
     ) async throws -> VoiceMemoTranscriptRecord {
         guard transcript.approvedAt == nil else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+        if let expectedRelationshipRevision {
+            guard expectedRelationshipRevision.url == VoiceMemoCompanionRepository().recordURL(for: imageURL).standardizedFileURL else {
+                throw VoiceMemoTranscriptionError.sourceChanged
+            }
+        }
         let reservation = try MCPProcessReservation.acquirePhoto(imageURL)
         defer { reservation.release() }
         return try await saveVoiceMemoTranscriptSerialized(transcript, for: imageURL, in: folderURL,
             createOnly: true, beforeCommit: {
                 try beforeCommit()
+                try expectedRelationshipRevision?.requireUnchanged()
                 try VoiceMemoTranscriptionService.requireRegularInput(imageURL)
                 try VoiceMemoTranscriptionService.requireRegularInput(expectedMemoURL)
                 let expected = VoiceMemoAssociation(profileIdentifier: transcript.associationProfileIdentifier,
@@ -454,6 +461,7 @@ struct MetadataSidecarService: Sendable {
                 guard try VoiceMemoTranscriptionService.lookupRegularAssociation(for: imageURL) == .available(expected) else {
                     throw VoiceMemoTranscriptionError.sourceChanged
                 }
+                try expectedRelationshipRevision?.requireUnchanged()
             })
     }
 

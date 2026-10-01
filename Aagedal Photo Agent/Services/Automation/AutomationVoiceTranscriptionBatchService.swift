@@ -15,6 +15,7 @@ actor AutomationVoiceTranscriptionBatchService {
         let sourceRevision: SourceImageRevision
         let association: VoiceMemoAssociation
         let memoRevision: SourceImageRevision
+        let relationshipRevision: VoiceMemoRelationshipRevision
     }
 
     /// Session-only consent evidence. This contains exact source and WAV identities,
@@ -27,7 +28,7 @@ actor AutomationVoiceTranscriptionBatchService {
     nonisolated struct Dependencies: Sendable {
         let capture: @Sendable (URL) async throws -> Input
         let generate: @Sendable (URL, Provider) async throws -> VoiceMemoTranscriptDraft
-        let save: @Sendable (VoiceMemoTranscriptDraft, SourceImageRevision) async throws -> VoiceMemoTranscriptDraft
+        let save: @Sendable (VoiceMemoTranscriptDraft, Input) async throws -> VoiceMemoTranscriptDraft
 
         static func live(service: VoiceMemoTranscriptionService) -> Self {
             let admission = VoiceTranscriptionBatchInputReader()
@@ -36,7 +37,7 @@ actor AutomationVoiceTranscriptionBatchService {
                 case .apple(let locale): try await service.transcribe(imageURL: image, locale: locale)
                 case .whisper(let provider): try await service.transcribe(imageURL: image, provider: provider)
                 }
-            }, save: { try await service.persistGeneratedDraft($0, expectedSourceRevision: $1) })
+            }, save: { try await service.persistGeneratedDraft($0, expectedSourceRevision: $1.sourceRevision, expectedRelationshipRevision: $1.relationshipRevision) })
         }
     }
 
@@ -115,6 +116,7 @@ actor AutomationVoiceTranscriptionBatchService {
         expected.imageURL == current.imageURL && expected.association == current.association
             && expected.sourceRevision.relationship(to: current.sourceRevision) == .exactRevision
             && expected.memoRevision.relationship(to: current.memoRevision) == .exactRevision
+            && expected.relationshipRevision == current.relationshipRevision
     }
 
     private nonisolated static func validate(_ draft: VoiceMemoTranscriptDraft, input: Input) throws {
@@ -150,7 +152,7 @@ actor AutomationVoiceTranscriptionBatchService {
                 guard matches(input, try await dependencies.capture(input.imageURL)) else { throw Failure.sourceChanged }
                 try await context.markEffectsMayHaveOccurred()
                 saving = true
-                let saved = try await dependencies.save(draft, input.sourceRevision)
+                let saved = try await dependencies.save(draft, input)
                 // Durable semantic read-back must match the entire unapproved draft.
                 try validate(saved, input: input)
                 let dates = ISO8601DateFormatter()
@@ -221,12 +223,15 @@ private actor VoiceTranscriptionBatchInputReader {
               association.memoURL.pathExtension.lowercased() == "wav" else {
             throw VoiceMemoTranscriptionError.relationshipUnavailable
         }
+        let relationship = try VoiceMemoRelationshipRevision.capture(for: image)
         let source = try await SourceImageRevision.capture(at: image)
         let memo = try await SourceImageRevision.capture(at: association.memoURL)
         try Task.checkCancellation()
         guard try VoiceMemoTranscriptionService.lookupRegularAssociation(for: image) == .available(association) else {
             throw AutomationVoiceTranscriptionBatchService.Failure.sourceChanged
         }
-        return .init(imageURL: image, sourceRevision: source, association: association, memoRevision: memo)
+        try relationship.requireUnchanged()
+        return .init(imageURL: image, sourceRevision: source, association: association, memoRevision: memo,
+                     relationshipRevision: relationship)
     }
 }

@@ -90,7 +90,8 @@ struct AutomationVoiceTranscriptionBatchTests {
         let memo = url.deletingPathExtension().appendingPathExtension("WAV")
         return .init(imageURL: url, sourceRevision: revision(url, changed: changed),
                      association: .init(profileIdentifier: "test-profile", imageURL: url, memoURL: memo),
-                     memoRevision: revision(memo))
+                     memoRevision: revision(memo),
+                     relationshipRevision: .init(url: VoiceMemoCompanionRepository().recordURL(for: url), revision: String(repeating: "c", count: 64)))
     }
     private nonisolated static func draft(_ url: URL) -> VoiceMemoTranscriptDraft {
         let value = input(url)

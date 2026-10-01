@@ -176,7 +176,8 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
     private nonisolated static func input(_ url: URL, changed: Bool = false) -> AutomationVoiceTranscriptionBatchService.Input {
         let memo = url.deletingPathExtension().appendingPathExtension("WAV")
         return .init(imageURL: url, sourceRevision: revision(url, changed: changed),
-                     association: .init(profileIdentifier: "test", imageURL: url, memoURL: memo), memoRevision: revision(memo))
+                     association: .init(profileIdentifier: "test", imageURL: url, memoURL: memo), memoRevision: revision(memo),
+                     relationshipRevision: .init(url: VoiceMemoCompanionRepository().recordURL(for: url), revision: String(repeating: "c", count: 64)))
     }
     private nonisolated static func draft(_ url: URL) -> VoiceMemoTranscriptDraft {
         let input = input(url)
