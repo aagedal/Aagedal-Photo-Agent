@@ -1425,6 +1425,15 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 117 continuation (2026-10-01):** A separate epoch-bound transcription request domain
+now retains exact ordered helper preview intent and exposes native Settings inspection and
+pre-admission cancellation. Whole-set rooted evidence remains retained through private request
+publication, and native inspection compares the original request and regenerated plan intent.
+Native Caption batch consent additionally binds raw relationship bytes and exact filesystem revision,
+including a final check inside create-only draft saving. Provider consent/admission, exact operation
+linkage, authenticated invocation and native cancelled-request capacity maintenance remain open.
+See [cycle 117 evidence](release/cycle-117-transcription-review-intent-2026-10-01.md).
+
 **Cycle 116 continuation (2026-09-30):** `prepare_voice_transcription` and
 `get_voice_transcription_plan` add immutable, expiring previews for ordered explicit photo sets.
 Exact source, metadata, persisted relationship and WAV evidence plus requested provider options

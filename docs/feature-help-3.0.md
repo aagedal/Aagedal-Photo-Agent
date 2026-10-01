@@ -143,7 +143,21 @@ The tool writes only a private, immutable preview and returns a `planID`, valid 
 `get_voice_transcription_plan` accepts only that `planID` and returns the unchanged preview after
 rechecking every input and folder grant. Changed or expired plans require a new preparation.
 Neither tool runs inference, downloads assets, saves drafts, approves text or grants consent.
-Native review handoff and helper execution remain under implementation.
+To request native intent review, call `get_voice_transcription_review_capacity` without arguments
+for the transcription-specific `requestEpoch`, then `request_voice_transcription_review` with that
+epoch, a client-generated lowercase canonical `requestID`, and the `planID`. Reuse all three for
+an exact retry. New requests revalidate the whole ordered set while retaining its reservations;
+retries retrieve retained status even after the preview expires. These are separate from IPTC
+review handles. `list_voice_transcription_review_requests` takes no arguments;
+`get_voice_transcription_review_request` and `cancel_voice_transcription_review_request` accept only
+`requestID` and its original `requestEpoch`.
+
+In **Settings → Automation → Transcription Intent Review**, refresh requests and choose
+**Inspect Transcription Intent** to revalidate the preview and display photo order and requested
+provider/language/translation/GPU options. **Cancel Before Admission** retains a cancelled intent.
+Changed or expired previews cannot be inspected, but their request remains cancellable. The archive
+retains at most 64 requests without automatic eviction. Inspecting supplies no provider consent or
+operation link; execution, authenticated invocation and native capacity cleanup remain unfinished.
 
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not

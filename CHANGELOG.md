@@ -10,6 +10,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added a separate transcription intent inbox in Automation Settings. MCP clients can queue
+  epoch-bound requests for exact ordered previews, inspect their intent and cancel before admission.
+  Native inspection revalidates inputs and grants no execution consent; provider admission and
+  operation linkage remain under implementation.
+- Native batch transcription now refuses raw relationship rewrites and equal-byte carrier
+  replacements after confirmation, including a final revision check inside create-only draft saving.
+
 - Added immutable automation previews for ordered voice-transcription batches of up to eight
   photos. Exact photo, relationship, WAV and metadata revisions plus requested provider options
   are retained for five minutes and rechecked on retrieval. Previews grant no execution consent.

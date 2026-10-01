@@ -159,6 +159,10 @@ the support table and validation records.
   photos and requested provider options. `get_voice_transcription_plan` rechecks every photo,
   metadata, relationship, WAV and root grant before returning it. Preparation writes private
   coordination storage; neither tool grants consent, starts inference or saves drafts.
+  Separate epoch-bound transcription review requests can be queued, inspected and cancelled through
+  MCP, then revalidated in Settings → Automation → Transcription Intent Review. Photo order and
+  requested provider options remain exact. Provider consent, native execution and operation linkage
+  for these requests remain unfinished.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
