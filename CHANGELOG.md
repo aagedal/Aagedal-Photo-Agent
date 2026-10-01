@@ -13,7 +13,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Added a separate transcription intent inbox in Automation Settings. MCP clients can queue
   epoch-bound requests for exact ordered previews, inspect their intent and cancel before admission.
   Native inspection revalidates inputs and grants no execution consent; provider admission and
-  operation linkage remain under implementation.
+  authenticated execution remain under implementation. Explicit confirmed cleanup now retires
+  requests cancelled before admission while preserving awaiting and admitted evidence.
+- Added internal exact-operation transcription admission and linkage before recognition. Reserved
+  operation identities and one-way retained admission prevent uncertain work from replaying;
+  this coordination foundation supplies no provider consent or authenticated helper execution.
 - Native batch transcription now refuses raw relationship rewrites and equal-byte carrier
   replacements after confirmation, including a final revision check inside create-only draft saving.
 

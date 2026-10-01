@@ -139,8 +139,13 @@ This is separate from the unapproved AI-origin analyzer described above.
   coordination storage only. Separate epoch-bound review requests retain that exact intent and
   can be inspected or cancelled in Automation Settings; the transcription archive retains at most
   64 records without automatic eviction. Inspection revalidates the plan and grants no consent.
-  Provider/model admission, exact operation linkage, authenticated invocation and native cancelled-request
-  capacity cleanup remain unfinished. Native batch confirmation additionally binds the raw relationship
+  Internal admission now binds the original request, epoch, intent and reserved operation UUID;
+  exact configured-operation linkage precedes scheduling, and interrupted admission cannot replay.
+  These caller-supplied executor hooks do not bind prepared provider/options/model identity or
+  rooted execution authority. The archived managed-owner flag does not establish current liveness.
+  Native confirmed capacity cleanup retires only pre-admission cancellations and rotates the epoch;
+  awaiting, admitted, linked and uncertain evidence remains retained. Stale confirmation refuses.
+  Provider/model admission and authenticated invocation remain unfinished. Native batch confirmation additionally binds the raw relationship
   bytes and inode/mtime/ctime revision, with a final check inside the create-only save lock. Authenticated IPC remains unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
   integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
   remain release gates.

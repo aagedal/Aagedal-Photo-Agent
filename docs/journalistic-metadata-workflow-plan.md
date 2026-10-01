@@ -1425,6 +1425,16 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 118 continuation (2026-10-01):** Internal transcription coordination now reserves the
+exact operation UUID before durable admission, binds it to the original request/epoch/intent and
+owner, and verifies the actual configured queued operation under history/request locks before
+recognition can start. Interrupted admission cannot replay. Native Settings adds explicit
+cancelled-request capacity maintenance with displayed-epoch confirmation and stale-completion
+refusal. Only pre-admission cancellation retires; awaiting, admitted, linked and uncertain evidence
+remains retained. These hooks supply no provider consent, rooted execution or authenticated IPC.
+Provider/model/options binding to rooted intent, production execution and release qualification
+remain open. See [cycle 118 evidence](release/cycle-118-transcription-linkage-capacity-2026-10-01.md).
+
 **Cycle 117 continuation (2026-10-01):** A separate epoch-bound transcription request domain
 now retains exact ordered helper preview intent and exposes native Settings inspection and
 pre-admission cancellation. Whole-set rooted evidence remains retained through private request

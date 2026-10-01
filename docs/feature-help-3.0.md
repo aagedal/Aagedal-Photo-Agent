@@ -157,7 +157,12 @@ In **Settings → Automation → Transcription Intent Review**, refresh requests
 provider/language/translation/GPU options. **Cancel Before Admission** retains a cancelled intent.
 Changed or expired previews cannot be inspected, but their request remains cancellable. The archive
 retains at most 64 requests without automatic eviction. Inspecting supplies no provider consent or
-operation link; execution, authenticated invocation and native capacity cleanup remain unfinished.
+operation link; provider execution and authenticated invocation remain unfinished.
+Choose **Review transcription request capacity** to see the retained count and eligible
+cancellations, then **Remove cancelled transcription requests** and confirm to retire only
+requests cancelled before admission. Cleanup rotates the current epoch and preserves awaiting,
+admitted, linked and uncertain evidence. Retained handles keep their original epochs; removed
+intent cannot be retried with its old epoch. A changed confirmation epoch refuses cleanup.
 
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not

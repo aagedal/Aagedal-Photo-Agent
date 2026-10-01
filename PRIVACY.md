@@ -109,6 +109,16 @@ no consent and starts no inference or download. Archive checksums detect corrupt
 authenticate execution authority. Connected clients can retain returned previews under their own
 policies.
 
+Separate transcription review requests retain the immutable preview intent, request/epoch handles,
+digests, timestamps, cancellation and internal admission/operation identities in
+`~/Library/Application Support/Aagedal Photo Agent/Automation/.aagedal-photo-agent-voice-transcription-review-requests`.
+The archive holds at most 64 records / 1 MiB with no automatic eviction. Native Settings can explicitly
+retire requests cancelled before admission after epoch-bound confirmation; awaiting, admitted, linked
+and uncertain records remain retained. Cleanup grants no consent and changes no photos, audio or drafts.
+These records contain ordered photo paths and requested options, but no audio or transcript text.
+Checksums do not authenticate consent. Internal linkage does not establish provider/model readiness or
+current executor liveness; helper execution remains unavailable.
+
 Operation status and cancellation tools require local automation to be enabled. They return only
 opaque operation IDs, fixed kind/state/outcome values and timestamps, not paths, metadata or owner IDs.
 The private registry at `~/Library/Application Support/Aagedal Photo Agent/Automation/Operations`
