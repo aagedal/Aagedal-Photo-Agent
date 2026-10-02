@@ -731,4 +731,94 @@ struct AutomationTranscriptionReviewModelTests {
         #expect(UITestTranscriptionReviewFixture.service(configuration: ordinary, environment: ["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW": "1"]) == nil)
         #expect(UITestTranscriptionReviewFixture.service(configuration: enabled, environment: [:]) == nil)
     }
+    @Test("Authenticated helper start consumes exact native consent once before submission") @MainActor
+    func helperExecutionConsumesOnce() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, running, terminal) = try await executionFixture(f)
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        await service.configureExecution(prepared: prepared, record: running)
+        var begun = 0, ended = 0
+        let model = AutomationTranscriptionReviewModel(service: service,
+            beginExecution: { begun += 1; return true }, endExecution: { ended += 1 })
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.prepareExecution(provider: prepared.providerBinding.provider, whisperKind: .curated)
+        try await waitUntil { !model.isPreparingExecution }
+        #expect(!model.consumeHelperExecutionGrant(f.record))
+        model.allowHelperExecutionOnce()
+        #expect(model.helperGrantExpiresAt == nil)
+        model.executionConsent = true
+        #expect(!model.consumeHelperExecutionGrant(f.record), "Checkbox alone is not helper permission")
+        model.allowHelperExecutionOnce()
+        #expect(model.helperGrantExpiresAt != nil && begun == 0)
+        let other = try f.requests.request(requestID: UUID(), requestEpoch: #require(UUID(uuidString: f.record.requestEpoch)),
+            planID: f.record.planID, plans: f.plans, facade: f.facade)
+        #expect(!model.consumeHelperExecutionGrant(other))
+        #expect(model.helperGrantExpiresAt != nil && model.executionConsent)
+        #expect(model.consumeHelperExecutionGrant(f.record))
+        #expect(!model.consumeHelperExecutionGrant(f.record), "Retry before durable linkage must not replay")
+        #expect(begun == 1 && model.helperGrantExpiresAt == nil && !model.executionConsent)
+        model.clear()
+        #expect(model.isRunning, "Dismissal cannot abandon a consumed grant's owner")
+        try await waitUntil { await service.executionWaitPending }
+        #expect(await service.submissionConsents == [true])
+        await service.completeExecution(terminal); try await waitUntil { !model.isRunning }
+        #expect(ended == 1 && model.operation == terminal)
+    }
+
+    @Test("Helper consent expires and native review changes invalidate the grant",
+          arguments: ["expiry", "withdraw", "withdrawRecheck", "provider", "providerBeforeObserver", "clear", "presentation", "pollFailure"]) @MainActor
+    func helperExecutionGrantInvalidation(action: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, running, _) = try await executionFixture(f)
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        await service.configureExecution(prepared: prepared, record: running)
+        var currentTime = Date()
+        var currentClock = ContinuousClock.now
+        var providerSelection = "original exact provider"
+        let model = AutomationTranscriptionReviewModel(service: service, beginExecution: { true }, endExecution: {},
+            nativeConsentTime: { currentTime }, nativeConsentClock: { currentClock })
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.prepareExecution(provider: prepared.providerBinding.provider, whisperKind: .curated, selectionIdentity: { providerSelection })
+        try await waitUntil { !model.isPreparingExecution }
+        model.executionConsent = true; model.allowHelperExecutionOnce()
+        #expect(model.helperGrantExpiresAt == currentTime.addingTimeInterval(60))
+        switch action {
+        case "expiry":
+            currentTime = currentTime.addingTimeInterval(-3600)
+            currentClock = currentClock.advanced(by: .seconds(60))
+        case "providerBeforeObserver": providerSelection = "changed Settings selection before observation"
+        case "withdraw": model.executionConsent = false
+        case "withdrawRecheck": model.executionConsent = false; model.executionConsent = true
+        case "provider": model.invalidateExecutionReview()
+        case "presentation":
+            model.inspectInvocation(requestID: try #require(UUID(uuidString: f.record.requestID)),
+                requestEpoch: try #require(UUID(uuidString: f.record.requestEpoch)))
+            try await waitUntil { !model.isLoading }
+        case "pollFailure":
+            await service.configure(failList: true); model.refreshRequestEvidence()
+            try await waitUntil { !model.isRefreshingEvidence }
+        default: model.clear()
+        }
+        #expect(!model.consumeHelperExecutionGrant(f.record))
+        #expect(!model.isRunning)
+        #expect(await service.submissionConsents.isEmpty)
+        if action != "expiry" { #expect(model.helperGrantExpiresAt == nil) }
+    }
+
+    @Test("Timed-out queued native handoff never consumes consent")
+    func timedOutHandoff() {
+        let pending = AutomationNativeInvocationController.ExecutionHandoff()
+        #expect(!pending.wait(timeout: 0))
+        var consumed = false
+        pending.resolve { consumed = true; return true }
+        #expect(!consumed)
+        let completed = AutomationNativeInvocationController.ExecutionHandoff()
+        completed.resolve { true }
+        #expect(completed.wait(timeout: 0))
+        completed.resolve { consumed = true; return true }
+        #expect(!consumed)
+    }
+
 }

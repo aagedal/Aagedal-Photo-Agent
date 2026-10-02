@@ -284,7 +284,13 @@ final class AutomationTranscriptionReviewModel {
     }
     private let service: any AutomationTranscriptionReviewServing
     private(set) var executionReview: MCPNativeVoiceTranscriptionBindingService.PreparedBinding?
-    var executionConsent = false
+    var executionConsent = false {
+        didSet { if !executionConsent { helperGrantExpiresAt = nil; helperGrantDeadline = nil } }
+    }
+    private(set) var helperGrantExpiresAt: Date?
+    private var helperGrantDeadline: ContinuousClock.Instant?
+    private var preparedSelectionIdentity: String?
+    private var currentSelectionIdentity: @MainActor () -> String? = { nil }
     private(set) var isPreparingExecution = false
     private(set) var isRunning = false
     private(set) var isRequestingCancellation = false
@@ -297,6 +303,8 @@ final class AutomationTranscriptionReviewModel {
     private var cancellationRequested = false
     private let beginExecution: @MainActor () -> Bool
     private let endExecution: @MainActor () -> Void
+    private let nativeConsentTime: @MainActor () -> Date
+    private let nativeConsentClock: @MainActor () -> ContinuousClock.Instant
     private(set) var isCancelling = false
     private var inspectingRequest: MCPVoiceTranscriptionReviewRequestStore.Record?
     private var evidenceGeneration = UUID()
@@ -308,14 +316,21 @@ final class AutomationTranscriptionReviewModel {
 
     init(service: any AutomationTranscriptionReviewServing = AutomationTranscriptionReviewService(),
          beginExecution: @escaping @MainActor () -> Bool = { FFmpegWhisperSetupModel.shared.beginTranscription() },
-         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() }) {
+         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() },
+         nativeConsentTime: @escaping @MainActor () -> Date = Date.init,
+         nativeConsentClock: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) {
         self.service = service; self.beginExecution = beginExecution; self.endExecution = endExecution
+        self.nativeConsentTime = nativeConsentTime
+        self.nativeConsentClock = nativeConsentClock
     }
 
     func prepareExecution(provider: AutomationVoiceTranscriptionBatchService.Provider?,
-                          whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) {
+                          whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?,
+                          selectionIdentity: @escaping @MainActor () -> String? = { nil }) {
         guard !isRunning, !isCancelling, !isRecoveringCapacity, let selectedRequest, review != nil, message == nil else { return }
         invalidateExecutionReview()
+        currentSelectionIdentity = selectionIdentity
+        let selectedIdentity = selectionIdentity()
         guard let provider else {
             executionMessage = "The selected Settings provider is not ready. Complete its setup in Transcription Settings, then review again. No consent was granted."
             return
@@ -327,7 +342,11 @@ final class AutomationTranscriptionReviewModel {
                 let prepared = try await service.prepareExecution(selectedRequest, provider: provider, whisperKind: whisperKind)
                 guard prepared.request == selectedRequest else { throw MCPNativeVoiceTranscriptionBindingService.Failure.requestChanged }
                 guard let self, self.executionGeneration == expected, self.selectedRequest == selectedRequest, !Task.isCancelled else { return }
+                guard self.currentSelectionIdentity() == selectedIdentity else {
+                    self.invalidateExecutionReview(); return
+                }
                 self.executionReview = prepared
+                self.preparedSelectionIdentity = selectedIdentity
                 self.isPreparingExecution = false; self.preparationTask = nil
             } catch {
                 guard let self, self.executionGeneration == expected, !Task.isCancelled else { return }
@@ -337,13 +356,35 @@ final class AutomationTranscriptionReviewModel {
         }
     }
 
-    /// Owns a retained task: dismissing Settings invalidates only unconfirmed review.
-    func confirmExecution() {
+    /// Native action only. The grant belongs to this exact prepared review and
+    /// expires in one minute; it is never serialized or sent to the helper.
+    func allowHelperExecutionOnce() {
+        guard requireCurrentProviderSelection() else { return }
         guard executionConsent, !isRunning, !isPreparingExecution, !isRefreshingEvidence,
               message == nil, let prepared = executionReview, selectedRequest == prepared.request else { return }
+        helperGrantExpiresAt = nativeConsentTime().addingTimeInterval(60)
+        helperGrantDeadline = nativeConsentClock().advanced(by: .seconds(60))
+    }
+
+    /// Called only after authenticated app-side resolution of this exact request.
+    /// Refusal of another handle preserves the grant; admission consumes it before
+    /// any suspension, so retries and lost acknowledgments cannot start twice.
+    func consumeHelperExecutionGrant(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) -> Bool {
+        guard let deadline = helperGrantDeadline, nativeConsentClock() < deadline,
+              selectedRequest == request, executionReview?.request == request else { return false }
+        return startConfirmedExecution()
+    }
+
+    /// Owns a retained task: dismissing Settings invalidates only unconfirmed review.
+    func confirmExecution() { _ = startConfirmedExecution() }
+
+    private func startConfirmedExecution() -> Bool {
+        guard requireCurrentProviderSelection() else { return false }
+        guard executionConsent, !isRunning, !isPreparingExecution, !isRefreshingEvidence,
+              message == nil, let prepared = executionReview, selectedRequest == prepared.request else { return false }
         guard beginExecution() else {
             executionMessage = "Finish the current transcription before starting this request."
-            return
+            return false
         }
         invalidateExecutionReview()
         invalidateEvidence()
@@ -387,6 +428,16 @@ final class AutomationTranscriptionReviewModel {
                 finishExecution(); refreshRequestEvidence()
             }
         }
+        return true
+    }
+
+    /// Settings observers can be queued behind this invocation. Read the current
+    /// selection synchronously before consumption rather than trusting UI timing.
+    private func requireCurrentProviderSelection() -> Bool {
+        guard currentSelectionIdentity() == preparedSelectionIdentity else {
+            invalidateExecutionReview(); return false
+        }
+        return true
     }
 
     func requestExecutionCancellation() {
@@ -408,6 +459,9 @@ final class AutomationTranscriptionReviewModel {
     func invalidateExecutionReview() {
         executionGeneration = UUID(); preparationTask?.cancel(); preparationTask = nil
         executionReview = nil; executionConsent = false; isPreparingExecution = false
+        helperGrantExpiresAt = nil
+        helperGrantDeadline = nil; preparedSelectionIdentity = nil
+        currentSelectionIdentity = { nil }
         if !isRunning { executionMessage = nil }
     }
 

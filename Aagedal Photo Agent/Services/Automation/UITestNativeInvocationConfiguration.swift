@@ -73,6 +73,9 @@ nonisolated struct UITestNativeInvocationConfiguration: Sendable {
             voiceTranscriptionReviewRequests: requests, nativeReviewInvocation: { id, epoch in
                 try AutomationNativeInvocationChannel.Client(directory: directory)
                     .invoke(.init(requestID: id, requestEpoch: epoch))
+            }, nativeExecutionInvocation: { id, epoch in
+                try AutomationNativeInvocationChannel.Client(directory: directory)
+                    .invoke(.init(requestID: id, requestEpoch: epoch, kind: .start))
             })
     }
 }

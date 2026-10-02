@@ -1,15 +1,15 @@
 # ADR-006: authenticated local native review handoff
 
-Date: 2026-10-02. Status: accepted for the bounded transcription review handoff.
+Date: 2026-10-02. Status: accepted for bounded transcription review and one-use native execution handoff.
 
 ## Decision
 
 The independently launched STDIO helper may ask the running app to present one exact retained
-transcription request. The local channel accepts only a schema version, fixed review kind and
+transcription request. The local channel accepts only a schema version, fixed review/start kind and
 original lowercase request UUID/epoch. It cannot carry provider configuration, paths, transcript
-text, a consent flag or an execution capability. A successful `reviewRequired` response acknowledges
+text, a consent flag or a transferable execution capability. A successful `reviewRequired` response acknowledges
 the presentation request; it does not prove that the user has inspected, consented to or completed
-anything. Direct helper execution remains a separate unfinished boundary.
+anything. The start request requires a separate exact in-memory native grant as described below.
 
 Use a private Unix-domain socket. No launchd service installation, network listener or application
 launch is required. The app starts its listener only with local automation enabled and stops it when
@@ -65,7 +65,7 @@ Native UI tests and socket tests with injected peer checks are distinct from pro
 The disposable signed-pair probe exercises the actual Security framework and kernel credentials without
 touching host roots, preferences or models. Neither that probe nor development signing qualifies
 distribution signing, notarization, actual speech inference, physical power-loss recovery or release
-readiness. Broader authenticated execution requires a later decision and acceptance evidence.
+readiness. Broader workflow execution and actual provider qualification require separate acceptance evidence.
 
 [Cycle 122](release/cycle-122-installed-native-review-authority-2026-10-02.md) also joins
 the actual development-signed bundled helper, running app, retained request resolver and
@@ -76,3 +76,28 @@ the runner retains its sandbox with one narrow fixture-directory write exception
 storage routing injects no peer authentication and submits no inference. This bounded
 installed review evidence does not qualify distribution signing, real providers or direct
 helper execution.
+
+## One-use transcription start extension — cycle 123
+
+`start_voice_transcription` carries only the original canonical request UUID/epoch through the
+same authenticated channel. After exact preparation and concrete provider/options review,
+the user checks consent and explicitly allows the helper to start once. The grant remains
+in memory for 60 seconds measured with `ContinuousClock`; wall-clock changes cannot extend it.
+Withdrawal, provider selection changes, new review and dismissal invalidate it. Provider
+selection is checked synchronously before preparation publication, grant creation and consumption,
+including before SwiftUI observers run. The provider selection closure is released on invalidation.
+
+The listener uses a bounded one-second utility-to-MainActor handoff. Work that times out while
+queued cannot later consume a grant, and listener generations reject obsolete callbacks. A valid
+grant is consumed before scheduling asynchronous submission through the existing rooted native
+admission, durable linkage and draft executor. No wire flag grants consent. `executionRequested`
+acknowledges consumption/scheduling only: it reports no operation UUID, admission, execution or
+completion. A client must inspect retained operation history; an uncertain response is never a
+reason to replay. An already linked request returns its exact original operation handle after
+history validation and does not execute again.
+
+[Cycle 123](release/cycle-123-native-helper-transcription-start-2026-10-02.md) qualifies nine real
+signed-helper calls against the installed development-signed Debug app, including refusal without
+this grant, wrong epoch, successful grant consumption and linked retry. Recognition in that case
+is synthetic. Separate real production Whisper CLI evidence does not establish signed native
+provider integration, GPU acceleration or distribution qualification.

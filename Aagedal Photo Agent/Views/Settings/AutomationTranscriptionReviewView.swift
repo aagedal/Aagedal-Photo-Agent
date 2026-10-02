@@ -119,7 +119,8 @@ struct AutomationTranscriptionReviewView: View {
                     Text("Current Settings provider: \(whisperSetup.choice.title)")
                         .font(.caption)
                     Button("Review Selected Provider") {
-                        model.prepareExecution(provider: selectedProvider, whisperKind: selectedWhisperKind)
+                        model.prepareExecution(provider: selectedProvider, whisperKind: selectedWhisperKind,
+                            selectionIdentity: { providerSelectionIdentity })
                     }
                     .disabled(model.isRunning || model.isPreparingExecution || whisperSetup.isPreparing
                               || managedWhisper.isDownloading || managedWhisper.isRefreshing)
@@ -149,6 +150,7 @@ struct AutomationTranscriptionReviewView: View {
         }
         .accessibilityElement(children: .contain)
         .task {
+            nativeInvocation.registerExecutionModel(model)
             // The initial helper event may already be inspecting its exact epoch.
             if !model.isLoading && model.selectedRequest == nil && model.message == nil { model.refresh() }
             while !Task.isCancelled {
@@ -172,7 +174,7 @@ struct AutomationTranscriptionReviewView: View {
             model.inspectInvocation(requestID: review.requestID, requestEpoch: review.requestEpoch)
             nativeInvocation.consume(review)
         }
-        .onDisappear { model.clear() }
+        .onDisappear { nativeInvocation.unregisterExecutionModel(model); model.clear() }
     }
 
     private var selectedProvider: AutomationVoiceTranscriptionBatchService.Provider? {
@@ -229,6 +231,14 @@ struct AutomationTranscriptionReviewView: View {
             Button("Start Confirmed Transcription") { model.confirmExecution() }
                 .disabled(!model.executionConsent || model.isRefreshingEvidence || model.isRunning)
                 .accessibilityIdentifier("automation.confirmTranscriptionExecution")
+            Button("Allow Helper to Start Once") { model.allowHelperExecutionOnce() }
+                .disabled(!model.executionConsent || model.isRefreshingEvidence || model.isRunning)
+                .accessibilityIdentifier("automation.allowHelperTranscriptionExecution")
+            if let expires = model.helperGrantExpiresAt {
+                Text("The matching signed helper may start this exact request once before \(expires.formatted(date: .omitted, time: .standard)). Closing this view, reviewing again, changing the provider or withdrawing consent clears this permission. No transcription has started.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("automation.helperTranscriptionGrant")
+            }
         }
         .accessibilityElement(children: .contain)
     }

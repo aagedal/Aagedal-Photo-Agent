@@ -135,6 +135,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     /// disposable; the deterministic provider is never submitted for execution.
     @MainActor
     func testSignedBundledHelperOpensExactTranscriptionReviewWithoutExecution() throws {
+        try exerciseSignedBundledHelperTranscription(execute: false)
+    }
+
+    @MainActor
+    func testSignedBundledHelperConsumesExactNativeConsentAndCompletesDrafts() throws {
+        try exerciseSignedBundledHelperTranscription(execute: true)
+    }
+
+    @MainActor
+    private func exerciseSignedBundledHelperTranscription(execute: Bool) throws {
         guard installedHelperToken != nil else {
             throw XCTSkip("Run this qualification with scripts/ci/probe_installed_native_review.py so the real helper starts outside the XCTest runner sandbox. A standalone UI suite does not qualify this installed boundary.")
         }
@@ -262,6 +272,91 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(checkboxState(consent), false)
         XCTAssertFalse(settings.buttons["automation.confirmTranscriptionExecution"].isEnabled)
         try assertNoWrites()
+        if execute {
+            func start(epoch requestedEpoch: String) throws -> [String: Any] {
+                try invokeBundledTranscriptionHelper(helper, applicationPID: running.processIdentifier,
+                    root: folder, socket: socket, requestID: id, requestEpoch: requestedEpoch, tool: "start_voice_transcription")
+            }
+            func refusedStart(_ result: [String: Any]) throws {
+                XCTAssertEqual(result["isError"] as? Bool, true)
+                XCTAssertEqual((result["structuredContent"] as? [String: Any])?["code"] as? String, "native_execution_unavailable")
+            }
+            // Mere checked consent is never helper execution permission.
+            try refusedStart(start(epoch: epoch)); try assertNoWrites()
+            consent.click()
+            try refusedStart(start(epoch: epoch)); try assertNoWrites()
+            let allow = settings.buttons["automation.allowHelperTranscriptionExecution"]
+            XCTAssertTrue(allow.waitForExistence(timeout: 8)); XCTAssertTrue(allow.isEnabled); allow.click()
+            let grant = settings.staticTexts["automation.helperTranscriptionGrant"]
+            XCTAssertTrue(grant.waitForExistence(timeout: 8))
+            try refusedStart(start(epoch: UUID().uuidString.lowercased()))
+            XCTAssertTrue(grant.exists); XCTAssertEqual(checkboxState(consent), true); try assertNoWrites()
+            let started = try start(epoch: epoch)
+            XCTAssertEqual(started["isError"] as? Bool, false)
+            let scheduled = try XCTUnwrap(started["structuredContent"] as? [String: Any])
+            XCTAssertEqual(scheduled["status"] as? String, "executionRequested")
+            XCTAssertEqual(scheduled["nativeConsentConsumed"] as? Bool, true)
+            XCTAssertTrue(scheduled["operationID"] is NSNull)
+            XCTAssertEqual(scheduled["executionStarted"] as? Bool, false)
+            XCTAssertEqual(scheduled["completionConfirmed"] as? Bool, false)
+            let message = settings.staticTexts["automation.transcriptionExecutionMessage"]
+            XCTAssertTrue(message.waitForExistence(timeout: 15))
+            let finished = expectation(for: NSPredicate { _, _ in
+                self.visibleText(message).contains("Transcription finished: verified")
+            }, evaluatedWith: nil)
+            wait(for: [finished], timeout: 15)
+            XCTAssertFalse(grant.exists)
+            func archive(_ relative: String) throws -> [String: Any] {
+                let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+                    folder.appendingPathComponent(relative))) as? [String: Any])
+                let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+                return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            }
+            let requests = try XCTUnwrap(archive("transcription-review-requests/operations.json")["records"] as? [[String: Any]])
+            XCTAssertEqual(requests.count, 1)
+            let linked = try XCTUnwrap(requests.first)
+            XCTAssertEqual(linked["state"] as? String, "linked")
+            XCTAssertEqual(linked["requestID"] as? String, id)
+            let admission = try XCTUnwrap(linked["admission"] as? [String: Any])
+            // The portable record stores this only in admission; operationID
+            // is a computed property of the production linked record.
+            let operationID = try XCTUnwrap(admission["operationID"] as? String)
+            let operations = try XCTUnwrap(archive("transcription-review-operations/operations.json")["records"] as? [[String: Any]])
+            XCTAssertEqual(operations.count, 1)
+            let operation = try XCTUnwrap(operations.first)
+            XCTAssertEqual((operation["id"] as? String)?.lowercased(), operationID)
+            XCTAssertEqual((operation["ownerID"] as? String)?.lowercased(), admission["ownerID"] as? String)
+            XCTAssertEqual(operation["ownerLeaseManaged"] as? Bool, true)
+            XCTAssertEqual(operation["outcome"] as? String, "verified")
+            let progress = try XCTUnwrap(operation["batchProgress"] as? [String: Any])
+            let items = try XCTUnwrap(progress["items"] as? [[String: Any]])
+            XCTAssertEqual(items.count, paths.count)
+            XCTAssertTrue(items.allSatisfy { $0["outcome"] as? String == "draftSaved" })
+            let drafts = paths.map { folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: $0).lastPathComponent).meta.json") }
+            for draftURL in drafts {
+                let data = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: draftURL)) as? [String: Any])
+                let draft = try XCTUnwrap(data["voiceMemoTranscript"] as? [String: Any])
+                XCTAssertEqual(draft["generatedText"] as? String, "Synthetic review transcript")
+                XCTAssertNil(draft["approvedAt"])
+            }
+            // The source, association, plan and authorization bytes are unchanged;
+            // only exact retained admission/history and editable drafts were written.
+            for (url, bytes) in zip(preservedURLs, preserved) where !url.path.contains("transcription-review-requests/") {
+                XCTAssertEqual(try Data(contentsOf: url), bytes)
+            }
+            let writtenURLs = [folder.appendingPathComponent("transcription-review-requests/operations.json"),
+                folder.appendingPathComponent("transcription-review-operations/operations.json")] + drafts
+            let durableBytes = try writtenURLs.map { try Data(contentsOf: $0) }
+            let retry = try start(epoch: epoch)
+            XCTAssertEqual(retry["isError"] as? Bool, false)
+            let retryValue = try XCTUnwrap(retry["structuredContent"] as? [String: Any])
+            XCTAssertEqual(retryValue["status"] as? String, "linkedOperation")
+            XCTAssertEqual(retryValue["operationID"] as? String, operationID)
+            XCTAssertEqual(retryValue["nativeConsentConsumed"] as? Bool, false)
+            XCTAssertEqual(retryValue["executionStarted"] as? Bool, false)
+            XCTAssertEqual(retryValue["completionConfirmed"] as? Bool, false)
+            XCTAssertEqual(try writtenURLs.map { try Data(contentsOf: $0) }, durableBytes)
+        }
         // XCTest's terminate() can force-kill without delivering AppKit's quit
         // lifecycle. Use the real quit command to qualify listener shutdown.
         app.typeKey("q", modifierFlags: .command)
@@ -2940,7 +3035,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     /// production kernel peer and signature checks still decide authentication.
     @MainActor
     private func invokeBundledTranscriptionHelper(_ helper: URL, applicationPID: pid_t, root: URL, socket: URL,
-        requestID: String, requestEpoch: String) throws -> [String: Any] {
+        requestID: String, requestEpoch: String, tool: String = "open_voice_transcription_review") throws -> [String: Any] {
         guard let token = installedHelperToken else { throw BundledHelperSmokeFailure.externalOrchestratorRequired }
         installedHelperInvocationCount += 1
         let call = installedHelperInvocationCount
@@ -2949,7 +3044,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let responseURL = fixtureRoot.appendingPathComponent("installed-helper-response-\(call).json")
         let request: [String: Any] = ["schemaVersion": 1, "token": token, "call": call,
             "helperURL": helper.path, "applicationPID": applicationPID, "rootURL": root.path,
-            "socketDirectory": socket.path, "requestID": requestID, "requestEpoch": requestEpoch]
+            "socketDirectory": socket.path, "requestID": requestID, "requestEpoch": requestEpoch, "tool": tool]
         try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]).write(to: pendingURL, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pendingURL.path)
         try FileManager.default.moveItem(at: pendingURL, to: requestURL)

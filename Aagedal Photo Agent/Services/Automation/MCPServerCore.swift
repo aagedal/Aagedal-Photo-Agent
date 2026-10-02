@@ -2351,7 +2351,8 @@ nonisolated enum MCPTranscriptionProviderDiscovery {
     static var discovery: [String: MCPJSONValue] {
         [
             "scope": .string("provider-catalog-only"),
-            "transcriptionToolsAvailable": .bool(false),
+            "transcriptionToolsAvailable": .bool(true),
+            "voiceTranscriptionHelperStartRequiresExactNativeGrant": .bool(true),
             "automaticFallback": .bool(false),
             "providers": .array([
                 provider(
@@ -2481,6 +2482,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let nativeReviewRequests: MCPNativeReviewRequestStore?
     let voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore?
     let nativeReviewInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
+    let nativeExecutionInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
          patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(),
@@ -2491,6 +2493,9 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
          voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore? = nil,
          nativeReviewInvocation: @escaping @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response = { id, epoch in
              try AutomationNativeInvocationChannel.Client().invoke(.init(requestID: id, requestEpoch: epoch))
+         },
+         nativeExecutionInvocation: @escaping @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response = { id, epoch in
+             try AutomationNativeInvocationChannel.Client().invoke(.init(requestID: id, requestEpoch: epoch, kind: .start))
          }) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
@@ -2499,6 +2504,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         self.nativeReviewRequests = nativeReviewRequests
         self.voiceTranscriptionReviewRequests = voiceTranscriptionReviewRequests
         self.nativeReviewInvocation = nativeReviewInvocation
+        self.nativeExecutionInvocation = nativeExecutionInvocation
         self.patchPlans = patchPlans
         self.voiceTranscriptionPlans = voiceTranscriptionPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
@@ -2507,8 +2513,15 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
             definition(
+                name: "start_voice_transcription",
+                description: "Ask the running matching signed app to consume one fresh native Allow Helper to Start Once grant for this exact retained request and prepared provider. Accepts only original canonical lowercase requestID/requestEpoch; helper consent values are forbidden. The user must inspect intent, review the exact Settings provider, check native consent and explicitly allow helper start in the open Transcription Requests view. That in-memory grant expires after 60 seconds and clears on dismissal, provider/review change or withdrawal. executionRequested means consent was consumed and guarded native admission was scheduled, never inference, durable linkage, completion or success. An exact linked retry returns its operation handle without execution; inspect operation history for durable status. Missing/expired consent, changed authority/photos, wrong epochs and uncertain admission refuse. No app launch, model download or permission request occurs. Each admitted request is non-replayable; transcript drafts require separate caption approval.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID", "requestEpoch"], idempotent: false, readOnly: false
+            ),
+            definition(
                 name: "open_voice_transcription_review",
-                description: "Ask the running Photo Agent app to present one exact retained transcription request for native review. Requires Enable local automation, original lowercase requestID/requestEpoch, and the matching signed bundled app/helper. Both processes authenticate the local connection; no app launch, consent, provider change, download, inference or draft creation occurs. reviewRequired acknowledges a presentation request only; the UI revalidates before selection. An already linked request returns only its exactly matched operation handle, never completion. Cancelled, expired awaiting, uncertain admitted, mismatched and unavailable requests refuse. Explicit native provider review and consent remain required; direct helper execution is unavailable.",
+                description: "Ask the running Photo Agent app to present one exact retained transcription request for native review. Requires Enable local automation, original lowercase requestID/requestEpoch, and the matching signed bundled app/helper. Both processes authenticate the local connection; no app launch, consent, provider change, download, inference or draft creation occurs. reviewRequired acknowledges a presentation request only; the UI revalidates before selection and clears any prior consent or helper start grant. An already linked request returns only its exactly matched operation handle, never completion. Cancelled, expired awaiting, uncertain admitted, mismatched and unavailable requests refuse. Explicit native provider review and consent remain required before native execution or a separate one-use helper start grant.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID", "requestEpoch"], idempotent: false, readOnly: false
@@ -2535,17 +2548,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_voice_transcription_review_capacity",
-                description: "Initialize private transcription review intent storage and return its mandatory requestEpoch and bounded capacity. Requires Enable local automation. Creates coordination storage only. Get this epoch before submitting a new transcription intent; retries keep the original epoch. Native Settings can separately review the exact provider, obtain explicit consent and admit one linked operation. Helper execution remains unavailable. No automatic eviction or replay.",
+                description: "Initialize private transcription review intent storage and return its mandatory requestEpoch and bounded capacity. Requires Enable local automation. Creates coordination storage only. Get this epoch before submitting a new transcription intent; retries keep the original epoch. Native Settings can separately review the exact provider, obtain explicit consent and admit one linked operation. This tool starts no work; start_voice_transcription separately requires an exact fresh one-use native grant. No automatic eviction or replay.",
                 properties: [:], required: [], readOnly: false
             ),
             definition(
                 name: "list_voice_transcription_review_requests",
-                description: "List retained bounded transcription review intent status without revalidating expired plans. Requires Enable local automation. Reports canonical requestID/requestEpoch handles and immutable intent digests; grants no consent or execution and creates no transcript draft. Native Settings can separately consent and admit linked work; this helper cannot start it.",
+                description: "List retained bounded transcription review intent status without revalidating expired plans. Requires Enable local automation. Reports canonical requestID/requestEpoch handles and immutable intent digests; grants no consent or execution and creates no transcript draft. Native Settings can separately consent and admit linked work; authenticated start_voice_transcription requires its separate one-use native grant.",
                 properties: [:], required: []
             ),
             definition(
                 name: "request_voice_transcription_review",
-                description: "Persist intent to review one exact five-minute retained transcription preview. Requires Enable local automation and canonical lowercase requestID, requestEpoch from get_voice_transcription_review_capacity, and planID. New intent revalidates the whole ordered photo/WAV/relationship set and authorization while its reservations remain held. Exact retries return retained status after plan expiry; reuse the same ID, epoch and plan. Stores immutable options and revisions, grants no consent, downloads no model, saves no draft and executes no transcription. Automation settings can inspect the intent, review the exact native provider, obtain explicit consent and admit one linked operation. This helper cannot grant consent or start execution.",
+                description: "Persist intent to review one exact five-minute retained transcription preview. Requires Enable local automation and canonical lowercase requestID, requestEpoch from get_voice_transcription_review_capacity, and planID. New intent revalidates the whole ordered photo/WAV/relationship set and authorization while its reservations remain held. Exact retries return retained status after plan expiry; reuse the same ID, epoch and plan. Stores immutable options and revisions, grants no consent, downloads no model, saves no draft and executes no transcription. Automation settings can inspect the intent, review the exact native provider, obtain explicit consent and admit one linked operation. This tool cannot grant consent or start execution; the separate start_voice_transcription tool requires fresh exact one-use native permission.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
                     "planID": .object(["type": .string("string"), "format": .string("uuid")])],
@@ -2599,13 +2612,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_operation_status",
-                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcription drafts remain unapproved; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. Helper workflow invocation remains under implementation.",
+                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcription drafts remain unapproved; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. This status/cancellation tool starts no work. Authenticated transcription start requires a separate exact one-use native grant; face/template invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["operationID"]
             ),
             definition(
                 name: "cancel_operation",
-                description: "Persist a cooperative cancellation request for one operation. Requires Enable local automation. A request is not cancellation completion: only the executing owner can acknowledge cancellation or report partial effects and recovery. Repeated requests are harmless. Verified saved transcription drafts remain available after cancellation. Helper workflow invocation remains under implementation.",
+                description: "Persist a cooperative cancellation request for one operation. Requires Enable local automation. A request is not cancellation completion: only the executing owner can acknowledge cancellation or report partial effects and recovery. Repeated requests are harmless. Verified saved transcription drafts remain available after cancellation. This status/cancellation tool starts no work. Authenticated transcription start requires a separate exact one-use native grant; face/template invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["operationID"],
                 readOnly: false
@@ -2763,7 +2776,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_photo_voice_memo",
-                description: "Inspect one exact persisted adjacent voice-memo relationship for an authorized photo. Independently authorizes its named WAV, captures bounded opaque current revisions and byte count, and revalidates photo, relationship, audio and roots under a shared photo reservation. Does not scan by basename. Rejects malformed or stale filenames, symbolic links, special/private files and WAVs over 256 MiB. Historical content matches are recovery hints. WAV extension admission does not decode or prove playable audio. Provider readiness and execution are unavailable in the helper; this grants no consent, creates no operation, downloads nothing and writes no metadata.",
+                description: "Inspect one exact persisted adjacent voice-memo relationship for an authorized photo. Independently authorizes its named WAV, captures bounded opaque current revisions and byte count, and revalidates photo, relationship, audio and roots under a shared photo reservation. Does not scan by basename. Rejects malformed or stale filenames, symbolic links, special/private files and WAVs over 256 MiB. Historical content matches are recovery hints. WAV extension admission does not decode or prove playable audio. Provider readiness is unknown in the helper; this inspection grants no consent, creates no operation, downloads nothing and writes no metadata. Transcription start separately requires an exact one-use native grant in the running app.",
                 properties: ["path": .object(["type": .string("string"),
                     "description": .string("Absolute canonical path to one photo under an authorized folder.")])],
                 required: ["path"]
@@ -2792,7 +2805,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             let acceptedArguments: Set<String>
             switch name {
             case "request_voice_transcription_review": acceptedArguments = ["requestID", "requestEpoch", "planID"]
-            case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "open_voice_transcription_review": acceptedArguments = ["requestID", "requestEpoch"]
+            case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "open_voice_transcription_review", "start_voice_transcription": acceptedArguments = ["requestID", "requestEpoch"]
             case "request_iptc_patch_review": acceptedArguments = ["requestID", "requestEpoch", "planID", "purpose"]
             case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
@@ -2814,7 +2827,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             let configuration = try authorizationStore.load()
             switch name {
-            case "open_voice_transcription_review":
+            case "open_voice_transcription_review", "start_voice_transcription":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 guard Set(arguments.keys) == ["requestID", "requestEpoch"],
                       let id = canonicalUUID(arguments["requestID"]),
@@ -2822,20 +2835,27 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidArguments
                 }
                 do {
-                    let response = try nativeReviewInvocation(id, epoch)
+                    let starts = name == "start_voice_transcription"
+                    let response = try (starts ? nativeExecutionInvocation : nativeReviewInvocation)(id, epoch)
                     guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
-                    guard response.status != .unavailable else {
+                    guard response.status != .unavailable,
+                          starts ? response.status != .reviewRequired : response.status != .executionRequested else {
+                        if starts { return failure(code: "native_execution_unavailable", message: "The exact native helper start grant could not be consumed. Inspect retained request and operation history before retrying; no completion is confirmed.") }
                         return failure(code: "native_review_unavailable", message: "The running app could not accept this exact request for native review. No consent was granted.")
                     }
                     return success([
-                        "scope": .string("authenticated-native-review-handoff"),
+                        "scope": .string(starts ? "authenticated-native-execution-handoff" : "authenticated-native-review-handoff"),
                         "requestID": .string(id.uuidString.lowercased()), "requestEpoch": .string(epoch.uuidString.lowercased()),
                         "status": .string(response.status.rawValue),
                         "operationID": response.operationID.map { .string($0.uuidString.lowercased()) } ?? .null,
                         "consentGranted": .bool(false), "executionStarted": .bool(false),
-                        "directHelperExecutionAvailable": .bool(false), "completionConfirmed": .bool(false)
+                        "directHelperExecutionAvailable": .bool(starts), "completionConfirmed": .bool(false),
+                        "nativeConsentConsumed": .bool(response.status == .executionRequested)
                     ])
                 } catch {
+                    if name == "start_voice_transcription" {
+                        return failure(code: "native_execution_unavailable", message: "Starting requires the running matching signed app and fresh exact native helper permission. Admission may be uncertain; inspect retained request and operation history. No completion is confirmed.")
+                    }
                     return failure(code: "native_review_unavailable", message: "Native review requires the running app, its matching signed helper and a current exact request. No consent was granted.")
                 }
             case "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests",
@@ -3008,6 +3028,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("immutable-voice-transcription-batch-preview"), .string("voice-transcription-preview-revalidation"),
                         .string("durable-voice-transcription-review-intent"),
                         .string("authenticated-native-transcription-review-handoff"),
+                        .string("one-use-native-consent-transcription-start"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
@@ -3022,6 +3043,9 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "voiceTranscriptionReviewNativeAdmissionAvailable": .bool(true),
                     "voiceTranscriptionReviewOperationLinkageAvailable": .bool(true),
                     "voiceTranscriptionReviewOpenToolAvailable": .bool(true),
+                    "voiceTranscriptionHelperStartToolAvailable": .bool(true),
+                    "voiceTranscriptionHelperStartConsent": .string("fresh-exact-native-one-use-grant"),
+                    "voiceTranscriptionHelperStartConsentTTLSeconds": .integer(60),
                     "nativeReviewInvocationTransport": .string("mutually-authenticated-local-socket"),
                     "nativeReviewSessionAvailability": .string("checked-on-invocation"),
                     "helperCommitAvailable": .bool(false),

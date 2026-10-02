@@ -58,8 +58,11 @@ These are material product and evidence boundaries, not a list of unfinished int
 - Helper transcription-review presentation requires the running app and its matching signed helper.
   Copied, unsigned or differently installed peers refuse. `reviewRequired` acknowledges only a
   presentation request; exact intent is revalidated in the native UI, and consent remains unchecked.
-  Direct helper execution, actual provider/device qualification and broader signed lifecycle gates
-  remain unfinished. An exact linked operation handle does not prove executor liveness or completion.
+  Helper start additionally requires a fresh exact native provider review, checked consent and
+  **Allow Helper to Start Once**. Its session-only grant lasts 60 seconds and clears on provider
+  changes, withdrawal, repeated review or dismissal. `executionRequested` confirms scheduling only;
+  actual provider/device and broader signed lifecycle qualification remain unfinished. An exact
+  linked operation handle does not prove executor liveness or completion.
 - Native XMP publication requires a checked plan, dry run and separate session consent. It writes
   the sidecar and reconciles local history; helper clients cannot invoke physical publication.
 - Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further
@@ -157,8 +160,9 @@ This is separate from the unapproved AI-origin analyzer described above.
   behavior remain qualification gates. The archived managed-owner flag does not establish liveness.
   Native confirmed capacity cleanup retires only pre-admission cancellations and rotates the epoch;
   awaiting, admitted, linked and uncertain evidence remains retained. Stale confirmation refuses.
-  Authenticated invocation and direct helper execution remain unfinished. Native batch confirmation additionally binds the raw relationship
-  bytes and inode/mtime/ctime revision, with a final check inside the create-only save lock. No helper tool can start this executor. Native deterministic fixtures verify the
+  Authenticated helper start consumes only an exact fresh one-use native grant; helper request
+  values cannot supply consent. Native batch confirmation additionally binds the raw relationship
+  bytes and inode/mtime/ctime revision, with a final check inside the create-only save lock. Native deterministic fixtures verify the
   integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
   remain release gates.
   Durable per-photo history retains numbered outcomes, without source paths or text; it does not

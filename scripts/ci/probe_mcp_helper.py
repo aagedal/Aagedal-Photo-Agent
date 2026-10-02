@@ -101,7 +101,7 @@ def probe(executable):
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
                 "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
                 "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request",
-                "open_voice_transcription_review",
+                "open_voice_transcription_review", "start_voice_transcription",
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
@@ -117,7 +117,9 @@ def probe(executable):
         catalog_result = connection.receive(6)["result"]
         require(catalog_result.get("isError") is False, "Provider discovery failed")
         catalog = catalog_result["structuredContent"]
-        require(catalog["transcriptionToolsAvailable"] is False, "Unexpected transcription execution")
+        require(catalog["transcriptionToolsAvailable"] is True and
+                catalog["voiceTranscriptionHelperStartRequiresExactNativeGrant"] is True,
+                "Transcription start must require exact native consent")
         providers = catalog["providers"]
         require({provider["id"] for provider in providers} == {"appleSpeech", "whisper", "customWhisper"},
                 "Unexpected provider identities")
@@ -157,6 +159,15 @@ def probe(executable):
         invocation = connection.receive(101)["result"]
         require(invocation["isError"] is True and invocation["structuredContent"]["code"] == "invalid_arguments",
                 "Native review handoff accepted helper consent")
+        require("start_voice_transcription" in names,
+                "Missing native-consent-bound transcription start")
+        connection.send(request(102, "tools/call", {
+            "name": "start_voice_transcription",
+            "arguments": {"requestID": "not-a-uuid", "requestEpoch": "not-a-uuid", "consent": True},
+        }))
+        execution = connection.receive(102)["result"]
+        require(execution["isError"] is True and execution["structuredContent"]["code"] == "invalid_arguments",
+                "Transcription start accepted helper-supplied consent")
         require("inspect_iptc_patch_publication_requirements" in names,
                 "Missing native publication requirements inspection")
         connection.send(request(11, "tools/call", {

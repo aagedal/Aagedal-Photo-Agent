@@ -173,8 +173,17 @@ The confirmed operation saves editable, unapproved drafts in order; IPTC stays u
 Closing Settings preserves admitted work. Request cancellation in the active workflow or from its
 retained request after reopening Settings; use the linked operation ID to inspect actual completion.
 A cancellation request is not confirmation of teardown. Saved drafts survive a later cancellation or
-failure. Linked and interrupted admissions cannot be replayed. Direct helper execution and
-authenticated invocation remain unfinished.
+failure. Linked and interrupted admissions cannot be replayed.
+
+To start the same reviewed request from the helper, check native consent and choose
+**Allow Helper to Start Once**, then call `start_voice_transcription` with the original
+`requestID` and `requestEpoch` within 60 seconds. Keep the review open. The one-use grant
+is stored only in the running app; provider changes, consent withdrawal, dismissal and
+another accepted review presentation revoke it. Helper-supplied consent is refused.
+`executionRequested` confirms grant consumption and scheduled guarded admission, not
+durable linkage or completion. Inspect the retained request and operation status to
+confirm admission and actual outcomes, including after a lost response. Exact linked
+retries return the original operation ID without starting work again.
 Choose **Review transcription request capacity** to see the retained count and eligible
 cancellations, then **Remove cancelled transcription requests** and confirm to retire only
 requests cancelled before admission. Cleanup rotates the current epoch and preserves awaiting,
@@ -189,8 +198,8 @@ without paths or transcript text. A saved transcription draft remains editable a
 with IPTC unchanged. Failed or cancelled batches can retain saved drafts; inspect each outcome
 before retrying. Uncertain saves retain recovery evidence. Executor liveness is reported as unknown.
 These endpoints do not start work or authorize photo writes. Batch transcription starts through
-Caption or the Automation intent review after explicit native consent; direct helper
-face/template/transcription invocation remains under implementation.
+Caption, the Automation intent review, or the authenticated helper after the separate
+native one-use grant. Face/template invocation remains under implementation.
 
 Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
 absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,

@@ -6,8 +6,9 @@ import Security
 @_silgen_name("flock")
 nonisolated private func nativeInvocationFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
-/// A local, mutually authenticated request to review retained intent. This channel
-/// transports no consent, provider, paths, transcript text or execution capability.
+/// A local, mutually authenticated request to review retained intent or consume
+/// an exact one-use native grant. No consent, provider, paths or transcript text
+/// can be supplied by the helper through this channel.
 nonisolated enum AutomationNativeInvocationChannel {
     enum Failure: Error, Equatable {
         case invalidMessage, invalidResponse, unsafeEndpoint, endpointOccupied
@@ -31,15 +32,17 @@ nonisolated enum AutomationNativeInvocationChannel {
     private static let receivedAcknowledgement = Data("{\"schemaVersion\":1,\"status\":\"peerReceipt\"}".utf8)
 
     struct Request: Equatable, Sendable {
+        enum Kind: String, Sendable { case review = "voiceTranscriptionReview", start = "voiceTranscriptionStart" }
         let requestID: UUID
         let requestEpoch: UUID
+        let kind: Kind
 
-        init(requestID: UUID, requestEpoch: UUID) {
-            self.requestID = requestID; self.requestEpoch = requestEpoch
+        init(requestID: UUID, requestEpoch: UUID, kind: Kind = .review) {
+            self.requestID = requestID; self.requestEpoch = requestEpoch; self.kind = kind
         }
 
         func encoded() throws -> Data {
-            try canonical(["schemaVersion": 1, "kind": "voiceTranscriptionReview",
+            try canonical(["schemaVersion": 1, "kind": kind.rawValue,
                            "requestID": requestID.uuidString.lowercased(),
                            "requestEpoch": requestEpoch.uuidString.lowercased()])
         }
@@ -47,11 +50,11 @@ nonisolated enum AutomationNativeInvocationChannel {
         static func decode(_ data: Data) throws -> Request {
             let object = try dictionary(data)
             guard Set(object.keys) == ["schemaVersion", "kind", "requestID", "requestEpoch"],
-                  object["kind"] as? String == "voiceTranscriptionReview",
+                  let name = object["kind"] as? String, let kind = Kind(rawValue: name),
                   let id = uuid(object["requestID"]), let epoch = uuid(object["requestEpoch"]) else {
                 throw Failure.invalidMessage
             }
-            let request = Request(requestID: id, requestEpoch: epoch)
+            let request = Request(requestID: id, requestEpoch: epoch, kind: kind)
             // A canonical wire format rejects duplicate keys, alternate numeric
             // types, nested data, trailing values and spelling ambiguity.
             guard try request.encoded() == data else { throw Failure.invalidMessage }
@@ -59,7 +62,7 @@ nonisolated enum AutomationNativeInvocationChannel {
         }
     }
 
-    enum Status: String, Sendable { case reviewRequired, linkedOperation, unavailable }
+    enum Status: String, Sendable { case reviewRequired, executionRequested, linkedOperation, unavailable }
 
     struct Response: Equatable, Sendable {
         let status: Status

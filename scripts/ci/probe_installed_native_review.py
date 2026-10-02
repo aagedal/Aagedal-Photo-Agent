@@ -4,7 +4,8 @@
 XCTest's generated runner remains sandboxed. This standalone CLI launches the
 actual nested helper normally; a private token-bound fixture rendezvous only
 coordinates requests/results. Production signature and kernel peer checks apply.
-The provider is reviewed but never submitted; host preferences/models stay intact.
+Review mode never submits the provider. --execution additionally qualifies one-use
+native consent consumption and synthetic editable drafts; host settings stay intact.
 """
 
 import argparse
@@ -22,8 +23,9 @@ import uuid
 
 SHARED_ROOT = Path("/private/tmp/apa-installed-qualification")
 TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperOpensExactTranscriptionReviewWithoutExecution"
+EXECUTION_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperConsumesExactNativeConsentAndCompletesDrafts"
 MAX_MESSAGE = 65_536
-REQUEST_KEYS = {"schemaVersion", "token", "call", "helperURL", "applicationPID", "rootURL", "socketDirectory", "requestID", "requestEpoch"}
+REQUEST_KEYS = {"schemaVersion", "token", "call", "helperURL", "applicationPID", "rootURL", "socketDirectory", "requestID", "requestEpoch", "tool"}
 
 
 class ProbeFailure(Exception):
@@ -88,22 +90,26 @@ def file_hash(path):
         os.close(descriptor)
 
 
-def protected_state(root):
+def protected_state(root, allow_execution=False):
     paths = [root / "transcription-review-authorization.json", root / "transcription-review-manifest.json",
-             root / "transcription-review-plans/plans.json", root / "transcription-review-requests/operations.json"]
+             root / "transcription-review-plans/plans.json", root / "synthetic-review-runtime", root / "synthetic-review-model"]
+    if not allow_execution:
+        paths.append(root / "transcription-review-requests/operations.json")
     for pattern in ("*.jpg", "*.wav", ".*.voice-memo.json"):
         paths.extend(root.glob(pattern))
     result = {str(path.relative_to(root)): file_hash(path) for path in paths}
-    if (root / "transcription-review-operations/operations.json").exists() or (root / ".photo_metadata").exists():
+    if not allow_execution and ((root / "transcription-review-operations/operations.json").exists() or (root / ".photo_metadata").exists()):
         raise ProbeFailure("unexpected_operation_or_draft")
     return result
 
 
-def validate_request(value, token, call, fixture, expected_helper):
+def validate_request(value, token, call, fixture, expected_helper, execution=False):
     if not isinstance(value, dict) or set(value) != REQUEST_KEYS or value["schemaVersion"] != 1:
         raise ProbeFailure("invalid_rendezvous_schema")
-    if value["token"] != token or type(value["call"]) is not int or value["call"] != call or not 1 <= call <= 4:
+    if value["token"] != token or type(value["call"]) is not int or value["call"] != call or not 1 <= call <= (9 if execution else 4):
         raise ProbeFailure("invalid_rendezvous_token_or_call")
+    if value["tool"] != ("start_voice_transcription" if call >= 5 else "open_voice_transcription_review"):
+        raise ProbeFailure("unexpected_rendezvous_tool")
     if value["helperURL"] != str(expected_helper):
         raise ProbeFailure("unexpected_helper_location")
     if not canonical_uuid(value["requestID"]) or not canonical_uuid(value["requestEpoch"]):
@@ -138,7 +144,7 @@ def helper_messages(request):
             "clientInfo": {"name": "installed-pair-ui-qualification", "version": "1"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
-            "name": "open_voice_transcription_review", "arguments": {
+            "name": request["tool"], "arguments": {
                 "requestID": request["requestID"], "requestEpoch": request["requestEpoch"]}}}]
     return b"".join(json.dumps(message, sort_keys=True).encode() + b"\n" for message in messages)
 
@@ -158,10 +164,21 @@ def verify_runner_entitlements(app):
     return {"runnerSandboxEnabled": True, "testRunnerAbsoluteReadWriteExceptions": exception}
 
 
+def execution_state(root):
+    paths = [root / "transcription-review-requests/operations.json"]
+    operation = root / "transcription-review-operations/operations.json"
+    if operation.exists():
+        paths.append(operation)
+    paths.extend((root / ".photo_metadata").glob("*.meta.json"))
+    return {str(path.relative_to(root)): file_hash(path) for path in paths}
+
+
 def invoke_helper(helper, root, socket, request, pair_hashes, app_executable):
     if [file_hash(app_executable), file_hash(helper)] != pair_hashes:
         raise ProbeFailure("built_pair_changed")
-    before = protected_state(root)
+    allow_execution = request["call"] >= 8
+    before = protected_state(root, allow_execution)
+    durable_before = execution_state(root)
     environment = os.environ.copy()
     for key in ("OS_ACTIVITY_DT_MODE", "CFLOG_FORCE_STDERR", "IDEPreferLogStreaming"):
         environment.pop(key, None)
@@ -171,13 +188,61 @@ def invoke_helper(helper, root, socket, request, pair_hashes, app_executable):
                             capture_output=True, timeout=8, env=environment, check=False)
     if len(result.stdout) >= MAX_MESSAGE or len(result.stderr) >= MAX_MESSAGE:
         raise ProbeFailure("helper_output_limit")
-    if [file_hash(app_executable), file_hash(helper)] != pair_hashes or protected_state(root) != before:
+    if [file_hash(app_executable), file_hash(helper)] != pair_hashes or protected_state(root, allow_execution) != before:
         raise ProbeFailure("built_pair_or_sources_changed")
+    if request["call"] != 8 and execution_state(root) != durable_before:
+        raise ProbeFailure("refusal_or_retry_changed_execution_evidence")
     return {"exitCode": result.returncode, "stdout": result.stdout.decode("utf-8"), "stderr": result.stderr.decode("utf-8")}
 
 
-def validate_results(cases):
-    if len(cases) != 4:
+def completed_operation_evidence(root, request):
+    def archive(relative):
+        envelope = read_private_json(root / relative)
+        import base64
+        payload = base64.b64decode(envelope["payload"], validate=True)
+        if hashlib.sha256(payload).hexdigest() != envelope["sha256"]:
+            raise ProbeFailure("invalid_completed_operation_envelope")
+        value = json.loads(payload)
+        if not isinstance(value, dict) or not isinstance(value.get("records"), list):
+            raise ProbeFailure("invalid_completed_operation_archive")
+        return value["records"]
+    requests = archive("transcription-review-requests/operations.json")
+    operations = archive("transcription-review-operations/operations.json")
+    if len(requests) != 1 or len(operations) != 1:
+        raise ProbeFailure("unexpected_completed_operation_count")
+    retained, operation = requests[0], operations[0]
+    admission = retained.get("admission", {})
+    progress = operation.get("batchProgress", {})
+    items = progress.get("items", [])
+    operation_id = operation.get("id", "").lower()
+    if (retained.get("requestID") != request["requestID"] or retained.get("requestEpoch") != request["requestEpoch"]
+            or retained.get("state") != "linked"
+            or not canonical_uuid(operation_id) or admission.get("operationID") != operation_id
+            or admission.get("ownerID") != operation.get("ownerID", "").lower()
+            or operation.get("ownerLeaseManaged") is not True or operation.get("kind") != "voice_transcription"
+            or operation.get("state") != "completed" or operation.get("outcome") != "verified"
+            or len(items) != 2
+            or any(item.get("outcome") != "draftSaved" for item in items)):
+        raise ProbeFailure("completed_operation_linkage_mismatch")
+    drafts = list((root / ".photo_metadata").glob("*.meta.json"))
+    if len(drafts) != 2:
+        raise ProbeFailure("completed_draft_count_mismatch")
+    for path in drafts:
+        # Metadata carriers need not have coordination-store permissions; inspect
+        # only the fixture-owned regular no-follow bytes already hash-witnessed.
+        file_hash(path)
+        draft = json.loads(path.read_bytes()).get("voiceMemoTranscript", {})
+        if draft.get("generatedText") != "Synthetic review transcript" or draft.get("approvedAt") is not None:
+            raise ProbeFailure("completed_draft_content_mismatch")
+    return {"operationID": operation_id, "ownerID": admission["ownerID"],
+            "requestID": request["requestID"], "requestEpoch": request["requestEpoch"],
+            "state": operation["state"], "outcome": operation["outcome"],
+            "itemCount": 2, "draftSavedCount": 2, "captionApprovalGranted": False,
+            "durableEvidenceSHA256": execution_state(root)}
+
+
+def validate_results(cases, execution=False):
+    if len(cases) != (9 if execution else 4):
         return False
     for index, case in enumerate(cases):
         if case.get("error") or case.get("exitCode") != 0 or case.get("stderr"):
@@ -188,7 +253,19 @@ def validate_results(cases):
                 return False
             result = lines[1]["result"]
             value = result["structuredContent"]
-            if index in (0, 2):
+            if index >= 4:
+                if index in (4, 5, 6):
+                    if result["isError"] is not True or value["code"] != "native_execution_unavailable":
+                        return False
+                elif (result["isError"] is not False or value["status"] != ("executionRequested" if index == 7 else "linkedOperation")
+                      or value["nativeConsentConsumed"] is not (index == 7)
+                      or value["requestID"] != case["requestID"] or value["requestEpoch"] != case["requestEpoch"]
+                      or value["directHelperExecutionAvailable"] is not True
+                      or any(value[key] is not False for key in ("consentGranted", "executionStarted", "completionConfirmed"))
+                      or (index == 7 and value["operationID"] is not None)
+                      or (index == 8 and not canonical_uuid(value["operationID"]))):
+                    return False
+            elif index in (0, 2):
                 if result["isError"] is not True or value["code"] != "native_review_unavailable":
                     return False
             elif (result["isError"] is not False or value["status"] != "reviewRequired"
@@ -203,6 +280,7 @@ def validate_results(cases):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execution", action="store_true", help="Also qualify exact native grant consumption, synthetic drafts and non-replay")
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--derived-data-path", type=Path, required=True)
     parser.add_argument("--result-bundle", type=Path, required=True)
@@ -214,8 +292,9 @@ def main():
     report = {"schemaVersion": 1, "passed": False, "authentication": "production signature requirements and kernel audit-token peers",
               "helperLaunch": "normal standalone subprocess outside XCTest runner sandbox", "runnerSandboxEnabled": None,
               "productionSandboxChanged": False, "testRunnerWritableFixtureRoot": str(SHARED_ROOT), "sharedParentRetained": True,
-              "hostPreferencesChanged": False, "executionSubmitted": False, "cases": [], "cleanupComplete": False,
-              "limitations": ["Debug disposable stores and deterministic provider preparation; no inference or draft publication",
+              "hostPreferencesChanged": False, "executionSubmitted": False, "executionModeRequested": args.execution, "nativeExecutionRequested": False, "verifiedCompletion": False,
+              "executionSubmissionStatus": "not-observed", "cases": [], "cleanupComplete": False,
+              "limitations": ["Debug disposable stores and deterministic synthetic provider; no real Apple/Whisper inference",
                               "Does not qualify distribution signing or notarization"]}
     process = None
     validated_output = None
@@ -263,7 +342,7 @@ def main():
                    "-scheme", "Aagedal Photo Agent UI Smoke Tests", "-configuration", "Debug", "-destination", "platform=macOS",
                    "-derivedDataPath", str(derived), "-disableAutomaticPackageResolution", "-parallel-testing-enabled", "NO",
                    "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
-                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{TEST}",
+                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{EXECUTION_TEST if args.execution else TEST}",
                    "-resultBundlePath", str(args.result_bundle.resolve())]
         pinned = None
         runner_checked = False
@@ -294,9 +373,9 @@ def main():
                             report["listenerStartupFailure"] = value
                     call = len(report["cases"]) + 1
                     request_path = fixture / f"installed-helper-request-{call}.json"
-                    if call <= 4 and request_path.exists():
+                    if call <= (9 if args.execution else 4) and request_path.exists():
                         request = read_private_json(request_path)
-                        root, socket = validate_request(request, token, call, fixture, helper)
+                        root, socket = validate_request(request, token, call, fixture, helper, args.execution)
                         socket_paths.add(socket)
                         response = {"schemaVersion": 1, "token": token, "call": call}
                         try:
@@ -308,9 +387,23 @@ def main():
                                 report["appExecutableSHA256"], report["helperSHA256"] = pinned
                                 report["appPath"] = str(app)
                             response.update(invoke_helper(helper, root, socket, request, pinned, app_executable))
+                            if args.execution and call == 8:
+                                try:
+                                    scheduled = json.loads(response["stdout"].splitlines()[1])["result"]["structuredContent"]
+                                    if scheduled.get("status") == "executionRequested":
+                                        report["nativeExecutionRequested"] = True
+                                        report["executionSubmitted"] = None
+                                        report["executionSubmissionStatus"] = "scheduled-admission-unconfirmed"
+                                except (KeyError, IndexError, ValueError):
+                                    pass
+                            if args.execution and call == 9:
+                                report["completedOperation"] = completed_operation_evidence(root, request)
+                                report["executionSubmitted"] = True
+                                report["executionSubmissionStatus"] = "durably-linked-and-completed"
+                                report["verifiedCompletion"] = True
                         except (ProbeFailure, subprocess.TimeoutExpired, UnicodeError, OSError) as error:
                             response["error"] = str(error) if isinstance(error, ProbeFailure) else type(error).__name__
-                        report["cases"].append({"call": call, "requestID": request["requestID"], "requestEpoch": request["requestEpoch"],
+                        report["cases"].append({"call": call, "tool": request["tool"], "requestID": request["requestID"], "requestEpoch": request["requestEpoch"],
                                                 **{key: value for key, value in response.items() if key not in ("token", "schemaVersion", "call")}})
                         atomic_json(fixture / f"installed-helper-response-{call}.json", response)
                 time.sleep(0.05)
@@ -325,7 +418,19 @@ def main():
         report["tests"] = counts
         executed = counts == {"totalTestCount": 1, "passedTests": 1, "failedTests": 0, "skippedTests": 0}
         report["helperInvocationCount"] = len(report["cases"])
-        report["passed"] = process.returncode == 0 and executed and validate_results(report["cases"])
+        report["nativeExecutionRequested"] = False
+        if args.execution and len(report["cases"]) >= 8:
+            try:
+                scheduled = json.loads(report["cases"][7]["stdout"].splitlines()[1])["result"]["structuredContent"]
+                report["nativeExecutionRequested"] = scheduled.get("status") == "executionRequested"
+            except (KeyError, IndexError, ValueError):
+                pass
+        if report["nativeExecutionRequested"] and not report["executionSubmitted"]:
+            report["executionSubmitted"] = None
+        report["executionSubmissionStatus"] = ("durably-linked-and-completed" if report.get("completedOperation")
+            else "scheduled-admission-unconfirmed" if report["nativeExecutionRequested"] else "not-observed")
+        report["verifiedCompletion"] = bool(report.get("completedOperation"))
+        report["passed"] = process.returncode == 0 and executed and validate_results(report["cases"], args.execution) and (not args.execution or "completedOperation" in report)
         if not report["passed"]:
             report["failure"] = "installed_native_review_qualification_failed"
     except (ProbeFailure, OSError, ValueError, subprocess.TimeoutExpired) as error:

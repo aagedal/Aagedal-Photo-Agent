@@ -848,13 +848,14 @@ struct MCPServerCoreTests {
         let result = try #require((try json(response))["result"] as? [String: Any])
         let tools = try #require(result["tools"] as? [[String: Any]])
         #expect(tools.map { $0["name"] as? String } == [
+            "start_voice_transcription",
             "open_voice_transcription_review",
             "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
-            #expect(annotations["readOnlyHint"] as? Bool == (!["open_voice_transcription_review", "create_team", "prepare_voice_transcription", "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request"].contains(tool["name"] as? String ?? "")))
+            #expect(annotations["readOnlyHint"] as? Bool == (!["start_voice_transcription", "open_voice_transcription_review", "create_team", "prepare_voice_transcription", "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request"].contains(tool["name"] as? String ?? "")))
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }
@@ -2083,7 +2084,8 @@ struct MCPServerCoreTests {
         #expect(result["isError"] == .bool(false))
         let catalog = try #require(result["structuredContent"]?.objectValue)
         #expect(catalog["scope"] == .string("provider-catalog-only"))
-        #expect(catalog["transcriptionToolsAvailable"] == .bool(false))
+        #expect(catalog["transcriptionToolsAvailable"] == .bool(true))
+        #expect(catalog["voiceTranscriptionHelperStartRequiresExactNativeGrant"] == .bool(true))
         #expect(catalog["automaticFallback"] == .bool(false))
         guard case .array(let providers) = catalog["providers"] else {
             Issue.record("Expected provider array")

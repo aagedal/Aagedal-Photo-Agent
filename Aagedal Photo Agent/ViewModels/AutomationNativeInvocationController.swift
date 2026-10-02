@@ -2,8 +2,9 @@ import AppKit
 import Foundation
 import Observation
 
-/// Owns presentation only. No serializable helper value can approve a provider or
-/// start transcription. The existing native model re-inspects each UI handoff.
+/// Owns authenticated presentation and exact one-use native grant consumption.
+/// No serializable helper value can approve a provider. Existing rooted native
+/// admission rechecks the complete request after consumption.
 @MainActor @Observable
 final class AutomationNativeInvocationController {
     static let shared = AutomationNativeInvocationController()
@@ -20,6 +21,33 @@ final class AutomationNativeInvocationController {
     private var listener: AutomationNativeInvocationChannel.Listener?
     private var generation = UUID()
     private var startup: Task<Void, Never>?
+    @ObservationIgnored private weak var executionModel: AutomationTranscriptionReviewModel?
+
+    func registerExecutionModel(_ model: AutomationTranscriptionReviewModel) { executionModel = model }
+    func unregisterExecutionModel(_ model: AutomationTranscriptionReviewModel) {
+        if executionModel === model { executionModel = nil }
+    }
+
+    /// A bounded utility-to-main-actor handoff. Timeout retires queued work before
+    /// returning; a delayed UI task cannot consume consent after the caller leaves.
+    nonisolated final class ExecutionHandoff: @unchecked Sendable {
+        private let condition = NSCondition()
+        private var retired = false
+        private var result: Bool?
+        func resolve(_ consume: () -> Bool) {
+            condition.lock(); defer { condition.unlock() }
+            guard !retired else { return }
+            result = consume(); retired = true; condition.signal()
+        }
+        func wait(timeout: TimeInterval = 1) -> Bool {
+            condition.lock(); defer { condition.unlock() }
+            let deadline = Date().addingTimeInterval(timeout)
+            while !retired {
+                if !condition.wait(until: deadline) { retired = true }
+            }
+            return result ?? false
+        }
+    }
 
     func start() {
         let fixture = UITestNativeInvocationConfiguration.current
@@ -43,7 +71,21 @@ final class AutomationNativeInvocationController {
                     let candidate = try AutomationNativeInvocationChannel.Listener(
                         directory: fixture?.socketDirectory ?? AutomationNativeInvocationChannel.defaultDirectory) { request in
                         switch try service.invoke(requestID: request.requestID, requestEpoch: request.requestEpoch) {
-                        case .review:
+                        case .review(let retained):
+                            if request.kind == .start {
+                                let handoff = ExecutionHandoff()
+                                Task { @MainActor in
+                                    handoff.resolve {
+                                        let controller = AutomationNativeInvocationController.shared
+                                        guard controller.generation == expected else { return false }
+                                        return controller.executionModel?.consumeHelperExecutionGrant(retained) ?? false
+                                    }
+                                }
+                                guard handoff.wait() else { return try .init(status: .unavailable) }
+                                // Scheduling after exact native consent consumption
+                                // is not durable admission or provider completion.
+                                return try .init(status: .executionRequested)
+                            }
                             Task { @MainActor in
                                 let controller = AutomationNativeInvocationController.shared
                                 guard controller.generation == expected else { return }
@@ -88,6 +130,8 @@ final class AutomationNativeInvocationController {
         startup?.cancel(); startup = nil
         listener?.stop(); listener = nil
         pendingReview = nil; isAvailable = false; isChecking = false
+        executionModel?.invalidateExecutionReview()
+        executionModel = nil
     }
 
     func present(requestID: UUID, requestEpoch: UUID) {

@@ -126,7 +126,12 @@ retire requests cancelled before admission after epoch-bound confirmation; await
 and uncertain records remain retained. Cleanup grants no consent and changes no photos, audio or drafts.
 These records contain ordered photo paths and requested options, but no audio or transcript text.
 Checksums do not authenticate consent. Internal linkage does not establish provider/model readiness or
-current executor liveness; helper execution remains unavailable.
+current executor liveness. Authenticated helper start requires an exact prepared provider review,
+checked native consent and the explicit **Allow Helper to Start Once** action. This in-memory
+grant expires after 60 seconds and is revoked by provider changes, consent withdrawal, repeated
+review or dismissal. Only the request/epoch handles cross the authenticated channel; the helper
+cannot supply consent. The app consumes the grant before scheduling admission, retaining durable
+operation linkage and editable unapproved drafts. Lost acknowledgments do not authorize replay.
 
 Operation status and cancellation tools require local automation to be enabled. They return only
 opaque operation IDs, fixed kind/state/outcome values and timestamps, not paths, metadata or owner IDs.

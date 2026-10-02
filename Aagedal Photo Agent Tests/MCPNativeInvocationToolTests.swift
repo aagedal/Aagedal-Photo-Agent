@@ -105,4 +105,68 @@ struct MCPNativeInvocationToolTests {
         #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("native_review_unavailable"))
         #expect(!String(decoding: try JSONEncoder().encode(result), as: UTF8.self).contains("sensitivePathAndTranscript"))
     }
+    @Test("Start tool rejects helper consent and disabled authority before contacting the app")
+    func startToolRefusesHelperConsent() throws {
+        let store = authority(), calls = Calls()
+        let tools = MCPFoundationTools(authorizationStore: store, nativeExecutionInvocation: { _, _ in
+            calls.record(); return try .init(status: .executionRequested)
+        })
+        let args: [String: MCPJSONValue] = ["requestID": .string(UUID().uuidString.lowercased()),
+            "requestEpoch": .string(UUID().uuidString.lowercased())]
+        #expect(tools.callTool(name: "start_voice_transcription", arguments: args).objectValue?["isError"] == .bool(true))
+        try store.setEnabled(true)
+        for key in ["consent", "nativeConsent", "nativeConsentConsumed", "provider", "operationID"] {
+            var supplied = args; supplied[key] = .bool(true)
+            #expect(tools.callTool(name: "start_voice_transcription", arguments: supplied).objectValue?["isError"] == .bool(true))
+        }
+        #expect(calls.count == 0)
+        let definition = try #require(tools.toolDefinitions(configuration: try store.load()).first {
+            $0.objectValue?["name"] == .string("start_voice_transcription")
+        }?.objectValue)
+        #expect(definition["annotations"]?.objectValue?["idempotentHint"] == .bool(false))
+        #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+    }
+
+    @Test("Start scheduling and linked retries report no execution or completion", arguments: [false, true])
+    func startToolTruthfulResult(linked: Bool) throws {
+        let store = authority(); try store.setEnabled(true)
+        let operation = UUID()
+        let tools = MCPFoundationTools(authorizationStore: store, nativeExecutionInvocation: { _, _ in
+            try .init(status: linked ? .linkedOperation : .executionRequested, operationID: linked ? operation : nil)
+        })
+        let result = tools.callTool(name: "start_voice_transcription", arguments: [
+            "requestID": .string(UUID().uuidString.lowercased()), "requestEpoch": .string(UUID().uuidString.lowercased())])
+        let content = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        #expect(result.objectValue?["isError"] == .bool(false))
+        #expect(content["nativeConsentConsumed"] == .bool(!linked))
+        #expect(content["operationID"] == (linked ? .string(operation.uuidString.lowercased()) : .null))
+        #expect(content["consentGranted"] == .bool(false))
+        #expect(content["executionStarted"] == .bool(false))
+        #expect(content["completionConfirmed"] == .bool(false))
+    }
+
+    @Test("Missing grant, confused response kind and revocation refuse start",
+          arguments: ["unavailable", "reviewRequired", "revoke"])
+    func startToolPrivateFailure(reason: String) throws {
+        let store = authority(); try store.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: store, nativeExecutionInvocation: { _, _ in
+            if reason == "revoke" { try store.setEnabled(false); return try .init(status: .executionRequested) }
+            return try .init(status: reason == "reviewRequired" ? .reviewRequired : .unavailable)
+        })
+        let result = tools.callTool(name: "start_voice_transcription", arguments: [
+            "requestID": .string(UUID().uuidString.lowercased()), "requestEpoch": .string(UUID().uuidString.lowercased())])
+        #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("native_execution_unavailable"))
+    }
+
+    @Test("Closed start wire carries only exact handles and no approval")
+    func startWire() throws {
+        let request = AutomationNativeInvocationChannel.Request(requestID: UUID(), requestEpoch: UUID(), kind: .start)
+        #expect(try AutomationNativeInvocationChannel.Request.decode(request.encoded()) == request)
+        let response = try AutomationNativeInvocationChannel.Response(status: .executionRequested)
+        #expect(try AutomationNativeInvocationChannel.Response.decode(response.encoded()) == response)
+        #expect(throws: AutomationNativeInvocationChannel.Failure.invalidResponse) {
+            try AutomationNativeInvocationChannel.Response(status: .executionRequested, operationID: UUID())
+        }
+    }
+
 }

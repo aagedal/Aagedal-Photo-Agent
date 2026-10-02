@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added `start_voice_transcription` through the matching signed helper and running app. Native exact
+  provider review, checked consent and **Allow Helper to Start Once** grant one start for 60 seconds.
+  Provider changes, consent withdrawal, repeated review and dismissal revoke the session grant.
+  Scheduling acknowledgments do not claim admission or completion; linked retries never replay.
 - Fixed persistent automation clients retaining cached folder/enablement authority. Authorization
   reads now refresh shared preferences, report refresh/persistence failures, and discard a failed
   pending grant before a later read can publish it. Revocation and regrant retain distinct generations.
@@ -17,7 +21,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   `open_voice_transcription_review` opens an exact retained request/epoch in the running app;
   both processes verify the matching signed pair. The UI revalidates and clears prior execution
   consent. The response acknowledges review presentation or an exact linked operation handle,
-  never consent, inference or completion. Direct helper execution remains unfinished.
+  never consent, inference or completion. Starting work requires the separate native one-use grant.
 - Fixed Apple speech cancellation returning before analyzer teardown completed. Recognition,
   finalization and result collection now share one awaited cleanup task, retaining source access
   until teardown finishes.
@@ -26,12 +30,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   Native provider review now displays the exact locale or model/runtime and options, with separate
   explicit consent to durably linked execution. Whole-set rooted reservations guard recognition and
   verified create-only draft saves; existing transcripts refuse admission, changed inputs refuse saving,
-  and cancellation retains saved drafts. Closing Settings preserves admitted work. Direct helper
-  execution remains unfinished. Explicit confirmed cleanup now retires
+  and cancellation retains saved drafts. Closing Settings preserves admitted work. Explicit confirmed cleanup now retires
   requests cancelled before admission while preserving awaiting and admitted evidence.
 - Added internal exact-operation transcription admission and linkage before recognition. Reserved
   operation identities and one-way retained admission prevent uncertain work from replaying;
-  this coordination foundation supplies no provider consent or authenticated helper execution.
+  this coordination foundation supplies no provider consent on its own.
 - Native batch transcription now refuses raw relationship rewrites and equal-byte carrier
   replacements after confirmation, including a final revision check inside create-only draft saving.
 
@@ -40,13 +43,13 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   are retained for five minutes and rechecked on retrieval. Previews grant no execution consent.
 
 - Added read-only automation inspection of saved photo/WAV relationships with rooted file
-  admission and exact revision evidence. Audio decoding, provider readiness and helper
-  transcription invocation remain unavailable.
+  admission and exact revision evidence. This inspection does not decode audio or establish
+  provider readiness; authenticated transcription start requires a separate native one-use grant.
 
 - Transcribe a captured selection of up to eight voice memos from Caption after explicit
   provider/language consent. Ordered results distinguish saved, unapproved drafts from failed,
   cancelled or uncertain items; cancellation keeps drafts already saved. Changed inputs and
-  existing transcripts refuse admission. Helper transcription invocation remains under implementation.
+  existing transcripts refuse admission. Authenticated helper start uses separate native one-use consent.
 
 - Restore identified interrupted XMP publications from Automation Settings after a separate confirmation.
   Original metadata is restored or originally absent files are removed; durable restoration receipts
@@ -263,8 +266,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
   grants and a copyable Codex install command. The initial server exposes read-only capability,
   authorized-root and path-admission tools, rejects aliases/links, traversal, special files,
   changed roots and Photo Agent private folders, and never opens a network listener.
-  Face, template, transcription and mutation tools remain unavailable until their shared
-  operation/recovery boundaries are implemented.
+  Face, template and physical metadata mutation tools remain under implementation; transcription
+  start is connected through exact native consent and the shared operation/recovery boundaries.
 - Retained field mutations, variable/template metadata completion, Write All and Primary Develop
   saves now reserve their photo and folder across processes while they prepare, write and verify.
   A competing operation is refused before a metadata write begins; the bundled MCP helper shares

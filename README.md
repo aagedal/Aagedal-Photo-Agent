@@ -146,8 +146,8 @@ the support table and validation records.
   cannot be retried; clients must never silently resubmit them under a
   new epoch. Retained requests keep their original epochs. Settings can explicitly apply an approved
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo
-  and XMP. Template application, face,
-  transcription, and photo mutation tools remain under implementation for 3.0.
+  and XMP. Template application, face scans and physical photo mutation tools remain
+  under implementation for 3.0; transcription start uses the separate native grant below.
   `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
   cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
   outcomes. Available transcription batch status includes ordered per-photo outcomes without paths
@@ -168,13 +168,19 @@ the support table and validation records.
   consent. Whole-set rooted reservations and identity checks span recognition and verified create-only
   transcript saves. Existing transcripts refuse admission; cancellation preserves saved drafts. Closing
   Settings does not stop admitted work, and linked requests never replay. Helper tools can request
-  cooperative cancellation and inspect the linked operation; direct helper execution remains unfinished.
+  cooperative cancellation and inspect the linked operation.
   `open_voice_transcription_review` asks the running app to open one exact original request/epoch.
   A private local socket authenticates both processes against the matching signed app/helper pair.
   The app repeats whole-set validation and the native UI clears previous execution consent.
   `reviewRequired` acknowledges a presentation request only; an already linked request returns its
   exactly matched operation handle without claiming completion. No provider consent or execution
-  authority crosses this channel. Copied, unsigned, mismatched, stale and unavailable peers refuse.
+  authority is supplied by the helper. Copied, unsigned, mismatched, stale and unavailable peers refuse.
+  After exact native provider review and checked consent, **Allow Helper to Start Once** enables
+  `start_voice_transcription` for that request for 60 seconds while the review stays open.
+  The app consumes this session-only grant once and schedules guarded admission; `executionRequested`
+  confirms scheduling, never durable admission, inference or completion. Provider changes, consent
+  withdrawal, dismissal and repeat review revoke the grant. Exact linked retries return the original
+  operation handle without starting again. Saved drafts still require separate caption approval.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
