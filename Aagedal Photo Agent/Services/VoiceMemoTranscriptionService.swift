@@ -200,12 +200,18 @@ nonisolated struct VoiceMemoRecognitionSession: Sendable {
 }
 
 private actor VoiceMemoRecognitionCleanup {
-    private var hasStarted = false
+    private var task: Task<Void, Never>?
 
-    func run(_ cancelAndFinish: @Sendable () async -> Void) async {
-        guard !hasStarted else { return }
-        hasStarted = true
-        await cancelAndFinish()
+    func run(_ cancelAndFinish: @escaping @Sendable () async -> Void) async {
+        if let task {
+            await task.value
+            return
+        }
+        // Cancellation starts teardown from an unstructured handler task. Retain its
+        // completion so the error path also drains that same teardown before returning.
+        let task = Task { await cancelAndFinish() }
+        self.task = task
+        await task.value
     }
 }
 
@@ -220,26 +226,26 @@ nonisolated enum VoiceMemoRecognitionPipeline {
         }
 
         do {
-            let completion = try await withTaskCancellationHandler {
-                try await session.analyze()
+            return try await withTaskCancellationHandler {
+                let completion = try await session.analyze()
+                try Task.checkCancellation()
+                guard let completion else {
+                    throw VoiceMemoTranscriptionError.emptyAudio
+                }
+                try await completion.finalize()
+                let segments = try await consumer.value
+                try Task.checkCancellation()
+                let text = segments
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
+                return text
             } onCancel: {
                 consumer.cancel()
                 Task { await cleanup.run(session.cancelAndFinish) }
             }
-            try Task.checkCancellation()
-            guard let completion else {
-                throw VoiceMemoTranscriptionError.emptyAudio
-            }
-            try await completion.finalize()
-            let segments = try await consumer.value
-            try Task.checkCancellation()
-            let text = segments
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw VoiceMemoTranscriptionError.noSpeech }
-            return text
         } catch is CancellationError {
             consumer.cancel()
             await cleanup.run(session.cancelAndFinish)

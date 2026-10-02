@@ -676,6 +676,85 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(probe.finalizeCount == 0)
     }
 
+    @Test("Cancellation in every recognition phase retains provider access until shared teardown finishes",
+          arguments: ["analysis", "finalization", "consumer"])
+    func cancellationDrainsSharedTeardown(phase: String) async throws {
+        let probe = VoiceMemoRecognitionLifecycleProbe()
+        let phaseGate = VoiceMemoRecognitionHold(), teardownGate = VoiceMemoRecognitionHold()
+        defer { Task { await phaseGate.open(); await teardownGate.open() } }
+        let session = VoiceMemoRecognitionSession(
+            consumeFinalSegments: {
+                defer { probe.consumerFinished() }
+                if phase == "consumer" {
+                    await phaseGate.wait()
+                    try Task.checkCancellation()
+                } else {
+                    try await Task.sleep(for: .seconds(30))
+                }
+                return ["Late result"]
+            },
+            analyze: {
+                defer { probe.analysisFinished() }
+                if phase == "analysis" {
+                    await phaseGate.wait()
+                    try Task.checkCancellation()
+                }
+                return VoiceMemoRecognitionSession.AnalysisCompletion {
+                    if phase == "finalization" {
+                        await phaseGate.wait()
+                        try Task.checkCancellation()
+                    }
+                    probe.finalize()
+                }
+            },
+            cancelAndFinish: {
+                probe.cancel()
+                // Analysis and consumption may exit before native analyzer teardown.
+                // Keep that teardown pending to expose a second cleanup caller returning early.
+                await phaseGate.open()
+                await teardownGate.wait()
+                probe.cleanupFinished()
+            }
+        )
+        let selectedLocale = locale, found = association
+        let stable = revision(hash: String(repeating: "a", count: 64))
+        let service = VoiceMemoTranscriptionService(
+            runtime: .init(isAvailable: { true }, supportedLocales: { [selectedLocale] },
+                resolveLocale: { _ in selectedLocale }, assetStatus: { _ in .installed },
+                installAssets: { _ in }, makeRecognitionSession: { _, _ in session }),
+            lookup: { _ in .available(found) }, captureRevision: { _ in stable },
+            startAccess: { _ in true }, stopAccess: { _ in probe.releaseScope() }
+        )
+        let task = Task {
+            defer { probe.returned() }
+            return try await service.transcribe(imageURL: found.imageURL, locale: selectedLocale)
+        }
+        defer { task.cancel() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await phaseGate.hasWaiter), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(await phaseGate.hasWaiter)
+        task.cancel()
+        while (!(await teardownGate.hasWaiter) || !probe.didFinishAnalysis || !probe.didFinishConsumer),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await teardownGate.hasWaiter)
+        #expect(probe.didFinishAnalysis && probe.didFinishConsumer)
+        // Give the catch path time to run while the cleanup task is deliberately held.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!probe.didReturn)
+        #expect(!probe.didFinishCleanup)
+        #expect(probe.scopeReleaseCount == 0)
+        #expect(probe.cancelCount == 1)
+        await teardownGate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(probe.didReturn && probe.didFinishCleanup)
+        #expect(probe.scopeReleaseCount == 1)
+        #expect(probe.cancelCount == 1)
+    }
+
     @Test("malformed audio is an explicit non-destructive service failure")
     func malformedAudio() async {
         let found = association
@@ -1258,12 +1337,44 @@ nonisolated private final class VoiceMemoRecognitionLifecycleProbe: @unchecked S
     private let lock = NSLock()
     private var storedCancelCount = 0
     private var storedFinalizeCount = 0
+    private var storedAnalysisFinished = false
+    private var storedConsumerFinished = false
+    private var storedCleanupFinished = false
+    private var storedReturned = false
+    private var storedScopeReleaseCount = 0
 
     var cancelCount: Int { lock.withLock { storedCancelCount } }
     var finalizeCount: Int { lock.withLock { storedFinalizeCount } }
+    var didFinishAnalysis: Bool { lock.withLock { storedAnalysisFinished } }
+    var didFinishConsumer: Bool { lock.withLock { storedConsumerFinished } }
+    var didFinishCleanup: Bool { lock.withLock { storedCleanupFinished } }
+    var didReturn: Bool { lock.withLock { storedReturned } }
+    var scopeReleaseCount: Int { lock.withLock { storedScopeReleaseCount } }
 
     func cancel() { lock.withLock { storedCancelCount += 1 } }
     func finalize() { lock.withLock { storedFinalizeCount += 1 } }
+    func analysisFinished() { lock.withLock { storedAnalysisFinished = true } }
+    func consumerFinished() { lock.withLock { storedConsumerFinished = true } }
+    func cleanupFinished() { lock.withLock { storedCleanupFinished = true } }
+    func returned() { lock.withLock { storedReturned = true } }
+    func releaseScope() { lock.withLock { storedScopeReleaseCount += 1 } }
+}
+
+private actor VoiceMemoRecognitionHold {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var hasWaiter: Bool { !waiters.isEmpty }
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
 }
 
 nonisolated private final class VoiceMemoRevisionSequence: @unchecked Sendable {
