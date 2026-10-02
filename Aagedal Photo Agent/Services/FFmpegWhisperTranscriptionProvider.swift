@@ -39,6 +39,10 @@ nonisolated struct FFmpegWhisperTranscriptionProvider: Sendable {
     private let authorizeArtifacts: AuthorizeArtifacts
     private let run: Run
 
+    /// Exact immutable configuration for native session review. This snapshot supplies
+    /// identity only; it does not invoke artifact authorization or authorize execution.
+    var configurationSnapshot: Configuration { configuration }
+
     init(configuration: Configuration, authorizeArtifacts: @escaping AuthorizeArtifacts,
          run: @escaping Run = { try await FFmpegWhisperJobRunner().run($0) }) {
         self.configuration = configuration

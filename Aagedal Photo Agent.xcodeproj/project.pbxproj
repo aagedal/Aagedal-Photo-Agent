@@ -238,6 +238,8 @@
 		C11700000000000000000002 /* MCPVoiceTranscriptionReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */; };
 		C11700000000000000000102 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */; };
 		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
+		D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */; };
+		D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -512,6 +514,8 @@
 		C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
 		C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStoreTests.swift; path = "MCPVoiceTranscriptionReviewRequestStoreTests.swift"; sourceTree = "<group>"; };
 		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationTranscriptionReviewModelTests.swift; path = "AutomationTranscriptionReviewModelTests.swift"; sourceTree = "<group>"; };
+		D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionProviderBindingTests.swift; sourceTree = "<group>"; };
+		D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeVoiceTranscriptionBindingServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -608,6 +612,8 @@
 				D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */,
 				D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */,
 				D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */,
+				D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */,
+				D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */,
 				C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */,
 				C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */,
 				F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */,
@@ -1057,6 +1063,8 @@
 				D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */,
 				D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */,
 				D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */,
+				D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */,
+				D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */,
 				C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */,
 				C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */,
 				F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */,

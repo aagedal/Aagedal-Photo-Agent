@@ -23,6 +23,9 @@ actor AutomationVoiceTranscriptionBatchService {
     nonisolated struct PreparedBatch: Sendable {
         fileprivate let inputs: [Input]
         var imageURLs: [URL] { inputs.map(\.imageURL) }
+        /// Read-only native facts for binding a rooted preview to this exact session.
+        /// These facts supply no helper authority or provider consent.
+        var inputSnapshots: [Input] { inputs }
     }
 
     /// Internal coordination hooks for an explicitly reviewed native caller. They do
@@ -95,6 +98,13 @@ actor AutomationVoiceTranscriptionBatchService {
     /// photo, WAV or relationship requires a fresh preview and fresh consent.
     func submit(prepared: PreparedBatch, provider: Provider,
                 lifecycle: LifecycleHooks? = nil) async throws -> AutomationOperationRegistry.Record {
+        try await revalidate(prepared: prepared)
+        return try await enqueue(prepared.inputs, provider: provider, lifecycle: lifecycle)
+    }
+
+    /// Read-only session revalidation: no operation, inference or draft is created.
+    /// Rooted callers additionally retain and verify their complete carrier witnesses.
+    func revalidate(prepared: PreparedBatch) async throws {
         for input in prepared.inputs {
             try Task.checkCancellation()
             guard Self.matches(input, try await dependencies.capture(input.imageURL)) else {
@@ -102,7 +112,6 @@ actor AutomationVoiceTranscriptionBatchService {
             }
         }
         try Task.checkCancellation()
-        return try await enqueue(prepared.inputs, provider: provider, lifecycle: lifecycle)
     }
 
     private func enqueue(_ inputs: [Input], provider: Provider,

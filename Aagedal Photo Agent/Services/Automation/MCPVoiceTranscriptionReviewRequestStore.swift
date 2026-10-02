@@ -82,6 +82,9 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
             try validate()
         }
         fileprivate static let photoKeys = MCPVoiceTranscriptionPlanStore.Request.photoKeys.union(["photoIdentity", "audioIdentity", "rootID"])
+        /// Reuse the durable intent contract at native session boundaries, including
+        /// values decoded independently of this store. This is structural validation.
+        func requireValid() throws { try validate() }
         fileprivate func validate() throws {
             guard schemaVersion == 1, MCPVoiceTranscriptionReviewRequestStore.canonicalUUID(planID),
                   let created = ISO8601DateFormatter().date(from: planCreatedAt),

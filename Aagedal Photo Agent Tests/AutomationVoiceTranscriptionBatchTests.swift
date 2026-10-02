@@ -178,6 +178,25 @@ struct AutomationVoiceTranscriptionBatchTests {
         #expect(await f.io.saved.isEmpty)
     }
 
+    @Test("Read-only native revalidation preserves snapshots and never admits work", arguments: [false, true])
+    func readOnlyRevalidation(changed: Bool) async throws {
+        let f = try Fixture()
+        let prepared = try await f.service.prepare(imageURLs: photos)
+        #expect(prepared.inputSnapshots.map(\.imageURL) == photos)
+        if changed {
+            await f.io.configure(drift: photos[1])
+            await #expect(throws: AutomationVoiceTranscriptionBatchService.Failure.sourceChanged) {
+                try await f.service.revalidate(prepared: prepared)
+            }
+        } else {
+            try await f.service.revalidate(prepared: prepared)
+        }
+        #expect(try f.registry.records().isEmpty)
+        #expect(await f.io.generated.isEmpty)
+        #expect(await f.io.saved.isEmpty)
+        #expect(prepared.inputSnapshots.map(\.sourceRevision.sha256) == Array(repeating: String(repeating: "a", count: 64), count: photos.count))
+    }
+
     @Test("Ordered batch saves only editable drafts and survives registry reload", arguments: [false, true])
     func successfulBatch(roundedDates: Bool) async throws {
         let f = try Fixture()
