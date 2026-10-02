@@ -123,6 +123,18 @@
 		C0DE21000000000000000002 /* CodeReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE21000000000000000001 /* CodeReplacementTests.swift */; };
 		C0DE22000000000000000002 /* CaptionCodeReplacementCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */; };
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
+		C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */; };
+		C10800000000000000000002 /* MCPNativeReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */; };
+		C10800000000000000000102 /* MCPNativeReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */; };
+		C10800000000000000000202 /* MCPNativeReviewRequestProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */; };
+		C11700000000000000000002 /* MCPVoiceTranscriptionReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */; };
+		C11700000000000000000102 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */; };
+		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
+		C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */; };
+		C12100000000000000000202 /* AutomationNativeInvocationChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */; };
+		C12100000000000000000302 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */; };
+		C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */; };
+		C12200000000000000000102 /* UITestNativeInvocationConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */; };
 		C4A710000000000000000002 /* CaptionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A710000000000000000001 /* CaptionSessionTests.swift */; };
 		C4A720000000000000000002 /* CaptionCopyPreviousServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */; };
 		C59000000000000000000001 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 8ED369F32F8CF02C00FB9A33 /* SwiftMediaMetadata */; };
@@ -139,10 +151,7 @@
 		C76000000000000000000032 /* MetadataValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000031 /* MetadataValidation.swift */; };
 		C76000000000000000000042 /* MetadataRequirements.swift in Sources */ = {isa = PBXBuildFile; fileRef = C76000000000000000000041 /* MetadataRequirements.swift */; };
 		C77000000000000000000002 /* MCPIPTCPatchPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */; };
-		C96000000000000000000002 /* MCPVoiceTranscriptionPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */; };
-		C10500000000000000000002 /* MCPIPTCPatchXMPRecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */; };
 		C77000000000000000000102 /* MCPIPTCPatchPlanStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */; };
-		C96000000000000000000102 /* MCPVoiceTranscriptionPlanStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */; };
 		C77000000000000000000202 /* FFmpegWhisperJobRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77000000000000000000201 /* FFmpegWhisperJobRunnerTests.swift */; };
 		C78000000000000000000102 /* FFmpegWhisperTranscriptionProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78000000000000000000101 /* FFmpegWhisperTranscriptionProviderTests.swift */; };
 		C78000000000000000000202 /* FFmpegWhisperTranscriptProvenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */; };
@@ -169,6 +178,19 @@
 		C91000000000000000000202 /* MCPIPTCPatchXMPRecoveryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91000000000000000000201 /* MCPIPTCPatchXMPRecoveryStoreTests.swift */; };
 		C91000000000000000000302 /* MCPMetadataTemplatePreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91000000000000000000301 /* MCPMetadataTemplatePreviewTests.swift */; };
 		C91000000000000000000402 /* MCPMetadataTemplatePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91000000000000000000401 /* MCPMetadataTemplatePreview.swift */; };
+		C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */; };
+		C92000000000000000000202 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */; };
+		C92000000000000000000302 /* WhisperModelDistributionStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */; };
+		C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */; };
+		C93000000000000000000102 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */; };
+		C94000000000000000000102 /* MCPXMPSidecarInstallationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */; };
+		C96000000000000000000002 /* MCPVoiceTranscriptionPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */; };
+		C96000000000000000000102 /* MCPVoiceTranscriptionPlanStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */; };
+		D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */; };
+		D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */; };
+		D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */; };
+		D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */; };
+		D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */; };
 		D1C0023217A1B0E2510C12C2 /* MetadataIOCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */; };
 		D311F1000000000000000002 /* DeliveryPlanningServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */; };
 		D311F2000000000000000002 /* VerifiedDeliveryUploadCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D311F2000000000000000001 /* VerifiedDeliveryUploadCoordinatorTests.swift */; };
@@ -223,28 +245,7 @@
 		F4DD06000000000000000002 /* AdobeDNGDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4DD06000000000000000001 /* AdobeDNGDiscoveryTests.swift */; };
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
-		C92000000000000000000102 /* MCPMetadataTemplateBatchPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */; };
-		C92000000000000000000202 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */; };
-		C93000000000000000000102 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */; };
-		C94000000000000000000102 /* MCPXMPSidecarInstallationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */; };
-		C92000000000000000000302 /* WhisperModelDistributionStateStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */; };
-		C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */; };
-		C10800000000000000000002 /* MCPNativeReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */; };
-		C10800000000000000000102 /* MCPNativeReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */; };
-		C10800000000000000000202 /* MCPNativeReviewRequestProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */; };
-		D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */; };
-		D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */; };
-		D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */; };
-		C11700000000000000000002 /* MCPVoiceTranscriptionReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */; };
-		C11700000000000000000102 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */; };
-		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
-		D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */; };
-		D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */; };
-		C12200000000000000000102 /* UITestNativeInvocationConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */; };
-		C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */; };
-		C12100000000000000000202 /* AutomationNativeInvocationChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */; };
-		C12100000000000000000302 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */; };
-		C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */; };
+		C12400000000000000000102 /* CaptionVoiceMemoAssociationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -400,6 +401,18 @@
 		C0DE21000000000000000001 /* CodeReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodeReplacementTests.swift; sourceTree = "<group>"; };
 		C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCodeReplacementCoordinatorTests.swift; sourceTree = "<group>"; };
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
+		C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchXMPRecoveryStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchXMPRecoveryStore.swift"; sourceTree = SOURCE_ROOT; };
+		C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNativeReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPNativeReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
+		C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestStoreTests.swift; sourceTree = "<group>"; };
+		C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestProtocolTests.swift; sourceTree = "<group>"; };
+		C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
+		C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPVoiceTranscriptionReviewRequestStoreTests.swift; sourceTree = "<group>"; };
+		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationTranscriptionReviewModelTests.swift; sourceTree = "<group>"; };
+		C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannel.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationNativeInvocationChannel.swift"; sourceTree = SOURCE_ROOT; };
+		C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeInvocationChannelTests.swift; sourceTree = "<group>"; };
+		C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeTranscriptionReviewInvocationServiceTests.swift; sourceTree = "<group>"; };
+		C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeInvocationToolTests.swift; sourceTree = "<group>"; };
+		C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = UITestNativeInvocationConfiguration.swift; path = "Aagedal Photo Agent/Services/Automation/UITestNativeInvocationConfiguration.swift"; sourceTree = SOURCE_ROOT; };
 		C4A710000000000000000001 /* CaptionSessionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionSessionTests.swift; sourceTree = "<group>"; };
 		C4A720000000000000000001 /* CaptionCopyPreviousServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCopyPreviousServiceTests.swift; sourceTree = "<group>"; };
 		C5A000000000000000000001 /* main.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -415,10 +428,7 @@
 		C76000000000000000000031 /* MetadataValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataValidation.swift; path = "Aagedal Photo Agent/Models/MetadataValidation.swift"; sourceTree = SOURCE_ROOT; };
 		C76000000000000000000041 /* MetadataRequirements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetadataRequirements.swift; path = "Aagedal Photo Agent/Models/MetadataRequirements.swift"; sourceTree = SOURCE_ROOT; };
 		C77000000000000000000001 /* MCPIPTCPatchPlanStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchPlanStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchPlanStore.swift"; sourceTree = SOURCE_ROOT; };
-		C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionPlanStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionPlanStore.swift"; sourceTree = SOURCE_ROOT; };
-		C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPIPTCPatchXMPRecoveryStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPIPTCPatchXMPRecoveryStore.swift"; sourceTree = SOURCE_ROOT; };
 		C77000000000000000000101 /* MCPIPTCPatchPlanStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchPlanStoreTests.swift; sourceTree = "<group>"; };
-		C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPVoiceTranscriptionPlanStoreTests.swift; sourceTree = "<group>"; };
 		C77000000000000000000201 /* FFmpegWhisperJobRunnerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJobRunnerTests.swift; sourceTree = "<group>"; };
 		C78000000000000000000101 /* FFmpegWhisperTranscriptionProviderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperTranscriptionProviderTests.swift; sourceTree = "<group>"; };
 		C78000000000000000000201 /* FFmpegWhisperTranscriptProvenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FFmpegWhisperTranscriptProvenance.swift; path = "Aagedal Photo Agent/Models/FFmpegWhisperTranscriptProvenance.swift"; sourceTree = SOURCE_ROOT; };
@@ -446,6 +456,19 @@
 		C91000000000000000000201 /* MCPIPTCPatchXMPRecoveryStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPRecoveryStoreTests.swift; sourceTree = "<group>"; };
 		C91000000000000000000301 /* MCPMetadataTemplatePreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPMetadataTemplatePreviewTests.swift; sourceTree = "<group>"; };
 		C91000000000000000000401 /* MCPMetadataTemplatePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPMetadataTemplatePreview.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataTemplatePreview.swift"; sourceTree = SOURCE_ROOT; };
+		C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPMetadataTemplateBatchPreviewTests.swift; sourceTree = "<group>"; };
+		C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationApprovalStoreTests.swift; sourceTree = "<group>"; };
+		C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDistributionStateStoreTests.swift; sourceTree = "<group>"; };
+		C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPMetadataTemplateBatchPreview.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataTemplateBatchPreview.swift"; sourceTree = SOURCE_ROOT; };
+		C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift; sourceTree = "<group>"; };
+		C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPXMPSidecarInstallationTests.swift; sourceTree = "<group>"; };
+		C96000000000000000000001 /* MCPVoiceTranscriptionPlanStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionPlanStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionPlanStore.swift"; sourceTree = SOURCE_ROOT; };
+		C96000000000000000000101 /* MCPVoiceTranscriptionPlanStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPVoiceTranscriptionPlanStoreTests.swift; sourceTree = "<group>"; };
+		D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionBatchTests.swift; sourceTree = "<group>"; };
+		D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationBatchProgressTests.swift; sourceTree = "<group>"; };
+		D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoBatchTranscriptionModelTests.swift; sourceTree = "<group>"; };
+		D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionProviderBindingTests.swift; sourceTree = "<group>"; };
+		D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeVoiceTranscriptionBindingServiceTests.swift; sourceTree = "<group>"; };
 		D1C0023117A1B0E2510C12C1 /* MetadataIOCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataIOCoordinatorTests.swift; sourceTree = "<group>"; };
 		D242B1B673325FF76F5319C3 /* Aagedal Photo Agent/Models/EditorialJSONSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialJSONSchema.swift"; sourceTree = SOURCE_ROOT; };
 		D311F1000000000000000001 /* DeliveryPlanningServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeliveryPlanningServiceTests.swift; sourceTree = "<group>"; };
@@ -504,28 +527,7 @@
 		F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetadataEditorReadServiceTests.swift; sourceTree = "<group>"; };
 		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
-		C92000000000000000000101 /* MCPMetadataTemplateBatchPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPMetadataTemplateBatchPreviewTests.swift; sourceTree = "<group>"; };
-		C92000000000000000000201 /* MCPIPTCPatchXMPPublicationApprovalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationApprovalStoreTests.swift; sourceTree = "<group>"; };
-		C93000000000000000000101 /* MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPIPTCPatchXMPPublicationAdmissionServiceTests.swift; sourceTree = "<group>"; };
-		C94000000000000000000101 /* MCPXMPSidecarInstallationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPXMPSidecarInstallationTests.swift; sourceTree = "<group>"; };
-		C92000000000000000000301 /* WhisperModelDistributionStateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperModelDistributionStateStoreTests.swift; sourceTree = "<group>"; };
-		C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPMetadataTemplateBatchPreview.swift; path = "Aagedal Photo Agent/Services/Automation/MCPMetadataTemplateBatchPreview.swift"; sourceTree = SOURCE_ROOT; };
-		C10800000000000000000001 /* MCPNativeReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNativeReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPNativeReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
-		C10800000000000000000101 /* MCPNativeReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestStoreTests.swift; sourceTree = "<group>"; };
-		C10800000000000000000201 /* MCPNativeReviewRequestProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeReviewRequestProtocolTests.swift; sourceTree = "<group>"; };
-		D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionBatchTests.swift; sourceTree = "<group>"; };
-		D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationOperationBatchProgressTests.swift; sourceTree = "<group>"; };
-		D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoBatchTranscriptionModelTests.swift; sourceTree = "<group>"; };
-		C11700000000000000000001 /* MCPVoiceTranscriptionReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPVoiceTranscriptionReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
-		C11700000000000000000101 /* MCPVoiceTranscriptionReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPVoiceTranscriptionReviewRequestStoreTests.swift; path = "MCPVoiceTranscriptionReviewRequestStoreTests.swift"; sourceTree = "<group>"; };
-		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationTranscriptionReviewModelTests.swift; path = "AutomationTranscriptionReviewModelTests.swift"; sourceTree = "<group>"; };
-		D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionProviderBindingTests.swift; sourceTree = "<group>"; };
-		D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeVoiceTranscriptionBindingServiceTests.swift; sourceTree = "<group>"; };
-		C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = UITestNativeInvocationConfiguration.swift; path = "Aagedal Photo Agent/Services/Automation/UITestNativeInvocationConfiguration.swift"; sourceTree = SOURCE_ROOT; };
-		C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannel.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationNativeInvocationChannel.swift"; sourceTree = SOURCE_ROOT; };
-		C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannelTests.swift; path = "AutomationNativeInvocationChannelTests.swift"; sourceTree = "<group>"; };
-		C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeTranscriptionReviewInvocationServiceTests.swift; path = "AutomationNativeTranscriptionReviewInvocationServiceTests.swift"; sourceTree = "<group>"; };
-		C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNativeInvocationToolTests.swift; path = "MCPNativeInvocationToolTests.swift"; sourceTree = "<group>"; };
+		C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoAssociationServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -621,6 +623,7 @@
 				C82000000000000000000101 /* AutomationOperationRegistryTests.swift */,
 				D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */,
 				D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */,
+				C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */,
 				D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */,
 				D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */,
 				C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */,
@@ -796,6 +799,7 @@
 				8E0556B42F28C3F600BCFB49 /* Products */,
 				025F811ED39BE1D910E68E81 /* Aagedal Photo Agent Tests */,
 				F00D00000000000000000004 /* Aagedal Photo Agent UI Smoke Tests */,
+				C1D5E8F2307024C100E4BEE7 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -808,6 +812,14 @@
 				F00D00000000000000000003 /* Aagedal Photo Agent UI Smoke Tests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C1D5E8F2307024C100E4BEE7 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				C10500000000000000000001 /* MCPIPTCPatchXMPRecoveryStore.swift */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 		C5A000000000000000000004 /* PhotoAgent MCP */ = {
@@ -1077,6 +1089,7 @@
 				C82000000000000000000102 /* AutomationOperationRegistryTests.swift in Sources */,
 				D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */,
 				D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */,
+				C12400000000000000000102 /* CaptionVoiceMemoAssociationServiceTests.swift in Sources */,
 				D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */,
 				D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */,
 				C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */,

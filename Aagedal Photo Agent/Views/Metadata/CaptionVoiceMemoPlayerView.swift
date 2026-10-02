@@ -9,6 +9,7 @@ struct CaptionVoiceMemoPlayerView: View {
     let openTranscriptionSettings: () -> Void
     @State private var model = CaptionVoiceMemoPlaybackModel()
     @State private var recoveryModel = CaptionVoiceMemoRecoveryModel()
+    @State private var associationModel = CaptionVoiceMemoAssociationModel()
     @State private var reassociationModel = CaptionVoiceMemoReassociationModel()
     @State private var transcriptModel = CaptionVoiceMemoTranscriptModel(
         service: UITestVoiceTranscriptionBatchFixture.currentTranscriptService()
@@ -41,6 +42,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     .font(.caption.weight(.semibold))
                 Spacer()
                 Button("Refresh voice memo", systemImage: "arrow.clockwise") {
+                    associationModel.cancel()
                     refreshID = UUID()
                 }
                 .labelStyle(.iconOnly)
@@ -54,11 +56,18 @@ struct CaptionVoiceMemoPlayerView: View {
             case .none:
                 VStack(alignment: .leading, spacing: 5) {
                     Text("No associated voice memo").foregroundStyle(.secondary)
+                    Button("Find matching voice memo…", systemImage: "waveform.badge.plus") {
+                        guard let imageURL else { return }
+                        Task { await associationModel.discover(imageURL: imageURL) }
+                    }
+                    .disabled(associationModel.isWorking || reassociationModel.isWorking || imageURL == nil || isBatchPresentationActive
+                              || isMetadataReviewOrSaveBusy)
+                    .accessibilityIdentifier("caption.voiceMemo.findMatching")
                     Button("Find moved relationship…", systemImage: "folder.badge.questionmark") {
                         reassociationImageURL = imageURL
                         isSelectingRelationshipFolder = true
                     }
-                    .disabled(reassociationModel.isWorking || imageURL == nil || isBatchPresentationActive)
+                    .disabled(reassociationModel.isWorking || associationModel.isWorking || imageURL == nil || isBatchPresentationActive)
                     .accessibilityIdentifier("caption.voiceMemo.findRelationship")
                 }
             case .missing(let filename):
@@ -99,6 +108,14 @@ struct CaptionVoiceMemoPlayerView: View {
                     }
                     transcriptionPanel
                 }
+            }
+            if associationModel.isWorking {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking matching voice memo…").foregroundStyle(.secondary)
+                }
+            } else if let error = associationModel.errorMessage {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
             }
             if recoveryModel.isWorking {
                 HStack(spacing: 6) {
@@ -194,6 +211,25 @@ struct CaptionVoiceMemoPlayerView: View {
             }
         }
         .alert(
+            "Link matching voice memo?",
+            isPresented: Binding(
+                get: { associationModel.pendingAssociation != nil },
+                // Buttons own dismissal so SwiftUI cannot clear the preview before the async confirmation starts.
+                set: { _ in }
+            )
+        ) {
+            Button("Cancel", role: .cancel) { associationModel.cancel() }
+            Button("Link Voice Memo") {
+                Task {
+                    if await associationModel.confirm() { refreshID = UUID() }
+                }
+            }
+        } message: {
+            if let pair = associationModel.pendingAssociation {
+                Text("Link \(pair.memoURL.lastPathComponent) to \(pair.imageURL.lastPathComponent)? Camera capture evidence and the matching WAV were checked. This saves a relationship record in this folder; the photo and audio remain unchanged.")
+            }
+        }
+        .alert(
             "Use replacement voice memo?",
             isPresented: Binding(
                 get: { recoveryModel.pendingReplacement != nil },
@@ -217,6 +253,7 @@ struct CaptionVoiceMemoPlayerView: View {
         }
         .onChange(of: imageURL) {
             recoveryModel.cancel()
+            associationModel.cancel()
             reassociationModel.cancel()
             transcriptModel.cancel(resetDraft: true)
             isSelectingRecoveryMemo = false
@@ -227,6 +264,7 @@ struct CaptionVoiceMemoPlayerView: View {
         .onDisappear {
             model.stop()
             recoveryModel.cancel()
+            associationModel.cancel()
             reassociationModel.cancel()
             transcriptModel.cancel(resetDraft: true)
             batchModel.dismissConfirmation()

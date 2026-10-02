@@ -10,6 +10,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added **Find matching voice memo…** in Caption for existing Sony photo/WAV folders opened
+  directly. Camera evidence and the full adjacent inventory are checked before explicit link
+  confirmation; saved links never overwrite existing relationships or modify the photo/audio.
+
 - Added `start_voice_transcription` through the matching signed helper and running app. Native exact
   provider review, checked consent and **Allow Helper to Start Once** grant one start for 60 seconds.
   Provider changes, consent withdrawal, repeated review and dismissal revoke the session grant.

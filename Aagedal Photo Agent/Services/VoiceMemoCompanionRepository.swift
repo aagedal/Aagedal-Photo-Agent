@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Darwin
 
 nonisolated struct VoiceMemoRenamePlanningRequest: Sendable {
     let requestID: UUID
@@ -545,6 +546,87 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             provenance: .capturedAssociation
         )
         try write(record, to: recordURL(for: imageURL))
+    }
+
+    /// Creates an initial, explicitly reviewed link without replacing any existing relationship.
+    /// The caller retains its folder reservation and revalidates the complete discovery evidence.
+    func saveNewReviewedAssociation(
+        _ association: VoiceMemoAssociation,
+        revalidate: () throws -> Void
+    ) throws {
+        let image = association.imageURL.standardizedFileURL
+        let memo = association.memoURL.standardizedFileURL
+        guard image.deletingLastPathComponent() == memo.deletingLastPathComponent() else {
+            throw RepositoryError.mismatchedFolder
+        }
+        try Self.validateFilename(image.lastPathComponent)
+        try Self.validateFilename(memo.lastPathComponent)
+        try VoiceMemoTranscriptionService.requireRegularInput(image)
+        try VoiceMemoTranscriptionService.requireRegularInput(memo)
+        try revalidate()
+        let destination = recordURL(for: image)
+        let record = try identityRecord(profileIdentifier: association.profileIdentifier,
+            imageURL: image, memoURL: memo, provenance: .capturedAssociation)
+        let bytes = try encoded(record)
+        // Pin the destination directory. Installation and cleanup cannot follow a swapped
+        // ancestor into another folder, and cleanup never recursively removes a pathname.
+        let parent = Darwin.open(image.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw RepositoryError.copySourceChanged }
+        defer { Darwin.close(parent) }
+        let stagingName = ".voice-memo-association-\(UUID().uuidString)"
+        guard Darwin.mkdirat(parent, stagingName, 0o700) == 0 else { throw RepositoryError.copySourceChanged }
+        let staging = Darwin.openat(parent, stagingName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard staging >= 0 else { throw RepositoryError.copySourceChanged }
+        defer {
+            _ = Darwin.unlinkat(staging, "relationship.json", 0)
+            Darwin.close(staging)
+            _ = Darwin.unlinkat(parent, stagingName, AT_REMOVEDIR)
+        }
+        let output = Darwin.openat(staging, "relationship.json", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard output >= 0 else { throw RepositoryError.copySourceChanged }
+        let handle = FileHandle(fileDescriptor: output, closeOnDealloc: true)
+        try handle.write(contentsOf: bytes)
+        try handle.synchronize()
+        var witness = stat()
+        guard Darwin.fstat(output, &witness) == 0 else { throw RepositoryError.copySourceChanged }
+        try handle.close()
+        try Task.checkCancellation()
+        try revalidate()
+        guard Darwin.renameatx_np(staging, "relationship.json", parent, destination.lastPathComponent,
+                                 UInt32(RENAME_EXCL)) == 0 else {
+            throw RepositoryError.copyDestinationExists(destination.lastPathComponent)
+        }
+        do {
+            try revalidate()
+            guard try Data(contentsOf: destination) == bytes,
+                  try lookup(for: image) == .available(association) else {
+                throw RepositoryError.copySourceChanged
+            }
+        } catch {
+            // Quarantine before inspecting, so a replacement cannot race a check-and-unlink.
+            // An unrelated replacement is restored without overwriting any new destination.
+            let quarantine = ".voice-memo-association-rollback-\(UUID().uuidString)"
+            if Darwin.renameatx_np(parent, destination.lastPathComponent, parent, quarantine, UInt32(RENAME_EXCL)) == 0 {
+                let candidate = Darwin.openat(parent, quarantine, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+                var current = stat()
+                var owned = false
+                if candidate >= 0 {
+                    let reader = FileHandle(fileDescriptor: candidate, closeOnDealloc: true)
+                    owned = Darwin.fstat(candidate, &current) == 0
+                        && current.st_dev == witness.st_dev && current.st_ino == witness.st_ino
+                        && (try? reader.readToEnd()) == bytes
+                    try? reader.close()
+                }
+                if owned {
+                    guard Darwin.unlinkat(parent, quarantine, 0) == 0 else {
+                        throw RepositoryError.copyRollbackFailed([destination.deletingLastPathComponent().appendingPathComponent(quarantine).path])
+                    }
+                } else if Darwin.renameatx_np(parent, quarantine, parent, destination.lastPathComponent, UInt32(RENAME_EXCL)) != 0 {
+                    throw RepositoryError.copyRollbackFailed([destination.deletingLastPathComponent().appendingPathComponent(quarantine).path])
+                }
+            }
+            throw error
+        }
     }
 
     /// Classifies a user-selected WAV against identity captured when the relationship was made.

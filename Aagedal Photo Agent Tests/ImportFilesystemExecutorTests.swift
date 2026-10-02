@@ -4,6 +4,63 @@ import Testing
 
 @Suite("Import filesystem Dispatch executors")
 struct ImportFilesystemExecutorTests {
+    @Test("Opt-in Sony card import automatically persists all validated adjacent memo relationships",
+          .enabled(if: ProcessInfo.processInfo.environment["APA_SONY_EXISTING_FOLDER_FIXTURE"] != nil))
+    func productionSonyCardMemoImport() async throws {
+        let sourcePath = try #require(ProcessInfo.processInfo.environment["APA_SONY_EXISTING_FOLDER_FIXTURE"])
+        let sourceFolder = URL(fileURLWithPath: sourcePath).standardizedFileURL.resolvingSymlinksInPath()
+        let sourceEntries = try FileManager.default.contentsOfDirectory(at: sourceFolder,
+            includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        let images = sourceEntries.filter { $0.pathExtension.lowercased() == "jpg" }
+        let memos = sourceEntries.filter { $0.pathExtension.lowercased() == "wav" }
+        #expect(images.count == 3)
+        #expect(memos.count == 3)
+        let originals = try Dictionary(uniqueKeysWithValues: (images + memos).map {
+            ($0, try HashStream.hashFileSynchronously(at: $0))
+        })
+        // Existing Caption-created records are deliberately excluded: card import discovers
+        // relationships from the Sony capture evidence and audio dates, not prior sidecars.
+        let discovery = await ImportVoiceMemoAssociationScanService().scan(
+            primaryImages: images, primaryMemos: memos, companionFiles: [],
+            primaryRoot: sourceFolder, companionRoot: nil)
+        guard case .complete(let evidence) = discovery else {
+            Issue.record("The complete production card association scan was cancelled")
+            return
+        }
+        #expect(evidence.report.associations.count == 3)
+        #expect(evidence.report.ambiguous.isEmpty)
+        #expect(evidence.report.imagesWithoutMemo.isEmpty)
+
+        let destination = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("sony-card-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let files = (images + memos).sorted { $0.path < $1.path }
+        let jobs = files.map { source in
+            ImportCopyService.CopyJob(source: source,
+                desiredPrimaryDest: destination.appendingPathComponent(source.lastPathComponent),
+                desiredBackupDest: nil)
+        }
+        let results = try await ImportCopyService().run(jobs: jobs, conflictPolicy: .skipExisting,
+            verificationMode: .on, verifyBackup: false, progress: { _ in })
+        #expect(results.count == 6)
+        #expect(results.allSatisfy { $0.isPrimaryGood && $0.primaryVerification == .verified })
+        let repository = VoiceMemoCompanionRepository()
+        #expect(try repository.saveImportedAssociations(evidence.report.associations, results: results) == 3)
+        for association in evidence.report.associations {
+            let importedImage = destination.appendingPathComponent(association.imageURL.lastPathComponent)
+            let importedMemo = destination.appendingPathComponent(association.memoURL.lastPathComponent)
+            #expect(try repository.lookup(for: importedImage) == .available(.init(
+                profileIdentifier: SonyDualCardVoiceMemoAssociationService.profileIdentifier,
+                imageURL: importedImage, memoURL: importedMemo)))
+        }
+        for (source, digest) in originals {
+            #expect(try HashStream.hashFileSynchronously(at: source) == digest)
+            #expect(try HashStream.hashFileSynchronously(
+                at: destination.appendingPathComponent(source.lastPathComponent)) == digest)
+        }
+    }
+
     @Test("Source access and release stay on Dispatch across progress suspension")
     @MainActor
     func sourceDiscoveryContext() async throws {

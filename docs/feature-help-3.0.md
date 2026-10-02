@@ -39,6 +39,17 @@ changed files, follow its reload/retry guidance before another action.
 
 ## Listen to an associated voice memo
 
+If you open an existing Sony camera folder directly, select its photo in Caption and use
+**Find matching voice memo…**. The app checks the adjacent photo/WAV inventory and camera
+capture evidence. Confirm **Link Voice Memo** to save the proposed relationship. Opening or
+checking the folder makes no changes; confirmation adds a relationship record without changing
+the image or WAV. Duplicate or uncertain matches are refused. **Find moved relationship…**
+is for recovering a previously saved link, not making the initial association.
+
+After linking, choose **Apple Speech** in Settings → Transcription. Caption’s Voice memo panel
+then exposes the language picker and **Download Language** when the selected locale needs its
+on-device asset. If **Transcribe** appears, the selected language is already installed.
+
 Caption Workspace shows a **Voice memo** panel beneath the preview. When an imported photo
 has a saved WAV relationship, the panel displays its filename and duration. Press **Play voice
 memo** to listen and **Pause voice memo** to pause. Selecting another photo or leaving Caption
