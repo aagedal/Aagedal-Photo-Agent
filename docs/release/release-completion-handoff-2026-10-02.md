@@ -1,6 +1,6 @@
 # What is still needed to finish 3.0
 
-**Reviewed:** 2026-10-02, source baseline `86ac666`; continued in [cycle 123](cycle-123-native-helper-transcription-start-2026-10-02.md). This is a planning
+**Reviewed:** 2026-10-02, source baseline `86ac666`; continued in [cycle 124](cycle-124-existing-sony-folder-linking-2026-10-02.md). This is a planning
 handoff, not a readiness decision or a record of completed manual tests. The four
 owning plans and the [coordinator protocol](coordinator.md) remain authoritative.
 
@@ -40,7 +40,7 @@ not automatically mean the user must perform every step.
 
 | Resource / owner action | Why it is needed | Checklist |
 | --- | --- | --- |
-| Confirm the existing authorized ILCE-1 v4.00 private sample is accessible for current workflow tests; supply more body/firmware and duplicate/orphan/card cases only for additional claimed combinations. Keep private originals outside Git. Also supply authorized decodable HEIC/HEIF and camera RAW fixtures if they are not already available. | Prove actual camera association/lifecycle, metadata preservation, transcription and image-plus-WAV delivery. Existing real-sample association evidence does not establish the full current workflow. | A12, E01, E08 |
+| The provided ILCE-1 v4.00 private JPEG/WAV sample is now accessible and qualified on disposable copies in cycle 124. Supply more body/firmware and duplicate/orphan/card cases for additional claimed combinations. Keep private originals outside Git. Also supply authorized decodable HEIC/HEIF and camera RAW fixtures if they are not already available. | Prove actual camera association/lifecycle, metadata preservation, transcription and image-plus-WAV delivery. Existing real-sample association evidence does not establish the full current workflow. | A12, E01, E08 |
 | Confirm Bridge and Photo Mechanic launch/activation. Use disposable outputs and authorize fixture redistribution before committing third-party examples. | Run IPTC tests and dated editor round trips, including Original Filename. The agent can operate the installed apps when activation permits. | E01 |
 | Designate disposable FTP, explicit FTPS and SFTP test destinations. Enter credentials through the app’s Keychain UI, rather than in chat. | Real delivery, certificate/host-key failure, disconnect and retry evidence. A saved production profile is not permission to use it. | E02 |
 | Designate a disposable removable disk, read-only target, actual evicted iCloud test image and isolated sync data. Provide access to a second Mac if needed for the claimed multi-Mac sync behavior. | Real permission/revocation, disconnect, cloud offline/recovery and reconciliation drills. The agent can create bounded local disk images for capacity cases. | E04; Known People lifecycle |
@@ -101,8 +101,9 @@ not constitute complete accessibility coverage or actual provider inference evid
 
 [Existing Sony evidence](../sony-alpha-voice-memo-companion-validation.md) records a
 user-supplied private ILCE-1 v4.00 two-card sample with three RAW/JPEG/WAV exposures
-and passing production association parsing. Its current private location was not
-inspected. Request access to that existing sample before asking for replacement media;
+and passing production association parsing. The user supplied its current private folder on 2026-10-02. Cycle 124 checks disposable
+copies of all three JPEG/WAV pairs through production matching and explicit initial linking;
+originals remain unchanged. The sample supports the existing automatic Import association path;
 additional body/firmware claims require additional evidence. Old unimplemented-feature
 bullets in that August record are historical and superseded by current cycle evidence.
 

@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest implementation continuation:** [Cycle 123: one-use native helper transcription start](release/cycle-123-native-helper-transcription-start-2026-10-02.md) connects authenticated helper start to exact in-memory native consent and rooted durable draft execution. Nine actual signed-helper calls qualify refusal, grant consumption, verified drafts and non-replaying linked retry with synthetic recognition. Ten separate real production Whisper CLI cases pass; native real-provider/model/distribution qualification and broader executors remain open. [Release completion handoff](release/release-completion-handoff-2026-10-02.md) separates remaining engineering, resource setup and later human acceptance.
+**Latest implementation continuation:** [Cycle 124: existing Sony folder linking and automatic Import qualification](release/cycle-124-existing-sony-folder-linking-2026-10-02.md) adds explicit initial voice-memo linking for folders opened directly. Production matching checks all three pairs from the provided Sony A1 sample; verified copy and receipt persistence qualify automatic Import linking on disposable copies. Existing native provider/model/distribution and broader release gates remain open. [Cycle 123](release/cycle-123-native-helper-transcription-start-2026-10-02.md) records authenticated one-use helper start. The [release handoff](release/release-completion-handoff-2026-10-02.md) distinguishes remaining engineering, resource setup and later acceptance.
 
 ## Portfolio
 

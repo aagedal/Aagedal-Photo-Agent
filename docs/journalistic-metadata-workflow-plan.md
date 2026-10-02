@@ -673,6 +673,16 @@ hands-on focus/IME/VoiceOver/visual checks remain explicit.
 
 ### Sony Alpha voice memos — ingest foundation implemented for 3.0
 
+**Cycle 124 continuation (2026-10-02):** A user drill of the real Sony A1 JPEG/WAV card
+folder exposed that direct folder opening had no saved relationship and no initial-link action.
+Caption now offers explicit **Find matching voice memo…** and **Link Voice Memo** confirmation.
+Read-only discovery and confirmed exclusive record installation reuse the full adjacent Sony
+evidence scan, revalidate inventory/content, refuse collisions and retain shared folder ownership.
+The provided sample proves all three pairs on disposable copies. The separate production Import
+scan/verified-copy/receipt-persistence pipeline automatically records the same three pairs;
+this does not qualify the complete GUI Import or wider camera/firmware matrix. See
+[cycle 124 evidence](release/cycle-124-existing-sony-folder-linking-2026-10-02.md).
+
 **Status:** flexible one/two-source ILCE-1 v4.00 ingest is implemented, with companion lifecycle
 slices through user-scoped exact relationship reassociation. Compatibility with other Sony bodies/
 firmware, authentic native/physical-volume validation and later transcript/delivery stages remain
