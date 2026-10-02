@@ -12,8 +12,11 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 - Added a separate transcription intent inbox in Automation Settings. MCP clients can queue
   epoch-bound requests for exact ordered previews, inspect their intent and cancel before admission.
-  Native inspection revalidates inputs and grants no execution consent; provider admission and
-  authenticated execution remain under implementation. Explicit confirmed cleanup now retires
+  Native provider review now displays the exact locale or model/runtime and options, with separate
+  explicit consent to durably linked execution. Whole-set rooted reservations guard recognition and
+  verified create-only draft saves; existing transcripts refuse admission, changed inputs refuse saving,
+  and cancellation retains saved drafts. Closing Settings preserves admitted work. Direct helper
+  execution and authenticated invocation remain unfinished. Explicit confirmed cleanup now retires
   requests cancelled before admission while preserving awaiting and admitted evidence.
 - Added internal exact-operation transcription admission and linkage before recognition. Reserved
   operation identities and one-way retained admission prevent uncertain work from replaying;
@@ -32,7 +35,7 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 - Transcribe a captured selection of up to eight voice memos from Caption after explicit
   provider/language consent. Ordered results distinguish saved, unapproved drafts from failed,
   cancelled or uncertain items; cancellation keeps drafts already saved. Changed inputs and
-  existing reviews refuse admission. Helper transcription invocation remains under implementation.
+  existing transcripts refuse admission. Helper transcription invocation remains under implementation.
 
 - Restore identified interrupted XMP publications from Automation Settings after a separate confirmation.
   Original metadata is restored or originally absent files are removed; durable restoration receipts

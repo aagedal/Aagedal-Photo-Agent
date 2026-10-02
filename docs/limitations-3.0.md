@@ -141,15 +141,19 @@ This is separate from the unapproved AI-origin analyzer described above.
   64 records without automatic eviction. Inspection revalidates the plan and grants no consent.
   Internal admission now binds the original request, epoch, intent and reserved operation UUID;
   exact configured-operation linkage precedes scheduling, and interrupted admission cannot replay.
-  These caller-supplied executor hooks do not grant rooted execution authority. A separate internal
-  read-only native session API now binds the exact prepared photo set and concrete provider/options/
-  model/executable identity to the rooted request, with fresh readiness and carrier checks. It has
-  no production inbox caller, consent or operation admission. Apple availability and actual inference
-  remain device qualification gates. The archived managed-owner flag does not establish current liveness.
+  Native Settings now connects the exact rooted provider/session binding to separate provider review,
+  explicit consent and durable reserved-operation admission. Whole-set photo/metadata/WAV/relationship
+  authority and original directory identities remain retained across recognition and anchored create-only
+  draft installation. Only exact verified own transcript carrier generations advance the baseline;
+  unrelated fields and unknown extensions remain preserved. Existing transcripts refuse admission,
+  provider/locale/provenance drift refuses saving, and cancellation preserves saved prefixes. Closing
+  Settings retains provider capacity until the owner confirms terminal completion. Preview expiry gates
+  admission; it does not expire already consented recognition. Actual inference and offline/device
+  behavior remain qualification gates. The archived managed-owner flag does not establish liveness.
   Native confirmed capacity cleanup retires only pre-admission cancellations and rotates the epoch;
   awaiting, admitted, linked and uncertain evidence remains retained. Stale confirmation refuses.
-  Provider/model admission and authenticated invocation remain unfinished. Native batch confirmation additionally binds the raw relationship
-  bytes and inode/mtime/ctime revision, with a final check inside the create-only save lock. Authenticated IPC remains unfinished; no helper tool can start this executor. Native deterministic fixtures verify the
+  Authenticated invocation and direct helper execution remain unfinished. Native batch confirmation additionally binds the raw relationship
+  bytes and inode/mtime/ctime revision, with a final check inside the create-only save lock. No helper tool can start this executor. Native deterministic fixtures verify the
   integration, while real Apple/Whisper inference, cancellation and broader lifecycle qualification
   remain release gates.
   Durable per-photo history retains numbered outcomes, without source paths or text; it does not

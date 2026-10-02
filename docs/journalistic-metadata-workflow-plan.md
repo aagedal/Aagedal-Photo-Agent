@@ -1425,6 +1425,19 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 120 continuation (2026-10-02):** Automation Settings now connects the exact native
+provider/rooted session binding to explicit provider review, fresh consent and one durably linked
+operation. Whole-set kernel leases, original directory identities and source/WAV/relationship
+witnesses survive asynchronous recognition. Anchored create-only transcript writes preserve all
+other app JSON fields, source and XMP; only exact verified own app generations advance the retained
+baseline. Existing transcripts refuse admission, provider/locale/provenance drift refuses saving,
+cancellation preserves saved prefixes, and dismissal does not release provider capacity before
+terminal owner confirmation. Expiry gates admission, while admitted work retains frozen authority.
+The helper can request cooperative cancellation and inspect linked operation evidence but cannot
+start execution or grant consent. Authenticated invocation, actual provider/device qualification,
+signed model lifecycle, other executors and whole Phase 5A acceptance remain open.
+See [cycle 120 evidence](release/cycle-120-native-transcription-execution-2026-10-02.md).
+
 **Cycle 119 continuation (2026-10-02):** A read-only native session binding now pins an exact
 retained request/epoch/intent to the ordered prepared photo set and concrete provider. Apple locale
 and Whisper language/translation/GPU options must match; Whisper retains exact executable/model

@@ -156,8 +156,18 @@ In **Settings → Automation → Transcription Intent Review**, refresh requests
 **Inspect Transcription Intent** to revalidate the preview and display photo order and requested
 provider/language/translation/GPU options. **Cancel Before Admission** retains a cancelled intent.
 Changed or expired previews cannot be inspected, but their request remains cancellable. The archive
-retains at most 64 requests without automatic eviction. Inspecting supplies no provider consent or
-operation link; provider execution and authenticated invocation remain unfinished.
+retains at most 64 requests without automatic eviction. Inspecting supplies no provider consent.
+Configure the matching provider and options in **Settings → Transcription**, then choose
+**Review Selected Provider** in the intent review. For Apple Speech, enter the exact installed
+locale. The review displays that locale or the exact Whisper runtime/model paths, hashes and options.
+It downloads nothing and requests no permissions. Check the explicit consent box, then choose
+**Start Confirmed Transcription**. A mismatch, existing transcript or changed input refuses admission.
+The confirmed operation saves editable, unapproved drafts in order; IPTC stays unchanged.
+Closing Settings preserves admitted work. Request cancellation in the active workflow or from its
+retained request after reopening Settings; use the linked operation ID to inspect actual completion.
+A cancellation request is not confirmation of teardown. Saved drafts survive a later cancellation or
+failure. Linked and interrupted admissions cannot be replayed. Direct helper execution and
+authenticated invocation remain unfinished.
 Choose **Review transcription request capacity** to see the retained count and eligible
 cancellations, then **Remove cancelled transcription requests** and confirm to retire only
 requests cancelled before admission. Cleanup rotates the current epoch and preserves awaiting,
@@ -172,7 +182,8 @@ without paths or transcript text. A saved transcription draft remains editable a
 with IPTC unchanged. Failed or cancelled batches can retain saved drafts; inspect each outcome
 before retrying. Uncertain saves retain recovery evidence. Executor liveness is reported as unknown.
 These endpoints do not start work or authorize photo writes. Batch transcription starts through
-Caption's explicit native consent; helper face/template/transcription invocation remains under implementation.
+Caption or the Automation intent review after explicit native consent; direct helper
+face/template/transcription invocation remains under implementation.
 
 Call `prepare_iptc_patch` to preview proposed changes after `get_photo_metadata`. Supply the same
 absolute `path`, all three returned revision strings (`sourceRevision`, `xmpSidecarRevision`,
