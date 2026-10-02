@@ -2,15 +2,25 @@
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Helper-visible readiness and model/executable identity remain unresolved. Automation Settings now binds the exact retained request and ordered prepared photo set to concrete provider/options/model/executable identity, fresh readiness and explicit native consent. One durably admitted/linked operation retains original rooted reservations and carrier witnesses through inference, anchored transcript draft saves and terminal completion. Cancellation preserves completed drafts; retained linked requests cannot replay after relaunch. Epoch-bound intent inspection and confirmed cancelled-request capacity maintenance remain available. Authenticated exact-request transcription review presentation is available through the matching signed helper and running app; direct helper execution remains unavailable. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-10-02
-**Latest implementation state:** [Cycle 121](cycle-121-authenticated-native-review-2026-10-02.md) adds authenticated exact-request native review presentation with mutually checked kernel audit-token signatures and exact app/helper bundle pairing. No consent or execution authority crosses the channel. UI inspection clears prior consent; linked responses retain exact history without claiming completion. Shared speech teardown is awaited across analysis, finalization and result collection. Verification passes 3,776 integrated tests / 369 suites, 142 focused tests / six suites, 13 real signed transport cases, the 31-tool helper probe and repository checks.
-**Latest native evidence:** Cycle 121 passes four final-source workflows in 131.714 seconds, zero failures/skips: exact review opening without consent, concrete-provider consent and draft completion, changed-source refusal, and retained dismissal/cancellation/prefix/relaunch. Recognition remains synthetic. The real signed transport harness and actual app UI are separate evidence; the complete installed app/helper pipeline and actual providers remain unqualified.
-**Implementation commits:** `555c494` (speech teardown) and `e557d1b` (authenticated native review). All 20 final application/test/project/probe hashes match verified source and those commits. No application source changes followed final integrated/native verification. No new Release candidate was built.
-**Cycle baseline:** `0fd7871`, initially clean. No whole release-readiness gate is newly closed.
-**Continuation chat:** `01a0fce6-d268-7b13-9c60-6b969dae9bbc`; initial chat inventory found no other active chat editing this checkout.
+**Latest implementation state:** [Cycle 122](cycle-122-installed-native-review-authority-2026-10-02.md) fixes stale shared authorization in persistent clients, reports preference refresh/write failures and discards unacknowledged dirty grants. Debug fixture routing now joins the actual signed nested helper, running app, exact retained request resolver and native review UI without injected authentication. The final integrated suite passes 3,780 tests / 369 suites, zero failures/skips in 133.794 seconds; the independent-process preference probe passes ten checks.
+**Latest native evidence:** The installed signed-pair review workflow passes in 27.937 seconds, one test with zero failures/skips and four actual helper invocations. Stale handles refuse without changing selection/consent; valid repeats open the exact review and clear previous consent. Normal Command-Q removes the listener and fixture cleanup passes. The runner stays sandboxed with one private fixture-directory write exception; product permissions are unchanged. This development-signed Debug review-only case performs no inference. The four existing native workflows also pass in 133.033 seconds, zero failures/skips. The 31-tool bundled helper probe passes.
+**Implementation commits:** `1acfecf` (shared authority refresh) and `a34f612` (actual signed helper/app/native qualification). All 14 frozen code/test/project/probe hashes identify verified source. No new Release candidate was built.
+**Cycle baseline:** `fe853a8`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0fd17-a94a-7302-ad09-436b15de67b6`; initial chat inventory found no other active chat editing this checkout.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 122 installed native review and fresh shared authority](cycle-122-installed-native-review-authority-2026-10-02.md)
+records final 3,780 passing integrated tests / 369 suites in 133.794 seconds, ten isolated
+independent-process CFPreferences checks, and a joined actual development-signed helper/app/native
+review case in 27.937 seconds. Four actual helper invocations include two stale refusals and two
+exact truthful review acknowledgments. Native review/consent reset, graceful listener shutdown and
+fixture cleanup pass. Product authentication and no-follow storage remain unchanged. Independent
+review and repository checks pass. Four integrated QoS warnings, six native layout-constraint
+warnings and four native main-thread responsiveness warnings retain performance/UI qualification.
+Real providers, distribution signing, direct helper execution and broader release gates remain open.
 
 [Cycle 121 authenticated native transcription review handoff](cycle-121-authenticated-native-review-2026-10-02.md)
 records 3,776 passing serial integrated tests / 369 suites in 122.359 seconds, 142 focused tests /
@@ -233,14 +243,15 @@ progress/completion, canonical list field references and authenticated rollback-
 Restoration refuses external identity changes and missing receipt evidence; production model and
 workflow integration remain open.
 
-Ordered next implementation actions: qualify the complete actual installed signed app/helper review
-pipeline, then implement guarded direct helper execution using exact native consent, the retained
+Ordered next implementation actions after cycle 122: implement guarded direct helper execution
+using exact native consent, the retained
 rooted session and durable operation boundary. Never serialize consent or permit request replay.
 Qualify actual Apple/Whisper inference, cancellation/relaunch/offline/device behavior and signed
 model lifecycle; connect remaining face/template workflow executors and broaden native recovery.
 Physical crash, link-loss/archive-loss and epoch-retirement qualification remain; iCloud keyword
-authority, arbitrary-destination export and independent-process preference/power-loss evidence remain
-open. External interoperability, real-server/cloud/hardware/accessibility, privacy/legal, remote-CI
+authority, arbitrary-destination export and physical power-loss/durability qualification remain
+open. Cycle 122 verifies independent-process automation preference refresh; that bounded
+evidence does not qualify power-loss durability. External interoperability, real-server/cloud/hardware/accessibility, privacy/legal, remote-CI
 and exact signed-candidate/user acceptance gates remain open. No-progress count is zero.
 
 [Cycle 97 installed identities, recursive previews and model content recovery](cycle-97-installed-identities-recursive-previews-model-recovery-2026-09-22.md)
@@ -870,8 +881,8 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Current after cycle 121:** Qualify actual installed signed app/helper review presentation, then
-implement guarded direct helper execution using the verified native review/consent, retained rooted
+**Current after cycle 122:** The bounded actual development-signed Debug helper/app/native
+review path is qualified. Implement guarded direct helper execution using the verified native review/consent, retained rooted
 execution and durable operation boundary. Native provider selection grants no consent; exact explicit confirmation precedes admission
 and linkage, and interrupted/linked requests cannot replay. Qualify actual providers and signed model
 lifecycle, connect remaining face/template executors and broaden recovery. Preserve the external,
@@ -1035,7 +1046,7 @@ session. The final QA process was quit and native inventory confirmed it stopped
 returned to its original window. Bridge is available, but presence is not interoperability proof.
 
 Browser visual QA of the checklist remains pending: URL policy rejected its local file URL
-at setup. Do not bypass with another route. Static checks now pass for 35 complete cases, unique
+at setup. Do not bypass with another route. Cycle 122 static checks pass for 40 complete cases, unique
 IDs, local source links and JavaScript syntax. It remains unassigned to a candidate and all
 human results are unrun.
 
@@ -1043,6 +1054,20 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+Cycle 122 (`1acfecf` / `a34f612`, baseline `fe853a8`) adds fail-closed shared preference
+refresh and a joined real development-signed installed review qualification. Exact retained
+request/epoch presentation grants no consent or execution. Ten independent-process preferences
+checks and the final integrated 3,780-test / 369-suite run pass; actual installed review passes
+one test in 27.937 seconds with four real helper calls, normal shutdown and complete fixture cleanup.
+Four final existing native regressions pass in 133.033 seconds and the 31-tool helper probe
+passes; final evidence and implementation hashes are recorded in the dated report.
+All 14 source hashes are frozen. Independent review finds no must-fix issue. Direct helper execution,
+distribution/provider/model qualification and broader release gates remain open. State stays
+IMPLEMENTING; no Release candidate or whole readiness gate closes. The no-progress counter remains
+zero; this continuation does not alter or revalidate the existing automation.
+
+### Historical handoffs
 
 Cycle 121 (`555c494` / `e557d1b`, baseline `0fd7871`) implements authenticated exact-request
 native transcription review presentation and shared awaited speech teardown. The transport carries
@@ -1055,7 +1080,6 @@ actual installed signed-pair pipeline, real providers and broader release gates 
 State stays IMPLEMENTING; no Release candidate or whole readiness gate closes. The no-progress
 counter is zero and this continuation does not alter or revalidate the existing automation.
 
-### Historical handoffs
 
 Cycle 120 (`d5f40cf`, baseline `63e1552`) implements native concrete-provider review,
 explicit consent, exact durable request admission/linkage, retained rooted execution and anchored

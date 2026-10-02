@@ -10,6 +10,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Fixed persistent automation clients retaining cached folder/enablement authority. Authorization
+  reads now refresh shared preferences, report refresh/persistence failures, and discard a failed
+  pending grant before a later read can publish it. Revocation and regrant retain distinct generations.
 - Added an authenticated local handoff from the bundled helper to native transcription review.
   `open_voice_transcription_review` opens an exact retained request/epoch in the running app;
   both processes verify the matching signed pair. The UI revalidates and clears prior execution

@@ -66,3 +66,13 @@ The disposable signed-pair probe exercises the actual Security framework and ker
 touching host roots, preferences or models. Neither that probe nor development signing qualifies
 distribution signing, notarization, actual speech inference, physical power-loss recovery or release
 readiness. Broader authenticated execution requires a later decision and acceptance evidence.
+
+[Cycle 122](release/cycle-122-installed-native-review-authority-2026-10-02.md) also joins
+the actual development-signed bundled helper, running app, retained request resolver and
+native review UI in one disposable Debug qualification. Two stale-epoch refusals preserve
+native selection/consent; two valid presentations select the exact request and clear prior
+consent. Normal Command-Q removes the listener. The helper launches outside XCTest's sandbox;
+the runner retains its sandbox with one narrow fixture-directory write exception. Debug
+storage routing injects no peer authentication and submits no inference. This bounded
+installed review evidence does not qualify distribution signing, real providers or direct
+helper execution.

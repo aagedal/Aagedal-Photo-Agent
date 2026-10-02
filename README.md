@@ -105,6 +105,8 @@ the support table and validation records.
   it does not listen on the network.
 - Automation is disabled by default. Settings → Automation manages explicit folder grants and provides a
   copyable setup for Codex CLI, Claude Code, OpenCode 1.x, and OpenCode v2.
+  Authorization refreshes shared preferences on every read, so persistent clients see revocation and
+  fresh grant generations; failed refreshes or saves refuse authority.
 - The current foundation exposes read-only server, photo-input-format, root, path-admission and photo-revision tools with strict canonical-path,
   identity, link, special-file, and private-store refusal. The helper shares photo/folder reservations
   with retained field, variable/template, Write All, Primary Develop and Batch Rename GUI execution. The helper

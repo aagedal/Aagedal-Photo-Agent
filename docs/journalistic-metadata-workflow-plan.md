@@ -1425,6 +1425,17 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 122 continuation (2026-10-02):** Persistent clients now refresh shared authorization
+preferences before reads/writes and refuse refresh/persistence failures. Failed preference writes
+discard dirty authority before any subsequent refresh; revocation/regrant generations remain distinct.
+An isolated Debug qualification launch joins the actual signed app, its actual nested STDIO helper,
+production mutual peer authentication, exact retained intent resolver and native review UI. Its
+storage redirection grants no authentication or consent and is unavailable in Release builds.
+Final verification and scope limits are recorded in
+[cycle 122 evidence](release/cycle-122-installed-native-review-authority-2026-10-02.md).
+Direct helper execution, actual providers, distribution signing/model lifecycle and broader Phase 5A
+acceptance remain open; no whole Phase 5A checkbox closes.
+
 **Cycle 121 continuation (2026-10-02):** The helper now exposes
 `open_voice_transcription_review` for exact original request/epoch handles. A private Unix socket
 checks same-user kernel audit tokens, Apple-anchored signatures, application team, executable IDs
