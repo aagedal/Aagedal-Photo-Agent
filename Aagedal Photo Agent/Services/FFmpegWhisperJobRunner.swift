@@ -62,7 +62,7 @@ nonisolated struct FFmpegWhisperJobRequest: Equatable, Sendable {
     }
 }
 
-/// An inference result, never a reviewed/approved transcript. The provider must still revalidate
+/// An inference result, not yet a saved transcript. The provider must still revalidate
 /// the photo/audio relationship and persist exact build/model provenance before publishing a draft.
 nonisolated struct FFmpegWhisperJobResult: Sendable {
     let request: FFmpegWhisperJobRequest
@@ -155,8 +155,7 @@ actor FFmpegWhisperJobRunner {
     private nonisolated static func validate(_ request: FFmpegWhisperJobRequest) throws {
         guard request.timeoutSeconds.isFinite, request.timeoutSeconds > 0,
               request.timeoutSeconds <= 3600,
-              request.language == "auto" || (request.language.utf8.count == 2 &&
-                  request.language.utf8.allSatisfy({ (97...122).contains($0) })) else {
+              WhisperTranscriptionLanguage.isValid(request.language) else {
             throw FFmpegWhisperJobError.invalidRequest
         }
         for (input, maximum) in [(request.executable, Int64(512 * 1024 * 1024)),

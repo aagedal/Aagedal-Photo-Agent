@@ -109,7 +109,7 @@ struct VoiceMemoVariableBatchPreview: Identifiable, Equatable, Sendable {
 enum VariableMetadataResolver {
     static func resolve(_ input: VariableMetadataResolutionInput) async throws -> IPTCMetadata {
         try Task.checkCancellation()
-        if requiresApprovedVoiceMemoTranscript(input.metadata) {
+        if requiresVoiceMemoTranscript(input.metadata) {
             _ = try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: input.metadata)
             if input.voiceMemoTranscriptContext == nil {
                 throw VoiceMemoTranscriptVariableError.missing
@@ -200,7 +200,7 @@ enum VariableMetadataResolver {
         return result
     }
 
-    static func requiresApprovedVoiceMemoTranscript(_ metadata: IPTCMetadata) -> Bool {
+    static func requiresVoiceMemoTranscript(_ metadata: IPTCMetadata) -> Bool {
         guard let data = try? JSONEncoder().encode(metadata),
               let document = String(data: data, encoding: .utf8) else { return false }
         return document.contains("{voiceMemoTranscript}")

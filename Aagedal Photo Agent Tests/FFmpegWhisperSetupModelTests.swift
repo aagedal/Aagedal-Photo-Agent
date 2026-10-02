@@ -75,6 +75,20 @@ struct FFmpegWhisperSetupModelTests {
         #expect(reopened.modelURL == nil)
     }
 
+    @Test("Whisper menu languages persist, including three-letter language identifiers",
+          arguments: ["auto", "no", "nn", "en", "haw", "yue"])
+    func languageSelectionPersistence(code: String) {
+        let (defaults, suite) = defaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let setup = FFmpegWhisperSetupModel(defaults: defaults)
+        setup.language = code
+        #expect(setup.isLanguageValid)
+        #expect(FFmpegWhisperSetupModel(defaults: defaults).language == code)
+        #expect(WhisperTranscriptionLanguage.title(for: code) != code)
+        #expect(!WhisperTranscriptionLanguage.isValid("eng"))
+        #expect(!WhisperTranscriptionLanguage.isValid("no:unsafe"))
+    }
+
     @Test("inference settings persist while malformed language never becomes a process option")
     func inferenceSettingsPersistence() {
         let (defaults, suite) = defaults()

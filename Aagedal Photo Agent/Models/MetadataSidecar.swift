@@ -457,7 +457,7 @@ nonisolated struct MetadataSidecar: Codable, Sendable {
 }
 
 /// App-owned review state for one exact voice-memo revision. This remains a top-level
-/// metadata-sidecar extension rather than editorial IPTC metadata, so approval never writes
+/// metadata-sidecar extension rather than editorial IPTC metadata, so transcription never writes
 /// a caption field by itself.
 nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
     static let currentSchemaVersion = 1
@@ -474,10 +474,8 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
     let generatedAt: Date
     let generatedText: String
     var reviewedText: String
-    var approvedAt: Date?
     let whisperProvenance: FFmpegWhisperTranscriptProvenance?
 
-    var isApproved: Bool { approvedAt != nil }
 
     init(
         sourceImageFilename: String,
@@ -491,7 +489,6 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         generatedAt: Date,
         generatedText: String,
         reviewedText: String,
-        approvedAt: Date? = nil,
         whisperProvenance: FFmpegWhisperTranscriptProvenance? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
@@ -506,7 +503,6 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         self.generatedAt = generatedAt
         self.generatedText = generatedText
         self.reviewedText = reviewedText
-        self.approvedAt = approvedAt
         self.whisperProvenance = whisperProvenance
     }
 
@@ -514,10 +510,11 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         case schemaVersion, sourceImageFilename, sourceMemoFilename
         case memoByteCount, memoSHA256, associationProfileIdentifier
         case localeIdentifier, provider, providerModel, generatedAt
-        case generatedText, reviewedText, approvedAt, whisperProvenance
+        case generatedText, reviewedText, whisperProvenance
     }
 
-    static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue))
+    // Recognize the retired key so rewrites discard it instead of preserving it as opaque data.
+    static let persistedJSONFieldNames = Set(CodingKeys.allCases.map(\.rawValue)).union(["approvedAt"])
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -543,7 +540,6 @@ nonisolated struct VoiceMemoTranscriptRecord: Codable, Equatable, Sendable {
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
         generatedText = try container.decode(String.self, forKey: .generatedText)
         reviewedText = try container.decode(String.self, forKey: .reviewedText)
-        approvedAt = try container.decodeIfPresent(Date.self, forKey: .approvedAt)
         whisperProvenance = try container.decodeIfPresent(FFmpegWhisperTranscriptProvenance.self, forKey: .whisperProvenance)
         if let whisperProvenance {
             guard provider == "FFmpeg Whisper",

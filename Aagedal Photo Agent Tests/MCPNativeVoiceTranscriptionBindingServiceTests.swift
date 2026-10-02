@@ -128,7 +128,7 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
             associationProfileIdentifier: input.association.profileIdentifier, localeIdentifier: "en_US",
             provider: "Apple on-device speech", providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 1_700_000_000.25),
-            generatedText: "Editable generated text", reviewedText: "Editable generated text", approvedAt: nil)
+            generatedText: "Editable generated text", reviewedText: "Editable generated text")
     }
 
     private func executingService(_ f: Fixture, probe: Probe = Probe(),
@@ -611,7 +611,7 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
         #expect(FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path) == !failSecond)
     }
 
-    @Test("A generated draft cannot substitute the consented Apple locale or provider", arguments: ["locale", "provider", "model", "approved"])
+    @Test("A generated draft cannot substitute the consented Apple locale or provider", arguments: ["locale", "provider", "model"])
     func mismatchedProviderDraft(kind: String) async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let (service, _) = executingService(f, generate: { image in
@@ -621,8 +621,7 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
                 localeIdentifier: kind == "locale" ? "nb_NO" : original.localeIdentifier,
                 provider: kind == "provider" ? "Substituted provider" : original.provider,
                 providerModel: kind == "model" ? "Substituted model" : original.providerModel,
-                generatedAt: original.generatedAt, generatedText: original.generatedText, reviewedText: original.reviewedText,
-                approvedAt: kind == "approved" ? Date() : nil)
+                generatedAt: original.generatedAt, generatedText: original.generatedText, reviewedText: original.reviewedText)
         })
         let prepared = try await prepare(service, f)
         let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
@@ -655,8 +654,7 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
             return .init(imageURL: image, memoURL: input.association.memoURL, memoByteCount: input.memoRevision.byteCount,
                 memoSHA256: input.memoRevision.sha256, associationProfileIdentifier: input.association.profileIdentifier,
                 localeIdentifier: "auto", provider: "FFmpeg Whisper", providerModel: configuration.modelIdentifier,
-                generatedAt: Date(), generatedText: "Editable Whisper text", reviewedText: "Editable Whisper text",
-                approvedAt: nil, whisperProvenance: mode == "missing" ? nil : provenance)
+                generatedAt: Date(), generatedText: "Editable Whisper text", reviewedText: "Editable Whisper text", whisperProvenance: mode == "missing" ? nil : provenance)
         })
         let prepared = try await service.prepare(requestID: UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch,
             provider: .whisper(native), whisperKind: .curated)

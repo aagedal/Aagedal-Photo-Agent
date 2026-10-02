@@ -177,7 +177,7 @@ actor AutomationVoiceTranscriptionBatchService {
         guard draft.imageURL == input.imageURL, draft.memoURL == input.association.memoURL,
               draft.memoByteCount == input.memoRevision.byteCount, draft.memoSHA256 == input.memoRevision.sha256,
               draft.associationProfileIdentifier == input.association.profileIdentifier,
-              draft.approvedAt == nil, !draft.generatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !draft.generatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               draft.reviewedText == draft.generatedText else { throw Failure.invalidDraft }
     }
 
@@ -214,13 +214,16 @@ actor AutomationVoiceTranscriptionBatchService {
                 let saved: VoiceMemoTranscriptDraft
                 if let executionGuard { saved = try await executionGuard.save(draft, input) }
                 else { saved = try await dependencies.save(draft, input) }
-                // Durable semantic read-back must match the entire unapproved draft.
+                // Durable semantic read-back must match the entire generated draft.
                 try validate(saved, input: input)
-                let dates = ISO8601DateFormatter()
+                // Use the sidecar's encoding semantics. ISO8601DateFormatter rounds
+                // fractions near a second boundary while JSONEncoder truncates them.
+                let dates = JSONEncoder()
+                dates.dateEncodingStrategy = .iso8601
                 guard saved.generatedText == draft.generatedText, saved.reviewedText == draft.reviewedText,
                       saved.localeIdentifier == draft.localeIdentifier, saved.provider == draft.provider,
                       saved.providerModel == draft.providerModel, saved.whisperProvenance == draft.whisperProvenance,
-                      dates.string(from: saved.generatedAt) == dates.string(from: draft.generatedAt) else {
+                      try dates.encode(saved.generatedAt) == dates.encode(draft.generatedAt) else {
                     throw Failure.invalidDraft
                 }
                 _ = try registry.finishBatchItem(context.operationID, ownerID: owner, index: index, outcome: .draftSaved)

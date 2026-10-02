@@ -2057,6 +2057,34 @@ struct MetadataReplayIntentTests {
 
     private func jsonURL(_ folder: URL) -> URL { folder.appendingPathComponent(".photo_metadata/photo.JPG.meta.json") }
 
+    @Test("A transcript-only carrier does not conflict with the first Caption edit", arguments: [false, true])
+    func captionAfterTranscript(editorialChange: Bool) async throws {
+        let folder = try root()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let replay = request(in: folder, baseline: nil, edited: .init(title: "A", description: "Transcript words"))
+        let transcript = VoiceMemoTranscriptRecord(sourceImageFilename: "photo.JPG", sourceMemoFilename: "photo.WAV",
+            memoByteCount: 42, memoSHA256: String(repeating: "a", count: 64), associationProfileIdentifier: "test",
+            localeIdentifier: "en-US", provider: "Apple", providerModel: "System", generatedAt: .distantPast,
+            generatedText: "Transcript words", reviewedText: "Transcript words")
+        _ = try await service.saveVoiceMemoTranscriptSerialized(transcript, for: image, in: folder)
+        if editorialChange {
+            var newer = try #require(service.loadSidecar(for: image, in: folder))
+            newer.metadata.description = "External caption"
+            try service.saveSidecar(newer, for: image, in: folder)
+        }
+        let result = await service.replayHistoryAndMirrorXMP(replay)
+        #expect(result.completed == !editorialChange)
+        #expect(service.loadSidecar(for: image, in: folder)?.metadata.description ==
+            (editorialChange ? "External caption" : "Transcript words"))
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == transcript)
+        if !editorialChange {
+            #expect(result.installedSidecar?.metadata.title == "A")
+            #expect(result.installedSidecar?.imageMetadataSnapshot == replay.sidecar.imageMetadataSnapshot)
+        }
+    }
+
     @Test("A JSON-committed retry preserves newer fields, status, absent baseline, and technical XMP", arguments: [false, true])
     func retryAfterIndependentEdit(sameField: Bool) async throws {
         let folder = try root()
@@ -2352,6 +2380,29 @@ extension MetadataReplayIntentTests {
 
 @Suite("Voice-memo transcript sidecar extension")
 struct VoiceMemoTranscriptSidecarTests {
+    @Test("legacy approval markers load but are removed on the next transcript save", arguments: [false, true])
+    func legacyApprovalRemoval(hasMarker: Bool) async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        let transcript = record(reviewedText: "Saved text")
+        _ = try await service.saveVoiceMemoTranscriptSerialized(transcript, for: image, in: folder)
+        let carrier = jsonURL(for: image)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
+        var legacy = try #require(graph[MetadataSidecarService.voiceMemoTranscriptFieldName] as? [String: Any])
+        if hasMarker { legacy["approvedAt"] = "2026-10-02T20:00:00Z" }
+        legacy["futureField"] = "preserve"
+        graph[MetadataSidecarService.voiceMemoTranscriptFieldName] = legacy
+        try JSONSerialization.data(withJSONObject: graph).write(to: carrier, options: .atomic)
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == transcript)
+        _ = try await service.saveVoiceMemoTranscriptSerialized(transcript, for: image, in: folder)
+        let savedGraph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
+        let saved = try #require(savedGraph[MetadataSidecarService.voiceMemoTranscriptFieldName] as? [String: Any])
+        #expect(saved["approvedAt"] == nil)
+        #expect(saved["futureField"] as? String == "preserve")
+    }
+
     @Test("review state round-trips without erasing editorial or unknown extension fields")
     func roundTripAndOpaquePreservation() async throws {
         let folder = try makeFolder()
@@ -2367,8 +2418,11 @@ struct VoiceMemoTranscriptSidecarTests {
             for: image,
             in: folder
         )
+        let editorialBefore = try #require(service.loadSidecar(for: image, in: folder))
         let original = record(reviewedText: "First review")
         _ = try await service.saveVoiceMemoTranscriptSerialized(original, for: image, in: folder)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        #expect(try encoder.encode(service.loadSidecar(for: image, in: folder)) == encoder.encode(Optional(editorialBefore)))
 
         let carrier = jsonURL(for: image)
         var graph = try #require(
@@ -2381,7 +2435,6 @@ struct VoiceMemoTranscriptSidecarTests {
         try JSONSerialization.data(withJSONObject: graph).write(to: carrier, options: .atomic)
 
         var approved = record(reviewedText: "Human-reviewed text")
-        approved.approvedAt = Date(timeIntervalSince1970: 500)
         let saved = try await service.saveVoiceMemoTranscriptSerialized(approved, for: image, in: folder)
 
         #expect(saved == approved)
@@ -2402,7 +2455,6 @@ struct VoiceMemoTranscriptSidecarTests {
         let image = folder.appendingPathComponent("photo.JPG")
         let service = MetadataSidecarService()
         var approved = record(reviewedText: "Approved transcript")
-        approved.approvedAt = Date(timeIntervalSince1970: 500)
         _ = try await service.saveVoiceMemoTranscriptSerialized(approved, for: image, in: folder)
 
         let edited = try #require(service.loadSidecar(for: image, in: folder))
@@ -2447,7 +2499,6 @@ struct VoiceMemoTranscriptSidecarTests {
             generatedText: "Generated transcript",
             reviewedText: "Human-reviewed text"
         )
-        transcript.approvedAt = Date(timeIntervalSince1970: 500.625)
 
         let saved = try await service.saveVoiceMemoTranscriptSerialized(
             transcript,
@@ -2456,7 +2507,6 @@ struct VoiceMemoTranscriptSidecarTests {
         )
 
         #expect(saved.generatedAt == Date(timeIntervalSince1970: 100))
-        #expect(saved.approvedAt == Date(timeIntervalSince1970: 500))
         #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == saved)
     }
 
@@ -2488,6 +2538,51 @@ struct VoiceMemoTranscriptSidecarTests {
         #expect(try service.loadVoiceMemoTranscript(for: moved, in: target) == transcript)
     }
 
+    @Test("Reset removes only the transcript and permits a new draft without changing editorial fields")
+    func resetTranscriptPreservesEditorial() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG")
+        let service = MetadataSidecarService()
+        _ = try service.saveSidecar(MetadataSidecar(sourceFile: image.lastPathComponent,
+            pendingChanges: true, metadata: IPTCMetadata(description: "Text already inserted")), for: image, in: folder)
+        _ = try await service.saveVoiceMemoTranscriptSerialized(record(reviewedText: "Original"), for: image, in: folder)
+        let carrier = jsonURL(for: image)
+        var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
+        graph["futureTopLevel"] = ["preserved": true]
+        try JSONSerialization.data(withJSONObject: graph).write(to: carrier, options: .atomic)
+        let before = try Data(contentsOf: carrier)
+        try await service.resetVoiceMemoTranscriptSerialized(for: image, in: folder)
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder) == nil)
+        var expected = try #require(JSONSerialization.jsonObject(with: before) as? [String: Any])
+        expected.removeValue(forKey: MetadataSidecarService.voiceMemoTranscriptFieldName)
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? NSDictionary
+        #expect(after == expected as NSDictionary)
+        _ = try await service.saveVoiceMemoTranscriptSerialized(record(reviewedText: "New"),
+            for: image, in: folder, createOnly: true)
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder)?.reviewedText == "New")
+        #expect(service.loadSidecar(for: image, in: folder)?.metadata.description == "Text already inserted")
+    }
+
+    @Test("Reset refuses an external sidecar change without erasing it")
+    func resetDetectsConcurrentChange() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = folder.appendingPathComponent("photo.JPG"), service = MetadataSidecarService()
+        _ = try await service.saveVoiceMemoTranscriptSerialized(record(reviewedText: "Original"), for: image, in: folder)
+        let carrier = jsonURL(for: image)
+        await #expect(throws: VoiceMemoTranscriptionError.sourceChanged) {
+            try await service.resetVoiceMemoTranscriptSerialized(for: image, in: folder, beforeCommit: {
+                var object = try JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as! [String: Any]
+                object["externalChange"] = "retained"
+                try JSONSerialization.data(withJSONObject: object).write(to: carrier, options: .atomic)
+            })
+        }
+        #expect(try service.loadVoiceMemoTranscript(for: image, in: folder)?.reviewedText == "Original")
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any]
+        #expect(object?["externalChange"] as? String == "retained")
+    }
+
     @Test("a newer nested transcript schema is left byte-for-byte read-only")
     func newerNestedSchema() async throws {
         let folder = try makeFolder()
@@ -2512,6 +2607,9 @@ struct VoiceMemoTranscriptSidecarTests {
         }
         await #expect(throws: (any Error).self) {
             _ = try await service.saveVoiceMemoTranscriptSerialized(transcript, for: image, in: folder)
+        }
+        await #expect(throws: (any Error).self) {
+            try await service.resetVoiceMemoTranscriptSerialized(for: image, in: folder)
         }
         #expect(try Data(contentsOf: carrier) == futureBytes)
     }

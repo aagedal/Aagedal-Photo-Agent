@@ -1,5 +1,36 @@
 import Foundation
 
+/// Language identifiers accepted by Whisper, shared by Settings and Caption.
+nonisolated enum WhisperTranscriptionLanguage {
+    struct Option: Identifiable, Sendable {
+        let id: String
+        let title: String
+    }
+
+    static let options: [Option] = {
+        let names = "en:English|zh:Chinese|de:German|es:Spanish|ru:Russian|ko:Korean|fr:French|ja:Japanese|pt:Portuguese|tr:Turkish|pl:Polish|ca:Catalan|nl:Dutch|ar:Arabic|sv:Swedish|it:Italian|id:Indonesian|hi:Hindi|fi:Finnish|vi:Vietnamese|he:Hebrew|uk:Ukrainian|el:Greek|ms:Malay|cs:Czech|ro:Romanian|da:Danish|hu:Hungarian|ta:Tamil|no:Norwegian|th:Thai|ur:Urdu|hr:Croatian|bg:Bulgarian|lt:Lithuanian|la:Latin|mi:Maori|ml:Malayalam|cy:Welsh|sk:Slovak|te:Telugu|fa:Persian|lv:Latvian|bn:Bengali|sr:Serbian|az:Azerbaijani|sl:Slovenian|kn:Kannada|et:Estonian|mk:Macedonian|br:Breton|eu:Basque|is:Icelandic|hy:Armenian|ne:Nepali|mn:Mongolian|bs:Bosnian|kk:Kazakh|sq:Albanian|sw:Swahili|gl:Galician|mr:Marathi|pa:Punjabi|si:Sinhala|km:Khmer|sn:Shona|yo:Yoruba|so:Somali|af:Afrikaans|oc:Occitan|ka:Georgian|be:Belarusian|tg:Tajik|sd:Sindhi|gu:Gujarati|am:Amharic|yi:Yiddish|lo:Lao|uz:Uzbek|fo:Faroese|ht:Haitian Creole|ps:Pashto|tk:Turkmen|nn:Norwegian Nynorsk|mt:Maltese|sa:Sanskrit|lb:Luxembourgish|my:Myanmar|bo:Tibetan|tl:Tagalog|mg:Malagasy|as:Assamese|tt:Tatar|haw:Hawaiian|ln:Lingala|ha:Hausa|ba:Bashkir|jw:Javanese|su:Sundanese|yue:Cantonese"
+        let languages = names.split(separator: "|").map { entry in
+            let parts = entry.split(separator: ":", maxSplits: 1).map(String.init)
+            return Option(id: parts[0], title: parts[1])
+        }
+        let preferred = ["no", "nn"]
+        return [Option(id: "auto", title: "Detect Automatically")]
+            + preferred.compactMap { code in languages.first { $0.id == code } }
+            + languages.filter { !preferred.contains($0.id) }.sorted { $0.title < $1.title }
+    }()
+
+    static func title(for code: String) -> String {
+        options.first { $0.id == code }?.title
+            ?? Locale.current.localizedString(forLanguageCode: code) ?? code
+    }
+
+    static func isValid(_ code: String) -> Bool {
+        code == "auto" || code == "haw" || code == "yue"
+            || (code.utf8.count == 2 && code.utf8.allSatisfy { (97...122).contains($0) })
+    }
+}
+
+
 /// Immutable evidence about the exact inference request. A hash is identity, not authorization.
 nonisolated struct FFmpegWhisperTranscriptProvenance: Codable, Equatable, Sendable {
     let schemaVersion: Int
@@ -107,8 +138,7 @@ nonisolated struct FFmpegWhisperTranscriptProvenance: Codable, Equatable, Sendab
               hashes.allSatisfy({ $0.utf8.count == 64 && $0.utf8.allSatisfy {
                   (48...57).contains($0) || (97...102).contains($0)
               } }),
-              requestedLanguage == "auto" || (requestedLanguage.utf8.count == 2 &&
-                  requestedLanguage.utf8.allSatisfy { (97...122).contains($0) }),
+              WhisperTranscriptionLanguage.isValid(requestedLanguage),
               !segments.isEmpty, segments.count <= 20_000 else {
             throw ValidationError.invalidProvenance
         }

@@ -603,7 +603,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertEqual(items[0]["outcome"] as? String, "draftSaved")
             XCTAssertEqual(items[1]["outcome"] as? String, "cancelled")
             let saved = folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: paths[0]).lastPathComponent).meta.json")
-            XCTAssertTrue(waitForTranscript("Synthetic review transcript", approved: false, at: saved))
+            XCTAssertTrue(waitForTranscript("Synthetic review transcript", at: saved))
             let unfinished = folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: paths[1]).lastPathComponent).meta.json")
             XCTAssertFalse(FileManager.default.fileExists(atPath: unfinished.path))
         } else {
@@ -745,7 +745,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.\(index)"]).contains("Draft saved"))
             let item = fixture.items[index]
             let text = "Synthetic batch transcript \(item.memoURL.lastPathComponent)"
-            XCTAssertTrue(waitForTranscript(text, approved: false, at: item.sidecarURL))
+            XCTAssertTrue(waitForTranscript(text, at: item.sidecarURL))
             XCTAssertEqual(try Data(contentsOf: item.imageURL), originals[index].0)
             XCTAssertEqual(try Data(contentsOf: item.memoURL), originals[index].1)
             XCTAssertEqual(try Data(contentsOf: item.relationshipURL), originals[index].2)
@@ -759,7 +759,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
         XCTAssertTrue(draft.waitForExistence(timeout: 10))
         XCTAssertEqual(draft.value as? String, "Synthetic batch transcript voice-batch-1.WAV")
-        XCTAssertTrue(app.buttons["caption.voiceMemo.approveTranscript"].isEnabled)
+        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].exists)
         XCTAssertFalse(prepare.isEnabled)
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder, transcriptionBatchMode: "success")
@@ -800,7 +800,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(visibleText(summary).contains("Batch cancelled"), "Observed summary: \(visibleText(summary))")
         XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.0"]).contains("Draft saved"))
         XCTAssertTrue(visibleText(app.staticTexts["caption.voiceMemo.batch.result.1"]).contains("Cancelled"))
-        XCTAssertTrue(waitForTranscript("Synthetic batch transcript voice-batch-1.WAV", approved: false, at: fixture.items[0].sidecarURL))
+        XCTAssertTrue(waitForTranscript("Synthetic batch transcript voice-batch-1.WAV", at: fixture.items[0].sidecarURL))
         XCTAssertEqual(try Data(contentsOf: fixture.items[1].sidecarURL), secondOriginal)
         app.buttons["caption.voiceMemo.batch.close"].click()
         XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 10))
@@ -2589,39 +2589,13 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
         XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
         let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
-        let approval = app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"]
         XCTAssertTrue(draft.waitForExistence(timeout: 15))
-        XCTAssertTrue(approval.exists)
-        XCTAssertFalse(approval.isEnabled)
-        XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
-
-        draft.click()
-        draft.typeKey("a", modifierFlags: .command)
-        draft.typeText("Complete native review after many editor updates")
-        XCTAssertTrue(waitForTranscript(
-            "Complete native review after many editor updates",
-            approved: false,
-            at: fixture.sidecarURL
-        ))
-        XCTAssertTrue(approval.isEnabled)
-
+        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].exists)
+        XCTAssertTrue(waitForTranscript("Approved UI smoke review", at: fixture.sidecarURL))
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder)
-        let relaunchedDraft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
-        let relaunchedApproval = app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"]
-        XCTAssertTrue(relaunchedDraft.waitForExistence(timeout: 15))
-        XCTAssertTrue((relaunchedDraft.value as? String)?.contains(
-            "Complete native review after many editor updates"
-        ) == true)
-        XCTAssertTrue(relaunchedApproval.isEnabled)
-
-        relaunchedApproval.click()
-        XCTAssertTrue(waitForTranscript(
-            "Complete native review after many editor updates",
-            approved: true,
-            at: fixture.sidecarURL
-        ))
-        XCTAssertTrue(waitForEnabled(relaunchedApproval, expected: false))
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].exists)
         XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
         XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
         XCTAssertEqual(try evidence(), originalEvidence)
@@ -2649,29 +2623,25 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcribe.click()
         let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
         XCTAssertTrue(draft.waitForExistence(timeout: 45))
-        let generated = (draft.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        XCTAssertFalse(generated.isEmpty)
+        let savedTranscript = NSPredicate { _, _ in
+            guard let bytes = try? Data(contentsOf: fixture.sidecarURL),
+                  let graph = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  let transcript = graph["voiceMemoTranscript"] as? [String: Any],
+                  let text = transcript["reviewedText"] as? String else { return false }
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        expectation(for: savedTranscript, evaluatedWith: NSObject())
+        waitForExpectations(timeout: 45)
+        let graph = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.sidecarURL)) as? [String: Any])
+        let transcript = try XCTUnwrap(graph["voiceMemoTranscript"] as? [String: Any])
+        let generated = try XCTUnwrap(transcript["reviewedText"] as? String)
         XCTAssertTrue(generated.localizedCaseInsensitiveContains("photo"), "Unexpected transcript: \(generated)")
-
-        draft.click()
-        draft.typeKey("a", modifierFlags: .command)
-        draft.typeText(syntheticReviewedTranscript)
-        let approval = app.buttons["caption.voiceMemo.approveTranscript"]
-        XCTAssertTrue(approval.waitForExistence(timeout: 5))
-        XCTAssertTrue(approval.isEnabled)
-        approval.click()
-        XCTAssertTrue(waitForTranscript(
-            syntheticReviewedTranscript,
-            approved: true,
-            at: fixture.sidecarURL
-        ))
-
+        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].exists)
+        XCTAssertTrue(waitForTranscript(generated, at: fixture.sidecarURL))
         app.terminate()
         launch(workflow: "caption", folder: fixture.folder, localeIdentifier: "en_US")
-        let relaunchedDraft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
-        XCTAssertTrue(relaunchedDraft.waitForExistence(timeout: 15))
-        XCTAssertEqual(relaunchedDraft.value as? String, syntheticReviewedTranscript)
-        XCTAssertFalse(app.buttons["caption.voiceMemo.approveTranscript"].isEnabled)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForTranscript(generated, at: fixture.sidecarURL))
         XCTAssertEqual(try Data(contentsOf: fixture.relationshipURL), originalRelationship)
         XCTAssertEqual(try Data(contentsOf: fixture.memoURL), originalMemo)
     }
@@ -2735,10 +2705,10 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
-    func testVoiceMemoBatchRefusesInvalidAuthorityThenAppliesTwoApprovedTranscripts() throws {
+    func testVoiceMemoBatchRefusesInvalidSourcesThenAppliesTwoSavedTranscripts() throws {
         let templateRoot = try makeVoiceMemoTemplateRoot()
 
-        for invalidAuthority in [TranscriptAuthority.missing, .unapproved, .stale] {
+        for invalidAuthority in [TranscriptAuthority.missing, .stale] {
             let fixture = try makeVoiceMemoBatch(authorities: [.approved, invalidAuthority])
             let originalImages = try fixture.items.map { try Data(contentsOf: $0.imageURL) }
             let originalSidecars = try fixture.items.map { try Data(contentsOf: $0.sidecarURL) }
@@ -2761,7 +2731,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             app.terminate()
         }
 
-        let fixture = try makeVoiceMemoBatch(authorities: [.approved, .approved])
+        let fixture = try makeVoiceMemoBatch(authorities: [.unapproved, .unapproved])
         let originalImages = try fixture.items.map { try Data(contentsOf: $0.imageURL) }
         let originalRelationships = try fixture.items.map { try Data(contentsOf: $0.relationshipURL) }
         let originalMemos = try fixture.items.map { try Data(contentsOf: $0.memoURL) }
@@ -2769,14 +2739,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 15))
         openBrowserVoiceMemoTemplate()
 
-        let preview = app.descendants(matching: .any)["voiceMemoTranscript.preview"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["Replace will change 8 fields across 2 photos. Nothing is written until you confirm."].exists)
-        let confirm = app.buttons["voiceMemoTranscript.confirm"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
-        confirm.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(waitForAppliedVoiceMemoBatch(fixture.items))
-        XCTAssertFalse(preview.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["voiceMemoTranscript.preview"].exists)
         for (index, item) in fixture.items.enumerated() {
             XCTAssertNotEqual(try Data(contentsOf: item.imageURL), originalImages[index])
             XCTAssertEqual(try Data(contentsOf: item.relationshipURL), originalRelationships[index])
@@ -3505,7 +3469,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     private var transcriptText: String { "Approved UI smoke review" }
-    private var syntheticReviewedTranscript: String { "Reviewed local speech after native transcription" }
     private var initialHeadline: String { "Existing headline" }
     private var initialDescription: String { "Existing description" }
     private var initialExtendedDescription: String { "Existing extended description" }
@@ -3516,13 +3479,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     private var appliedInstructions: String { "\(initialInstructions) \(transcriptText)" }
 
     @MainActor
-    private func waitForTranscript(_ text: String, approved: Bool, at sidecarURL: URL) -> Bool {
+    private func waitForTranscript(_ text: String, at sidecarURL: URL) -> Bool {
         let predicate = NSPredicate { _, _ in
             guard let data = try? Data(contentsOf: sidecarURL),
                   let graph = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let transcript = graph["voiceMemoTranscript"] as? [String: Any] else { return false }
             return transcript["reviewedText"] as? String == text
-                && (transcript["approvedAt"] != nil) == approved
         }
         expectation(for: predicate, evaluatedWith: NSObject())
         waitForExpectations(timeout: 10)

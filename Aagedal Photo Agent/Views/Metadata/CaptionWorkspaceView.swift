@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,8 +21,7 @@ struct CaptionWorkspaceView: View {
     let onClose: () -> Void
 
     @State private var session: CaptionSession
-    /// Browser selection is captured before Caption narrows editing to the current photo.
-    @State private var batchTranscriptionImageURLs: [URL]
+    @State private var voiceMemoBadgeRefreshToken: UInt64 = 0
     @State private var preview: NSImage?
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
@@ -113,9 +113,6 @@ struct CaptionWorkspaceView: View {
         let images = browserViewModel.visibleImages.filter(\.isImageFile)
         let urls = images.map(\.url)
         let selected = browserViewModel.selectedImageIDs
-        _batchTranscriptionImageURLs = State(initialValue: images.filter {
-            selected.contains($0.url)
-        }.map(\.url))
         let focused = browserViewModel.lastClickedImageURL
             .flatMap { selected.contains($0) ? $0 : nil }
             ?? selected.first
@@ -298,7 +295,7 @@ struct CaptionWorkspaceView: View {
                  .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                  .setScopeMode, .toggleGamutClipping,
                  .uploadSelected, .uploadAll,
-                 .processVariablesSelected, .processVariablesAll,
+                 .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                  .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
@@ -682,11 +679,11 @@ struct CaptionWorkspaceView: View {
             Divider()
             CaptionVoiceMemoPlayerView(
                 imageURL: session.currentURL,
-                batchImageURLs: batchTranscriptionImageURLs,
                 isMetadataReviewOrSaveBusy: metadataViewModel.isSaving
                     || session.isTransitioning || isCurrentPhotoUnderReview
                     || conflictReview != nil || pendingReviewPhoto != nil
-                    || isConflictRecoveryBusy
+                    || isConflictRecoveryBusy,
+                onVoiceMemoChange: { voiceMemoBadgeRefreshToken &+= 1 }
             ) {
                 settingsViewModel.requestedDestination = .transcription
                 openSettings()
@@ -698,7 +695,8 @@ struct CaptionWorkspaceView: View {
                         CaptionFilmstripItem(
                             image: image,
                             thumbnailService: browserViewModel.thumbnailService,
-                            isSelected: session.currentURL == image.url.standardizedFileURL
+                            isSelected: session.currentURL == image.url.standardizedFileURL,
+                            voiceMemoRefreshToken: voiceMemoBadgeRefreshToken
                         ) {
                             select(image.url)
                         }
@@ -1501,8 +1499,17 @@ private struct CaptionFilmstripItem: View {
     let image: ImageFile
     let thumbnailService: ThumbnailService
     let isSelected: Bool
+    let voiceMemoRefreshToken: UInt64
     let onSelect: () -> Void
     @State private var thumbnail: NSImage?
+    @State private var voiceMemoStatus: CaptionVoiceMemoTranscriptionStatus = .none
+    @State private var transcriptChangeToken: UInt64 = 0
+
+    private struct StatusRequest: Equatable {
+        let imageURL: URL
+        let refreshToken: UInt64
+        let transcriptChangeToken: UInt64
+    }
 
     var body: some View {
         Button(action: onSelect) {
@@ -1518,16 +1525,40 @@ private struct CaptionFilmstripItem: View {
             }
             .frame(width: 86, height: 68)
             .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(alignment: .bottomTrailing) {
+                if voiceMemoStatus == .needsTranscription || voiceMemoStatus == .transcribed {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(voiceMemoStatus == .needsTranscription ? Color.orange : Color.green)
+                        .padding(4)
+                        .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 4))
+                        .padding(4)
+                        .help(voiceMemoStatus.accessibilityDescription)
+                        .accessibilityHidden(true)
+                }
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 5)
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             }
         }
         .buttonStyle(.plain)
-        .help(image.filename)
+        .help("\(image.filename)\n\(voiceMemoStatus.accessibilityDescription)")
         .accessibilityLabel(image.filename)
-        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityValue("\(isSelected ? "Selected" : "Not selected"), \(voiceMemoStatus.accessibilityDescription)")
         .accessibilityHint("Select this photo for caption editing")
+        .onReceive(NotificationCenter.default.publisher(for: MetadataSidecarService.voiceMemoTranscriptDidChange)
+            .receive(on: DispatchQueue.main)) { notification in
+            guard let url = notification.object as? URL,
+                  url.standardizedFileURL.path == image.url.standardizedFileURL.path else { return }
+            transcriptChangeToken &+= 1
+        }
+        .task(id: StatusRequest(imageURL: image.url, refreshToken: voiceMemoRefreshToken,
+            transcriptChangeToken: transcriptChangeToken)) {
+            let status = await CaptionVoiceMemoStatusService.shared.status(for: image.url)
+            guard !Task.isCancelled else { return }
+            voiceMemoStatus = status
+        }
         .task(id: image.url) {
             if let cached = thumbnailService.thumbnail(for: image.url) {
                 thumbnail = cached

@@ -158,9 +158,6 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
     let memoIdentity: VoiceMemoCompanionContentIdentity?
     let provenance: VoiceMemoCompanionProvenance?
     let imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint?
-    /// Reserved for the reviewed-transcript slice. Recovery only retains an approval when the
-    /// selected WAV is byte-for-byte identical to the revision on which it was approved.
-    let approvedTranscriptMemoSHA256: String?
 
     init(
         profileIdentifier: String,
@@ -169,8 +166,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         imageIdentity: VoiceMemoCompanionContentIdentity? = nil,
         memoIdentity: VoiceMemoCompanionContentIdentity? = nil,
         provenance: VoiceMemoCompanionProvenance? = nil,
-        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint? = nil,
-        approvedTranscriptMemoSHA256: String? = nil
+        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint? = nil
     ) {
         self.init(
             schemaVersion: Self.currentSchemaVersion,
@@ -180,8 +176,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
             imageIdentity: imageIdentity,
             memoIdentity: memoIdentity,
             provenance: provenance,
-            imageDiscoveryHint: imageDiscoveryHint,
-            approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
+            imageDiscoveryHint: imageDiscoveryHint
         )
     }
 
@@ -193,8 +188,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         imageIdentity: VoiceMemoCompanionContentIdentity?,
         memoIdentity: VoiceMemoCompanionContentIdentity?,
         provenance: VoiceMemoCompanionProvenance?,
-        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint?,
-        approvedTranscriptMemoSHA256: String?
+        imageDiscoveryHint: VoiceMemoCompanionDiscoveryHint?
     ) {
         self.schemaVersion = schemaVersion
         self.profileIdentifier = profileIdentifier
@@ -204,13 +198,11 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         self.memoIdentity = memoIdentity
         self.provenance = provenance
         self.imageDiscoveryHint = imageDiscoveryHint
-        self.approvedTranscriptMemoSHA256 = approvedTranscriptMemoSHA256
     }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, profileIdentifier, imageFilename, memoFilename
         case imageIdentity, memoIdentity, provenance, imageDiscoveryHint
-        case approvedTranscriptMemoSHA256
     }
 
     init(from decoder: Decoder) throws {
@@ -235,9 +227,6 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
         imageDiscoveryHint = try container.decodeIfPresent(
             VoiceMemoCompanionDiscoveryHint.self, forKey: .imageDiscoveryHint
         )
-        approvedTranscriptMemoSHA256 = try container.decodeIfPresent(
-            String.self, forKey: .approvedTranscriptMemoSHA256
-        )
     }
 
     func withFilenames(image: String, memo: String) -> Self {
@@ -249,8 +238,7 @@ nonisolated struct VoiceMemoCompanionRecord: Codable, Equatable, Sendable {
             imageIdentity: imageIdentity,
             memoIdentity: memoIdentity,
             provenance: provenance,
-            imageDiscoveryHint: imageDiscoveryHint,
-            approvedTranscriptMemoSHA256: approvedTranscriptMemoSHA256
+            imageDiscoveryHint: imageDiscoveryHint
         )
     }
 }
@@ -361,13 +349,13 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         let candidateURL: URL
         let destinationURL: URL
         let kind: RecoveryKind
-        let invalidatesTranscriptApproval: Bool
+        let invalidatesTranscript: Bool
     }
 
     struct RecoveryReceipt: Equatable, Sendable {
         let association: VoiceMemoAssociation
         let kind: RecoveryKind
-        let invalidatedTranscriptApproval: Bool
+        let invalidatedTranscript: Bool
     }
 
     struct ReassociationCandidate: Equatable, Sendable {
@@ -641,7 +629,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             candidateURL: context.candidateURL,
             destinationURL: context.destinationURL,
             kind: context.kind,
-            invalidatesTranscriptApproval: context.invalidatesTranscriptApproval
+            invalidatesTranscript: context.invalidatesTranscript
         )
     }
 
@@ -680,10 +668,6 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         }
 
         let exact = context.kind == .exactRecovery
-        let approval = exact
-            && context.record.approvedTranscriptMemoSHA256 == context.candidateIdentity.sha256
-            ? context.record.approvedTranscriptMemoSHA256
-            : nil
         let updated = VoiceMemoCompanionRecord(
             profileIdentifier: context.record.profileIdentifier,
             imageFilename: context.imageURL.lastPathComponent,
@@ -694,8 +678,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             imageDiscoveryHint: discoveryHint(
                 for: context.imageURL,
                 revision: context.imageRevision
-            ),
-            approvedTranscriptMemoSHA256: approval
+            )
         )
         let updatedBytes = try mergedRecoveryRecordBytes(
             original: context.recordBytes,
@@ -740,7 +723,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         return RecoveryReceipt(
             association: association,
             kind: context.kind,
-            invalidatedTranscriptApproval: context.invalidatesTranscriptApproval
+            invalidatedTranscript: context.invalidatesTranscript
         )
     }
 
@@ -912,8 +895,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             imageIdentity: candidate.imageIdentity,
             memoIdentity: candidate.memoIdentity,
             provenance: .exactReassociation,
-            imageDiscoveryHint: discoveryHint(for: image, revision: imageRevision),
-            approvedTranscriptMemoSHA256: record.approvedTranscriptMemoSHA256
+            imageDiscoveryHint: discoveryHint(for: image, revision: imageRevision)
         )
         let updatedBytes = try mergedRecoveryRecordBytes(original: relationshipBytes, updated: updated)
         let stagedRecord = staging.appendingPathComponent(destinationRecord.lastPathComponent)
@@ -1170,7 +1152,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         let candidateRevision: CopyRevision
         let candidateIdentity: VoiceMemoCompanionContentIdentity
         let kind: RecoveryKind
-        let invalidatesTranscriptApproval: Bool
+        let invalidatesTranscript: Bool
     }
 
     private func recoveryContext(candidateURL: URL, imageURL: URL) throws -> RecoveryContext {
@@ -1203,8 +1185,6 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             : .explicitReplacement(previousIdentityAvailable: hasCompleteHistoricalIdentity)
         let destination = image.deletingLastPathComponent()
             .appendingPathComponent(record.memoFilename)
-        let approvalIsValid = record.approvedTranscriptMemoSHA256 == identity.sha256
-            && kind == .exactRecovery
         return RecoveryContext(
             imageURL: image,
             candidateURL: candidate,
@@ -1215,7 +1195,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             candidateRevision: candidateRevision,
             candidateIdentity: identity,
             kind: kind,
-            invalidatesTranscriptApproval: record.approvedTranscriptMemoSHA256 != nil && !approvalIsValid
+            invalidatesTranscript: kind != .exactRecovery
         )
     }
 
@@ -1267,9 +1247,8 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             throw RepositoryError.invalidRecord
         }
         for (key, value) in known { object[key] = value }
-        if updated.approvedTranscriptMemoSHA256 == nil {
-            object.removeValue(forKey: "approvedTranscriptMemoSHA256")
-        }
+        // Remove the obsolete approval marker when rewriting a legacy relationship.
+        object.removeValue(forKey: "approvedTranscriptMemoSHA256")
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     }
 
@@ -1778,7 +1757,6 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         try Self.validateFilename(record.memoFilename)
         guard !record.profileIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               [record.imageIdentity, record.memoIdentity].compactMap({ $0 }).allSatisfy(Self.isValidIdentity),
-              record.approvedTranscriptMemoSHA256.map(Self.isLowercaseSHA256) ?? true,
               expectedImageFilename.map({ $0 == record.imageFilename }) ?? true else {
             throw RepositoryError.invalidRecord
         }

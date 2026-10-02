@@ -1,7 +1,99 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
+
+@Suite("Caption voice memo filmstrip status")
+struct CaptionVoiceMemoStatusTests {
+    @Test("Badges distinguish absent, missing, untranscribed, transcribed, stale and unreadable memos", arguments: 0...5)
+    func status(kind: Int) async {
+        let image = URL(fileURLWithPath: "/caption/photo.jpg")
+        let memo = URL(fileURLWithPath: "/caption/photo.WAV")
+        let found = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
+        let draft = VoiceMemoTranscriptDraft(imageURL: image, memoURL: memo, memoByteCount: 20,
+            memoSHA256: String(repeating: "a", count: 64), associationProfileIdentifier: "test",
+            localeIdentifier: "en-US", provider: "Apple", providerModel: "System", generatedAt: .now,
+            generatedText: "Words", reviewedText: "Words")
+        let service = CaptionVoiceMemoStatusService(lookup: { _ in
+            #expect(!Thread.isMainThread)
+            switch kind {
+            case 0: return .none
+            case 1: return .missing(.init(profileIdentifier: "test", imageFilename: "photo.jpg", memoFilename: "photo.WAV"))
+            default: return .available(found)
+            }
+        }, loadTranscript: { _ in
+            switch kind {
+            case 2: return nil
+            case 3: return draft
+            case 4: throw VoiceMemoTranscriptionError.sourceChanged
+            default: throw CocoaError(.fileReadCorruptFile)
+            }
+        })
+        let expected: [CaptionVoiceMemoTranscriptionStatus] = [.none, .missing, .needsTranscription, .transcribed, .needsTranscription, .unavailable]
+        #expect(await service.status(for: image) == expected[kind])
+    }
+}
+
+@Suite("Browser transcript badge notifications")
+struct BrowserTranscriptBadgeNotificationTests {
+    @MainActor
+    private final class DataSource: NSObject, NSCollectionViewDataSource {
+        func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { 1 }
+        func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+            collectionView.makeItem(withIdentifier: ThumbnailCollectionViewItem.identifier, for: indexPath)
+        }
+    }
+
+    private actor StatusLoader {
+        private var count = 0
+        private let resetting: Bool
+        init(resetting: Bool) { self.resetting = resetting }
+        func load(_ url: URL) -> CaptionVoiceMemoTranscriptionStatus {
+            count += 1
+            return (count == 1) != resetting ? .needsTranscription : .transcribed
+        }
+    }
+
+    @Test("Background saves and resets refresh badges across equivalent file URLs", arguments: [false, true])
+    @MainActor
+    func backgroundSaveRefresh(resetting: Bool) async throws {
+        let image = ImageFile(url: URL(fileURLWithPath: "photo.jpg", relativeTo:
+            URL(fileURLWithPath: "/virtual/browser-badge/", isDirectory: true)))
+        let loader = StatusLoader(resetting: resetting)
+        let initial = resetting ? "transcript available" : "not transcribed"
+        let expected = resetting ? "not transcribed" : "transcript available"
+        let collection = NSCollectionView()
+        let dataSource = DataSource()
+        collection.dataSource = dataSource
+        collection.collectionViewLayout = NSCollectionViewFlowLayout()
+        collection.register(ThumbnailCollectionViewItem.self, forItemWithIdentifier: ThumbnailCollectionViewItem.identifier)
+        collection.reloadData()
+        let item = try #require(collection.makeItem(withIdentifier: ThumbnailCollectionViewItem.identifier,
+            for: IndexPath(item: 0, section: 0)) as? ThumbnailCollectionViewItem)
+        _ = item.view
+        item.voiceMemoStatusLoader = { await loader.load($0) }
+        item.configure(with: ThumbnailCellData(from: image), thumbnailService: ThumbnailService(),
+            showOriginals: true, imageFile: image, isSelected: false, isActive: false)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(item.thumbnailView.accessibilityValue() as? String ?? "").contains(initial),
+              ContinuousClock.now < deadline { await Task.yield() }
+        try #require((item.thumbnailView.accessibilityValue() as? String ?? "").contains(initial))
+        let url = image.url.standardizedFileURL
+        #expect(image.url != url)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                #expect(!Thread.isMainThread)
+                NotificationCenter.default.post(name: MetadataSidecarService.voiceMemoTranscriptDidChange, object: url)
+                continuation.resume()
+            }
+        }
+        while !(item.thumbnailView.accessibilityValue() as? String ?? "").contains(expected),
+              ContinuousClock.now < deadline { await Task.yield() }
+        #expect((item.thumbnailView.accessibilityValue() as? String ?? "").contains(expected))
+        item.prepareForReuse()
+    }
+}
 
 @Suite("Caption voice memo playback")
 struct CaptionVoiceMemoPlaybackTests {
@@ -10,6 +102,33 @@ struct CaptionVoiceMemoPlaybackTests {
         memoURL: URL(fileURLWithPath: "/caption/a.WAV")
     )
     private let revision = CaptionVoiceMemoFileRevision(size: 10, modified: .distantPast, device: 1, inode: 2)
+
+    @Test("Seeking clamps the playhead, preserves playback and rejects stale commands")
+    func seekOwnership() async throws {
+        let found = association, version = revision
+        let probe = CaptionVoiceMemoProbe()
+        let service = CaptionVoiceMemoPlaybackService(lookup: { _ in .available(found) },
+            makePlayer: { _ in CaptionVoiceMemoTestPlayer(probe: probe) },
+            readRevision: { _ in version })
+        _ = await service.load(imageURL: found.imageURL, generation: 1)
+        guard case .available(let paused) = await service.seek(to: 7, generation: 1) else {
+            Issue.record("Expected seek while paused"); return
+        }
+        #expect(paused.position == 7)
+        #expect(!paused.isPlaying)
+        _ = await service.toggle(generation: 1)
+        guard case .available(let playing) = await service.seek(to: 99, generation: 1) else {
+            Issue.record("Expected seek while playing"); return
+        }
+        #expect(playing.position == 10)
+        #expect(playing.isPlaying)
+        #expect(await service.seek(to: 0, generation: 0) == nil)
+        #expect(await service.seek(to: .nan, generation: 1) == nil)
+        guard case .available(let start) = await service.seek(to: -1, generation: 1) else {
+            Issue.record("Expected clamped seek"); return
+        }
+        #expect(start.position == 0)
+    }
 
     @Test("Leaving the photo cancels a playback command blocked in source validation", arguments: [false, true])
     @MainActor
@@ -215,8 +334,8 @@ struct CaptionVoiceMemoPlaybackTests {
         #expect(probe.events.isEmpty)
     }
 
-    @Test("Changing either source after preparation blocks playback", arguments: ["image", "memo", "association"])
-    func sourceChangeBlocksPlayback(changed: String) async {
+    @Test("Changing either source after preparation blocks playback and seeking", arguments: ["image", "memo", "association"], [false, true])
+    func sourceChangeBlocksPlayback(changed: String, seeking: Bool) async {
         let probe = CaptionVoiceMemoProbe()
         let found = association
         let version = revision
@@ -236,7 +355,8 @@ struct CaptionVoiceMemoPlaybackTests {
         )
         _ = await service.load(imageURL: found.imageURL, generation: 1)
         probe.record("changed")
-        guard case .unavailable = await service.toggle(generation: 1) else {
+        let result = seeking ? await service.seek(to: 5, generation: 1) : await service.toggle(generation: 1)
+        guard case .unavailable = result else {
             Issue.record("Changed source must require refresh"); return
         }
         #expect(!probe.events.contains("play"))
@@ -252,7 +372,7 @@ struct CaptionVoiceMemoPlaybackTests {
             candidateURL: candidate,
             destinationURL: association.memoURL,
             kind: .exactRecovery,
-            invalidatesTranscriptApproval: false
+            invalidatesTranscript: false
         )
         let service = CaptionVoiceMemoRecoveryService(
             assessCandidate: { selected, owner in
@@ -268,7 +388,7 @@ struct CaptionVoiceMemoPlaybackTests {
                         profileIdentifier: "test", imageURL: owner, memoURL: assessment.destinationURL
                     ),
                     kind: .exactRecovery,
-                    invalidatedTranscriptApproval: false
+                    invalidatedTranscript: false
                 )
             },
             startAccess: { url in probe.record("access:\(url.path)"); return true },
@@ -294,7 +414,7 @@ struct CaptionVoiceMemoPlaybackTests {
             candidateURL: candidate,
             destinationURL: association.memoURL,
             kind: .explicitReplacement(previousIdentityAvailable: true),
-            invalidatesTranscriptApproval: true
+            invalidatesTranscript: true
         )
         let service = CaptionVoiceMemoRecoveryService(
             assessCandidate: { _, _ in assessment },
@@ -305,7 +425,7 @@ struct CaptionVoiceMemoPlaybackTests {
                         profileIdentifier: "test", imageURL: owner, memoURL: assessment.destinationURL
                     ),
                     kind: .explicitReplacement(previousIdentityAvailable: true),
-                    invalidatedTranscriptApproval: true
+                    invalidatedTranscript: true
                 )
             }
         )
@@ -331,7 +451,7 @@ struct CaptionVoiceMemoPlaybackTests {
             candidateURL: candidate,
             destinationURL: association.memoURL,
             kind: .exactRecovery,
-            invalidatesTranscriptApproval: false
+            invalidatesTranscript: false
         )
         let service = CaptionVoiceMemoRecoveryService(
             assessCandidate: { _, _ in
@@ -344,7 +464,7 @@ struct CaptionVoiceMemoPlaybackTests {
                 return .init(
                     association: found,
                     kind: .exactRecovery,
-                    invalidatedTranscriptApproval: false
+                    invalidatedTranscript: false
                 )
             }
         )
@@ -449,6 +569,26 @@ struct CaptionVoiceMemoTranscriptionTests {
         }
     }
 
+    @Test("Caption transcription is immediately available to metadata variables")
+    @MainActor
+    func captionTranscriptReady() async throws {
+        let found = association, stable = revision(hash: String(repeating: "a", count: 64))
+        let storage = VoiceMemoTranscriptStorageProbe()
+        let service = VoiceMemoTranscriptionService(runtime: runtime(status: .installed, transcript: "Generated caption words"),
+            lookup: { _ in .available(found) }, captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) }, startAccess: { _ in false })
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(imageURL)
+        await model.transcribe()
+        #expect(model.errorMessage == nil)
+        let context = try await service.readyVariableContext(imageURL: imageURL)
+        #expect(context.reviewedText == "Generated caption words")
+        let reopened = CaptionVoiceMemoTranscriptModel(service: service)
+        await reopened.load(imageURL)
+        #expect(reopened.draft == model.draft)
+    }
+
     @Test("Batch completion refresh cannot replace a local review or navigate to an old photo")
     @MainActor
     func guardedBatchRefresh() async throws {
@@ -463,7 +603,7 @@ struct CaptionVoiceMemoTranscriptionTests {
         await model.load(imageURL)
         var saved = try await service.transcribe(imageURL: imageURL, locale: locale)
         saved.reviewedText = "Saved batch words"
-        _ = try await service.approve(saved)
+        _ = try await service.save(saved)
         await gate.enable()
         let refresh = Task { await model.refreshPersistedDraftIfEmpty(for: imageURL) }
         let deadline = ContinuousClock.now + .seconds(5)
@@ -476,9 +616,8 @@ struct CaptionVoiceMemoTranscriptionTests {
         await model.load(imageURL)
         #expect(model.draft?.reviewedText == "Saved batch words")
         await model.transcribe()
-        model.updateReviewedText("Unsaved local human review")
         await model.refreshPersistedDraftIfEmpty(for: imageURL)
-        #expect(model.draft?.reviewedText == "Unsaved local human review")
+        #expect(model.draft?.reviewedText == "Local generated words")
     }
 
     @Test("availability distinguishes installed and download-required language assets")
@@ -882,7 +1021,7 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(!model.isTranscribing)
     }
 
-    @Test("Caption presents draft review without metadata or relationship writes")
+    @Test("Caption presents a read-only transcript without metadata or relationship writes")
     func presentationContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -898,8 +1037,10 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(source.contains("caption.voiceMemo.releaseLanguage"))
         #expect(source.contains("caption.voiceMemo.cancelTranscription"))
         #expect(source.contains("caption.voiceMemo.transcriptDraft"))
-        #expect(source.contains("caption.voiceMemo.approveTranscript"))
-        #expect(source.contains("It does not change Description or any other IPTC field"))
+        #expect(!source.contains("caption.voiceMemo.approveTranscript"))
+        #expect(source.contains("caption.voiceMemo.playhead"))
+        #expect(!source.contains("TextEditor("))
+        #expect(source.contains("Use {voiceMemoTranscript} in a metadata field to insert this text."))
 
         let preview = try String(
             contentsOf: workspace.appendingPathComponent(
@@ -924,104 +1065,11 @@ struct CaptionVoiceMemoTranscriptionTests {
         #expect(metadataModel.contains(".cancellation(.voiceMemoTranscriptApplication)"))
     }
 
-    @Test("approval and edit revocation persist generated and reviewed provenance")
-    @MainActor
-    func approvalRoundTrip() async throws {
+
+    @Test("metadata variable context revalidates exact saved text")
+    func savedVariableContext() async throws {
         let found = association
         let stable = revision(hash: String(repeating: "a", count: 64))
-        let storage = VoiceMemoTranscriptStorageProbe()
-        let service = VoiceMemoTranscriptionService(
-            runtime: runtime(status: .installed, transcript: "Generated words"),
-            lookup: { _ in .available(found) },
-            captureRevision: { _ in stable },
-            loadTranscript: { _, _ in await storage.load() },
-            saveTranscript: { record, _, _ in await storage.save(record) },
-            now: { Date(timeIntervalSince1970: 500) },
-            startAccess: { _ in false }
-        )
-        var draft = try await service.transcribe(imageURL: imageURL, locale: locale)
-        draft.reviewedText = "Human-reviewed words"
-
-        let approved = try await service.approve(draft)
-        #expect(approved.approvedAt == Date(timeIntervalSince1970: 500))
-        #expect(approved.generatedText == "Generated words")
-        #expect(approved.reviewedText == "Human-reviewed words")
-        #expect((await storage.load())?.approvedAt == approved.approvedAt)
-        #expect(try await service.loadPersistedDraft(imageURL: imageURL) == approved)
-
-        let model = CaptionVoiceMemoTranscriptModel(service: service)
-        await model.load(imageURL)
-        model.updateReviewedText("Edited after approval")
-        let deadline = ContinuousClock.now + .seconds(5)
-        while model.isSavingReview, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(model.draft?.isApproved == false)
-        #expect(model.draft?.reviewedText == "Edited after approval")
-        #expect((await storage.load())?.reviewedText == "Edited after approval")
-        #expect((await storage.load())?.approvedAt == nil)
-    }
-
-    @Test("rapid approved-transcript edits persist latest review and block replacement")
-    @MainActor
-    func rapidApprovedEditsPersistLatestReview() async throws {
-        let found = association
-        let stable = revision(hash: String(repeating: "a", count: 64))
-        let saveGate = VoiceMemoTranscriptionGate()
-        let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
-            sourceImageFilename: imageURL.lastPathComponent,
-            sourceMemoFilename: memoURL.lastPathComponent,
-            memoByteCount: stable.byteCount,
-            memoSHA256: stable.sha256,
-            associationProfileIdentifier: found.profileIdentifier,
-            localeIdentifier: locale.identifier,
-            provider: "Apple on-device speech",
-            providerModel: "System managed; exact version unavailable",
-            generatedAt: Date(timeIntervalSince1970: 100),
-            generatedText: "Original generated text",
-            reviewedText: "Approved review",
-            approvedAt: Date(timeIntervalSince1970: 200)
-        ))
-        let service = VoiceMemoTranscriptionService(
-            runtime: runtime(status: .installed),
-            lookup: { _ in .available(found) },
-            captureRevision: { _ in stable },
-            loadTranscript: { _, _ in await storage.load() },
-            saveTranscript: { record, _, _ in
-                if record.reviewedText == "First incremental edit" {
-                    await saveGate.wait()
-                }
-                return await storage.save(record)
-            },
-            startAccess: { _ in false }
-        )
-        let model = CaptionVoiceMemoTranscriptModel(service: service)
-        await model.load(imageURL)
-
-        model.updateReviewedText("First incremental edit")
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !(await saveGate.hasWaiter), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(await saveGate.hasWaiter)
-        model.updateReviewedText("The complete human review")
-        await model.transcribe()
-        await saveGate.open()
-        while model.isSavingReview, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-
-        #expect(model.draft?.reviewedText == "The complete human review")
-        #expect(model.draft?.approvedAt == nil)
-        #expect((await storage.load())?.reviewedText == "The complete human review")
-        #expect((await storage.load())?.approvedAt == nil)
-    }
-
-    @Test("metadata variable context requires and revalidates exact approval")
-    func approvedVariableContext() async throws {
-        let found = association
-        let stable = revision(hash: String(repeating: "a", count: 64))
-        let approval = Date(timeIntervalSince1970: 200)
         let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
             sourceImageFilename: imageURL.lastPathComponent,
             sourceMemoFilename: memoURL.lastPathComponent,
@@ -1033,8 +1081,7 @@ struct CaptionVoiceMemoTranscriptionTests {
             providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 100),
             generatedText: "Generated text",
-            reviewedText: "  Approved reviewed text  ",
-            approvedAt: approval
+            reviewedText: "  Saved transcript text  "
         ))
         let service = VoiceMemoTranscriptionService(
             runtime: runtime(status: .installed),
@@ -1045,21 +1092,21 @@ struct CaptionVoiceMemoTranscriptionTests {
             startAccess: { _ in false }
         )
 
-        let context = try await service.approvedVariableContext(imageURL: imageURL)
-        #expect(context.reviewedText == "Approved reviewed text")
-        #expect(context.approvedAt == approval)
+        let context = try await service.readyVariableContext(imageURL: imageURL)
+        #expect(context.reviewedText == "Saved transcript text")
+        #expect(context.generatedAt == Date(timeIntervalSince1970: 100))
         try await service.validateVariableContext(context, imageURL: imageURL)
 
         var changed = try #require(await storage.load())
-        changed.reviewedText = "A later approved edit"
+        changed.reviewedText = "A later saved transcript"
         _ = await storage.save(changed)
-        await #expect(throws: VoiceMemoTranscriptVariableError.approvalChanged) {
+        await #expect(throws: VoiceMemoTranscriptVariableError.transcriptChanged) {
             try await service.validateVariableContext(context, imageURL: imageURL)
         }
     }
 
-    @Test("unapproved transcript cannot authorize a metadata variable")
-    func unapprovedVariableContext() async throws {
+    @Test("saved transcript resolves variables and empty text is refused")
+    func savedAndEmptyVariableContexts() async throws {
         let found = association
         let stable = revision(hash: String(repeating: "a", count: 64))
         let storage = VoiceMemoTranscriptStorageProbe(record: VoiceMemoTranscriptRecord(
@@ -1073,7 +1120,7 @@ struct CaptionVoiceMemoTranscriptionTests {
             providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 100),
             generatedText: "Generated text",
-            reviewedText: "Edited but not approved"
+            reviewedText: "Saved transcript"
         ))
         let service = VoiceMemoTranscriptionService(
             runtime: runtime(status: .installed),
@@ -1083,12 +1130,20 @@ struct CaptionVoiceMemoTranscriptionTests {
             startAccess: { _ in false }
         )
 
-        await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
-            _ = try await service.approvedVariableContext(imageURL: imageURL)
+        let ready = try await service.readyVariableContext(imageURL: imageURL)
+        #expect(ready.reviewedText == "Saved transcript")
+        var changed = try #require(await storage.load())
+        changed.reviewedText = "Later transcript"
+        _ = await storage.save(changed)
+        #expect(try await service.readyVariableContext(imageURL: imageURL) != ready)
+        changed.reviewedText = "  "
+        _ = await storage.save(changed)
+        await #expect(throws: VoiceMemoTranscriptVariableError.empty) {
+            _ = try await service.readyVariableContext(imageURL: imageURL)
         }
     }
 
-    @Test("a failed replacement leaves the previously approved transcript visible")
+    @Test("a failed replacement leaves the previously saved transcript visible")
     @MainActor
     func failedReplacementRetainsApprovedRecord() async throws {
         let found = association
@@ -1104,8 +1159,7 @@ struct CaptionVoiceMemoTranscriptionTests {
             providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 100),
             generatedText: "Original generated text",
-            reviewedText: "Approved review",
-            approvedAt: Date(timeIntervalSince1970: 200)
+            reviewedText: "Approved review"
         ))
         let service = VoiceMemoTranscriptionService(
             runtime: runtime(status: .installed, transcript: "   "),
@@ -1117,17 +1171,15 @@ struct CaptionVoiceMemoTranscriptionTests {
         )
         let model = CaptionVoiceMemoTranscriptModel(service: service)
         await model.load(imageURL)
-        #expect(model.draft?.isApproved == true)
 
         await model.transcribe()
 
         #expect(model.draft?.reviewedText == "Approved review")
-        #expect(model.draft?.isApproved == true)
         #expect(model.errorMessage != nil)
         #expect((await storage.load())?.reviewedText == "Approved review")
     }
 
-    @Test("cancelling a replacement retains the previously approved transcript")
+    @Test("cancelling a replacement retains the previously saved transcript")
     @MainActor
     func cancelledReplacementRetainsApprovedRecord() async throws {
         let found = association
@@ -1145,8 +1197,7 @@ struct CaptionVoiceMemoTranscriptionTests {
             providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 100),
             generatedText: "Original generated text",
-            reviewedText: "Approved review",
-            approvedAt: Date(timeIntervalSince1970: 200)
+            reviewedText: "Approved review"
         ))
         let selectedLocale = locale
         let service = VoiceMemoTranscriptionService(
@@ -1179,9 +1230,7 @@ struct CaptionVoiceMemoTranscriptionTests {
         await replacement.value
 
         #expect(model.draft?.reviewedText == "Approved review")
-        #expect(model.draft?.isApproved == true)
         #expect((await storage.load())?.reviewedText == "Approved review")
-        #expect((await storage.load())?.approvedAt != nil)
     }
 
     private var association: VoiceMemoAssociation {

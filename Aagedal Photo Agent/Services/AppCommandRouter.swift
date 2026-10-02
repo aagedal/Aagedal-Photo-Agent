@@ -40,6 +40,7 @@ enum AppCommand: Equatable, Sendable {
     case uploadAll
     case processVariablesSelected
     case processVariablesAll
+    case transcribeVoiceMemosSelected
     case showTemplatePalette
     case applyTemplateShortcut(Int)
     case applyDevelopTemplate(DevelopTemplate)

@@ -16,6 +16,67 @@ nonisolated enum CaptionVoiceMemoState: Equatable, Sendable {
     case unavailable(String)
 }
 
+nonisolated enum CaptionVoiceMemoTranscriptionStatus: Equatable, Sendable {
+    case none, missing, needsTranscription, transcribed, unavailable
+
+    var accessibilityDescription: String {
+        switch self {
+        case .none: "No voice memo"
+        case .missing: "Voice memo missing"
+        case .needsTranscription: "Voice memo available, not transcribed"
+        case .transcribed: "Voice memo and transcript available"
+        case .unavailable: "Voice memo status unavailable"
+        }
+    }
+}
+
+/// Filmstrip inspection never opens an audio player or writes transcript readiness.
+actor CaptionVoiceMemoStatusService {
+    static let shared = CaptionVoiceMemoStatusService()
+    nonisolated let filesystemQueue = DispatchSerialQueue(
+        label: "com.aagedal.photo-agent.caption-voice-memo-status", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
+    private let lookup: @Sendable (URL) throws -> VoiceMemoCompanionRepository.Lookup
+    private let loadTranscript: @Sendable (URL) async throws -> VoiceMemoTranscriptDraft?
+    private let discoverAssociation: @Sendable (URL) async throws -> Bool
+
+    init(lookup: @escaping @Sendable (URL) throws -> VoiceMemoCompanionRepository.Lookup = {
+        try VoiceMemoCompanionRepository().lookup(for: $0)
+    }, loadTranscript: @escaping @Sendable (URL) async throws -> VoiceMemoTranscriptDraft? = {
+        try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: $0)
+    }, discoverAssociation: @escaping @Sendable (URL) async throws -> Bool = {
+        _ = try await CaptionVoiceMemoAssociationService().discover(imageURL: $0)
+        return true
+    }) {
+        self.lookup = lookup
+        self.loadTranscript = loadTranscript
+        self.discoverAssociation = discoverAssociation
+    }
+
+    func status(for imageURL: URL) async -> CaptionVoiceMemoTranscriptionStatus {
+        guard !Task.isCancelled else { return .unavailable }
+        let folder = imageURL.deletingLastPathComponent()
+        let accessed = folder.startAccessingSecurityScopedResource()
+        defer { if accessed { folder.stopAccessingSecurityScopedResource() } }
+        do {
+            switch try lookup(imageURL) {
+            case .none:
+                // Detect unlinked memos for badges without creating a relationship here.
+                do { return try await discoverAssociation(imageURL) ? .needsTranscription : .none }
+                catch { return .none }
+            case .missing: return .missing
+            case .available:
+                let draft = try await loadTranscript(imageURL)
+                guard !Task.isCancelled else { return .unavailable }
+                return draft?.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? .transcribed : .needsTranscription
+            }
+        } catch VoiceMemoTranscriptionError.sourceChanged {
+            return .needsTranscription
+        } catch { return .unavailable }
+    }
+}
+
 /// The player never leaves its service executor, including preparation and teardown.
 nonisolated protocol CaptionVoiceMemoAudioPlayer: AnyObject {
     var duration: TimeInterval { get }
@@ -167,6 +228,25 @@ actor CaptionVoiceMemoPlaybackService {
         return snapshot()
     }
 
+    func seek(to position: TimeInterval, generation requested: UInt64) -> CaptionVoiceMemoState? {
+        guard requested == generation, !Task.isCancelled, position.isFinite,
+              let player, let association else { return nil }
+        do {
+            guard try lookup(association.imageURL) == .available(association),
+                  try readRevision(association.imageURL) == imageRevision,
+                  try readRevision(association.memoURL) == memoRevision else {
+                releasePlayer()
+                return .unavailable("The photo or voice memo changed. Refresh before seeking.")
+            }
+            guard !Task.isCancelled else { return nil }
+            player.currentTime = max(0, min(position, player.duration))
+            return snapshot()
+        } catch {
+            releasePlayer()
+            return .unavailable("The photo or voice memo is no longer accessible. Restore access and refresh.")
+        }
+    }
+
     func progress(generation requested: UInt64) -> CaptionVoiceMemoState? {
         guard requested == generation, !Task.isCancelled else { return nil }
         return snapshot()
@@ -235,6 +315,21 @@ final class CaptionVoiceMemoPlaybackModel {
         } onCancel: {
             task.cancel()
         }
+        guard requested == generation else { return }
+        playbackTask = nil
+        isChangingPlayback = false
+        if let result, !Task.isCancelled { state = result }
+    }
+
+    func seek(to position: TimeInterval) async {
+        guard case .available = state, !isChangingPlayback else { return }
+        let requested = generation
+        isChangingPlayback = true
+        let task = Task { await service.seek(to: position, generation: requested) }
+        playbackTask = task
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
         guard requested == generation else { return }
         playbackTask = nil
         isChangingPlayback = false

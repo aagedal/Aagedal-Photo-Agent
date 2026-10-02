@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 struct ActivityHistoryButton: View {
     var history: ActivityHistoryStore
     var faceViewModel: FaceRecognitionViewModel
+    var transcriptionModel: CaptionVoiceMemoBatchTranscriptionModel
     var receiptLibrary: DeliveryReceiptLibraryModel
     var workflowActivity: DeliveryWorkflowActivityModel
     let onResumeWorkflow: (UUID) -> Bool
@@ -20,6 +21,8 @@ struct ActivityHistoryButton: View {
             Group {
                 if faceViewModel.isScanning {
                     Label("Face Scan \(faceViewModel.scanProgress)", systemImage: "viewfinder")
+                } else if transcriptionModel.isRunning {
+                    Label("Transcribing \(transcriptionModel.savedDraftImageURLs.count)/\(transcriptionModel.activeImageURLs.count)", systemImage: "waveform")
                 } else {
                     Label("Activity", systemImage: "clock.arrow.circlepath")
                 }
@@ -31,6 +34,7 @@ struct ActivityHistoryButton: View {
             ActivityHistoryView(
                 history: history,
                 faceViewModel: faceViewModel,
+                transcriptionModel: transcriptionModel,
                 receiptLibrary: receiptLibrary,
                 workflowActivity: workflowActivity,
                 onResumeWorkflow: onResumeWorkflow
@@ -42,6 +46,7 @@ struct ActivityHistoryButton: View {
 struct ActivityHistoryView: View {
     var history: ActivityHistoryStore
     var faceViewModel: FaceRecognitionViewModel
+    var transcriptionModel: CaptionVoiceMemoBatchTranscriptionModel
     @Bindable var receiptLibrary: DeliveryReceiptLibraryModel
     @Bindable var workflowActivity: DeliveryWorkflowActivityModel
     let onResumeWorkflow: (UUID) -> Bool
@@ -51,6 +56,7 @@ struct ActivityHistoryView: View {
         case imports = "Imports"
         case uploads = "Uploads"
         case faceScans = "Face Scans"
+        case transcriptions = "Transcriptions"
         var id: String { rawValue }
     }
     @State private var filter: Filter = .all
@@ -65,6 +71,7 @@ struct ActivityHistoryView: View {
         case .imports: return history.entries.filter { $0.kind == .importJob }
         case .uploads: return history.entries.filter { $0.kind == .upload }
         case .faceScans: return history.entries.filter { $0.kind == .faceScan }
+        case .transcriptions: return history.entries.filter { $0.kind == .transcription }
         }
     }
 
@@ -73,6 +80,13 @@ struct ActivityHistoryView: View {
             HStack {
                 Text("Activity History")
                     .font(.headline)
+                if transcriptionModel.isRunning {
+                    Button(transcriptionModel.isRequestingCancellation ? "Cancelling…" : "Cancel Transcription", role: .cancel) {
+                        Task { await transcriptionModel.requestCancellation() }
+                    }
+                    .disabled(transcriptionModel.isRequestingCancellation)
+                    .accessibilityIdentifier("activity.transcription.cancel")
+                }
                 Spacer()
                 Picker("", selection: $filter) {
                     ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
@@ -87,6 +101,11 @@ struct ActivityHistoryView: View {
 
             if faceViewModel.isScanning {
                 ActiveFaceScanRow(viewModel: faceViewModel)
+                Divider()
+            }
+
+            if transcriptionModel.isRunning {
+                ActiveTranscriptionRow(model: transcriptionModel)
                 Divider()
             }
 
@@ -741,7 +760,40 @@ private struct ActivityEntryRow: View {
         case .importJob: "square.and.arrow.down"
         case .upload: "square.and.arrow.up"
         case .faceScan: "viewfinder"
+        case .transcription: "waveform"
         }
+    }
+}
+
+private struct ActiveTranscriptionRow: View {
+    var model: CaptionVoiceMemoBatchTranscriptionModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(model.isRequestingCancellation ? "Cancelling transcription…" : "Transcribing voice memos")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+            }
+            Text("\(model.activeProviderTitle ?? "") · \(model.activeLanguageTitle ?? "")")
+                .font(.caption2).foregroundStyle(.secondary)
+            ProgressView(value: Double(model.record?.batchProgress?.items.filter { $0.state == .completed }.count ?? 0),
+                         total: Double(max(model.activeImageURLs.count, 1)))
+            Text(model.statusMessage).font(.caption).textSelection(.enabled)
+            ForEach(Array(model.activeImageURLs.enumerated()), id: \.offset) { index, url in
+                HStack {
+                    Text(url.lastPathComponent).lineLimit(1).help(url.path)
+                    Spacer()
+                    Text(model.itemStatus(at: index)).foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+            }
+            if let error = model.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+        }
+        .accessibilityIdentifier("activity.transcription.active")
     }
 }
 
@@ -789,7 +841,7 @@ private struct ActivityFileTable: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text("File").frame(maxWidth: .infinity, alignment: .leading)
-                Text(kind == .importJob ? "Folder" : "Destination").frame(maxWidth: .infinity, alignment: .leading)
+                Text(kind == .transcription ? "Status" : kind == .importJob ? "Folder" : "Destination").frame(maxWidth: .infinity, alignment: .leading)
                 Text("Verified").frame(width: 56, alignment: .center)
             }
             .font(.caption2.weight(.semibold))
@@ -802,8 +854,8 @@ private struct ActivityFileTable: View {
                         .truncationMode(.middle)
                         .foregroundStyle(file.succeeded ? .primary : .secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text(displayDestination(file.destination))
-                        .lineLimit(1)
+                    Text(kind == .transcription ? file.statusDetail ?? (file.succeeded ? "Transcript saved" : "No transcript saved") : displayDestination(file.destination))
+                        .lineLimit(kind == .transcription ? nil : 1)
                         .truncationMode(.head)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

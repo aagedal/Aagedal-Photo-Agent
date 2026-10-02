@@ -36,6 +36,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     }
 
     private(set) var snapshot: Snapshot?
+    private(set) var selectedImageURLs: [URL] = []
     private(set) var activeImageURLs: [URL] = []
     private(set) var activeProviderTitle: String?
     private(set) var activeLanguageTitle: String?
@@ -43,6 +44,7 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     private(set) var isChecking = false
     private(set) var isRunning = false
     private(set) var isRequestingCancellation = false
+    private(set) var isResetting = false
     private(set) var errorMessage: String?
     private(set) var completionToken: UInt64 = 0
 
@@ -53,11 +55,14 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     @ObservationIgnored private var executionTask: Task<Void, Never>?
     @ObservationIgnored private var cancellationRequested = false
     @ObservationIgnored private var cancelledBeforeSubmission = false
+    @ObservationIgnored private weak var activityHistory: ActivityHistoryStore?
+    @ObservationIgnored private var activityID = UUID()
 
-    init(dependencies: Dependencies? = nil,
+    init(dependencies: Dependencies? = nil, activityHistory: ActivityHistoryStore? = nil,
          beginExecution: @escaping @MainActor () -> Bool = { FFmpegWhisperSetupModel.shared.beginTranscription() },
          endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() }) {
         self.dependencies = dependencies ?? UITestVoiceTranscriptionBatchFixture.currentDependenciesForModel() ?? .live()
+        self.activityHistory = activityHistory
         self.beginExecution = beginExecution
         self.endExecution = endExecution
     }
@@ -71,14 +76,14 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
 
     var statusMessage: String {
         let saved = savedDraftImageURLs.count
-        let suffix = "\(saved) of \(activeImageURLs.count) editable drafts saved. Existing reviews are kept."
+        let suffix = "\(saved) of \(activeImageURLs.count) transcripts saved. Existing reviews are kept."
         if isRequestingCancellation || (isRunning && cancellationRequested) {
             return "Cancellation requested. Waiting for the current item to stop safely. " + suffix
         }
         if isRunning { return "Transcribing the confirmed photos. " + suffix }
         if cancelledBeforeSubmission { return "Batch cancelled before transcription started. No drafts were saved." }
         switch record?.outcome {
-        case .verified: return suffix + " Review and approve each draft in Caption."
+        case .verified: return suffix + " Open a transcript in Caption to use it in metadata."
         case .cancelled: return "Batch cancelled. " + suffix + " Saved drafts remain available; unfinished photos were not restarted."
         case .recoveryRequired, .partialUncertain:
             return "Batch stopped with an uncertain save. " + suffix + " Check the affected photo before trying again."
@@ -87,7 +92,42 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
             if !activeImageURLs.isEmpty, errorMessage != nil {
                 return "Batch was not admitted. No drafts were saved. Prepare the batch again after resolving the issue."
             }
-            return "Confirm the selected photos to save editable transcript drafts."
+            return "Confirm the Browser selection to transcribe its voice memos."
+        }
+    }
+
+    func resetTranscripts(imageURLs: [URL]) async -> Bool {
+        guard !isRunning, !isChecking, !isResetting,
+              (1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(imageURLs.count) else { return false }
+        isResetting = true
+        snapshot = nil
+        errorMessage = nil
+        defer { isResetting = false }
+        var failures: [String] = []
+        for url in imageURLs {
+            do {
+                try await MetadataSidecarService().resetVoiceMemoTranscriptSerialized(for: url, in: url.deletingLastPathComponent())
+            } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty {
+            errorMessage = failures.joined(separator: "\n")
+            return false
+        }
+        return true
+    }
+
+    func itemStatus(at index: Int) -> String {
+        guard let item = record?.batchProgress?.items.first(where: { $0.index == index }) else {
+            return isRunning ? "Waiting to start" : "Not started"
+        }
+        switch item.outcome {
+        case .draftSaved: return "Transcript saved"
+        case .failed: return "Failed · no transcript saved"
+        case .stale: return "Source changed · no transcript saved"
+        case .cancelled: return "Cancelled · no transcript saved"
+        case .recoveryRequired: return "Save uncertain · check transcript"
+        case nil:
+            return item.state == .running ? "Transcribing" : "Not started"
         }
     }
 
@@ -97,13 +137,14 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         guard !isRunning, !isChecking else { return }
         generation &+= 1
         let requested = generation
+        selectedImageURLs = imageURLs.map(\.standardizedFileURL)
         snapshot = nil
         errorMessage = nil
         guard !reviewOrSaveBusy, !providerBusy else {
             errorMessage = "Finish the current review, save, or transcription before preparing a batch."
             return
         }
-        let urls = imageURLs.map(\.standardizedFileURL)
+        let urls = selectedImageURLs
         guard (1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(urls.count),
               urls.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
               Set(urls).count == urls.count else {
@@ -143,10 +184,18 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     /// The unstructured task deliberately survives SwiftUI task cancellation. Capacity
     /// remains held until the retained executor acknowledges a drained terminal result.
     func confirm(consent: Bool, reviewOrSaveBusy: Bool, providerBusy: Bool) async {
-        guard consent, !isRunning, let snapshot else { return }
+        guard start(consent: consent, reviewOrSaveBusy: reviewOrSaveBusy, providerBusy: providerBusy),
+              let executionTask else { return }
+        await executionTask.value
+    }
+
+    /// Starts retained work synchronously so the confirmation sheet can close immediately.
+    @discardableResult
+    func start(consent: Bool, reviewOrSaveBusy: Bool, providerBusy: Bool) -> Bool {
+        guard consent, !isRunning, !isResetting, let snapshot else { return false }
         guard !reviewOrSaveBusy, !providerBusy, beginExecution() else {
             errorMessage = "Finish the current review, save, or transcription before starting this batch."
-            return
+            return false
         }
         self.snapshot = nil
         activeImageURLs = snapshot.imageURLs
@@ -158,9 +207,10 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         cancelledBeforeSubmission = false
         isRequestingCancellation = false
         isRunning = true
+        activityID = UUID()
         let work = Task { [self] in await execute(snapshot) }
         executionTask = work
-        await work.value
+        return true
     }
 
     func requestCancellation() async {
@@ -232,6 +282,17 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
     }
 
     private func finishExecution() {
+        let files = activeImageURLs.enumerated().map { index, url in
+            let saved = record?.batchProgress?.items.first(where: { $0.index == index })?.outcome == .draftSaved
+            return ActivityFileRecord(fileName: url.lastPathComponent,
+                destination: url.deletingLastPathComponent().path,
+                succeeded: saved, verification: saved ? .verified : .notApplicable,
+                statusDetail: itemStatus(at: index))
+        }
+        activityHistory?.record(ActivityEntry(id: activityID, kind: .transcription, date: .now,
+            title: [activeProviderTitle, activeLanguageTitle].compactMap { $0 }.joined(separator: " · "),
+            successCount: files.filter(\.succeeded).count, totalCount: files.count,
+            wasCancelled: cancelledBeforeSubmission || record?.outcome == .cancelled, files: files))
         isRunning = false
         isRequestingCancellation = false
         executionTask = nil

@@ -97,19 +97,14 @@ These are material product and evidence boundaries, not a list of unfinished int
   exact copy or confirmed replacement. Caption can also search a user-selected folder for an exact
   moved relationship; duplicate, changed and missing results are not adopted. Native validation of
   archive and reassociation breadth remains incomplete. Caption can explicitly use Apple on-device
-  speech after an explicit language download, show an exact-WAV-bound editable draft, and persist
-  generated/reviewed provenance only after explicit approval. Editing revokes approval, and
-  incremental edits serialize toward the latest complete durable review before a photo or locale
-  transition. The native review fixture verifies complete editing, relaunch and approval without
-  changing the WAV or relationship bytes. The shared
-  `{voiceMemoTranscript}` variable can place that reviewed text through an explicit template/variable
-  operation and revalidates the exact approval before each metadata write; braces in transcript text
+  speech after an explicit language download, show an exact-WAV-bound read-only transcript, and persist
+  generated provenance when transcription completes. Saved transcripts from Caption, Browser batches,
+  or helper requests are ready for `{voiceMemoTranscript}` without review or approval. The variable
+  revalidates the saved text and exact WAV identity before each metadata write; braces in transcript text
   remain literal. The supported Description, Extended Description, Headline and Instructions
-  destinations are enforced, and a dedicated affected-image
-  preview shows exact Append/Replace changes before confirmation; one invalid authority refuses the
-  entire transcript batch before mutation. A disposable native fixture verifies Escape cancellation,
-  Return confirmation, all four destinations and persisted metadata read-back after relaunch; this is
-  narrow workflow evidence rather than a complete VoiceOver/accessibility gate. Deadline profiles
+  destinations are enforced. Processing variables starts directly; one invalid transcript or audio
+  identity refuses the entire transcript batch before mutation. Native accessibility and relaunch
+  workflow validation remain incomplete. Deadline profiles
   explicitly exclude WAV companions,
   include proven companions when available, or require one for every image. Included audio is
   exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Injected
@@ -134,7 +129,7 @@ This is separate from the unapproved AI-origin analyzer described above.
 ## Local automation boundary
 
 - The shared transcription batch backend accepts up to eight explicit photos and saves only
-  previously absent, unapproved transcripts. Existing saved drafts or human reviews are preserved.
+  previously absent transcripts. Existing saved drafts or human reviews are preserved.
   Caption now launches a captured Browser selection through explicit provider/language consent.
   Every target must have a supported WAV relationship, and targets sharing a metadata sidecar
   cannot be included together. Preparation refuses any existing saved transcript, and active/unsaved current reviews block launch. Source/WAV drift

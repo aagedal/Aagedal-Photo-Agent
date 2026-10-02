@@ -7,6 +7,7 @@ struct MetadataSidecarService: Sendable {
 
     nonisolated static let sidecarDirectoryName = ".photo_metadata"
     nonisolated static let voiceMemoTranscriptFieldName = "voiceMemoTranscript"
+    nonisolated static let voiceMemoTranscriptDidChange = Notification.Name("com.aagedal.photo-agent.voice-memo-transcript-changed")
     /// Small JSON reads are cheap individually, but one task per sidecar creates thousands
     /// of queued jobs for large event folders. Bound admission to the Dispatch worker so
     /// cancellation stops queued reads and other metadata transactions can make progress.
@@ -434,7 +435,6 @@ struct MetadataSidecarService: Sendable {
         expectedRelationshipRevision: VoiceMemoRelationshipRevision? = nil,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
     ) async throws -> VoiceMemoTranscriptRecord {
-        guard transcript.approvedAt == nil else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
         if let expectedRelationshipRevision {
             guard expectedRelationshipRevision.url == VoiceMemoCompanionRepository().recordURL(for: imageURL).standardizedFileURL else {
                 throw VoiceMemoTranscriptionError.sourceChanged
@@ -514,7 +514,7 @@ struct MetadataSidecarService: Sendable {
                 throw VoiceMemoTranscriptionError.sourceChanged
             }
             _ = try self.saveSidecar(carrier, for: imageURL, in: folderURL,
-                expectedContentTokens: sourceTokens)
+                expectedContentTokens: sourceTokens, preserveModificationDate: existing != nil)
 
             let currentURL = self.sidecarFileURL(for: imageURL, in: folderURL)
             let currentData = try Data(contentsOf: currentURL)
@@ -542,13 +542,48 @@ struct MetadataSidecarService: Sendable {
                 == Self.encodedVoiceMemoTranscript(transcript) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
+            NotificationCenter.default.post(name: Self.voiceMemoTranscriptDidChange, object: imageURL.standardizedFileURL)
             return installed
         }
     }
 
+    /// Explicitly clears only the app-owned transcript, preserving all editorial fields.
+    @MetadataSidecarFilesystemActor
+    func resetVoiceMemoTranscriptSerialized(for imageURL: URL, in folderURL: URL,
+        beforeCommit: @escaping @Sendable () throws -> Void = {}) async throws {
+        try Task.checkCancellation()
+        let reservation = try MCPProcessReservation.acquirePhoto(imageURL)
+        defer { reservation.release() }
+        try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: imageURL)) { @MetadataSidecarFilesystemActor in
+            let tokens = try self.contentTokens(for: imageURL, in: folderURL)
+            guard try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL) != nil,
+                  let carrier = try self.loadOwnedSidecarForMutation(for: imageURL, in: folderURL) else { return }
+            try beforeCommit()
+            guard try self.contentTokens(for: imageURL, in: folderURL) == tokens else {
+                throw VoiceMemoTranscriptionError.sourceChanged
+            }
+            _ = try self.saveSidecar(carrier, for: imageURL, in: folderURL,
+                expectedContentTokens: tokens, preserveModificationDate: true)
+            let url = self.sidecarFileURL(for: imageURL, in: folderURL)
+            let data = try Data(contentsOf: url)
+            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            object.removeValue(forKey: Self.voiceMemoTranscriptFieldName)
+            let patched = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            guard try Data(contentsOf: url) == data else { throw self.ownershipChanged(url) }
+            try patched.write(to: url, options: .atomic)
+            guard try self.loadVoiceMemoTranscript(for: imageURL, in: folderURL) == nil else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+        }
+        // An idempotent reset also refreshes badges that may still show old state.
+        NotificationCenter.default.post(name: Self.voiceMemoTranscriptDidChange, object: imageURL.standardizedFileURL)
+    }
+
     /// Foundation's ISO-8601 strategy stores whole seconds. Compare the canonical encoded
     /// representation rather than the pre-encoding `Date` values so a verified write with a
-    /// fractional generation or approval timestamp is not reported as corrupt.
+    /// fractional generation timestamp is not reported as corrupt.
     private nonisolated static func encodedVoiceMemoTranscript(
         _ transcript: VoiceMemoTranscriptRecord
     ) throws -> Data {
@@ -600,6 +635,17 @@ struct MetadataSidecarService: Sendable {
         orientationMutation: OrientationDraftMutation = .preserve,
         expectedContentTokens: [Data?]? = nil
     ) throws -> MetadataSidecar {
+        try saveSidecar(sidecar, for: imageURL, in: folderURL, orientationMutation: orientationMutation,
+            expectedContentTokens: expectedContentTokens, preserveModificationDate: false)
+    }
+
+    /// Transcript extension updates preserve the editorial revision used by loaded editors.
+    @discardableResult
+    private nonisolated func saveSidecar(_ sidecar: MetadataSidecar, for imageURL: URL, in folderURL: URL,
+        orientationMutation: OrientationDraftMutation = .preserve,
+        expectedContentTokens: [Data?]? = nil,
+        preserveModificationDate: Bool
+    ) throws -> MetadataSidecar {
         try requireIncomingOwner(sidecar, imageURL: imageURL)
         let snapshots = try carrierSnapshots(for: imageURL, in: folderURL)
         if let expectedContentTokens {
@@ -627,7 +673,7 @@ struct MetadataSidecarService: Sendable {
             updatedSidecar.pendingChanges = true
         }
         updatedSidecar.schemaVersion = MetadataSidecar.currentSchemaVersion
-        updatedSidecar.lastModified = Date()
+        if !preserveModificationDate { updatedSidecar.lastModified = Date() }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -813,7 +859,18 @@ struct MetadataSidecarService: Sendable {
             do {
                 try self.requireIncomingOwner(request.sidecar, imageURL: request.imageURL)
                 let tokens = try self.contentTokens(for: request.imageURL, in: request.folderURL)
-                let current = try self.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL)
+                var current = try self.loadOwnedSidecarForMutation(for: request.imageURL, in: request.folderURL)
+                // A transcript can create an extension-only carrier after Caption loaded the
+                // photo. Its empty metadata is not an editorial baseline. Replay the captured
+                // photo baseline while retaining the transcript and all opaque fields on save.
+                if !requiresExactJSONBaseline, !request.receipt.hasCommitted, request.baselineHistory.isEmpty,
+                   let carrier = current, !carrier.pendingChanges, carrier.history.isEmpty,
+                   carrier.imageMetadataSnapshot == nil, carrier.orientationDraft == nil,
+                   Self.persistedMetadataEqual(carrier.metadata, IPTCMetadata()),
+                   try self.loadVoiceMemoTranscript(for: request.imageURL, in: request.folderURL) != nil {
+                    current?.metadata = request.baselineMetadata
+                    current?.imageMetadataSnapshot = request.sidecar.imageMetadataSnapshot
+                }
                 guard !request.receipt.creationEvidenceInvalidated else { throw Self.replayConflict() }
                 if requiresExactJSONBaseline, !request.receipt.hasCommitted,
                    !Self.sameOptionalRecord(current, expectedJSONBaseline) { throw Self.replayConflict() }
@@ -914,7 +971,7 @@ struct MetadataSidecarService: Sendable {
                       try self.contentTokens(for: request.imageURL, in: request.folderURL) == authoritativeTokens else {
                     throw DescriptiveMetadataWriteError.staleXMPSidecar(xmp.sidecarURL(for: request.imageURL))
                 }
-                request.receipt.markVerifiedXMP(verifiedXMP)
+                request.receipt.markVerifiedXMP(verifiedXMP, record: installed)
                 return .init(installedSidecar: installed, wroteXMPSidecar: true, wasCancelled: false, failure: nil,
                     writtenXMPMetadata: self.metadataFromXMPReceipt(xmpReceipt, imageURL: request.imageURL),
                     writtenXMPSnapshot: verifiedXMP)
@@ -1858,8 +1915,12 @@ nonisolated final class MetadataSidecarReplayReceipt: @unchecked Sendable {
     private var completedCreationMirror = false
     private var installedCreationXMP: Data?
     private var verifiedXMP: XMPSidecarWriteSnapshot?
+    private var verifiedRecord: MetadataSidecar?
+    var verifiedSidecar: MetadataSidecar? { lock.withLock { verifiedRecord } }
     var verifiedXMPSnapshot: XMPSidecarWriteSnapshot? { lock.withLock { verifiedXMP } }
-    func markVerifiedXMP(_ value: XMPSidecarWriteSnapshot) { lock.withLock { verifiedXMP = value } }
+    func markVerifiedXMP(_ value: XMPSidecarWriteSnapshot, record: MetadataSidecar? = nil) {
+        lock.withLock { verifiedXMP = value; verifiedRecord = record }
+    }
     var creationMirrorCompleted: Bool { lock.withLock { completedCreationMirror } }
     var creationInstalledXMPData: Data? { lock.withLock { installedCreationXMP } }
     func markCreationMirrorInstalled(_ data: Data?) { lock.withLock { installedCreationXMP = data } }

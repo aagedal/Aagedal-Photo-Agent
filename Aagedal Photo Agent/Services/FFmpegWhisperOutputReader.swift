@@ -30,7 +30,7 @@ nonisolated enum FFmpegWhisperProducerCompletion: Equatable, Sendable {
 
 /// A bounded, no-follow reader for a private inference job's canonical output. The future provider
 /// must supply an absolute path with no symlink components and retain ownership of the job directory.
-/// Neither these bytes nor successful exit confer reviewed transcript approval.
+/// Neither these bytes nor successful exit confer source validation.
 nonisolated enum FFmpegWhisperOutputReader {
     static func read(
         from url: URL,
