@@ -1425,6 +1425,17 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 123 continuation (2026-10-02):** Authenticated `start_voice_transcription` now consumes
+an exact native one-use grant before scheduling existing rooted admission and durable draft
+execution. The grant lasts 60 monotonic seconds and is revoked on consent withdrawal, provider
+change, new review or dismissal. Scheduling is not durable admission or completion; linked
+requests return original operation history without replay. Nine actual signed-helper calls qualify
+the installed Debug workflow with synthetic recognition. Ten separate real production Whisper
+CLI cases pass. Actual native providers, signed model lifecycle, distribution and broader
+executors remain open; no whole Phase 5A checkbox closes. See
+[cycle 123 evidence](release/cycle-123-native-helper-transcription-start-2026-10-02.md) and the
+[release completion handoff](release/release-completion-handoff-2026-10-02.md).
+
 **Cycle 122 continuation (2026-10-02):** Persistent clients now refresh shared authorization
 preferences before reads/writes and refuse refresh/persistence failures. Failed preference writes
 discard dirty authority before any subsequent refresh; revocation/regrant generations remain distinct.
