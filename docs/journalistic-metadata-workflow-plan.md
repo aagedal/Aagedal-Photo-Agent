@@ -1425,6 +1425,15 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 119 continuation (2026-10-02):** A read-only native session binding now pins an exact
+retained request/epoch/intent to the ordered prepared photo set and concrete provider. Apple locale
+and Whisper language/translation/GPU options must match; Whisper retains exact executable/model
+URLs, sizes, hashes, identifiers and timeout with explicit native curated/custom classification.
+Preparation and revalidation repeat native readiness and complete rooted carrier/authority checks,
+including file identity and native relationship evidence. This internal API has no production
+inbox caller, consent, operation admission, authenticated invocation or helper execution endpoint.
+No Phase 5A acceptance checkbox closes. See [cycle 119 evidence](release/cycle-119-native-transcription-binding-2026-10-02.md).
+
 **Cycle 118 continuation (2026-10-01):** Internal transcription coordination now reserves the
 exact operation UUID before durable admission, binds it to the original request/epoch/intent and
 owner, and verifies the actual configured queued operation under history/request locks before

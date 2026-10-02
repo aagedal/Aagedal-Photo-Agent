@@ -141,8 +141,11 @@ This is separate from the unapproved AI-origin analyzer described above.
   64 records without automatic eviction. Inspection revalidates the plan and grants no consent.
   Internal admission now binds the original request, epoch, intent and reserved operation UUID;
   exact configured-operation linkage precedes scheduling, and interrupted admission cannot replay.
-  These caller-supplied executor hooks do not bind prepared provider/options/model identity or
-  rooted execution authority. The archived managed-owner flag does not establish current liveness.
+  These caller-supplied executor hooks do not grant rooted execution authority. A separate internal
+  read-only native session API now binds the exact prepared photo set and concrete provider/options/
+  model/executable identity to the rooted request, with fresh readiness and carrier checks. It has
+  no production inbox caller, consent or operation admission. Apple availability and actual inference
+  remain device qualification gates. The archived managed-owner flag does not establish current liveness.
   Native confirmed capacity cleanup retires only pre-admission cancellations and rotates the epoch;
   awaiting, admitted, linked and uncertain evidence remains retained. Stale confirmation refuses.
   Provider/model admission and authenticated invocation remain unfinished. Native batch confirmation additionally binds the raw relationship

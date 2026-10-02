@@ -1,16 +1,27 @@
 # 3.0 coordinator state
 
-**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Readiness and model/executable identity remain unresolved. Separate epoch-bound helper requests now support native Settings intent inspection and cancellation before admission; internal exact-operation admission/linkage and confirmed cancelled-request capacity maintenance now have verification. Provider/model/options binding to rooted intent, execution consent and authenticated helper execution remain unavailable. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-10-01
-**Latest implementation state:** [Cycle 118](cycle-118-transcription-linkage-capacity-2026-10-01.md) adds internal exact reserved-operation admission/linkage before recognition, strict schema-2 coordination identity, native displayed-epoch cancelled-request cleanup and persistent source-review refusals across status polling. Verification passes 3,704 serial integrated tests / 364 suites, 166 focused tests, five distinct final-source native workflows across two runs, the 30-tool helper probe, independent review and repository checks. Production rooted provider/model/options consent, authenticated invocation, actual providers and broader release gates remain open.
-**Latest native evidence:** Cycle 118 verifies Caption consent/save/relaunch, cleanup/Cancel/preservation/relaunch, changed-store-epoch refusal, normal intent review/cancellation/relaunch and changed-relationship refusal. Four workflows pass in a mixed final-source run; the fifth passes an unchanged-source isolated rerun after an XCTest ScrollView setup failure. Earlier native testing found and fixed status polling clearing a rejected-source message. Logs retain both failures distinctly; no fully green five-test invocation is claimed. Real inference, spoken VoiceOver and broader display/performance qualification remain open.
-**Implementation commits:** `bfd8234`. All 13 final application/test hashes match the verified source; no source changes followed final verification. No new Release candidate was built; earlier candidate/model-omission/ZIP evidence remains historical.
-**Cycle baseline:** `ae1da87`, initially clean. No whole release-readiness gate is newly closed.
-**Continuation chat:** `01a0f7da-d588-75f2-95f4-054edd5ed112`; no other active chat was found editing this checkout.
+**State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Helper-visible readiness and model/executable identity remain unresolved. An internal read-only native session API now binds the exact retained request and ordered prepared photo set to the concrete provider/options/model/executable identity, with fresh readiness and whole-set rooted checks. Separate epoch-bound helper requests now support native Settings intent inspection and cancellation before admission; internal exact-operation admission/linkage and confirmed cancelled-request capacity maintenance now have verification. Production inbox/provider consent, binding-to-operation admission and authenticated helper execution remain unavailable. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
+**Updated:** 2026-10-02
+**Latest implementation state:** [Cycle 119](cycle-119-native-transcription-binding-2026-10-02.md) adds immutable native provider evidence and an internal read-only rooted session bridge. Exact Apple locale or Whisper options/artifacts and the original ordered native photo set must match the retained request; readiness, whole-set carriers, identity, authority, cancellation and expiry are checked again after awaits. Verification passes 3,722 integrated tests / 366 suites, 204 focused tests / ten suites, two native Caption workflows, the 30-tool helper probe, independent review and repository checks. No production inbox caller, consent, operation admission or authenticated execution is added.
+**Latest native evidence:** Cycle 119 passes both affected Caption consent/Cancel/draft-refresh/relaunch and unavailable-provider/changed-WAV refusal workflows in one final-source run, zero failures. Recognition is synthetic; no new production inbox UI or actual provider/device acceptance is claimed. Cycle 118 inbox/cleanup evidence remains historical; real inference, spoken VoiceOver and broader display/performance qualification stay open.
+**Implementation commits:** `dc66d58`. All nine final application/test/project hashes match the verified source and that commit; no source changes followed final verification. No new Release candidate was built; earlier candidate/model-omission/ZIP evidence remains historical.
+**Cycle baseline:** `42d86af`, initially clean. No whole release-readiness gate is newly closed.
+**Continuation chat:** `01a0fc5e-ce44-7f81-a850-76c304006337`; no other active chat was found editing this checkout.
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
 ## Current evidence
+
+[Cycle 119 native transcription provider and rooted session binding](cycle-119-native-transcription-binding-2026-10-02.md)
+records source `dc66d58`, 3,722 passing serial integrated tests / 366 suites, zero failures/skips
+in 103.869 seconds, 204 focused tests / ten suites and two native Caption workflows in 60.283
+seconds. The 30-tool helper probe, independent review and repository validation pass. Exact provider/
+intent/options/artifact identity, ordered native source/WAV/relationship matching under whole-set
+rooted reservations, drift across awaits, expiry, request/task cancellation, readiness refusal and
+already-admitted refusal have regression coverage. Initial fixture locale/path assumptions were
+corrected without changing production behavior. Twelve existing QoS diagnostics and 340 host cache
+messages leave performance/environment gates open. Production inbox consent, binding-to-operation
+admission, authenticated execution, actual providers and broader release gates remain open.
 
 [Cycle 118 exact transcription operation linkage and cancelled-request capacity](cycle-118-transcription-linkage-capacity-2026-10-01.md)
 records source `bfd8234`, 3,704 passing serial integrated tests / 364 suites, zero failures/skips
@@ -199,9 +210,9 @@ progress/completion, canonical list field references and authenticated rollback-
 Restoration refuses external identity changes and missing receipt evidence; production model and
 workflow integration remain open.
 
-Ordered next implementation actions: bind native provider/model/executable identity and requested
-options to the exact rooted helper intent under whole-set source/metadata/relationship/WAV admission,
-then authenticated IPC/guarded helper execution and native provider consent. Qualify actual
+Ordered next implementation actions: connect the exact read-only native provider/rooted session binding
+to production native provider review/consent and durable reserved-operation admission under whole-set
+authority, then authenticated IPC and guarded helper execution. Qualify actual
 Apple/Whisper inference, cancellation/relaunch/offline/device behavior and signed model lifecycle;
 connect remaining face/template workflow executors and broaden native recovery. Physical crash,
 link-loss/archive-loss and epoch-retirement qualification remain; iCloud keyword authority,
@@ -836,13 +847,14 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Current after cycle 118:** Bind native provider/model/executable identity and requested options
-to the exact rooted helper intent under whole-set photo/metadata/relationship/WAV revalidation,
-then authenticated IPC, explicit native provider consent and guarded helper execution. The internal
-reserved-operation admission/linkage and native cancelled-request capacity maintenance are implemented;
-do not repeat them as unfinished foundations. Qualify actual providers and signed model lifecycle,
-connect remaining face/template executors and broaden recovery. Preserve the external, hardware,
-accessibility, performance, legal/privacy, CI and signed-candidate gates in the authoritative plans.
+**Current after cycle 119:** Connect the exact read-only native provider/rooted session binding
+to explicit production native provider review/consent and durable reserved-operation admission under
+whole-set authority, then authenticated IPC and guarded helper execution. Immutable native binding,
+internal reserved-operation admission/linkage and native cancelled-request capacity maintenance are
+implemented; their production consent/invocation integration remains open. Qualify actual providers
+and signed model lifecycle, connect remaining face/template executors and broaden recovery. Preserve
+the external, hardware, accessibility, performance, legal/privacy, CI and signed-candidate gates in
+the authoritative plans.
 
 ### Historical action notes — cycle 115 and earlier
 
@@ -1010,6 +1022,17 @@ progress occurred. Automation remains active; no readiness notification is warra
 
 ## Latest handoff
 
+Cycle 119 (`dc66d58`, baseline `42d86af`) implements immutable native provider evidence and a read-only
+rooted session bridge, with exact ordered native identity/relationship matching and renewed
+readiness after awaits. Final focused verification passes 204 tests / ten suites and the serial
+integrated suite passes 3,722 tests / 366 suites, zero failures/skips. Both native Caption regressions pass in 60.283 seconds; the 30-tool helper probe, repository checks,
+independent review and all 440 local Markdown links pass. All nine source hashes match the commit. No production inbox caller, provider consent,
+operation admission or authenticated execution is added. No Release candidate or whole readiness
+gate closes. State is IMPLEMENTING and the no-progress counter is zero; this continuation does
+not alter or revalidate the existing automation.
+
+### Historical handoffs
+
 Cycle 118 (`bfd8234`, baseline `ae1da87`) implements exact reserved-operation transcription
 coordination before recognition and native epoch-confirmed retirement of pre-admission cancellations.
 Native testing found and fixed background status polling clearing source-review refusals. All 13
@@ -1022,8 +1045,6 @@ Next bind provider/model/options and whole-set rooted authority, native consent 
 invocation; qualify actual providers, remaining executors and release gates. No Release candidate
 was built and no whole readiness gate closes. State is IMPLEMENTING, the no-progress counter is zero,
 and this continuation does not alter or revalidate the existing automation.
-
-### Historical handoffs
 
 Cycle 114 (`413af7f`, baseline `c902a66`) implements native batch transcription
 consent and ordered results, retaining saved prefixes and provider ownership through cancellation.
