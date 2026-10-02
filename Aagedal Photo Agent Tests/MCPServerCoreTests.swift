@@ -1,4 +1,5 @@
 import Darwin
+import CoreFoundation
 import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
@@ -640,6 +641,80 @@ struct MCPServerCoreTests {
         // Saving a retained configuration cannot restore its older generation.
         try original.save(granted)
         #expect(try original.load().authorizationRevision != granted.authorizationRevision)
+    }
+
+    @Test("A failed refresh refuses previously admitted authority and cannot overwrite it")
+    func authorizationRefreshFailureFailsClosed() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        try Data("pixels".utf8).write(to: photo)
+        let box = DataBox()
+        let writer = store(box: box)
+        try writer.addRoot(root)
+        try writer.setEnabled(true)
+        let persisted = try #require(box.read())
+        // Once the preference backend cannot refresh, stale cached bytes must never be used.
+        let reader = MCPAuthorizationStore(readConfigurationData: {
+            if box.read() == nil { throw MCPAuthorizationStore.PersistenceError.refreshFailed }
+            return persisted
+        }, writeConfigurationData: { box.write($0) })
+        _ = try reader.authorizeExistingPath(photo.path)
+        box.write(nil)
+        #expect(throws: MCPAuthorizationStore.PersistenceError.refreshFailed) { _ = try reader.load() }
+        #expect(throws: MCPAuthorizationStore.PersistenceError.refreshFailed) {
+            _ = try reader.authorizeExistingPath(photo.path)
+        }
+        #expect(throws: MCPAuthorizationStore.PersistenceError.refreshFailed) { try reader.setEnabled(true) }
+        #expect(box.read() == nil)
+    }
+
+    @Test("Failed authorization persistence propagates through every settings mutation")
+    func authorizationWriteFailureIsReported() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let box = DataBox()
+        let persisted = store(box: box)
+        let grant = try persisted.addRoot(root)
+        try persisted.setEnabled(true)
+        let before = box.read()
+        let failing = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { _ in
+            throw MCPAuthorizationStore.PersistenceError.writeFailed
+        })
+        #expect(throws: MCPAuthorizationStore.PersistenceError.writeFailed) { try failing.setEnabled(false) }
+        #expect(throws: MCPAuthorizationStore.PersistenceError.writeFailed) { try failing.removeRoot(id: grant.id) }
+        #expect(throws: MCPAuthorizationStore.PersistenceError.writeFailed) { _ = try failing.addRoot(root) }
+        #expect(throws: MCPAuthorizationStore.PersistenceError.writeFailed) { try failing.save(try persisted.load()) }
+        #expect(box.read() == before)
+    }
+
+    @Test("A failed preferences flush discards dirty authority before the next refresh", arguments: [false, true])
+    func failedPreferencesFlushCannotGrantLater(previouslyEnabled: Bool) throws {
+        let suite = "com.aagedal.mcp-authorization-tests.\(UUID().uuidString)"
+        defer {
+            CFPreferencesSetAppValue(MCPServerConstants.configurationKey as CFString, nil, suite as CFString)
+            _ = CFPreferencesAppSynchronize(suite as CFString)
+        }
+        let store = MCPAuthorizationStore(preferencesSuiteName: suite)
+        var previous = MCPAuthorizationConfiguration()
+        previous.isEnabled = previouslyEnabled
+        try store.save(previous)
+        let attempts = DataBox()
+        var updated = previous
+        updated.isEnabled = !previouslyEnabled
+        let data = try JSONEncoder().encode(updated)
+        #expect(throws: MCPAuthorizationStore.PersistenceError.writeFailed) {
+            try MCPAuthorizationStore.writePreferences(data, in: suite, synchronize: { domain in
+                if attempts.read() != nil { return false }
+                attempts.write(Data([1]))
+                return CFPreferencesAppSynchronize(domain as CFString)
+            })
+        }
+        // The real cache was dirtied by a grant or revocation. The injected failure occurs
+        // only at its flush; a later refresh must neither publish a grant nor restore one.
+        #expect(CFPreferencesCopyAppValue(MCPServerConstants.configurationKey as CFString, suite as CFString) == nil)
+        #expect(try !store.load().isEnabled)
+        #expect(CFPreferencesCopyAppValue(MCPServerConstants.configurationKey as CFString, suite as CFString) == nil)
     }
 
     @Test("A canonical regular file under an unchanged authorized folder is admitted")

@@ -381,33 +381,73 @@ nonisolated enum MCPProcessReservation {
 /// and bundled helper are separate processes. Every operation reloads and revalidates the roots;
 /// removing a grant therefore takes effect without restarting a connected client.
 nonisolated struct MCPAuthorizationStore: Sendable {
-    typealias ReadConfigurationData = @Sendable () -> Data?
-    typealias WriteConfigurationData = @Sendable (Data?) -> Void
+    typealias ReadConfigurationData = @Sendable () throws -> Data?
+    typealias WriteConfigurationData = @Sendable (Data?) throws -> Void
+
+    enum PersistenceError: Error, Equatable {
+        case refreshFailed
+        case writeFailed
+    }
+
+    // CFPreferences' pending values are process-wide. Keep a read from observing a failed
+    // write before its unpersisted value has been discarded.
+    private static let preferencesLock = NSLock()
 
     private let readConfigurationData: ReadConfigurationData
     private let writeConfigurationData: WriteConfigurationData
     init(
         readConfigurationData: @escaping ReadConfigurationData = {
-            CFPreferencesCopyAppValue(
-                MCPServerConstants.configurationKey as CFString,
-                MCPServerConstants.preferencesSuiteName as CFString
-            ) as? Data
+            try readPreferences(in: MCPServerConstants.preferencesSuiteName)
         },
         writeConfigurationData: @escaping WriteConfigurationData = { data in
-            CFPreferencesSetAppValue(
-                MCPServerConstants.configurationKey as CFString,
-                data as CFData?,
-                MCPServerConstants.preferencesSuiteName as CFString
-            )
-            CFPreferencesAppSynchronize(MCPServerConstants.preferencesSuiteName as CFString)
+            try writePreferences(data, in: MCPServerConstants.preferencesSuiteName)
         }
     ) {
         self.readConfigurationData = readConfigurationData
         self.writeConfigurationData = writeConfigurationData
     }
 
+    /// Also used by independent-process regression probes with a unique, isolated domain.
+    init(preferencesSuiteName: String) {
+        self.init(
+            readConfigurationData: { try Self.readPreferences(in: preferencesSuiteName) },
+            writeConfigurationData: { try Self.writePreferences($0, in: preferencesSuiteName) }
+        )
+    }
+
+    private static func readPreferences(in suite: String) throws -> Data? {
+        try preferencesLock.withLock {
+            let domain = suite as CFString
+            // CFPreferences caches values per process. A helper that has already read a grant
+            // must refresh the domain before consulting it again after the app revokes it.
+            guard CFPreferencesAppSynchronize(domain) else { throw PersistenceError.refreshFailed }
+            guard let value = CFPreferencesCopyAppValue(MCPServerConstants.configurationKey as CFString, domain) else {
+                return nil
+            }
+            guard let data = value as? Data else { throw MCPAuthorizationError.invalidConfiguration }
+            return data
+        }
+    }
+
+    static func writePreferences(_ data: Data?, in suite: String,
+                                 synchronize: @Sendable (String) -> Bool = { CFPreferencesAppSynchronize($0 as CFString) }) throws {
+        try preferencesLock.withLock {
+            let domain = suite as CFString
+            guard synchronize(suite) else { throw PersistenceError.refreshFailed }
+            let key = MCPServerConstants.configurationKey as CFString
+            CFPreferencesSetAppValue(key, data as CFData?, domain)
+            guard synchronize(suite) else {
+                // Failed synchronization leaves the new value in CFPreferences' dirty cache.
+                // Discard it before a later read can flush and accept an unacknowledged grant.
+                // Clearing authority also avoids restoring an older grant after failed revocation.
+                CFPreferencesSetAppValue(key, nil, domain)
+                throw PersistenceError.writeFailed
+            }
+        }
+    }
+
     func load() throws -> MCPAuthorizationConfiguration {
-        guard let data = readConfigurationData() else { return MCPAuthorizationConfiguration() }
+        guard let data = try readConfigurationData() else { return MCPAuthorizationConfiguration() }
         do {
             let configuration = try JSONDecoder().decode(MCPAuthorizationConfiguration.self, from: data)
             guard configuration.schemaVersion == MCPAuthorizationConfiguration.schemaVersion else {
@@ -427,7 +467,7 @@ nonisolated struct MCPAuthorizationStore: Sendable {
         }
         var updated = configuration
         updated.authorizationRevision = UUID()
-        writeConfigurationData(try JSONEncoder().encode(updated))
+        try writeConfigurationData(JSONEncoder().encode(updated))
     }
 
     func setEnabled(_ enabled: Bool) throws {
