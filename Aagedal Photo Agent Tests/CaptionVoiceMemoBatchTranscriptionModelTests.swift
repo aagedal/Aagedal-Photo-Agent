@@ -185,7 +185,7 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
                      memoByteCount: input.memoRevision.byteCount, memoSHA256: input.memoRevision.sha256,
                      associationProfileIdentifier: "test", localeIdentifier: "en-US", provider: "Test", providerModel: "Test",
                      generatedAt: Date(timeIntervalSince1970: 1_700_000_000),
-                     generatedText: "Review this text", reviewedText: "Review this text", approvedAt: nil)
+                     generatedText: "Review this text", reviewedText: "Review this text")
     }
 
     @Test("Preparation and declined consent create no retained operation or draft")
@@ -202,6 +202,30 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
         #expect(capacity.starts == 0)
         model.dismissConfirmation()
         #expect(model.snapshot == nil)
+    }
+
+    @Test("Starting and closing confirmation preserves background work and records Activity results")
+    func backgroundActivity() async throws {
+        let f = try Fixture(), capacity = Capacity(), history = ActivityHistoryStore()
+        let model = CaptionVoiceMemoBatchTranscriptionModel(dependencies: f.dependencies, activityHistory: history,
+            beginExecution: { capacity.begin() }, endExecution: { capacity.end() })
+        await prepare(model)
+        #expect(model.start(consent: true, reviewOrSaveBusy: false, providerBusy: false))
+        #expect(model.isRunning)
+        #expect(capacity.held)
+        model.dismissConfirmation()
+        #expect(model.activeImageURLs == photos)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isRunning, ContinuousClock.now < deadline { await Task.yield() }
+        try #require(!model.isRunning)
+        let entry = try #require(history.entries.first { $0.kind == .transcription && $0.files.map(\.fileName) == photos.map(\.lastPathComponent) })
+        #expect(entry.successCount == photos.count)
+        #expect(entry.isClean)
+        #expect(entry.files.allSatisfy { $0.statusDetail == "Transcript saved" })
+        let decoded = try JSONDecoder().decode(ActivityEntry.self, from: JSONEncoder().encode(entry))
+        #expect(decoded.files.map(\.statusDetail) == entry.files.map(\.statusDetail))
+        #expect(!capacity.held)
+        #expect(capacity.finishes == 1)
     }
 
     @Test("The confirmed ordered targets and language do not track later selection changes")
@@ -245,7 +269,7 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
                     memoByteCount: input.memoRevision.byteCount, memoSHA256: input.memoRevision.sha256,
                     associationProfileIdentifier: input.association.profileIdentifier, localeIdentifier: "no",
                     provider: "FFmpeg Whisper", providerModel: "test-model", generatedAt: Date(),
-                    generatedText: result.text, reviewedText: result.text, approvedAt: nil,
+                    generatedText: result.text, reviewedText: result.text,
                     whisperProvenance: result.provenance)
             }, save: { value, _ in try await f.io.save(value) }))
         let base = f.dependencies
@@ -270,6 +294,35 @@ struct CaptionVoiceMemoBatchTranscriptionModelTests {
         #expect(model.record?.outcome == .verified)
         #expect(model.savedDraftImageURLs == Array(photos.prefix(2)))
         #expect(await f.io.generated.isEmpty)
+    }
+
+    @Test("Existing transcripts keep the captured reset targets and both selected transcripts can be reset")
+    func resetSelectionAfterRefusal() async throws {
+        let f = try Fixture(), model = model(f)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("BatchReset-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let urls = ["one.JPG", "two.JPG"].map { root.appendingPathComponent($0) }
+        let sidecars = MetadataSidecarService()
+        for url in urls {
+            let transcript = VoiceMemoTranscriptRecord(sourceImageFilename: url.lastPathComponent,
+                sourceMemoFilename: url.deletingPathExtension().lastPathComponent + ".WAV",
+                memoByteCount: 42, memoSHA256: String(repeating: "a", count: 64),
+                associationProfileIdentifier: "test", localeIdentifier: "no", provider: "Test",
+                providerModel: "Test", generatedAt: .now, generatedText: "Transcript", reviewedText: "Transcript")
+            _ = try await sidecars.saveVoiceMemoTranscriptSerialized(transcript, for: url, in: root)
+        }
+        await f.io.configure(existing: Set(urls))
+        await prepare(model, photos: urls)
+        #expect(model.snapshot == nil)
+        #expect(model.errorMessage != nil)
+        #expect(model.selectedImageURLs == urls)
+        #expect(await model.resetTranscripts(imageURLs: model.selectedImageURLs))
+        #expect(model.selectedImageURLs == urls)
+        for url in urls { #expect(try sidecars.loadVoiceMemoTranscript(for: url, in: root) == nil) }
+        await f.io.configure(existing: [])
+        await prepare(model, photos: model.selectedImageURLs)
+        #expect(model.snapshot?.imageURLs == urls)
     }
 
     @Test("Existing reviews and missing readiness refuse preparation", arguments: [false, true])

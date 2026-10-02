@@ -125,7 +125,8 @@ struct VariableMetadataCallerTests {
                            loadedSnapshots: [URL: VariableMetadataInputSnapshot]? = nil,
                            lifecycle: VariableDraftLifecycleCoordinator = VariableDraftLifecycleCoordinator(),
                            resolver: (@MainActor @Sendable (VariableMetadataResolutionInput) async throws -> IPTCMetadata)? = nil,
-                           transcriptLoader: (@Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext)? = nil) -> MetadataViewModel {
+                           transcriptLoader: (@Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext)? = nil,
+                           inputLoader: (@Sendable (URL, URL) async throws -> VariableMetadataInputSnapshot)? = nil) -> MetadataViewModel {
         let capturedOptions = options(mode)
         let loadedInputs = loadedSnapshots ?? snapshots
         let loadedFacts = Dictionary(uniqueKeysWithValues: loadedInputs.map { url, input in
@@ -137,7 +138,7 @@ struct VariableMetadataCallerTests {
             loadedFacts[url] ?? .init(imageURL: url, xmpMetadata: nil, appSidecar: nil, reconciliationVerdict: nil)
         }))
         return MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
-            editorReadService: boundary, variableInputLoader: { url, _ in
+            editorReadService: boundary, variableInputLoader: inputLoader ?? { url, _ in
                 guard let input = snapshots[url] else { throw CocoaError(.fileReadNoSuchFile) }
                 return input
             }, variableWriteExecutor: { await executor.execute($0) },
@@ -160,6 +161,72 @@ struct VariableMetadataCallerTests {
         let deadline = ContinuousClock.now + .seconds(5)
         while !(await executor.isPaused), ContinuousClock.now < deadline { await Task.yield() }
         try #require(await executor.isPaused)
+    }
+
+    @Test("Variable processing uses Caption's verified save rather than its captured timestamp", arguments: [false, true])
+    @MainActor
+    func variablesAfterCaptionSave(externalEdit: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CaptionVariableBaseline-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("photo.jpg")
+        try Data("photo bytes".utf8).write(to: url)
+        let service = MetadataSidecarService()
+        let original = IPTCMetadata(title: "Keep title")
+        let executor = VariableCallerExecutor()
+        let context = VoiceMemoTranscriptVariableContext(reviewedText: "Spoken caption", generatedAt: .now,
+            memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64), associationProfileIdentifier: "test")
+        let model = makeModel([url: snapshot(url, metadata: original)], executor: executor,
+            transcriptLoader: { _ in context }, inputLoader: { image, folder in
+                let record = try await MetadataReviewDraftCapture.loadBaseline(for: image, in: folder)
+                let evidence = MetadataSidecarReplayCreationEvidence(sourceRevision: try await SourceImageRevision.capture(at: image), xmpData: nil)
+                return .init(baselineSidecar: record, embeddedMetadata: original, xmpMetadata: original,
+                    hasC2PA: false, evidence: evidence)
+            })
+        try await load(model, url: url)
+        model.editingMetadata.description = "{voiceMemoTranscript}"
+        model.hasChanges = true
+        let capture = try #require(try model.captureCaptionDraftPersistence())
+        let saved = await service.replayHistoryAndMirrorXMP(capture.request)
+        try #require(saved.completed)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        #expect(try encoder.encode(capture.request.receipt.verifiedSidecar) == encoder.encode(saved.installedSidecar))
+        if externalEdit {
+            var changed = try #require(saved.installedSidecar)
+            changed.metadata.title = "External title"
+            try service.saveSidecar(changed, for: url, in: folder)
+        }
+        model.processVariablesForImages([ImageFile(url: url)])
+        await model.waitForVariableProcessing()
+        if externalEdit {
+            #expect(model.voiceMemoVariablePreview == nil)
+            #expect(model.variableBatchOutcome?.attention?.message.contains("saved metadata changed") == true)
+            #expect(model.editingMetadata.title == "Keep title")
+        } else {
+            #expect(model.voiceMemoVariablePreview == nil)
+            #expect(await executor.requests.first?.sidecar.metadata.description == "Spoken caption")
+        }
+    }
+
+    @Test("Caption's in-place variable command inserts transcript text ready for metadata editing")
+    @MainActor
+    func captionTranscriptVariableInPlace() async throws {
+        let url = URL(fileURLWithPath: "/virtual/caption-transcript/photo.jpg")
+        let original = IPTCMetadata(description: "Prefix {voiceMemoTranscript}")
+        let context = VoiceMemoTranscriptVariableContext(reviewedText: "Spoken words {date}",
+            generatedAt: Date(timeIntervalSince1970: 200), memoByteCount: 20,
+            memoSHA256: String(repeating: "a", count: 64), associationProfileIdentifier: "test")
+        let model = makeModel([url: snapshot(url, metadata: original)], executor: VariableCallerExecutor(),
+            transcriptLoader: { _ in context })
+        try await load(model, url: url)
+        model.processVariables(filename: "photo.jpg")
+        await model.waitForVariableProcessing()
+        #expect(model.editingMetadata.description == "Prefix Spoken words {date}")
+        #expect(model.hasChanges)
+        #expect(model.saveError == nil)
+        model.editingMetadata.description = "Edited caption"
+        #expect(model.editingMetadata.description == "Edited caption")
     }
 
     @Test("Automatic metadata commit defers unresolved variables and processing crosses the editor barrier")
@@ -529,7 +596,7 @@ struct VariableMetadataCallerTests {
             ($0, snapshot($0, metadata: IPTCMetadata(description: "Existing")))
         })
         func context(_ text: String, hash: Character) -> VoiceMemoTranscriptVariableContext {
-            .init(reviewedText: text, approvedAt: Date(timeIntervalSince1970: 200),
+            .init(reviewedText: text, generatedAt: Date(timeIntervalSince1970: 200),
                 memoByteCount: 20, memoSHA256: String(repeating: String(hash), count: 64),
                 associationProfileIdentifier: "sony-test")
         }
@@ -552,18 +619,7 @@ struct VariableMetadataCallerTests {
         )
         await model.waitForVariableProcessing()
 
-        let preview = try #require(model.voiceMemoVariablePreview)
-        #expect(preview.action == .replace)
-        #expect(preview.affectedImageCount == 2)
-        #expect(preview.rows.map(\.imageURL) == urls)
-        #expect(preview.rows[0].fields == [.init(field: .description,
-            before: "Existing", after: "First reviewed {date}", isTranscriptDestination: true)])
-        #expect(preview.rows[1].fields == [.init(field: .description,
-            before: "Existing", after: "Second reviewed words", isTranscriptDestination: true)])
-        #expect(await executor.requests.isEmpty)
-
-        model.confirmVoiceMemoVariablePreview(preview.id)
-        await model.waitForVariableProcessing()
+        #expect(model.voiceMemoVariablePreview == nil)
 
         let requests = await executor.requests
         try #require(requests.count == 2)
@@ -572,9 +628,9 @@ struct VariableMetadataCallerTests {
         #expect(requests[0].voiceMemoTranscriptContext == first)
         #expect(requests[1].voiceMemoTranscriptContext == second)
         let calls = await probe.calls
-        #expect(calls.count == 8)
-        #expect(calls.filter { $0 == urls[0] }.count == 4)
-        #expect(calls.filter { $0 == urls[1] }.count == 4)
+        #expect(calls.count == 6)
+        #expect(calls.filter { $0 == urls[0] }.count == 3)
+        #expect(calls.filter { $0 == urls[1] }.count == 3)
     }
 
     @Test("Changed transcript approval blocks metadata before executor mutation")
@@ -584,12 +640,12 @@ struct VariableMetadataCallerTests {
         let url = folder.appendingPathComponent("one.jpg")
         let input = snapshot(url, metadata: IPTCMetadata(description: "Existing caption"))
         let approved = VoiceMemoTranscriptVariableContext(
-            reviewedText: "Approved text", approvedAt: Date(timeIntervalSince1970: 200),
+            reviewedText: "Approved text", generatedAt: Date(timeIntervalSince1970: 200),
             memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "sony-test"
         )
         let changed = VoiceMemoTranscriptVariableContext(
-            reviewedText: "Changed approval", approvedAt: Date(timeIntervalSince1970: 201),
+            reviewedText: "Changed approval", generatedAt: Date(timeIntervalSince1970: 201),
             memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "sony-test"
         )
@@ -608,13 +664,13 @@ struct VariableMetadataCallerTests {
         #expect(model.variableBatchOutcome?.attention?.message.contains("transcript changed") == true)
     }
 
-    @Test("Transcript preview shows exact append result and cancellation writes nothing")
+    @Test("Transcript append applies immediately without a confirmation")
     @MainActor
-    func transcriptAppendPreviewCanCancel() async throws {
+    func transcriptAppendWithoutConfirmation() async throws {
         let folder = URL(fileURLWithPath: "/virtual/variables-transcript-append")
         let url = folder.appendingPathComponent("one.jpg")
         let context = VoiceMemoTranscriptVariableContext(
-            reviewedText: "Approved words", approvedAt: Date(timeIntervalSince1970: 200),
+            reviewedText: "Approved words", generatedAt: Date(timeIntervalSince1970: 200),
             memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "sony-test"
         )
@@ -631,17 +687,12 @@ struct VariableMetadataCallerTests {
         )
         await model.waitForVariableProcessing()
 
-        let preview = try #require(model.voiceMemoVariablePreview)
-        #expect(preview.action == .append)
-        #expect(preview.rows.first?.fields == [.init(field: .description,
-            before: "Existing caption", after: "Existing caption Approved words",
-            isTranscriptDestination: true)])
-        #expect(await executor.requests.isEmpty)
-        model.cancelVoiceMemoVariablePreview(preview.id)
         #expect(model.voiceMemoVariablePreview == nil)
-        #expect(await executor.requests.isEmpty)
+        let requests = await executor.requests
+        try #require(requests.count == 1)
+        #expect(requests[0].sidecar.metadata.description == "Existing caption Approved words")
         #expect(!model.hasRetainedVariableWrites)
-        #expect(model.variableProcessingStatus?.contains("no metadata was written") == true)
+
     }
 
     @Test("One unavailable transcript refuses the whole batch before any write")
@@ -653,7 +704,7 @@ struct VariableMetadataCallerTests {
             ($0, snapshot($0, metadata: IPTCMetadata(description: "Existing")))
         })
         let context = VoiceMemoTranscriptVariableContext(
-            reviewedText: "Approved", approvedAt: Date(timeIntervalSince1970: 200),
+            reviewedText: "Approved", generatedAt: Date(timeIntervalSince1970: 200),
             memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "sony-test"
         )
@@ -681,11 +732,8 @@ struct VariableMetadataCallerTests {
         model.retryVariableWrites()
         await model.waitForVariableProcessing()
 
-        let preview = try #require(model.voiceMemoVariablePreview)
-        #expect(preview.action == .replace)
-        #expect(preview.affectedImageCount == 2)
-        #expect(await executor.requests.isEmpty)
-        model.cancelVoiceMemoVariablePreview(preview.id)
+        #expect(model.voiceMemoVariablePreview == nil)
+        #expect(await executor.requests.count == 2)
         #expect(!model.hasRetainedVariableWrites)
     }
 

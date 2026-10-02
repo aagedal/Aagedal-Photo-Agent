@@ -244,7 +244,7 @@ actor MCPNativeVoiceTranscriptionBindingService {
             memoSHA256: draft.memoSHA256, associationProfileIdentifier: draft.associationProfileIdentifier,
             localeIdentifier: draft.localeIdentifier, provider: draft.provider, providerModel: draft.providerModel,
             generatedAt: draft.generatedAt, generatedText: draft.generatedText, reviewedText: draft.reviewedText,
-            approvedAt: nil, whisperProvenance: draft.whisperProvenance)
+            whisperProvenance: draft.whisperProvenance)
         let encoded = try encoder.encode(transcript)
         object[MetadataSidecarService.voiceMemoTranscriptFieldName] = try JSONSerialization.jsonObject(with: encoded)
         let patched = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
@@ -262,7 +262,7 @@ actor MCPNativeVoiceTranscriptionBindingService {
             memoByteCount: saved.memoByteCount, memoSHA256: saved.memoSHA256,
             associationProfileIdentifier: saved.associationProfileIdentifier, localeIdentifier: saved.localeIdentifier,
             provider: saved.provider, providerModel: saved.providerModel, generatedAt: saved.generatedAt,
-            generatedText: saved.generatedText, reviewedText: saved.reviewedText, approvedAt: saved.approvedAt,
+            generatedText: saved.generatedText, reviewedText: saved.reviewedText,
             whisperProvenance: saved.whisperProvenance)
     }
 

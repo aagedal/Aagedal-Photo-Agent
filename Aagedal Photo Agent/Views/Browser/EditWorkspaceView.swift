@@ -931,7 +931,7 @@ struct EditWorkspaceView: View {
                  .deleteSelected, .moveRejectedToFolder,
                  .setScopeMode, .toggleGamutClipping,
                  .uploadSelected, .uploadAll,
-                 .processVariablesSelected, .processVariablesAll,
+                 .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                  .showTemplatePalette, .applyTemplateShortcut,
                  .writeAllPendingMetadata, .openCaptionWorkspace,
                  .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,

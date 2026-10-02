@@ -1629,7 +1629,6 @@ nonisolated private struct MCPVoiceMemoRelationship: Decodable {
     let memoIdentity: ContentIdentity?
     let provenance: Provenance?
     let imageDiscoveryHint: DiscoveryHint?
-    let approvedTranscriptMemoSHA256: String?
 
     static func isSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
@@ -1644,8 +1643,7 @@ nonisolated private struct MCPVoiceMemoRelationship: Decodable {
               Self.safeFilename(imageFilename), Self.safeFilename(memoFilename),
               imageFilename == photoName,
               (memoFilename as NSString).pathExtension.lowercased() == "wav",
-              imageIdentity?.isValid ?? true, memoIdentity?.isValid ?? true,
-              approvedTranscriptMemoSHA256.map(Self.isSHA256) ?? true else {
+              imageIdentity?.isValid ?? true, memoIdentity?.isValid ?? true else {
             throw MCPVoiceMemoAdmissionError.invalidRelationship
         }
     }
@@ -2514,7 +2512,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         [
             definition(
                 name: "start_voice_transcription",
-                description: "Ask the running matching signed app to consume one fresh native Allow Helper to Start Once grant for this exact retained request and prepared provider. Accepts only original canonical lowercase requestID/requestEpoch; helper consent values are forbidden. The user must inspect intent, review the exact Settings provider, check native consent and explicitly allow helper start in the open Transcription Requests view. That in-memory grant expires after 60 seconds and clears on dismissal, provider/review change or withdrawal. executionRequested means consent was consumed and guarded native admission was scheduled, never inference, durable linkage, completion or success. An exact linked retry returns its operation handle without execution; inspect operation history for durable status. Missing/expired consent, changed authority/photos, wrong epochs and uncertain admission refuse. No app launch, model download or permission request occurs. Each admitted request is non-replayable; transcript drafts require separate caption approval.",
+                description: "Ask the running matching signed app to consume one fresh native Allow Helper to Start Once grant for this exact retained request and prepared provider. Accepts only original canonical lowercase requestID/requestEpoch; helper consent values are forbidden. The user must inspect intent, review the exact Settings provider, check native consent and explicitly allow helper start in the open Transcription Requests view. That in-memory grant expires after 60 seconds and clears on dismissal, provider/review change or withdrawal. executionRequested means consent was consumed and guarded native admission was scheduled, never inference, durable linkage, completion or success. An exact linked retry returns its operation handle without execution; inspect operation history for durable status. Missing/expired consent, changed authority/photos, wrong epochs and uncertain admission refuse. No app launch, model download or permission request occurs. Each admitted request is non-replayable; saved transcripts are ready for metadata variables; transcription does not write IPTC metadata.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID", "requestEpoch"], idempotent: false, readOnly: false
@@ -2612,7 +2610,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_operation_status",
-                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcription drafts remain unapproved; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. This status/cancellation tool starts no work. Authenticated transcription start requires a separate exact one-use native grant; face/template invocation remains under implementation.",
+                description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcripts are ready for metadata variables; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. This status/cancellation tool starts no work. Authenticated transcription start requires a separate exact one-use native grant; face/template invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["operationID"]
             ),
@@ -2690,7 +2688,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "list_transcription_providers",
-                description: "Discover Photo Agent's transcription provider IDs and the helper's readiness boundary. Runtime, language and model availability are unknown until checked in the app session. Does not inspect assets, request permissions, download, execute transcription, switch providers or approve text.",
+                description: "Discover Photo Agent's transcription provider IDs and the helper's readiness boundary. Runtime, language and model availability are unknown until checked in the app session. Does not inspect assets, request permissions, download, execute transcription, switch providers or write metadata.",
                 properties: [:],
                 required: []
             ),

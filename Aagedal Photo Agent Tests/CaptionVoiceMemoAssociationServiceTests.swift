@@ -22,6 +22,54 @@ struct CaptionVoiceMemoAssociationServiceTests {
             memoDateReader: { _ in Date(timeIntervalSince1970: 200) }))
     }
 
+    @MainActor @Test("Opening Caption automatically links a unique adjacent WAV without confirmation")
+    func automaticAssociation() async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let originals = try [Data(contentsOf: image), Data(contentsOf: memo)]
+        let service = service()
+        let model = CaptionVoiceMemoAssociationModel(service: service)
+        #expect(await model.associateAutomatically(imageURL: image))
+        #expect(model.pendingAssociation == nil)
+        #expect(!model.isWorking)
+        #expect(model.errorMessage == nil)
+        guard case .available(let pair) = try VoiceMemoCompanionRepository().lookup(for: image) else {
+            Issue.record("Expected an automatically installed relationship"); return
+        }
+        #expect(pair.memoURL == memo)
+        #expect(try [Data(contentsOf: image), Data(contentsOf: memo)] == originals)
+        let record = VoiceMemoCompanionRepository().recordURL(for: image)
+        let bytes = try Data(contentsOf: record)
+        #expect(try await service.associateAutomatically(imageURL: image) == false)
+        #expect(try Data(contentsOf: record) == bytes)
+    }
+
+    @MainActor @Test("Automatic detection leaves missing or ambiguous matches unlinked", arguments: [false, true])
+    func automaticNoMatch(ambiguous: Bool) async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        if ambiguous { try Data("duplicate".utf8).write(to: folder.appendingPathComponent("TRA08907.jpeg")) }
+        else { try FileManager.default.removeItem(at: memo) }
+        let model = CaptionVoiceMemoAssociationModel(service: service())
+        #expect(await model.associateAutomatically(imageURL: image) == false)
+        #expect(model.errorMessage == nil)
+        #expect(model.pendingAssociation == nil)
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
+    }
+
+    @Test("An unlinked adjacent voice memo has a waiting badge without a relationship write")
+    func unlinkedBadge() async throws {
+        let (folder, image, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let associationService = service()
+        let badges = CaptionVoiceMemoStatusService(discoverAssociation: {
+            _ = try await associationService.discover(imageURL: $0)
+            return true
+        })
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
+    }
+
     @Test("Discovery is read-only; reviewed confirmation installs identities and preserves originals")
     func explicitConfirmation() async throws {
         let (folder, image, memo) = try fixture()
@@ -38,7 +86,6 @@ struct CaptionVoiceMemoAssociationServiceTests {
             from: Data(contentsOf: VoiceMemoCompanionRepository().recordURL(for: image)))
         #expect(record.imageIdentity != nil)
         #expect(record.memoIdentity != nil)
-        #expect(record.approvedTranscriptMemoSHA256 == nil)
         await #expect(throws: (any Error).self) { try await service.confirm(preview) }
     }
 

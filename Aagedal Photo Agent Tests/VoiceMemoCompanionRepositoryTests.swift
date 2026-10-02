@@ -800,7 +800,7 @@ struct VoiceMemoCompanionRepositoryTests {
 
         let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
         #expect(assessment.kind == .exactRecovery)
-        #expect(!assessment.invalidatesTranscriptApproval)
+        #expect(!assessment.invalidatesTranscript)
         let receipt = try repository.recoverMissingMemo(
             for: fixture.image,
             from: candidate,
@@ -885,13 +885,13 @@ struct VoiceMemoCompanionRepositoryTests {
 
         let assessment = try repository.assessRecoveryCandidate(candidate, for: fixture.image)
         #expect(assessment.kind == .explicitReplacement(previousIdentityAvailable: true))
-        #expect(assessment.invalidatesTranscriptApproval)
+        #expect(assessment.invalidatesTranscript)
         let receipt = try repository.recoverMissingMemo(
             for: fixture.image,
             from: candidate,
             confirmingReplacement: true
         )
-        #expect(receipt.invalidatedTranscriptApproval)
+        #expect(receipt.invalidatedTranscript)
         let replaced = try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: recordURL)) as? [String: Any]
         )

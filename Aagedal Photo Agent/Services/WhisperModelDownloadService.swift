@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// Public GGML weights from whisper.cpp, pinned to an immutable repository revision.
+/// Public GGML weights from whisper.cpp and NbAiLab, pinned to immutable revisions.
 nonisolated struct WhisperDownloadableModel: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -14,12 +14,25 @@ nonisolated struct WhisperDownloadableModel: Identifiable, Hashable, Sendable {
     static let catalog: [Self] = [
         model("tiny", "Tiny", 77_691_713, "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"),
         model("base", "Base", 147_951_465, "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"),
-        model("small", "Small", 487_601_967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b")
+        model("small", "Small", 487_601_967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
+        norwegian("tiny", "8b38492d0e4111d5d6ad825e979cb082a2da013a", 77_691_730,
+            "2f9dd799ee36b6a9c8d642e9b1df8ecf2135efdd5a91b1d9ca0b3c0decda535f"),
+        norwegian("small", "e9bb5cb83cb74c96239fd506163aa97cff2fce4c", 487_601_984,
+            "a0fc1555f5bd51044b0ea88bb9b7891e1ee331a8087eddb0afc3a05839db48ab"),
+        norwegian("medium", "0ed074d5985bd56ca4140159a9dbffbc3fb5117e", 1_533_763_076,
+            "f73141401d203ee77fc7ddf7bf97926a8a85fe85faa6066a6920e4815f48a73d"),
+        norwegian("large", "8c6249fdeeb4dcd05e5735a4c39640607eb6e4ac", 3_095_033_483,
+            "0f2f66f22e11a7c7da3c582d8e5c89cb2c0011753ba9c7c9731e320a4ba33e76")
     ]
 
     private static func model(_ id: String, _ title: String, _ bytes: Int64, _ hash: String) -> Self {
         Self(id: id, title: title, byteCount: bytes, sha256: hash,
              url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(revision)/ggml-\(id).bin")!)
+    }
+
+    private static func norwegian(_ size: String, _ revision: String, _ bytes: Int64, _ hash: String) -> Self {
+        Self(id: "nb-\(size)", title: "Norwegian \(size.capitalized) (NbAiLab)", byteCount: bytes, sha256: hash,
+             url: URL(string: "https://huggingface.co/NbAiLab/nb-whisper-\(size)/resolve/\(revision)/ggml-model.bin")!)
     }
 }
 

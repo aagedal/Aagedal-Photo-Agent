@@ -95,18 +95,16 @@ nonisolated struct VoiceMemoTranscriptDraft: Equatable, Sendable {
     let generatedAt: Date
     let generatedText: String
     var reviewedText: String
-    var approvedAt: Date?
     var whisperProvenance: FFmpegWhisperTranscriptProvenance? = nil
 
-    var isApproved: Bool { approvedAt != nil }
 }
 
 /// The complete immutable authority used by metadata-variable processing. Keeping the reviewed
-/// text together with its approval and WAV identity lets a retained write revalidate the same
-/// approval immediately before a retry rather than trusting a filename or previously loaded text.
+/// text together with its revision and WAV identity lets a retained write revalidate the same
+/// transcript immediately before a retry rather than trusting a filename or previously loaded text.
 nonisolated struct VoiceMemoTranscriptVariableContext: Equatable, Sendable {
     let reviewedText: String
-    let approvedAt: Date
+    let generatedAt: Date
     let memoByteCount: Int64
     let memoSHA256: String
     let associationProfileIdentifier: String
@@ -114,21 +112,21 @@ nonisolated struct VoiceMemoTranscriptVariableContext: Equatable, Sendable {
 
 nonisolated enum VoiceMemoTranscriptVariableError: LocalizedError, Equatable, Sendable {
     case missing
-    case notApproved
+    case empty
     case sourceChanged
-    case approvalChanged
+    case transcriptChanged
     case incompatibleDestinations([MetadataFieldID])
 
     var errorDescription: String? {
         switch self {
         case .missing:
-            return "This photo has no reviewed voice-memo transcript. Transcribe and approve it before processing {voiceMemoTranscript}."
-        case .notApproved:
-            return "This photo's voice-memo transcript is not approved. Review and approve it before processing {voiceMemoTranscript}."
+            return "This photo has no voice-memo transcript. Transcribe it in Caption before processing {voiceMemoTranscript}."
+        case .empty:
+            return "This photo's voice-memo transcript is not ready. Open it in Caption before processing {voiceMemoTranscript}."
         case .sourceChanged:
-            return "The approved voice-memo transcript no longer matches the current WAV relationship and bytes. No transcript text was applied."
-        case .approvalChanged:
-            return "The approved voice-memo transcript changed before metadata could be written. No transcript text was applied; review the current approval and try again."
+            return "The voice-memo transcript no longer matches the current WAV relationship and bytes. No transcript text was applied."
+        case .transcriptChanged:
+            return "The voice-memo transcript changed before metadata could be written. No transcript text was applied; reload the transcript and try again."
         case .incompatibleDestinations(let fields):
             let names = fields.map(\.displayName).joined(separator: ", ")
             return "The voice-memo transcript cannot be inserted into: \(names). Choose Description, Extended Description, Headline, or Instructions."
@@ -173,7 +171,7 @@ nonisolated enum VoiceMemoTranscriptionError: LocalizedError, Equatable, Sendabl
         case .existingTranscript:
             return "This photo already has a saved transcript. Its draft or human review was kept."
         case .invalidGeneratedDraft:
-            return "A generated transcript draft must be unapproved before it can be saved by automation."
+            return "The generated transcript draft is invalid."
         case .audioUnreadable:
             return "The associated WAV could not be opened as supported audio. Playback remains available."
         case .emptyAudio:
@@ -643,13 +641,12 @@ actor VoiceMemoTranscriptionService {
             providerModel: "System managed; exact version unavailable",
             generatedAt: now(),
             generatedText: normalized,
-            reviewedText: normalized,
-            approvedAt: nil
+            reviewedText: normalized
         )
     }
 
     /// Explicit opt-in only: authorization is supplied by curated or consented custom admission.
-    /// No Apple fallback, persistence, approval, or metadata write happens here.
+    /// No Apple fallback, persistence or metadata write happens here.
     func transcribe(
         imageURL: URL,
         provider: FFmpegWhisperTranscriptionProvider
@@ -684,7 +681,7 @@ actor VoiceMemoTranscriptionService {
             localeIdentifier: result.provenance.requestedLanguage,
             provider: "FFmpeg Whisper", providerModel: result.provenance.modelIdentifier,
             generatedAt: now(), generatedText: result.text, reviewedText: result.text,
-            approvedAt: nil, whisperProvenance: result.provenance
+            whisperProvenance: result.provenance
         )
     }
 
@@ -696,7 +693,6 @@ actor VoiceMemoTranscriptionService {
         expectedRelationshipRevision: VoiceMemoRelationshipRevision? = nil
     ) async throws -> VoiceMemoTranscriptDraft {
         try Task.checkCancellation()
-        guard !draft.isApproved else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
         let image = draft.imageURL.standardizedFileURL
         let folder = image.deletingLastPathComponent()
         let didAccess = startAccess(folder)
@@ -716,7 +712,7 @@ actor VoiceMemoTranscriptionService {
             sourceMemoFilename: association.memoURL.lastPathComponent, memoByteCount: draft.memoByteCount,
             memoSHA256: draft.memoSHA256, associationProfileIdentifier: draft.associationProfileIdentifier,
             localeIdentifier: draft.localeIdentifier, provider: draft.provider, providerModel: draft.providerModel,
-            generatedAt: draft.generatedAt, generatedText: text, reviewedText: text, approvedAt: nil,
+            generatedAt: draft.generatedAt, generatedText: text, reviewedText: text,
             whisperProvenance: draft.whisperProvenance)
         try Task.checkCancellation()
         let installed = try await createTranscript(record, image, folder, expectedSourceRevision, association.memoURL, expectedRelationshipRevision)
@@ -727,7 +723,7 @@ actor VoiceMemoTranscriptionService {
             associationProfileIdentifier: installed.associationProfileIdentifier,
             localeIdentifier: installed.localeIdentifier, provider: installed.provider, providerModel: installed.providerModel,
             generatedAt: installed.generatedAt, generatedText: installed.generatedText,
-            reviewedText: installed.reviewedText, approvedAt: installed.approvedAt,
+            reviewedText: installed.reviewedText,
             whisperProvenance: installed.whisperProvenance)
     }
 
@@ -778,15 +774,14 @@ actor VoiceMemoTranscriptionService {
             generatedAt: record.generatedAt,
             generatedText: record.generatedText,
             reviewedText: record.reviewedText,
-            approvedAt: record.approvedAt,
+
             whisperProvenance: record.whisperProvenance
         )
     }
 
-    /// Loads only explicitly approved text after `loadPersistedDraft` has revalidated the exact
-    /// current relationship and WAV bytes. Generated or merely edited drafts cannot resolve a
-    /// metadata variable.
-    func approvedVariableContext(imageURL: URL) async throws -> VoiceMemoTranscriptVariableContext {
+    /// Saved text is ready after the relationship and exact WAV bytes are validated.
+    /// Callers compare this immutable context again before writing or retrying.
+    func readyVariableContext(imageURL: URL) async throws -> VoiceMemoTranscriptVariableContext {
         let loaded: VoiceMemoTranscriptDraft?
         do { loaded = try await loadPersistedDraft(imageURL: imageURL) }
         catch VoiceMemoTranscriptionError.sourceChanged {
@@ -795,14 +790,11 @@ actor VoiceMemoTranscriptionService {
         guard let draft = loaded else {
             throw VoiceMemoTranscriptVariableError.missing
         }
-        guard let approvedAt = draft.approvedAt else {
-            throw VoiceMemoTranscriptVariableError.notApproved
-        }
         let reviewed = draft.reviewedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !reviewed.isEmpty else { throw VoiceMemoTranscriptVariableError.notApproved }
+        guard !reviewed.isEmpty else { throw VoiceMemoTranscriptVariableError.empty }
         return .init(
             reviewedText: reviewed,
-            approvedAt: approvedAt,
+            generatedAt: draft.generatedAt,
             memoByteCount: draft.memoByteCount,
             memoSHA256: draft.memoSHA256,
             associationProfileIdentifier: draft.associationProfileIdentifier
@@ -813,24 +805,11 @@ actor VoiceMemoTranscriptionService {
         _ expected: VoiceMemoTranscriptVariableContext,
         imageURL: URL
     ) async throws {
-        let current = try await approvedVariableContext(imageURL: imageURL)
-        guard current == expected else { throw VoiceMemoTranscriptVariableError.approvalChanged }
+        let current = try await readyVariableContext(imageURL: imageURL)
+        guard current == expected else { throw VoiceMemoTranscriptVariableError.transcriptChanged }
     }
 
-    func approve(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
-        let approvedAt = now()
-        var approved = draft
-        approved.approvedAt = approvedAt
-        return try await persist(approved)
-    }
-
-    func revokeApproval(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
-        var revoked = draft
-        revoked.approvedAt = nil
-        return try await persist(revoked)
-    }
-
-    private func persist(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
+    func save(_ draft: VoiceMemoTranscriptDraft) async throws -> VoiceMemoTranscriptDraft {
         try Task.checkCancellation()
         let image = draft.imageURL.standardizedFileURL
         let association = try await validatedAssociation(
@@ -853,7 +832,7 @@ actor VoiceMemoTranscriptionService {
             generatedAt: draft.generatedAt,
             generatedText: draft.generatedText,
             reviewedText: normalizedReview,
-            approvedAt: draft.approvedAt,
+
             whisperProvenance: draft.whisperProvenance
         )
         let saved = try await saveTranscript(record, image, image.deletingLastPathComponent())
@@ -876,7 +855,6 @@ actor VoiceMemoTranscriptionService {
             generatedAt: saved.generatedAt,
             generatedText: saved.generatedText,
             reviewedText: saved.reviewedText,
-            approvedAt: saved.approvedAt,
             whisperProvenance: saved.whisperProvenance
         )
     }

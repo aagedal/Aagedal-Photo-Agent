@@ -58,7 +58,7 @@ struct TranscriptionSettingsView: View {
 
     private var managedWhisperPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Whisper transcribes on your Mac using the FFmpeg included with this app. Download a model once to get started.")
+            Text("Download a model to transcribe voice memos on your Mac.")
                 .foregroundStyle(.secondary).textSelection(.enabled)
             Picker("Whisper model", selection: Binding(
                 get: { managedWhisper.selectedModelID },
@@ -71,10 +71,8 @@ struct TranscriptionSettingsView: View {
             }
             .disabled(managedWhisper.isDownloading || managedWhisper.isRefreshing)
             .accessibilityIdentifier("settings.transcription.whisper.model")
-            Text("Tiny downloads faster and uses less memory. Base balances speed and accuracy. Small may improve accuracy but takes more time and memory.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("Models download from Hugging Face and are verified before use. Your voice memos stay on this Mac.")
-                .foregroundStyle(.secondary).textSelection(.enabled)
+            Text("Smaller models are faster. For Norwegian, choose an NbAiLab model and select Norwegian below.")
+                .font(.caption).foregroundStyle(.secondary)
             if managedWhisper.isDownloading {
                 ProgressView(value: managedWhisper.progress) {
                     Text("Downloading \(managedWhisper.selectedModel.title)…")
@@ -117,15 +115,7 @@ struct TranscriptionSettingsView: View {
 
     private var whisperOptions: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                TextField("Language", text: $whisperSetup.language)
-                    .frame(maxWidth: 180)
-                    .accessibilityIdentifier("caption.voiceMemo.whisper.language")
-                Text("auto or a two-letter code (en, no, fr)").foregroundStyle(.secondary)
-            }
-            if !whisperSetup.isLanguageValid {
-                Text("Enter auto or a lowercase two-letter language code.").foregroundStyle(.red)
-            }
+            WhisperLanguagePicker(selection: $whisperSetup.language)
             Toggle("Translate speech into English", isOn: $whisperSetup.translate)
                 .accessibilityIdentifier("caption.voiceMemo.whisper.translateToEnglish")
             Toggle("Request GPU acceleration", isOn: $whisperSetup.useGPU)
@@ -181,4 +171,21 @@ struct TranscriptionSettingsView: View {
         }
     }
 
+}
+
+/// Uses the same persisted choice in Settings and the Caption toolbar.
+struct WhisperLanguagePicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        Picker("Transcription language", selection: $selection) {
+            ForEach(WhisperTranscriptionLanguage.options) { language in
+                Text(language.title).tag(language.id)
+            }
+            if !WhisperTranscriptionLanguage.options.contains(where: { $0.id == selection }) {
+                Text(WhisperTranscriptionLanguage.title(for: selection)).tag(selection)
+            }
+        }
+        .accessibilityIdentifier("caption.voiceMemo.whisper.language")
+    }
 }

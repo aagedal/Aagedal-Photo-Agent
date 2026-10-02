@@ -22,12 +22,21 @@ struct WhisperModelDownloadServiceTests {
 
     @Test("Catalog pins multilingual weights to immutable revisions and exact identities")
     func catalog() {
-        #expect(WhisperDownloadableModel.catalog.map(\.id) == ["tiny", "base", "small"])
-        #expect(WhisperDownloadableModel.catalog.map(\.byteCount) == [77_691_713, 147_951_465, 487_601_967])
+        #expect(WhisperDownloadableModel.catalog.map(\.id) == ["tiny", "base", "small", "nb-tiny", "nb-small", "nb-medium", "nb-large"])
+        #expect(WhisperDownloadableModel.catalog.map(\.byteCount) == [77_691_713, 147_951_465, 487_601_967,
+            77_691_730, 487_601_984, 1_533_763_076, 3_095_033_483])
         for model in WhisperDownloadableModel.catalog {
-            #expect(model.url.path.contains(WhisperDownloadableModel.revision))
+            let revision = model.url.pathComponents.dropLast().last ?? ""
+            #expect(revision.count == 40)
+            #expect(revision.allSatisfy { $0.isHexDigit })
             #expect(model.url.host == "huggingface.co")
             #expect(model.sha256.count == 64)
+            if model.id.hasPrefix("nb-") {
+                #expect(model.url.path.hasPrefix("/NbAiLab/nb-whisper-"))
+                #expect(model.url.lastPathComponent == "ggml-model.bin")
+            } else {
+                #expect(revision == WhisperDownloadableModel.revision)
+            }
         }
     }
 

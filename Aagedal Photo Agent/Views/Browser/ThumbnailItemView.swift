@@ -43,10 +43,10 @@ final class ThumbnailItemView: NSView {
     private let editedBadge = CALayer()
     private let cropBadge = CALayer()
     private let hdrBadge = CALayer()
+    private let voiceMemoBadge = CALayer()
+    private var voiceMemoStatus: CaptionVoiceMemoTranscriptionStatus = .none
 
-    // Pending metadata dot (top-left)
-    private let pendingDot = CALayer()
-    private let pendingDotBorder = CALayer()
+
 
     // Text fields
     private let downloadStatusField = NSTextField(labelWithString: "Downloading from iCloud")
@@ -216,21 +216,14 @@ final class ThumbnailItemView: NSView {
         configureBadge(editedBadge, color: .systemOrange, systemName: "slider.horizontal.3")
         configureBadge(cropBadge, color: .systemGreen, systemName: "crop")
         configureBadge(hdrBadge, color: .systemPurple, systemName: "sun.max.fill")
+        configureBadge(voiceMemoBadge, color: .systemOrange, systemName: "waveform")
 
-        for badge in [c2paBadge, editedBadge, cropBadge, hdrBadge] {
+        for badge in [c2paBadge, editedBadge, cropBadge, hdrBadge, voiceMemoBadge] {
             badge.isHidden = true
             layer?.addSublayer(badge)
         }
 
-        // Pending dot
-        pendingDot.backgroundColor = NSColor.systemYellow.cgColor
-        pendingDot.cornerRadius = 5
-        pendingDot.isHidden = true
-        pendingDotBorder.backgroundColor = NSColor.white.withAlphaComponent(0.5).cgColor
-        pendingDotBorder.cornerRadius = 6
-        pendingDotBorder.isHidden = true
-        layer?.addSublayer(pendingDotBorder)
-        layer?.addSublayer(pendingDot)
+
 
         // Filename
         filenameField.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
@@ -336,9 +329,10 @@ final class ThumbnailItemView: NSView {
             badgeY -= 24
         }
 
-        // Pending dot (top-left of image)
-        pendingDotBorder.frame = CGRect(x: imageFrame.minX + 2, y: imageFrame.maxY - 14, width: 12, height: 12)
-        pendingDot.frame = CGRect(x: imageFrame.minX + 3, y: imageFrame.maxY - 13, width: 10, height: 10)
+        // Keep the audio badge clear of the technical badge stack at small thumbnail sizes.
+        voiceMemoBadge.position = CGPoint(x: imageFrame.minX + 16, y: imageFrame.minY + 16)
+
+
 
         // Text below image
         let textTop = imageFrame.minY - 4
@@ -374,23 +368,9 @@ final class ThumbnailItemView: NSView {
         cropBadge.isHidden = !data.hasCropEdits
         hdrBadge.isHidden = !data.isHDR
 
-        // Pending dot
-        pendingDot.isHidden = !data.hasPendingMetadataChanges
-        pendingDotBorder.isHidden = !data.hasPendingMetadataChanges
+
         downloadStatusField.isHidden = !data.isICloudDownloadPending
-        if data.isICloudDownloadPending {
-            self.toolTip = "Downloading from iCloud. The thumbnail will appear when the file is ready."
-        } else if data.hasPendingMetadataChanges {
-            let tooltip: String
-            if data.pendingFieldNames.isEmpty {
-                tooltip = "Pending metadata changes"
-            } else {
-                tooltip = "Pending: " + data.pendingFieldNames.joined(separator: ", ")
-            }
-            self.toolTip = tooltip
-        } else {
-            self.toolTip = nil
-        }
+        refreshTooltip()
 
         // Filename
         filenameField.stringValue = data.filename
@@ -452,10 +432,35 @@ final class ThumbnailItemView: NSView {
         }
     }
 
+    func updateVoiceMemoStatus(_ status: CaptionVoiceMemoTranscriptionStatus) {
+        voiceMemoStatus = status
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        voiceMemoBadge.isHidden = status != .needsTranscription && status != .transcribed
+        configureBadge(voiceMemoBadge, color: status == .transcribed ? .systemGreen : .systemOrange,
+            systemName: "waveform")
+        CATransaction.commit()
+        needsLayout = true
+        refreshAccessibilityValue()
+        refreshTooltip()
+    }
+
+    private func refreshTooltip() {
+        guard let data = currentData else { toolTip = nil; return }
+        var details: [String] = []
+        if data.isICloudDownloadPending { details.append("Downloading from iCloud. The thumbnail will appear when the file is ready.") }
+        if data.hasPendingMetadataChanges {
+            details.append(data.pendingFieldNames.isEmpty ? "Pending metadata changes" : "Pending: " + data.pendingFieldNames.joined(separator: ", "))
+        }
+        if voiceMemoStatus != .none { details.append(voiceMemoStatus.accessibilityDescription) }
+        toolTip = details.isEmpty ? nil : details.joined(separator: "\n")
+    }
+
     private func refreshAccessibilityValue() {
         let selection = accessibilitySelectedState ? "Selected" : "Not selected"
         let summary = currentData.map(Self.accessibilitySummary(for:))
-        setAccessibilityValue([selection, summary].compactMap { $0 }.joined(separator: ", "))
+        let memo = voiceMemoStatus == .none ? nil : voiceMemoStatus.accessibilityDescription
+        setAccessibilityValue([selection, summary, memo].compactMap { $0 }.joined(separator: ", "))
     }
 
     // MARK: - Thumbnail
@@ -495,6 +500,7 @@ final class ThumbnailItemView: NSView {
 
     func reset() {
         currentData = nil
+        updateVoiceMemoStatus(.none)
         onAccessibilityPress = nil
         downloadStatusField.isHidden = true
         setThumbnail(nil)

@@ -60,13 +60,10 @@ struct FFmpegWhisperTranscriptionProviderTests {
         let draft = try await service.transcribe(imageURL: image, provider: provider)
         #expect(draft.generatedText == "hello")
         #expect(draft.reviewedText == "hello")
-        #expect(!draft.isApproved)
-        let approved = try await service.approve(draft)
-        #expect(approved.isApproved)
+        let approved = try await service.save(draft)
         #expect(approved.whisperProvenance == draft.whisperProvenance)
-        let revoked = try await service.revokeApproval(approved)
-        #expect(!revoked.isApproved)
-        #expect(revoked.whisperProvenance == draft.whisperProvenance)
+        let resaved = try await service.save(approved)
+        #expect(resaved.whisperProvenance == draft.whisperProvenance)
         let evidence = try #require(draft.whisperProvenance)
         #expect(evidence.segments.first?.text == " hello ")
         #expect(evidence.segments.first?.endMilliseconds == 25)
@@ -81,7 +78,6 @@ struct FFmpegWhisperTranscriptionProviderTests {
             generatedText: draft.generatedText, reviewedText: "edited", whisperProvenance: evidence)
         let decoded = try JSONDecoder().decode(VoiceMemoTranscriptRecord.self, from: JSONEncoder().encode(record))
         #expect(decoded.whisperProvenance == evidence)
-        #expect(!decoded.isApproved)
         var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
         let validJSON = json
         var futureEvidence = try #require(json["whisperProvenance"] as? [String: Any])
@@ -157,16 +153,15 @@ struct FFmpegWhisperTranscriptionProviderTests {
         let service = VoiceMemoTranscriptionService()
         let draft = try await service.transcribe(imageURL: photo, provider: provider)
         let saved = try await service.persistGeneratedDraft(draft, expectedSourceRevision: source)
-        #expect(saved.approvedAt == nil)
         #expect(saved.reviewedText == "hello")
         let reloaded = try #require(try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: photo))
-        #expect(reloaded.approvedAt == nil)
-        await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
-            _ = try await service.approvedVariableContext(imageURL: photo)
-        }
+        let ready = try await service.readyVariableContext(imageURL: photo)
+        #expect(ready.reviewedText == "hello")
+        #expect(ready.generatedAt == reloaded.generatedAt)
+        // Resolving the variable leaves the stored transcript and IPTC unchanged.
         var edited = saved
         edited.reviewedText = "Human reviewed text"
-        let approved = try await service.approve(edited)
+        let approved = try await service.save(edited)
         let carrier = folder.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName)
             .appendingPathComponent("\(photo.lastPathComponent).meta.json")
         let bytes = try Data(contentsOf: carrier)
@@ -174,7 +169,7 @@ struct FFmpegWhisperTranscriptionProviderTests {
             _ = try await service.persistGeneratedDraft(draft, expectedSourceRevision: source)
         }
         #expect(try Data(contentsOf: carrier) == bytes)
-        await #expect(throws: VoiceMemoTranscriptionError.invalidGeneratedDraft) {
+        await #expect(throws: VoiceMemoTranscriptionError.existingTranscript) {
             _ = try await service.persistGeneratedDraft(approved, expectedSourceRevision: source)
         }
         #expect(try Data(contentsOf: carrier) == bytes)
@@ -385,11 +380,8 @@ struct FFmpegWhisperTranscriptionProviderTests {
             let draft = try #require(loaded)
             #expect(draft.generatedText == "Speech for " + photo.deletingPathExtension().appendingPathExtension("wav").lastPathComponent)
             #expect(draft.reviewedText == draft.generatedText)
-            #expect(draft.approvedAt == nil)
             #expect(draft.generatedAt == Date(timeIntervalSince1970: 500))
-            await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
-                _ = try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: photo)
-            }
+            #expect(try await VoiceMemoTranscriptionService().readyVariableContext(imageURL: photo).reviewedText == draft.reviewedText)
             #expect(try Data(contentsOf: photo) == originalPhotos[index])
             #expect(try Data(contentsOf: photo.deletingPathExtension().appendingPathExtension("xmp")) == originalXMP[index])
         }
@@ -454,12 +446,11 @@ struct FFmpegWhisperTranscriptionProviderTests {
         var generated = try await service.transcribe(imageURL: imageURL, provider: provider)
         let evidence = try #require(generated.whisperProvenance)
         generated.reviewedText = "First human review"
-        // Review edits use revokeApproval as their save boundary, also for unapproved drafts.
-        _ = try await service.revokeApproval(generated)
+        // Persistence preserves generated evidence and any saved text.
+        _ = try await service.save(generated)
         let firstReload = try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: imageURL)
         let reviewed = try #require(firstReload)
         #expect(reviewed.reviewedText == "First human review")
-        #expect(!reviewed.isApproved)
         #expect(reviewed.whisperProvenance == evidence)
         var graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
         graph["futureEditorialExtension"] = ["keep": true]
@@ -467,24 +458,19 @@ struct FFmpegWhisperTranscriptionProviderTests {
         transcript["futureTranscriptExtension"] = "preserve"
         graph[MetadataSidecarService.voiceMemoTranscriptFieldName] = transcript
         try JSONSerialization.data(withJSONObject: graph).write(to: carrier, options: .atomic)
-        _ = try await service.approve(reviewed)
+        _ = try await service.save(reviewed)
         let approvedReload = try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: imageURL)
         var approved = try #require(approvedReload)
-        #expect(approved.isApproved)
         #expect(approved.whisperProvenance == evidence)
-        let variable = try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: imageURL)
+        let variable = try await VoiceMemoTranscriptionService().readyVariableContext(imageURL: imageURL)
         #expect(variable.reviewedText == "First human review")
         approved.reviewedText = "Corrected human review"
-        _ = try await service.revokeApproval(approved)
+        _ = try await service.save(approved)
         let finalReload = try await VoiceMemoTranscriptionService().loadPersistedDraft(imageURL: imageURL)
         let final = try #require(finalReload)
-        #expect(!final.isApproved)
         #expect(final.reviewedText == "Corrected human review")
         #expect(final.generatedText == "generated speech")
         #expect(final.whisperProvenance == evidence)
-        await #expect(throws: VoiceMemoTranscriptVariableError.notApproved) {
-            _ = try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: imageURL)
-        }
         let savedGraph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: carrier)) as? [String: Any])
         #expect((savedGraph["futureEditorialExtension"] as? [String: Bool])?["keep"] == true)
         let savedTranscript = try #require(savedGraph[MetadataSidecarService.voiceMemoTranscriptFieldName] as? [String: Any])
@@ -497,7 +483,7 @@ struct FFmpegWhisperTranscriptionProviderTests {
         #expect(try Data(contentsOf: repository.recordURL(for: imageURL)) == relationshipBytes)
     }
 
-    @Test("Caption custom provider produces an unapproved draft or retains the exact review without Apple fallback",
+    @Test("Caption custom provider saves a ready transcript or retains the exact review without Apple fallback",
           arguments: [false, true])
     @MainActor
     func captionProviderBridge(fails: Bool) async throws {
@@ -511,7 +497,7 @@ struct FFmpegWhisperTranscriptionProviderTests {
             localeIdentifier: locale.identifier, provider: "Apple on-device speech",
             providerModel: "System managed; exact version unavailable",
             generatedAt: Date(timeIntervalSince1970: 100), generatedText: "Original draft",
-            reviewedText: "Existing approved human review", approvedAt: Date(timeIntervalSince1970: 200))
+            reviewedText: "Existing approved human review")
         let runtime = VoiceMemoTranscriptionRuntime(
             isAvailable: { true }, supportedLocales: { [locale] }, resolveLocale: { _ in locale },
             assetStatus: { _ in .installed },
@@ -520,17 +506,14 @@ struct FFmpegWhisperTranscriptionProviderTests {
                 Issue.record("Custom transcription must not fall back to Apple Speech")
                 return "Unexpected Apple result"
             })
+        let storage = CaptionWhisperTranscriptStorage(existing)
         let service = VoiceMemoTranscriptionService(runtime: runtime,
             lookup: { _ in .available(association) }, captureRevision: { _ in stable },
-            loadTranscript: { _, _ in existing },
-            saveTranscript: { record, _, _ in
-                Issue.record("Generating a replacement draft must not persist or approve it")
-                return record
-            }, startAccess: { _ in false })
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) }, startAccess: { _ in false })
         let model = CaptionVoiceMemoTranscriptModel(service: service)
         await model.load(image)
         let original = try #require(model.draft)
-        #expect(original.isApproved)
         let custom = configuration
         let provider = FFmpegWhisperTranscriptionProvider(configuration: custom,
             authorizeArtifacts: { _ in }, run: { request in
@@ -552,14 +535,16 @@ struct FFmpegWhisperTranscriptionProviderTests {
             #expect(draft.reviewedText == draft.generatedText)
             #expect(draft.provider == "FFmpeg Whisper")
             #expect(draft.memoSHA256 == stable.sha256)
-            #expect(!draft.isApproved)
             #expect(draft.whisperProvenance?.buildIdentifier == custom.buildIdentifier)
             #expect(draft.whisperProvenance?.modelSHA256 == custom.model.sha256)
             #expect(draft.whisperProvenance?.segments.first?.endMilliseconds == 25)
             #expect(model.errorMessage == nil)
         }
         let persisted = try await service.loadPersistedDraft(imageURL: image)
-        #expect(persisted == original)
+        #expect(persisted == model.draft)
+        if !fails {
+            #expect(try await service.readyVariableContext(imageURL: image).reviewedText == "Custom replacement")
+        }
     }
 
     @Test("artifact authorization failure cannot reach the runner")
@@ -657,4 +642,14 @@ nonisolated private final class WhisperDraftTestState: @unchecked Sendable {
     private var storedComplete = false
     var complete: Bool { lock.withLock { storedComplete } }
     func markComplete() { lock.withLock { storedComplete = true } }
+}
+
+private actor CaptionWhisperTranscriptStorage {
+    private var record: VoiceMemoTranscriptRecord
+    init(_ record: VoiceMemoTranscriptRecord) { self.record = record }
+    func load() -> VoiceMemoTranscriptRecord { record }
+    func save(_ record: VoiceMemoTranscriptRecord) -> VoiceMemoTranscriptRecord {
+        self.record = record
+        return record
+    }
 }

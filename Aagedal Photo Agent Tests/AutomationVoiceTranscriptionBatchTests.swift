@@ -13,16 +13,15 @@ struct AutomationVoiceTranscriptionBatchTests {
         var failGeneration: URL?
         var failSave: URL?
         var drift: URL?
-        var invalidApproval = false
         var roundedDates = false
         var gate: Gate?
         var entered: Gate?
 
         func configure(failGeneration: URL? = nil, failSave: URL? = nil, drift: URL? = nil,
-                       invalidApproval: Bool = false, roundedDates: Bool = false,
+                       roundedDates: Bool = false,
                        gate: Gate? = nil, entered: Gate? = nil) {
             self.failGeneration = failGeneration; self.failSave = failSave; self.drift = drift
-            self.invalidApproval = invalidApproval; self.roundedDates = roundedDates
+            self.roundedDates = roundedDates
             self.gate = gate; self.entered = entered
         }
         func capture(_ url: URL) -> AutomationVoiceTranscriptionBatchService.Input {
@@ -34,8 +33,7 @@ struct AutomationVoiceTranscriptionBatchTests {
             if let entered { await entered.open() }
             if let gate { try await gate.wait() }
             if failGeneration == url { throw Injected.inference }
-            var result = AutomationVoiceTranscriptionBatchTests.draft(url)
-            if invalidApproval { result.approvedAt = Date() }
+            let result = AutomationVoiceTranscriptionBatchTests.draft(url)
             return result
         }
         func save(_ value: VoiceMemoTranscriptDraft) throws -> VoiceMemoTranscriptDraft {
@@ -47,7 +45,7 @@ struct AutomationVoiceTranscriptionBatchTests {
                     associationProfileIdentifier: value.associationProfileIdentifier,
                     localeIdentifier: value.localeIdentifier, provider: value.provider, providerModel: value.providerModel,
                     generatedAt: Date(timeIntervalSince1970: value.generatedAt.timeIntervalSince1970.rounded(.down)),
-                    generatedText: value.generatedText, reviewedText: value.reviewedText, approvedAt: nil)
+                    generatedText: value.generatedText, reviewedText: value.reviewedText)
             }
             return value
         }
@@ -99,8 +97,8 @@ struct AutomationVoiceTranscriptionBatchTests {
                      memoByteCount: value.memoRevision.byteCount, memoSHA256: value.memoRevision.sha256,
                      associationProfileIdentifier: value.association.profileIdentifier,
                      localeIdentifier: "en-US", provider: "Test provider", providerModel: "Test model",
-                     generatedAt: Date(timeIntervalSince1970: 1_700_000_000.25),
-                     generatedText: "Editable text", reviewedText: "Editable text", approvedAt: nil)
+                     generatedAt: Date(timeIntervalSince1970: 1_700_000_000.9999),
+                     generatedText: "Editable text", reviewedText: "Editable text")
     }
     private var photos: [URL] { ["first", "second", "third"].map { URL(fileURLWithPath: "/fixture/\($0).JPG") } }
     private var provider: AutomationVoiceTranscriptionBatchService.Provider { .apple(Locale(identifier: "en-US")) }
@@ -208,7 +206,6 @@ struct AutomationVoiceTranscriptionBatchTests {
         #expect(result.batchProgress?.items.map(\.outcome) == [.draftSaved, .draftSaved, .draftSaved])
         #expect(await f.io.generated == photos)
         #expect(await f.io.saved.map(\.imageURL) == photos)
-        #expect(await f.io.saved.allSatisfy { !$0.isApproved })
         #expect(try AutomationOperationRegistry(storageDirectory: f.root).inspect(result.id) == result)
         let archive = try String(contentsOf: f.root.appendingPathComponent("operations.json"), encoding: .utf8)
         #expect(!archive.contains("Editable text"))
@@ -268,14 +265,7 @@ struct AutomationVoiceTranscriptionBatchTests {
         try await f.service.shutdown()
     }
 
-    @Test("Provider output cannot manufacture approval")
-    func approvedOutputRefused() async throws {
-        let f = try Fixture()
-        await f.io.configure(invalidApproval: true)
-        let record = try await f.service.submit(imageURLs: [photos[0]], provider: provider)
-        #expect(try await f.service.waitForCompletion(record.id).outcome == .failed)
-        #expect(await f.io.saved.isEmpty)
-    }
+
 
     @Test("Cancellation after a verified save preserves that draft and stops the suffix")
     func cancellationAfterSave() async throws {

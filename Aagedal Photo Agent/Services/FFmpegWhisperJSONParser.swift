@@ -1,7 +1,7 @@
 import Foundation
 
 /// Evidence emitted by the attributed FFmpeg 9.0.1 whisper filter, not whisper-cli JSON.
-/// This is an inference result only: it grants no source identity or transcript approval.
+/// This is an inference result only: it grants no source identity or persistence.
 nonisolated struct FFmpegWhisperTranscript: Equatable, Sendable {
     struct Segment: Equatable, Sendable, Decodable {
         let start: Int64

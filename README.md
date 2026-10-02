@@ -151,7 +151,7 @@ the support table and validation records.
   `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
   cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
   outcomes. Available transcription batch status includes ordered per-photo outcomes without paths
-  or transcript text. Saved drafts remain editable and unapproved; failed or cancelled batches can
+  or transcript text. Saved transcripts are ready for metadata variables; failed or cancelled batches can
   retain a saved prefix. Caption launches the shared batch backend after explicit native consent;
   helper transcription invocation remains unfinished. A request is not completion.
   `get_photo_voice_memo` inspects one photo's saved adjacent WAV relationship under the authorized

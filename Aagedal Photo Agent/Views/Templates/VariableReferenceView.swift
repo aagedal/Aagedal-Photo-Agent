@@ -144,7 +144,7 @@ enum VariableCatalog {
     VariableDefinition(
         variable: "{voiceMemoTranscript}",
         category: "Shortcuts",
-        description: "Reviewed text from the explicitly approved transcript for this photo's exact associated WAV. Use a compatible free-text destination such as Description, Extended Description, Headline, or Instructions. Missing, unapproved, or changed audio blocks the complete batch before writing.",
+        description: "Saved text from the transcript for this photo's exact associated WAV. Use a compatible free-text destination such as Description, Extended Description, Headline, or Instructions. Missing transcripts or changed audio blocks the complete batch before writing.",
         example: "The approved spoken caption"
     ),
     VariableDefinition(

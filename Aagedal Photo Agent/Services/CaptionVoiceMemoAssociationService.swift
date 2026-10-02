@@ -13,7 +13,7 @@ nonisolated struct CaptionVoiceMemoAssociationRevision: Equatable, Sendable {
     let digest: Data
 }
 
-/// Discovery is read-only. A separate reviewed confirmation creates only a new relationship.
+/// Discovery is read-only. Both explicit and automatic linking revalidate a unique match before creating a relationship.
 actor CaptionVoiceMemoAssociationService {
     nonisolated let filesystemQueue: DispatchSerialQueue
     nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
@@ -32,6 +32,11 @@ actor CaptionVoiceMemoAssociationService {
         let access = folder.startAccessingSecurityScopedResource()
         defer { if access { folder.stopAccessingSecurityScopedResource() } }
         try requireAbsentRecord(image)
+        // Most photo folders have no voice memos. Avoid hashing their entire inventory
+        // during automatic checks when there cannot be an adjacent candidate.
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
+        guard files.contains(where: { $0.pathExtension.lowercased() == "wav" }) else { throw Failure.noMatch }
         let folderRevision = try CaptionVoiceMemoFileRevision.read(folder)
         let inventory = try Self.captureInventory(folder)
         let report = try await scan(inventory: inventory, folder: folder)
@@ -46,6 +51,21 @@ actor CaptionVoiceMemoAssociationService {
         try Self.revalidate(preview)
         try requireAbsentRecord(image)
         return preview
+    }
+
+    /// Used when Caption opens a photo. Existing relationships and ambiguous/no matches
+    /// are left alone; the normal installation boundary rechecks the source bytes.
+    func associateAutomatically(imageURL: URL) async throws -> Bool {
+        do {
+            let preview = try await discover(imageURL: imageURL)
+            try Task.checkCancellation()
+            try await confirm(preview)
+            return true
+        } catch Failure.noMatch {
+            return false
+        } catch Failure.existingRecord {
+            return false
+        }
     }
 
     func confirm(_ preview: CaptionVoiceMemoAssociationPreview) async throws {
@@ -131,7 +151,7 @@ final class CaptionVoiceMemoAssociationModel {
     @ObservationIgnored private let service: CaptionVoiceMemoAssociationService
     private var preview: CaptionVoiceMemoAssociationPreview?
     @ObservationIgnored private var generation: UInt64 = 0
-    @ObservationIgnored private var work: Task<CaptionVoiceMemoAssociationPreview?, Error>?
+    @ObservationIgnored private var cancelWork: (() -> Void)?
 
     init(service: CaptionVoiceMemoAssociationService = CaptionVoiceMemoAssociationService()) { self.service = service }
 
@@ -140,7 +160,7 @@ final class CaptionVoiceMemoAssociationModel {
         let requested = generation
         isWorking = true
         let task = Task { [service] in Optional(try await service.discover(imageURL: imageURL)) }
-        work = task
+        cancelWork = { task.cancel() }
         do {
             let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
             guard requested == generation, !Task.isCancelled else { return }
@@ -150,8 +170,33 @@ final class CaptionVoiceMemoAssociationModel {
             if !(error is CancellationError) { errorMessage = error.localizedDescription }
         }
         guard requested == generation else { return }
-        work = nil
+        cancelWork = nil
         isWorking = false
+    }
+
+    func associateAutomatically(imageURL: URL) async -> Bool {
+        guard !isWorking, preview == nil else { return false }
+        cancel()
+        let requested = generation
+        isWorking = true
+        let task = Task { [service] in
+            try await service.associateAutomatically(imageURL: imageURL)
+        }
+        cancelWork = { task.cancel() }
+        do {
+            let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            guard requested == generation else { return false }
+            cancelWork = nil
+            isWorking = false
+            guard !Task.isCancelled else { return false }
+            return result
+        } catch {
+            guard requested == generation else { return false }
+            cancelWork = nil
+            isWorking = false
+            // Background discovery must not present errors for unrelated or unsupported files.
+            return false
+        }
     }
 
     func confirm() async -> Bool {
@@ -164,16 +209,16 @@ final class CaptionVoiceMemoAssociationModel {
             try await service.confirm(preview)
             return Optional<CaptionVoiceMemoAssociationPreview>.none
         }
-        work = task
+        cancelWork = { task.cancel() }
         do {
             _ = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
             guard requested == generation, !Task.isCancelled else { return false }
-            work = nil
+            cancelWork = nil
             isWorking = false
             return true
         } catch {
             guard requested == generation else { return false }
-            work = nil
+            cancelWork = nil
             isWorking = false
             if !(error is CancellationError) { errorMessage = error.localizedDescription }
             return false
@@ -182,8 +227,8 @@ final class CaptionVoiceMemoAssociationModel {
 
     func cancel() {
         generation &+= 1
-        work?.cancel()
-        work = nil
+        cancelWork?()
+        cancelWork = nil
         preview = nil
         isWorking = false
         errorMessage = nil

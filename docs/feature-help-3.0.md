@@ -52,13 +52,18 @@ on-device asset. If **Transcribe** appears, the selected language is already ins
 
 Caption Workspace shows a **Voice memo** panel beneath the preview. When an imported photo
 has a saved WAV relationship, the panel displays its filename and duration. Press **Play voice
-memo** to listen and **Pause voice memo** to pause. Selecting another photo or leaving Caption
+memo** to listen and **Pause voice memo** to pause. Drag the playhead to listen from any point,
+including while paused. Selecting another photo or leaving Caption
 stops playback. Playback does not transcribe audio or alter metadata.
+Browser thumbnails and the Caption filmstrip show an orange waveform on photos with a voice memo awaiting transcription,
+and the same waveform in green when a saved transcript matches the current memo. The filmstrip
+focuses one photo for editing; batch transcription is available from the Browser thumbnail context menu.
 
 If the memo is missing, restore the WAV beside its photo and press **Refresh voice memo**.
 Invalid records, unsupported relationship schemas and unplayable audio remain unavailable.
-Refresh also reloads a changed photo or memo before another playback attempt. The app does
-not infer an association merely because a WAV has a similar filename.
+Refresh also reloads a changed photo or memo before another playback attempt. Caption automatically detects and links a unique supported WAV in the same folder using the
+same validated matching rules as import. Existing relationships are preserved. Ambiguous matches
+and moved or replaced memos still use the manual recovery controls.
 
 **Duplicate** preserves a proven memo and its relationship as independent copies. When a RAW
 and JPEG share a source memo, duplicating either creates its own WAV without changing the
@@ -77,16 +82,25 @@ If an operation reports an issue, open **Details** for all affected paths and re
 
 Archive, source reassociation, reviewed Apple on-device transcription, transcript-template application,
 and explicit WAV delivery policy are implemented with the boundaries described below and in Known
-Limitations. Configure the provider in **Settings → Transcription**. Caption contains playback, Transcribe, and transcript review; custom file selection, language, translation, GPU and consent controls live in Settings.
+Limitations. Configure the provider in **Settings → Transcription**. Caption contains playback, Transcribe, and a compact read-only transcript; language selection is available in Caption and Settings. Custom file selection, translation, GPU and consent controls live in Settings.
 Select **Whisper** to use the embedded FFmpeg engine. Choose Tiny (about 78 MB), Base
 (about 148 MB), or Small (about 488 MB), then explicitly download the model in Settings.
-Downloads come from the pinned whisper.cpp model repository over HTTPS; the app checks the exact
+Norwegian Tiny, Small, Medium (about 1.5 GB), and Large (about 3.1 GB) from NbAiLab are also available.
+Choose a Norwegian model and select **Norwegian** for Norwegian voice memos.
+Downloads come from pinned whisper.cpp or NbAiLab model repositories over HTTPS; the app checks the exact
 byte count and SHA-256 before installing in local Application Support. Progress and cancellation
 are available. Installed models can be removed from Settings and used offline after preparation.
 No executable selection is needed for this provider. Inference starts only after an explicit single-photo or batch action.
-Language defaults to `auto`; you can enter a two-letter code, request translation into English,
+Language defaults to **Detect Automatically**. Choose a named language in Settings or Caption, request translation into English,
 and request GPU acceleration. GPU use is requested rather than verified. Each draft records the
-engine/model identities and settings used, and remains editable until explicitly reviewed and approved.
+engine/model identities and settings used. Single-photo transcripts are saved and ready for
+`{voiceMemoTranscript}` automatically, without an approval step. Process the variable in
+Description, Extended Description, Headline, or Instructions, then edit the resulting metadata
+text there. Processing transcript variables needs no additional confirmation. Saved batch transcripts are ready for variables directly in the Browser; opening each photo in Caption is unnecessary. Transcription itself does not change IPTC fields.
+Caption reserves a fixed transcript area; the settings cog and reset arrow sit beside the transcription controls.
+Use the **Reset Transcript** arrow in Caption to remove the saved transcript and transcribe the memo again.
+The batch confirmation also offers **Reset Selected Transcripts…**, then rechecks the captured selection.
+Both resets preserve the WAV files and any text already inserted into metadata fields.
 
 **Custom FFmpeg Whisper** remains available for advanced users. Choose compatible executable/model
 files, grant execution consent, and select **Enable Custom Files** to record their current identities.
@@ -96,19 +110,22 @@ bookmarks persist; custom execution consent and identity admission must be renew
 identity, not software trust. No provider automatically falls back to Apple Speech. Downloads require
 an explicit action and do not send voice memos, photos or transcripts to the hosting service.
 
-To transcribe several memos, select 1–8 photos in Browser, open Caption, and choose
-**Transcribe Selected…**. The batch retains that selection in Browser order. Check the photo names,
+To transcribe several memos, select 1–8 photos in Browser, right-click a selected thumbnail,
+and choose **Transcribe Voice Memos…**. The batch retains that selection in Browser order. Check the photo names,
 provider and language in the confirmation, grant consent, then press **Transcribe N Photos**.
 Every photo needs a supported saved WAV relationship. Photos sharing a metadata sidecar cannot
 be included together. Existing saved transcripts refuse preparation; an active or unsaved current review must finish before a batch starts.
 The chosen provider must already be ready. This action downloads no language or model assets and
 does not switch providers. Changed photos, WAVs or relationships require a fresh confirmation.
 
-Results show each numbered photo separately. Saved drafts remain editable and unapproved; IPTC
-fields are unchanged. **Cancel Batch** requests cancellation and waits for the active item to stop.
-Drafts already saved remain available for individual review and approval in Caption, even if the
+The confirmation closes when transcription starts, and processing continues in the background.
+Open **Activity** in the left sidebar to view progress or cancel the batch. Completed batches remain
+in Activity history, with per-photo results and a **Transcriptions** filter.
+Saved batch drafts become ready for metadata
+variables when opened in Caption; IPTC fields are unchanged. **Cancel Transcription** in the Activity header requests cancellation and waits for the active item to stop.
+Drafts already saved remain available in Caption, even if the
 batch fails or is cancelled. An uncertain save stops the remaining photos and requires inspection
-before retrying. The current empty review reloads a saved batch draft without replacing local edits.
+before retrying. The current empty transcript panel reloads a saved batch draft without replacing an existing transcript.
 
 ## Connect a local automation client
 
@@ -148,7 +165,7 @@ Each entry supplies `path` and the exact `sourceRevision`, `appSidecarRevision`,
 `xmpSidecarRevision`, `relationshipRevision` and `audioRevision` returned by
 `get_photo_voice_memo`. Supply `provider` (`appleSpeech`, `whisper` or `customWhisper`),
 `language`, `translate` and `useGPU` explicitly. Apple requests use a locale such as `en-US`
-with both booleans false; Whisper requests use `auto` or a two-letter lowercase language code.
+with both booleans false; Whisper requests use `auto` or a supported language identifier.
 Provider availability and installed/custom model identity must still be checked in the app.
 The tool writes only a private, immutable preview and returns a `planID`, valid for five minutes.
 `get_voice_transcription_plan` accepts only that `planID` and returns the unchanged preview after
@@ -180,7 +197,7 @@ Configure the matching provider and options in **Settings → Transcription**, t
 locale. The review displays that locale or the exact Whisper runtime/model paths, hashes and options.
 It downloads nothing and requests no permissions. Check the explicit consent box, then choose
 **Start Confirmed Transcription**. A mismatch, existing transcript or changed input refuses admission.
-The confirmed operation saves editable, unapproved drafts in order; IPTC stays unchanged.
+The confirmed operation saves transcripts in order, ready for metadata variables; IPTC stays unchanged.
 Closing Settings preserves admitted work. Request cancellation in the active workflow or from its
 retained request after reopening Settings; use the linked operation ID to inspect actual completion.
 A cancellation request is not confirmation of teardown. Saved drafts survive a later cancellation or
@@ -205,7 +222,7 @@ intent cannot be retried with its old epoch. A changed confirmation epoch refuse
 They inspect durable coordination records and request cooperative cancellation. A request does not
 mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.
 Available `batchProgress` contains completed counts and ordered photo indices/states/outcomes,
-without paths or transcript text. A saved transcription draft remains editable and unapproved,
+without paths or transcript text. A saved transcript is ready for metadata variables,
 with IPTC unchanged. Failed or cancelled batches can retain saved drafts; inspect each outcome
 before retrying. Uncertain saves retain recovery evidence. Executor liveness is reported as unknown.
 These endpoints do not start work or authorize photo writes. Batch transcription starts through

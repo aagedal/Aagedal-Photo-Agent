@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// NSCollectionViewItem subclass managing the lifecycle of a single thumbnail cell.
 final class ThumbnailCollectionViewItem: NSCollectionViewItem {
@@ -6,6 +7,12 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
 
     private(set) var thumbnailView: ThumbnailItemView!
     var thumbnailLoadTask: Task<Void, Never>?
+    private var voiceMemoStatusTask: Task<Void, Never>?
+    private var voiceMemoStatusObserver: AnyCancellable?
+    private var isICloudDownloadPending = false
+    var voiceMemoStatusLoader: @Sendable (URL) async -> CaptionVoiceMemoTranscriptionStatus = {
+        await CaptionVoiceMemoStatusService.shared.status(for: $0)
+    }
     /// Identity of the image actually represented by this cell. During a diffable
     /// insertion its collection index can still belong to the previous snapshot.
     private(set) var currentURL: URL?
@@ -14,12 +21,25 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         let itemView = ThumbnailItemView(frame: .zero)
         self.view = itemView
         self.thumbnailView = itemView
+        voiceMemoStatusObserver = NotificationCenter.default.publisher(for: MetadataSidecarService.voiceMemoTranscriptDidChange)
+            // Notifications arrive on the metadata filesystem queue. Hop before either
+            // closure created in this MainActor-isolated view is invoked.
+            .receive(on: DispatchQueue.main)
+            .compactMap { $0.object as? URL }
+            .sink { [weak self] url in
+                Task { @MainActor [weak self] in
+                    guard let self, self.currentURL?.standardizedFileURL.path == url.standardizedFileURL.path else { return }
+                    self.refreshVoiceMemoStatus()
+                }
+            }
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         thumbnailLoadTask?.cancel()
         thumbnailLoadTask = nil
+        voiceMemoStatusTask?.cancel()
+        voiceMemoStatusTask = nil
         currentURL = nil
         thumbnailView.reset()
         thumbnailView.setAccessibilityLabel(nil)
@@ -35,7 +55,9 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
         isSelected: Bool,
         isActive: Bool
     ) {
+        if currentURL != data.url { thumbnailView.updateVoiceMemoStatus(.none) }
         currentURL = data.url
+        isICloudDownloadPending = imageFile.isICloudDownloadPending
         thumbnailView.configure(with: data)
         thumbnailView.updateSelection(isSelected: isSelected, isActive: isActive)
         thumbnailView.setAccessibilityElement(true)
@@ -47,6 +69,7 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
 
         thumbnailLoadTask?.cancel()
         let url = data.url
+        refreshVoiceMemoStatus(checkFilesystem: !imageFile.isICloudDownloadPending)
         if imageFile.isICloudDownloadPending {
             thumbnailView.setThumbnailNSImage(nil)
             return
@@ -92,4 +115,19 @@ final class ThumbnailCollectionViewItem: NSCollectionViewItem {
             }
         }
     }
+    func refreshVoiceMemoStatus(checkFilesystem: Bool = true) {
+        voiceMemoStatusTask?.cancel()
+        voiceMemoStatusTask = nil
+        guard checkFilesystem, !isICloudDownloadPending, let url = currentURL else {
+            thumbnailView.updateVoiceMemoStatus(.none)
+            return
+        }
+        let loader = voiceMemoStatusLoader
+        voiceMemoStatusTask = Task { [weak self] in
+            let status = await loader(url)
+            guard !Task.isCancelled, let self, self.currentURL == url else { return }
+            self.thumbnailView.updateVoiceMemoStatus(status)
+        }
+    }
+
 }

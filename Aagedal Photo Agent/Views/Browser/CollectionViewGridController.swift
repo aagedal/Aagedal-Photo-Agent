@@ -104,6 +104,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             viewModel.shouldRestoreGridFocus = false
         }
         restoreInitialSelectionIfPossible()
+        for item in collectionView.visibleItems() {
+            (item as? ThumbnailCollectionViewItem)?.refreshVoiceMemoStatus()
+        }
     }
 
     // MARK: - Data Source

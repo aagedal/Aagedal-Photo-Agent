@@ -23,7 +23,7 @@ struct PresetVariableInterpolatorTests {
         let reviewed = "Spoken {date} and {field:description} stay literal"
         let context = VoiceMemoTranscriptVariableContext(
             reviewedText: reviewed,
-            approvedAt: Date(timeIntervalSince1970: 1),
+            generatedAt: Date(timeIntervalSince1970: 1),
             memoByteCount: 2,
             memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "test"
@@ -63,7 +63,7 @@ struct PresetVariableInterpolatorTests {
         metadata.event = "Memo: {voiceMemoTranscript}"
         let context = VoiceMemoTranscriptVariableContext(
             reviewedText: "Reviewed words",
-            approvedAt: Date(timeIntervalSince1970: 1),
+            generatedAt: Date(timeIntervalSince1970: 1),
             memoByteCount: 2,
             memoSHA256: String(repeating: "a", count: 64),
             associationProfileIdentifier: "test"

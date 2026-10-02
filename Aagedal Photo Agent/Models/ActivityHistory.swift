@@ -5,6 +5,7 @@ enum ActivityKind: String, Codable, Sendable {
     case importJob
     case upload
     case faceScan
+    case transcription
 }
 
 /// Whether a file was confirmed intact after the operation.
@@ -27,19 +28,22 @@ struct ActivityFileRecord: Codable, Sendable, Identifiable {
     let succeeded: Bool
     /// Per-file verification outcome.
     let verification: ActivityVerification
+    let statusDetail: String?
 
     init(
         id: UUID = UUID(),
         fileName: String,
         destination: String,
         succeeded: Bool,
-        verification: ActivityVerification
+        verification: ActivityVerification,
+        statusDetail: String? = nil
     ) {
         self.id = id
         self.fileName = fileName
         self.destination = destination
         self.succeeded = succeeded
         self.verification = verification
+        self.statusDetail = statusDetail
     }
 }
 
@@ -113,13 +117,16 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         case .importJob: "Import"
         case .upload: "Upload"
         case .faceScan: "Face scan"
+        case .transcription: "Transcription"
         }
         if wasCancelled {
-            let item = kind == .faceScan ? "photo" : "file"
+            let item = kind == .faceScan || kind == .transcription ? "photo" : "file"
             return "\(noun) cancelled — \(successCount) of \(totalCount) \(item)\(totalCount == 1 ? "" : "s")"
         }
         var line: String
-        if kind == .faceScan {
+        if kind == .transcription {
+            line = "Transcription of \(successCount) voice memo\(successCount == 1 ? "" : "s") completed"
+        } else if kind == .faceScan {
             line = "Face scan of \(successCount) photo\(successCount == 1 ? "" : "s") completed"
         } else {
             line = "\(noun) of \(successCount) file\(successCount == 1 ? "" : "s") completed"

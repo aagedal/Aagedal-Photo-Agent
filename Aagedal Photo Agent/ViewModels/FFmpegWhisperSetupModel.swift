@@ -48,7 +48,7 @@ final class FFmpegWhisperSetupModel {
     var isLanguageValid: Bool { Self.isValidLanguage(language) }
 
     private static func isValidLanguage(_ language: String) -> Bool {
-        language == "auto" || (language.utf8.count == 2 && language.utf8.allSatisfy { (97...122).contains($0) })
+        WhisperTranscriptionLanguage.isValid(language)
     }
 
     var choice: VoiceMemoTranscriptionProviderChoice {

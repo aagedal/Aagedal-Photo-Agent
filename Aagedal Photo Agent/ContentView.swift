@@ -109,7 +109,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
                      .uploadSelected, .uploadAll,
-                     .processVariablesSelected, .processVariablesAll,
+                     .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
@@ -232,6 +232,10 @@ struct ContentView: View {
     private let commandRouter: AppCommandRouter
 
     // Keyword-list backup recovery (prompts when a list comes back empty at launch).
+    @State private var voiceMemoBatchModel = CaptionVoiceMemoBatchTranscriptionModel()
+    @State private var isShowingVoiceMemoBatch = false
+    @State private var voiceMemoBatchPreparationTask: Task<Void, Never>?
+
     @State private var isShowingListRecoveryPrompt = false
     @State private var isShowingListBackups = false
     @State private var listRecoveryHandled = false
@@ -281,6 +285,7 @@ struct ContentView: View {
             _deadlineProfileLibrary = State(initialValue: DeadlineProfileLibraryModel())
         }
         _activityHistory = State(initialValue: history)
+        _voiceMemoBatchModel = State(initialValue: CaptionVoiceMemoBatchTranscriptionModel(activityHistory: history))
         _deadlineDeliverySession = State(initialValue: deliverySession)
         _deliveryWorkflowActivity = State(initialValue: DeliveryWorkflowActivityModel(
             dependencies: .production(session: deliverySession)
@@ -439,6 +444,15 @@ struct ContentView: View {
                     onCancel: { metadataViewModel.cancelVoiceMemoVariablePreview(preview.id) }
                 )
             }
+            .sheet(isPresented: $isShowingVoiceMemoBatch) {
+                CaptionVoiceMemoBatchTranscriptionView(
+                    model: voiceMemoBatchModel,
+                    reviewOrSaveBusy: metadataViewModel.isSaving || metadataViewModel.isProcessingFolder,
+                    providerBusy: FFmpegWhisperSetupModel.shared.isTranscribing,
+                    onClose: { isShowingVoiceMemoBatch = false },
+                    onReset: { prepareSelectedVoiceMemoBatch(imageURLs: voiceMemoBatchModel.selectedImageURLs) }
+                )
+            }
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingPrimaryDevelopRecovery) {
                 PrimaryDevelopRecoveryHost(viewModel: metadataViewModel)
@@ -468,6 +482,7 @@ struct ContentView: View {
                 ActivityHistoryView(
                     history: activityHistory,
                     faceViewModel: faceRecognitionViewModel,
+                    transcriptionModel: voiceMemoBatchModel,
                     receiptLibrary: deliveryReceiptLibrary,
                     workflowActivity: deliveryWorkflowActivity,
                     onResumeWorkflow: { workflowIdentifier in
@@ -848,7 +863,7 @@ struct ContentView: View {
                      .deleteSelected, .moveRejectedToFolder,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
-                     .processVariablesSelected, .processVariablesAll,
+                     .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
@@ -932,6 +947,8 @@ struct ContentView: View {
                     }
                 case .writeAllPendingMetadata:
                     requestWriteAllPendingMetadata()
+                case .transcribeVoiceMemosSelected:
+                    prepareSelectedVoiceMemoBatch()
                 case .openCaptionWorkspace:
                     openCaptionWorkspace()
                 case .renderAndSignSelected:
@@ -1361,6 +1378,56 @@ struct ContentView: View {
         }
 
         mainViewMode = .editing
+    }
+
+    private func prepareSelectedVoiceMemoBatch(imageURLs: [URL]? = nil) {
+        // Right-click preserves an existing multi-selection. Freeze Browser order before any
+        // association or provider check can suspend and the user can change selection.
+        let urls = imageURLs ?? browserViewModel.visibleImages.filter {
+            browserViewModel.selectedImageIDs.contains($0.url) && $0.isImageFile
+        }.map(\.url)
+        guard !voiceMemoBatchModel.isChecking, voiceMemoBatchPreparationTask == nil else { return }
+        if voiceMemoBatchModel.isRunning {
+            isShowingDeadlineStagingActivity = true
+            return
+        }
+        let reviewBusy = metadataViewModel.isSaving || metadataViewModel.isProcessingFolder
+        let setup = FFmpegWhisperSetupModel.shared
+        let providerBusy = setup.isTranscribing
+        voiceMemoBatchPreparationTask = Task {
+            defer { voiceMemoBatchPreparationTask = nil }
+            await setup.restoreSelections()
+            let provider: AutomationVoiceTranscriptionBatchService.Provider?
+            let languageTitle: String
+            switch setup.choice {
+            case .appleSpeech:
+                let availability = await VoiceMemoTranscriptionService().availability(preferredLocale: .current)
+                let locale = availability.selectedLocale ?? .current
+                provider = availability.status == .installed ? .apple(locale) : nil
+                languageTitle = Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
+            case .whisper:
+                await ManagedWhisperSetupModel.shared.refresh()
+                provider = setup.isLanguageValid ? ManagedWhisperSetupModel.shared.provider(language: setup.language,
+                    useGPU: setup.useGPU, translate: setup.translate).map { .whisper($0) } : nil
+                languageTitle = WhisperTranscriptionLanguage.title(for: setup.language) + (setup.translate ? " · Translate into English" : " · Original language")
+            case .customWhisper:
+                provider = setup.isLanguageValid ? setup.provider().map { .whisper($0) } : nil
+                languageTitle = WhisperTranscriptionLanguage.title(for: setup.language) + (setup.translate ? " · Translate into English" : " · Original language")
+            }
+            if !reviewBusy, !providerBusy, provider != nil,
+               (1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(urls.count) {
+                let associations = CaptionVoiceMemoAssociationService()
+                for url in urls {
+                    guard !Task.isCancelled else { return }
+                    _ = try? await associations.associateAutomatically(imageURL: url)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await voiceMemoBatchModel.prepare(imageURLs: urls, provider: provider,
+                providerTitle: setup.choice.title, languageTitle: languageTitle,
+                reviewOrSaveBusy: reviewBusy, providerBusy: providerBusy)
+            if !Task.isCancelled { isShowingVoiceMemoBatch = true }
+        }
     }
 
     private func openCaptionWorkspace() {
@@ -2523,6 +2590,7 @@ struct ContentView: View {
             }
 
             if faceRecognitionViewModel.isScanning
+                || voiceMemoBatchModel.isRunning
                 || !activityHistory.entries.isEmpty
                 || !deliveryReceiptLibrary.receipts.isEmpty
                 || !deliveryWorkflowActivity.workflows.isEmpty
@@ -2533,6 +2601,7 @@ struct ContentView: View {
                     ActivityHistoryButton(
                         history: activityHistory,
                         faceViewModel: faceRecognitionViewModel,
+                        transcriptionModel: voiceMemoBatchModel,
                         receiptLibrary: deliveryReceiptLibrary,
                         workflowActivity: deliveryWorkflowActivity,
                         onResumeWorkflow: { workflowIdentifier in
@@ -2640,7 +2709,7 @@ struct ContentView: View {
                          .deleteSelected, .moveRejectedToFolder,
                          .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                          .uploadSelected, .uploadAll,
-                         .processVariablesSelected, .processVariablesAll,
+                         .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                          .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                          .writeAllPendingMetadata, .openCaptionWorkspace,
                          .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,
@@ -4201,7 +4270,7 @@ struct ContentViewModifiers: ViewModifier {
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
                      .uploadSelected, .uploadAll,
-                     .processVariablesSelected, .processVariablesAll,
+                     .processVariablesSelected, .processVariablesAll, .transcribeVoiceMemosSelected,
                      .showTemplatePalette, .applyTemplateShortcut, .applyDevelopTemplate,
                      .writeAllPendingMetadata, .openCaptionWorkspace,
                      .renderAndSignSelected, .copyIPTCMetadata, .pasteIPTCMetadata,

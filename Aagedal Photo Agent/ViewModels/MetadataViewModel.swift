@@ -409,7 +409,7 @@ final class MetadataViewModel {
             try await VariableMetadataResolver.resolve($0)
         },
         voiceMemoTranscriptContextLoader: @escaping @Sendable (URL) async throws -> VoiceMemoTranscriptVariableContext = { imageURL in
-            try await VoiceMemoTranscriptionService().approvedVariableContext(imageURL: imageURL)
+            try await VoiceMemoTranscriptionService().readyVariableContext(imageURL: imageURL)
         },
         primaryDevelopLifecycle: DevelopPrimaryLifecycleCoordinator = .shared,
         primaryDevelopExecutor: (@Sendable (PrimaryDevelopWriteRequest) async -> PrimaryDevelopWriteResult)? = nil
@@ -2786,7 +2786,7 @@ final class MetadataViewModel {
         batchProcessTask = Task {
             do {
                 let transcriptContext: VoiceMemoTranscriptVariableContext? = if
-                    VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(original)
+                    VariableMetadataResolver.requiresVoiceMemoTranscript(original)
                 { try await voiceMemoTranscriptContextLoader(imageURL) } else { nil }
                 let input = VariableMetadataResolutionInput(metadata: original, imageURL: imageURL,
                     filename: filename, sequenceIndex: sequenceIndex, options: options,
@@ -2916,6 +2916,7 @@ final class MetadataViewModel {
 
     private static func sameVariableRecord(_ first: MetadataSidecar?, _ second: MetadataSidecar?) throws -> Bool {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
         return try encoder.encode(first) == encoder.encode(second)
     }
 
@@ -3322,7 +3323,7 @@ final class MetadataViewModel {
         }
         let transcriptDestinations: [MetadataFieldID]
         let transcriptContext: VoiceMemoTranscriptVariableContext?
-        if VariableMetadataResolver.requiresApprovedVoiceMemoTranscript(local) {
+        if VariableMetadataResolver.requiresVoiceMemoTranscript(local) {
             transcriptDestinations = try VoiceMemoTranscriptVariablePolicy.validateDestinations(in: local)
             transcriptContext = try await voiceMemoTranscriptContextLoader(url)
         } else {
@@ -3452,7 +3453,7 @@ final class MetadataViewModel {
                 }
                 return .init(metadata: iptcMetadataFromDict(dictionary), hasC2PA: TechnicalMetadata.dictHasC2PA(dictionary))
             })
-            // Resolve every source and approval before the first write. Transcript batches are
+            // Resolve every source and transcript before the first write. Transcript batches are
             // all-or-nothing at this admission boundary: one missing/stale approval must not
             // leave an earlier photo silently written before the user sees the failure.
             var plannedRequests: [String: VariableMetadataWriteRequest] = [:]
@@ -3493,14 +3494,13 @@ final class MetadataViewModel {
                 }
             }
 
-            // Revalidate the entire authority set together before either preview publication or
-            // execution. A changed approval invalidates the complete transcript batch.
+            // Revalidate the entire authority set together before execution. A changed transcript invalidates the complete transcript batch.
             if !Task.isCancelled {
                 for request in plannedRequests.values {
                     guard let expected = request.voiceMemoTranscriptContext else { continue }
                     do {
                         let current = try await voiceMemoTranscriptContextLoader(request.imageURL)
-                        guard current == expected else { throw VoiceMemoTranscriptVariableError.approvalChanged }
+                        guard current == expected else { throw VoiceMemoTranscriptVariableError.transcriptChanged }
                     } catch {
                         planningResults[Self.variablePhotoKey(request.imageURL)] = .init(
                             imageURL: request.imageURL,
@@ -3514,7 +3514,7 @@ final class MetadataViewModel {
             let planningWasCancelled = Task.isCancelled || planningResults.values.contains(where: \.wasCancelled)
             let planningFailures = planningResults.values.filter { !$0.completed }
             if transcriptBatch && (!planningFailures.isEmpty || planningWasCancelled) {
-                let refusal = "No metadata was written because every photo in a voice-memo transcript batch must pass preview validation together."
+                let refusal = "No metadata was written because every photo in a voice-memo transcript batch must pass validation together."
                 var refusedResults: [VariableMetadataPhotoOutcome] = []
                 for url in urls {
                     let key = Self.variablePhotoKey(url)
@@ -3532,34 +3532,10 @@ final class MetadataViewModel {
                     results: refusedResults, unattemptedURLs: [], wasCancelled: planningWasCancelled)
                 variableBatchOutcome = outcome
                 variableProcessingHadFailures = true
-                variableProcessingStatus = "Voice-memo transcript preview refused; 0 photos were written."
+                variableProcessingStatus = "Voice-memo transcript processing refused; 0 photos were written."
                 AccessibilityAnnouncementCenter.post(.failure(.voiceMemoTranscriptRefused))
                 if metadataLoadRequestID == loadID, selectedURLs == selected, currentFolderURL == folder,
                    editingMetadata == edited { saveError = outcome.attention?.message }
-                return
-            }
-
-            if transcriptBatch && !voiceMemoPreviewConfirmed {
-                let requests = urls.compactMap { plannedRequests[Self.variablePhotoKey($0)] }
-                let previewID = UUID()
-                let rows = requests.map { request in
-                    let transcriptFields = Set(request.voiceMemoTranscriptDestinationFields)
-                    let fields = MetadataFieldID.allCases.compactMap { field -> VoiceMemoVariablePreviewField? in
-                        let before = field.textValue(in: request.originalMetadata) ?? ""
-                        let after = field.textValue(in: request.sidecar.metadata) ?? ""
-                        guard before != after else { return nil }
-                        return .init(field: field, before: before, after: after,
-                            isTranscriptDestination: transcriptFields.contains(field))
-                    }
-                    return VoiceMemoVariablePreviewRow(imageURL: request.imageURL,
-                        writeDestination: request.requestedMode.displayName, fields: fields)
-                }
-                pendingVoiceMemoVariablePreviewState = .init(id: previewID, folderURL: folder,
-                    requestIDs: requests.map(\.id))
-                voiceMemoVariablePreview = .init(id: previewID, folderURL: folder,
-                    action: requests.first?.voiceMemoVariablePreviewAction ?? previewAction, rows: rows)
-                variableProcessingStatus = "Review the exact voice-memo transcript changes before writing."
-                variableProcessingHadFailures = false
                 return
             }
 
@@ -3584,7 +3560,7 @@ final class MetadataViewModel {
                         if let expected = request.voiceMemoTranscriptContext {
                             let current = try await voiceMemoTranscriptContextLoader(url)
                             guard current == expected else {
-                                throw VoiceMemoTranscriptVariableError.approvalChanged
+                                throw VoiceMemoTranscriptVariableError.transcriptChanged
                             }
                         }
                         let editorCheckpoint = retainedVariableEditorCheckpoints[request.id]
@@ -4879,6 +4855,13 @@ final class MetadataViewModel {
            currentFolderURL == captured.request.folderURL {
             // The durable Caption barrier may complete inline before MainActor callbacks can run.
             // Accept only this exact captured revision; a replay rebased onto newer data must reload.
+            if let installed = captured.request.receipt.verifiedSidecar {
+                var intended = captured.request.sidecar
+                intended.lastModified = installed.lastModified
+                // Accept timestamp canonicalization only. A replay that incorporated other
+                // editorial changes still requires reconciliation with the visible editor.
+                if (try? Self.sameVariableRecord(intended, installed)) == true { return installed }
+            }
             return captured.request.sidecar
         }
         return currentHistoryRecord

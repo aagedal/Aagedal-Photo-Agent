@@ -377,6 +377,12 @@ final class ThumbnailCollectionView: NSCollectionView {
             menu.addItem(editorItem)
         }
 
+        let transcriptionItem = NSMenuItem(title: "Transcribe Voice Memos…", action: #selector(contextTranscribeVoiceMemos(_:)), keyEquivalent: "")
+        transcriptionItem.target = self
+        transcriptionItem.isEnabled = (1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(viewModel.selectedImages.count)
+            && viewModel.selectedImages.allSatisfy(\.isImageFile)
+        menu.addItem(transcriptionItem)
+
         // Copy File Path(s)
         let copyItem = NSMenuItem(title: "Copy File Path(s)", action: #selector(contextCopyFilePaths(_:)), keyEquivalent: "")
         copyItem.target = self
@@ -530,6 +536,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     // MARK: - Context Menu Actions
+
+    @objc private func contextTranscribeVoiceMemos(_ sender: NSMenuItem) {
+        commandRouter?.send(.transcribeVoiceMemosSelected)
+    }
+
 
     @objc private func contextRevealInFinder(_ sender: Any?) {
         guard let viewModel else { return }

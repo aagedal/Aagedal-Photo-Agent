@@ -223,7 +223,7 @@ struct AutomationTranscriptionReviewView: View {
                 Text("Language: \(configuration.language). Translation: \(configuration.translate ? "English" : "Original language"). GPU: \(configuration.useGPU ? "Requested" : "Off"). Timeout: \(configuration.timeoutSeconds.formatted()) seconds.")
                     .accessibilityIdentifier("automation.transcriptionExecutionOptions")
             }
-            Text("This exact provider and the ordered photos above will be checked again before admission. Existing transcript reviews are kept. Each generated transcript is saved as an editable app draft; caption approval remains separate.")
+            Text("This exact provider and the ordered photos above will be checked again before admission. Existing transcript reviews are kept. Each generated transcript is saved as an editable app draft; transcripts are ready for metadata variables.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("I consent to local transcription of these ordered photos using the exact provider, model and options shown.", isOn: $model.executionConsent)
                 .toggleStyle(.checkbox)

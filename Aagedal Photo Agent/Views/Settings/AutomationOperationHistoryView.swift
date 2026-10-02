@@ -105,7 +105,7 @@ struct AutomationOperationHistoryView: View {
         switch record.outcome {
         case .verified:
             if record.kind == .voiceTranscription {
-                return "Editable transcript drafts saved and verified. Drafts remain unapproved; IPTC metadata is unchanged."
+                return "Editable transcript drafts saved and verified. Saved text is ready for metadata variables; IPTC metadata is unchanged."
             }
             return record.kind == .iptcDraft ? "Pending draft saved and verified; not published to the photo or XMP." : "Completed and verified."
         case .failed: return "Failed or refused." + retainedTranscriptDrafts(record)
@@ -124,7 +124,7 @@ struct AutomationOperationHistoryView: View {
         guard record.kind == .voiceTranscription, let progress = record.batchProgress else { return "" }
         let saved = progress.items.filter { $0.outcome == .draftSaved }.count
         let drafts = saved == 1 ? "1 editable transcript draft remains saved" : "\(saved) editable transcript drafts remain saved"
-        return " \(drafts). Drafts remain unapproved; IPTC metadata is unchanged."
+        return " \(drafts). Saved text is ready for metadata variables; IPTC metadata is unchanged."
     }
 
     nonisolated static func recoveryGuidance(_ record: AutomationOperationRegistry.Record) -> String {

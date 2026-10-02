@@ -148,7 +148,7 @@ struct PresetVariableInterpolator: Sendable {
     /// - `{gps:city}` / `{gps:country}` — reverse-geocoded place names
     /// - `{seq}` — 1-based sequence number for batch processing
     /// - `{seq:N}` — zero-padded sequence number (e.g., `{seq:3}` produces "001", "002", …)
-    /// - `{voiceMemoTranscript}` — reviewed text from an explicitly approved, exact-audio-bound
+    /// - `{voiceMemoTranscript}` — saved text from an exact-audio-bound
     ///   voice-memo transcript context. Without that context the token remains unresolved.
     /// - `{field:FIELDNAME}` — value from existing metadata (case-insensitive, matches key or label)
     func resolve(

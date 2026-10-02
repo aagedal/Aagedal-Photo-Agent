@@ -76,7 +76,7 @@ struct VoiceMemoVariablePreviewView: View {
             }
             .frame(minHeight: 220, maxHeight: 520)
 
-            Text("Every approved transcript and associated WAV will be checked again before the batch starts. If any photo fails that check, no photo in this transcript batch is written.")
+            Text("Every saved transcript and associated WAV will be checked again before the batch starts. If any photo fails that check, no photo in this transcript batch is written.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
