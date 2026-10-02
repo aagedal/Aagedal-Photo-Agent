@@ -1425,6 +1425,21 @@ receipt/terminal-manifest crash window on relaunch.
 
 ## Phase 5A — local MCP automation and FFmpeg Whisper transcription
 
+**Cycle 121 continuation (2026-10-02):** The helper now exposes
+`open_voice_transcription_review` for exact original request/epoch handles. A private Unix socket
+checks same-user kernel audit tokens, Apple-anchored signatures, application team, executable IDs
+and exact current bundle pairing in both directions. A bounded greeting and receipt keep peer
+credentials available through final checks. The app independently revalidates awaiting intent and
+the native UI inspects it again with prior execution consent cleared. Linked requests return only
+an exact retained operation handle, never completion or a replay. Native consent remains separate;
+no provider configuration, paths, transcript text or execution capability is serialized. Real signed
+transport positives/refusals and native presentation are separately tested; their combination does
+not qualify the actual installed app/helper pipeline. Speech cancellation now awaits one shared
+teardown task across analysis, finalization and result collection. Direct helper execution, actual
+provider/device and signed lifecycle acceptance, other executors and whole Phase 5A gates remain
+open. See [cycle 121 evidence](release/cycle-121-authenticated-native-review-2026-10-02.md) and
+[ADR-006](adr-006-authenticated-native-review-handoff.md).
+
 **Cycle 120 continuation (2026-10-02):** Automation Settings now connects the exact native
 provider/rooted session binding to explicit provider review, fresh consent and one durably linked
 operation. Whole-set kernel leases, original directory identities and source/WAV/relationship
