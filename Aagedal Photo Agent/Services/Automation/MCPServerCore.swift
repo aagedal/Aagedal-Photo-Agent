@@ -695,6 +695,8 @@ nonisolated struct MCPAutomationFacade: Sendable {
     /// witness until final whole-set validation and the bounded private-plan publication.
     /// The callback may write private coordination only; it must never change photo inputs.
     func withVoiceMemoBatch<Value>(paths: [String],
+                                  reservations: [MCPProcessReservationLease]? = nil,
+                                  retainingWitnesses: (([MCPVoiceMemoAdmission.Witness]) throws -> Void)? = nil,
                                   body: ([[String: MCPJSONValue]]) throws -> Value) throws -> Value {
         guard !paths.isEmpty, paths.count <= 8 else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
         let configuration = try authorizationStore.load()
@@ -707,9 +709,17 @@ nonisolated struct MCPAutomationFacade: Sendable {
             }
         }
         var leases: [Int: MCPProcessReservationLease] = [:]
-        defer { for lease in leases.values { lease.release() } }
+        defer { if reservations == nil { for lease in leases.values { lease.release() } } }
         let order = targets.indices.sorted { targets[$0].url.path < targets[$1].url.path }
-        for index in order { leases[index] = try MCPProcessReservation.acquirePhoto(targets[index].url) }
+        if let reservations {
+            guard reservations.count == targets.count else { throw MCPAutomationReadError.unsafeCarrier }
+            for index in targets.indices {
+                guard reservations[index].coversPhoto(targets[index].url) else { throw MCPAutomationReadError.unsafeCarrier }
+                leases[index] = reservations[index]
+            }
+        } else {
+            for index in order { leases[index] = try MCPProcessReservation.acquirePhoto(targets[index].url) }
+        }
         var values: [Int: [String: MCPJSONValue]] = [:]
         var validators: [Int: () throws -> Void] = [:]
         var witnesses: [Int: MCPVoiceMemoAdmission.Witness] = [:]
@@ -719,6 +729,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
             if position == order.count {
                 for index in order { try validators[index]?(); try witnesses[index]?.requireUnchanged(authorizationStore: authorizationStore) }
                 guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                try retainingWitnesses?(try targets.indices.map { index in
+                    guard let witness = witnesses[index] else { throw MCPAutomationReadError.photoChanged }
+                    return witness
+                })
                 result = try body(try targets.indices.map { index in
                     guard let value = values[index] else { throw MCPAutomationReadError.photoChanged }
                     return value
@@ -757,6 +771,13 @@ nonisolated struct MCPAutomationFacade: Sendable {
         try retain(0, bytes: 0)
         guard let result else { throw MCPAutomationReadError.photoChanged }
         return result
+    }
+
+    /// Kernel leases and anchored directories survive asynchronous native recognition.
+    /// No in-process mutex is held across an await. Every synchronous boundary checks
+    /// the original authority, ancestors and exact complete carrier set again.
+    func retainVoiceMemoBatch(paths: [String]) throws -> MCPRetainedVoiceMemoBatch {
+        try MCPRetainedVoiceMemoBatch(facade: self, paths: paths)
     }
 
     func capturePhotoSnapshot(path: String) throws -> MCPPhotoCarrierSnapshot {
@@ -798,6 +819,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
     @discardableResult
     func installPendingDraft(data: Data, expected: MCPPhotoCarrierSnapshot,
                              reservation: MCPProcessReservationLease,
+                             afterPrepareDirectory: (@Sendable (Int32) throws -> Void)? = nil,
                              beforeInstall: @Sendable () throws -> Void = {},
                              beforeMutation: @Sendable (MCPPreparedXMPIdentity) throws -> Void = { _ in },
                              afterInstall: (@Sendable (MCPPhotoCarrierSnapshot) throws -> Void)? = nil) throws -> URL {
@@ -828,6 +850,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         try validate()
         var privateDirectory = try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(
             name: ".photo_metadata", in: directory.descriptor)
+        let createsPrivateDirectory = privateDirectory == nil
         if privateDirectory == nil {
             guard Darwin.mkdirat(directory.descriptor, ".photo_metadata", 0o700) == 0 else {
                 throw MCPAutomationReadError.photoChanged
@@ -837,6 +860,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
         }
         guard let destinationDirectory = privateDirectory else { throw MCPAutomationReadError.unsafeCarrier }
         defer { _ = Darwin.close(destinationDirectory) }
+        if createsPrivateDirectory { try afterPrepareDirectory?(destinationDirectory) }
         let currentName = "\(target.url.lastPathComponent).meta.json"
         let legacyName = "\(target.url.deletingPathExtension().lastPathComponent).meta.json"
         var currentEntry = stat()
@@ -1255,6 +1279,187 @@ nonisolated struct MCPAutomationFacade: Sendable {
 
 /// Opens each ancestor relative to the granted root. An absolute carrier path can otherwise
 /// follow a retargeted ancestor between authorization and the actual read.
+/// Session-only native execution authority. The lock serializes short filesystem
+/// transactions, never asynchronous provider work. Only a verified create-only
+/// transcript installation may advance an owned app carrier baseline.
+nonisolated final class MCPRetainedVoiceMemoBatch: @unchecked Sendable {
+    private let lock = NSRecursiveLock()
+    private let facade: MCPAutomationFacade
+    private let paths: [String]
+    private let configuration: MCPAuthorizationConfiguration
+    private let targets: [MCPAuthorizedTarget]
+    private var leases: [MCPProcessReservationLease] = []
+    private var directories: [MCPAnchoredPhotoDirectory] = []
+    private var privateDirectories: [Int: Int32] = [:]
+    private var sourceStats: [stat] = []
+    private var witnesses: [MCPVoiceMemoAdmission.Witness] = []
+    private var values: [[String: MCPJSONValue]] = []
+    private var released = false
+
+    fileprivate init(facade: MCPAutomationFacade, paths: [String]) throws {
+        guard !paths.isEmpty, paths.count <= 8 else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
+        self.facade = facade
+        configuration = try facade.authorizationStore.load()
+        targets = try paths.map { try facade.authorizationStore.authorizeExistingPath($0) }
+        self.paths = targets.map { $0.url.path }
+        var keys = Set<String>()
+        guard configuration.isEnabled, targets.allSatisfy({ target in
+            !target.isDirectory && MCPPhotoFormatCatalog.fileExtensions.contains(target.url.pathExtension.lowercased())
+                && keys.insert(target.url.deletingPathExtension().path.lowercased()).inserted
+        }) else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidArguments }
+        do {
+            var ordered: [Int: MCPProcessReservationLease] = [:]
+            for index in targets.indices.sorted(by: { targets[$0].url.path < targets[$1].url.path }) {
+                let lease = try MCPProcessReservation.acquirePhoto(targets[index].url)
+                ordered[index] = lease
+                leases.append(lease)
+            }
+            leases = targets.indices.compactMap { ordered[$0] }
+            for (index, target) in targets.enumerated() {
+                guard let root = configuration.roots.first(where: { $0.id == target.rootID }) else {
+                    throw MCPAuthorizationError.rootChanged
+                }
+                let directory = try MCPAnchoredPhotoDirectory(root: root, target: target)
+                directories.append(directory)
+                var source = stat()
+                guard Darwin.fstatat(directory.descriptor, target.url.lastPathComponent, &source, AT_SYMLINK_NOFOLLOW) == 0 else {
+                    throw MCPAutomationReadError.photoChanged
+                }
+                sourceStats.append(source)
+                privateDirectories[index] = try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(
+                    name: ".photo_metadata", in: directory.descriptor)
+            }
+            values = try facade.withVoiceMemoBatch(paths: self.paths, reservations: leases,
+                retainingWitnesses: { self.witnesses = $0 }) { $0 }
+            try validate()
+        } catch { release(); throw error }
+    }
+
+    func withValidatedInputs<Value>(_ body: ([[String: MCPJSONValue]]) throws -> Value) throws -> Value {
+        try lock.withLock {
+            try requireAnchors()
+            return try facade.withVoiceMemoBatch(paths: paths, reservations: leases) { current in
+                guard current == values else { throw MCPVoiceTranscriptionPlanStore.Failure.stalePlan }
+                let result = try body(current)
+                try requireAnchors()
+                return result
+            }
+        }
+    }
+
+    func validate() throws { try withValidatedInputs { _ in } }
+
+    /// Cheap liveness/cancellation polling checks authority and retained directory
+    /// identities. Whole carrier hashes remain mandatory at every effect boundary.
+    func checkAuthority() throws { try lock.withLock { try requireAnchors() } }
+
+    func snapshot(for photoURL: URL) throws -> MCPPhotoCarrierSnapshot {
+        try lock.withLock {
+            try validate()
+            let index = try index(for: photoURL)
+            return try facade.withPhotoSnapshot(path: paths[index], reservation: leases[index]) { snapshot in
+                guard snapshot.target == targets[index],
+                      values[index]["sourceRevision"] == .string(snapshot.sourceRevision),
+                      values[index]["appSidecarRevision"] == .string(snapshot.appSidecarRevision),
+                      values[index]["xmpSidecarRevision"] == .string(snapshot.xmpSidecarRevision) else {
+                    throw MCPVoiceTranscriptionPlanStore.Failure.stalePlan
+                }
+                try requireAnchors()
+                return snapshot
+            }
+        }
+    }
+
+    /// App callers supply an exact create-only transcript carrier. Installation keeps
+    /// the existing JSON object byte semantics and every other field/extension intact.
+    func installDraft(data: Data, photoURL: URL,
+                      beforeInstall: @escaping @Sendable () throws -> Void = {}) throws {
+        try lock.withLock {
+            let index = try index(for: photoURL)
+            let expected = try snapshot(for: photoURL)
+            guard let replacement = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  replacement["voiceMemoTranscript"] is [String: Any] else { throw MCPAutomationReadError.unsafeCarrier }
+            if let oldData = expected.appSidecarBytes {
+                guard let original = try JSONSerialization.jsonObject(with: oldData) as? [String: Any],
+                      original["voiceMemoTranscript"] == nil else { throw MCPAutomationReadError.unsafeCarrier }
+                var remaining = replacement; remaining.removeValue(forKey: "voiceMemoTranscript")
+                guard try JSONSerialization.data(withJSONObject: original, options: [.sortedKeys])
+                        == JSONSerialization.data(withJSONObject: remaining, options: [.sortedKeys]) else {
+                    throw MCPAutomationReadError.unsafeCarrier
+                }
+            }
+            _ = try facade.installPendingDraft(data: data, expected: expected, reservation: leases[index],
+                afterPrepareDirectory: { [self] descriptor in
+                    // Only this successful mkdirat may satisfy retained absence. All
+                    // photos sharing the folder advance to the same owned generation.
+                    for peer in targets.indices where targets[peer].url.deletingLastPathComponent()
+                        == targets[index].url.deletingLastPathComponent() {
+                        guard privateDirectories[peer] == nil else { throw MCPAutomationReadError.photoChanged }
+                        try directories[peer].requireSameAncestors()
+                        try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
+                            in: directories[peer].descriptor, descriptor: descriptor)
+                        let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+                        guard duplicate >= 0 else { throw MCPAutomationReadError.unsafeCarrier }
+                        privateDirectories[peer] = duplicate
+                    }
+                },
+                beforeInstall: { [self] in try beforeInstall(); try validate() },
+                afterInstall: { [self] installed in
+                    guard installed.sourceRevision == expected.sourceRevision,
+                          installed.xmpSidecarRevision == expected.xmpSidecarRevision,
+                          installed.appSidecarBytes == data else { throw MCPAutomationReadError.photoChanged }
+                    values[index]["appSidecarRevision"] = .string(installed.appSidecarRevision)
+                    if privateDirectories[index] == nil {
+                        privateDirectories[index] = try MCPPhotoRevisionEvidence.openSafeDirectoryIfPresent(
+                            name: ".photo_metadata", in: directories[index].descriptor)
+                    }
+                    try validate()
+                })
+        }
+    }
+
+    private func index(for photoURL: URL) throws -> Int {
+        guard let index = targets.firstIndex(where: { $0.url == photoURL }) else { throw MCPAutomationReadError.unsafeCarrier }
+        return index
+    }
+
+    private func requireAnchors() throws {
+        try Task.checkCancellation()
+        guard !released, try facade.authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+        for index in targets.indices {
+            guard leases[index].coversPhoto(targets[index].url),
+                  try facade.authorizationStore.authorizeExistingPath(paths[index]) == targets[index] else {
+                throw MCPAuthorizationError.rootChanged
+            }
+            try directories[index].requireSameAncestors()
+            try MCPPhotoRevisionEvidence.requireSameFile(name: targets[index].url.lastPathComponent,
+                in: directories[index].descriptor, snapshot: sourceStats[index])
+            try witnesses[index].requireUnchanged(authorizationStore: facade.authorizationStore)
+            if let descriptor = privateDirectories[index] {
+                try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
+                    in: directories[index].descriptor, descriptor: descriptor)
+            } else {
+                try MCPPhotoRevisionEvidence.requireAbsent(name: ".photo_metadata", in: directories[index].descriptor)
+            }
+        }
+    }
+
+    func release() {
+        lock.withLock {
+            guard !released else { return }
+            released = true
+            for descriptor in privateDirectories.values { _ = Darwin.close(descriptor) }
+            privateDirectories.removeAll()
+            witnesses.removeAll()
+            sourceStats.removeAll()
+            directories.removeAll()
+            for lease in leases.reversed() { lease.release() }
+            leases.removeAll()
+        }
+    }
+    deinit { release() }
+}
+
 nonisolated fileprivate final class MCPAnchoredPhotoDirectory {
     var descriptor: Int32 { descriptors[descriptors.count - 1] }
     private let rootPath: String
@@ -1446,7 +1651,7 @@ nonisolated enum MCPVoiceMemoAdmission {
         }
     }
 
-    fileprivate final class Witness {
+    final class Witness {
         let value: [String: MCPJSONValue]
         private let directory: MCPAnchoredPhotoDirectory
         private let relationshipName: String
@@ -2278,17 +2483,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_voice_transcription_review_capacity",
-                description: "Initialize private transcription review intent storage and return its mandatory requestEpoch and bounded capacity. Requires Enable local automation. Creates coordination storage only. Get this epoch before submitting a new transcription intent; retries keep the original epoch. Native execution, consent and operation linkage remain unavailable. No automatic eviction or replay.",
+                description: "Initialize private transcription review intent storage and return its mandatory requestEpoch and bounded capacity. Requires Enable local automation. Creates coordination storage only. Get this epoch before submitting a new transcription intent; retries keep the original epoch. Native Settings can separately review the exact provider, obtain explicit consent and admit one linked operation. Helper execution remains unavailable. No automatic eviction or replay.",
                 properties: [:], required: [], readOnly: false
             ),
             definition(
                 name: "list_voice_transcription_review_requests",
-                description: "List retained bounded transcription review intent status without revalidating expired plans. Requires Enable local automation. Reports canonical requestID/requestEpoch handles and immutable intent digests; grants no consent or execution and creates no transcript draft. Native execution and operation linkage remain unavailable.",
+                description: "List retained bounded transcription review intent status without revalidating expired plans. Requires Enable local automation. Reports canonical requestID/requestEpoch handles and immutable intent digests; grants no consent or execution and creates no transcript draft. Native Settings can separately consent and admit linked work; this helper cannot start it.",
                 properties: [:], required: []
             ),
             definition(
                 name: "request_voice_transcription_review",
-                description: "Persist intent to review one exact five-minute retained transcription preview. Requires Enable local automation and canonical lowercase requestID, requestEpoch from get_voice_transcription_review_capacity, and planID. New intent revalidates the whole ordered photo/WAV/relationship set and authorization while its reservations remain held. Exact retries return retained status after plan expiry; reuse the same ID, epoch and plan. Stores immutable options and revisions, grants no consent, downloads no model, saves no draft and executes no transcription. Native inspection is available in Automation settings; consent, native execution and operation linkage for these requests remain unavailable.",
+                description: "Persist intent to review one exact five-minute retained transcription preview. Requires Enable local automation and canonical lowercase requestID, requestEpoch from get_voice_transcription_review_capacity, and planID. New intent revalidates the whole ordered photo/WAV/relationship set and authorization while its reservations remain held. Exact retries return retained status after plan expiry; reuse the same ID, epoch and plan. Stores immutable options and revisions, grants no consent, downloads no model, saves no draft and executes no transcription. Automation settings can inspect the intent, review the exact native provider, obtain explicit consent and admit one linked operation. This helper cannot grant consent or start execution.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
                     "planID": .object(["type": .string("string"), "format": .string("uuid")])],
@@ -2296,14 +2501,14 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             ),
             definition(
                 name: "get_voice_transcription_review_request",
-                description: "Inspect retained transcription intent with its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Does not revalidate a plan, infer executor liveness or grant consent. Native admission, execution and operation linkage remain unavailable.",
+                description: "Inspect retained transcription intent with its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Does not revalidate a plan, infer executor liveness or grant consent. A linked operationID can be inspected with get_operation_status; missing history does not prove completion. Only native Settings can grant execution consent and admit linked work.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID", "requestEpoch"]
             ),
             definition(
                 name: "cancel_voice_transcription_review_request",
-                description: "Cancel an awaiting transcription review intent using its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Cancellation is durable and idempotent; no executor has been admitted through this protocol. Retains immutable intent and grants no consent or execution. Epoch protects stale handles after explicit native capacity retirement.",
+                description: "Cancel an awaiting transcription intent or request cooperative cancellation of admitted or linked native work using its original lowercase canonical requestID and requestEpoch. Requires Enable local automation. Cancellation is durable and idempotent; a request does not confirm executor teardown or rollback. Retains immutable intent and grants no consent or execution. Epoch protects stale handles after explicit native capacity retirement.",
                 properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
                     "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
                 required: ["requestID", "requestEpoch"], readOnly: false
@@ -2569,12 +2774,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     value = ["requestProtocolVersion": .integer(1), "requestEpoch": .string(capacity.epoch.uuidString.lowercased()),
                         "retainedCount": .integer(Int64(capacity.retainedCount)), "maximumRecords": .integer(Int64(capacity.maximumRecords)),
                         "cancelledBeforeAdmissionCount": .integer(Int64(capacity.cancelledBeforeAdmissionCount)),
-                        "cleanupAvailableInNativeApp": .bool(true), "nativeAdmissionAvailable": .bool(false),
+                        "cleanupAvailableInNativeApp": .bool(true), "nativeAdmissionAvailable": .bool(true),
                         "executionAvailable": .bool(false), "consentGranted": .bool(false), "commitAvailable": .bool(false)]
                 } else if name == "list_voice_transcription_review_requests" {
                     value = ["requestProtocolVersion": .integer(1),
                         "requests": .array(try requests.records().map { .object(voiceTranscriptionReviewRequestValue($0)) }),
-                        "nativeAdmissionAvailable": .bool(false), "executionAvailable": .bool(false), "consentGranted": .bool(false)]
+                        "nativeAdmissionAvailable": .bool(true), "executionAvailable": .bool(false), "consentGranted": .bool(false)]
                 } else {
                     let expected: Set<String> = name == "request_voice_transcription_review" ? ["requestID", "requestEpoch", "planID"] : ["requestID", "requestEpoch"]
                     guard Set(arguments.keys) == expected, let id = canonicalUUID(arguments["requestID"]),
@@ -2588,7 +2793,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                             plans: voiceTranscriptionPlans, facade: automationFacade)
                     } else {
                         record = try name == "cancel_voice_transcription_review_request"
-                            ? requests.cancelBeforeAdmission(id, requestEpoch: epoch) : requests.inspect(id, requestEpoch: epoch)
+                            ? requests.cancel(id, requestEpoch: epoch) : requests.inspect(id, requestEpoch: epoch)
                     }
                     value = voiceTranscriptionReviewRequestValue(record)
                 }
@@ -2737,8 +2942,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "nativeReviewRequestProtocolVersion": .integer(2),
                     "voiceTranscriptionReviewRequestsAvailable": .bool(true),
                     "voiceTranscriptionReviewRequestProtocolVersion": .integer(1),
-                    "voiceTranscriptionReviewNativeAdmissionAvailable": .bool(false),
-                    "voiceTranscriptionReviewOperationLinkageAvailable": .bool(false),
+                    "voiceTranscriptionReviewNativeAdmissionAvailable": .bool(true),
+                    "voiceTranscriptionReviewOperationLinkageAvailable": .bool(true),
                     "helperCommitAvailable": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])
@@ -2955,8 +3160,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 (record.state == .admitted ? "unknown" : "not-admitted")),
             "admittedAt": record.admittedAt.map { .string($0.ISO8601Format()) } ?? .null,
             "linkedAt": record.linkedAt.map { .string($0.ISO8601Format()) } ?? .null,
-            "nativeAdmissionAvailable": .bool(false), "executionAvailable": .bool(false),
-            "operationLinkageAvailable": .bool(false), "operationID": record.operationID.map { .string($0) } ?? .null,
+            "nativeAdmissionAvailable": .bool(true), "executionAvailable": .bool(false),
+            "operationLinkageAvailable": .bool(true), "operationID": record.operationID.map { .string($0) } ?? .null,
             "commitAvailable": .bool(false), "consentGranted": .bool(false)]
     }
 

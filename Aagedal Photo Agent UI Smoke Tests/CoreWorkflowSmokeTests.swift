@@ -90,15 +90,34 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         try exerciseTranscriptionCapacity(changedEpoch: true)
     }
 
+    /// SwiftUI Settings can remain open behind the main window after folder loading.
+    /// Raise its known titlebar before XCTest attempts to scroll any form controls.
+    @MainActor
+    private func showAutomationTranscriptionRequests() -> XCUIElement {
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        func focusTitlebar() {
+            settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+                .withOffset(CGVector(dx: 0, dy: 16)).click()
+        }
+        focusTitlebar()
+        let refresh = settings.buttons["automation.refreshTranscriptionRequests"]
+        if !refresh.exists {
+            let category = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
+            XCTAssertTrue(category.waitForExistence(timeout: 8)); category.click()
+        }
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        focusTitlebar()
+        refresh.click()
+        return settings
+    }
+
     @MainActor
     private func exerciseTranscriptionCapacity(changedEpoch: Bool) throws {
         let folder = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: folder, transcriptionReview: true, transcriptionReviewCapacity: true)
         app.typeKey(",", modifierFlags: .command)
-        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
-        app.staticTexts["Automation"].click()
-        let refresh = app.buttons["automation.refreshTranscriptionRequests"]
-        XCTAssertTrue(refresh.waitForExistence(timeout: 8)); refresh.click()
+        let settings = showAutomationTranscriptionRequests()
         let manifestURL = folder.appendingPathComponent("transcription-review-manifest.json")
         let ready = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: manifestURL.path) }, evaluatedWith: nil)
         wait(for: [ready], timeout: 10)
@@ -118,22 +137,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
                 folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")]
         }
         let originalBytes = try carrierURLs.map { try Data(contentsOf: $0) }
-        let cancel = app.buttons["automation.cancelTranscriptionRequest." + cancelledID]
+        let cancel = settings.buttons["automation.cancelTranscriptionRequest." + cancelledID]
         XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.click()
-        let status = app.staticTexts["automation.transcriptionRequestStatus." + cancelledID]
+        let status = settings.staticTexts["automation.transcriptionRequestStatus." + cancelledID]
         let cancelled = expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("Cancelled") }, evaluatedWith: nil)
         wait(for: [cancelled], timeout: 8)
         let before = try archive(), beforeBytes = try Data(contentsOf: archiveURL)
         let beforeRecords = try XCTUnwrap(before["records"] as? [[String: Any]])
         let retained = try XCTUnwrap(beforeRecords.first { $0["requestID"] as? String == retainedID }) as NSDictionary
-        let capacityButton = app.buttons["automation.inspectTranscriptionRequestCapacity"]
+        let capacityButton = settings.buttons["automation.inspectTranscriptionRequestCapacity"]
         XCTAssertTrue(capacityButton.waitForExistence(timeout: 8)); capacityButton.click()
-        let capacity = app.staticTexts["automation.transcriptionRequestCapacity"]
+        let capacity = settings.staticTexts["automation.transcriptionRequestCapacity"]
         XCTAssertTrue(capacity.waitForExistence(timeout: 8))
         XCTAssertTrue(visibleText(capacity).contains("Cancelled before admission: 1"))
-        let cleanup = app.buttons["automation.removeCancelledTranscriptionRequests"]
+        let cleanup = settings.buttons["automation.removeCancelledTranscriptionRequests"]
         XCTAssertTrue(cleanup.isEnabled); cleanup.click()
-        let dialog = app.sheets.firstMatch
+        let dialog = settings.sheets.firstMatch
         XCTAssertTrue(dialog.waitForExistence(timeout: 5)); dialog.buttons["Cancel"].click()
         XCTAssertEqual(try Data(contentsOf: archiveURL), beforeBytes)
         cleanup.click(); XCTAssertTrue(dialog.waitForExistence(timeout: 5))
@@ -148,7 +167,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archiveURL.path)
         }
         dialog.buttons["Remove cancelled transcription requests"].click()
-        let message = app.staticTexts["automation.transcriptionRequestCapacityMessage"]
+        let message = settings.staticTexts["automation.transcriptionRequestCapacityMessage"]
         XCTAssertTrue(message.waitForExistence(timeout: 8))
         if changedEpoch {
             XCTAssertTrue(visibleText(message).contains("Cleanup could not be confirmed"))
@@ -164,11 +183,9 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let persisted = try Data(contentsOf: archiveURL)
         app.terminate(); app.launch()
         app.typeKey(",", modifierFlags: .command)
-        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8)); app.staticTexts["Automation"].click()
-        XCTAssertTrue(app.buttons["automation.refreshTranscriptionRequests"].waitForExistence(timeout: 8))
-        app.buttons["automation.refreshTranscriptionRequests"].click()
-        XCTAssertTrue(app.staticTexts["automation.transcriptionRequestStatus." + retainedID].waitForExistence(timeout: 8))
-        XCTAssertEqual(app.staticTexts["automation.transcriptionRequestStatus." + cancelledID].exists, changedEpoch)
+        _ = showAutomationTranscriptionRequests()
+        XCTAssertTrue(settings.staticTexts["automation.transcriptionRequestStatus." + retainedID].waitForExistence(timeout: 8))
+        XCTAssertEqual(settings.staticTexts["automation.transcriptionRequestStatus." + cancelledID].exists, changedEpoch)
         XCTAssertEqual(try Data(contentsOf: archiveURL), persisted)
         XCTAssertEqual(try carrierURLs.map { try Data(contentsOf: $0) }, originalBytes)
         for path in paths {
@@ -178,14 +195,170 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeHelperTranscriptionRequiresConcreteProviderConsentAndSavesDrafts() throws {
+        try exerciseNativeHelperTranscription(mode: "complete", changeAfterReview: false)
+    }
+
+    @MainActor
+    func testNativeHelperTranscriptionRefusesChangedSourceAfterConsent() throws {
+        try exerciseNativeHelperTranscription(mode: "complete", changeAfterReview: true)
+    }
+
+    @MainActor
+    func testNativeHelperTranscriptionSurvivesSettingsDismissalAndCancelsRetainedWork() throws {
+        try exerciseNativeHelperTranscription(mode: "blockSecond", changeAfterReview: false)
+    }
+
+    @MainActor
+    private func exerciseNativeHelperTranscription(mode: String, changeAfterReview: Bool) throws {
+        let folder = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true, transcriptionReviewExecution: mode)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = showAutomationTranscriptionRequests()
+        let manifestURL = folder.appendingPathComponent("transcription-review-manifest.json")
+        let ready = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: manifestURL.path) }, evaluatedWith: nil)
+        wait(for: [ready], timeout: 10)
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        let id = try XCTUnwrap(manifest["requestID"] as? String)
+        let paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        let originals = try paths.map { try Data(contentsOf: URL(fileURLWithPath: $0)) }
+        let carriers = paths.flatMap { path -> [URL] in
+            let photo = URL(fileURLWithPath: path)
+            return [photo, folder.appendingPathComponent(photo.lastPathComponent.contains("-2-") ? "transcription-review-2.wav" : "transcription-review-1.wav"),
+                folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")]
+        }
+        let carrierBytes = try carriers.map { try Data(contentsOf: $0) }
+        let requestURL = folder.appendingPathComponent("transcription-review-requests/operations.json")
+        let operationURL = folder.appendingPathComponent("transcription-review-operations/operations.json")
+        func archiveRecords(_ url: URL) throws -> [[String: Any]] {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            let payload = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(envelope["payload"] as? String)))
+            let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            return try XCTUnwrap(archive["records"] as? [[String: Any]])
+        }
+        func linkedRequest() throws -> [String: Any] {
+            try XCTUnwrap(archiveRecords(requestURL).first { $0["requestID"] as? String == id })
+        }
+        func operationRecord() throws -> [String: Any] {
+            let request = try linkedRequest()
+            XCTAssertEqual(request["state"] as? String, "linked")
+            let admission = try XCTUnwrap(request["admission"] as? [String: Any])
+            XCTAssertEqual(admission["schemaVersion"] as? Int, 1)
+            XCTAssertEqual(admission["requestID"] as? String, id)
+            XCTAssertEqual(admission["requestEpoch"] as? String, try XCTUnwrap(manifest["requestEpoch"] as? String))
+            XCTAssertEqual(admission["intentSHA256"] as? String, try XCTUnwrap(request["intentSHA256"] as? String))
+            XCTAssertEqual(admission["batchIdentity"] as? String, try XCTUnwrap(request["batchIdentity"] as? String))
+            let operationID = try XCTUnwrap(admission["operationID"] as? String)
+            let ownerID = try XCTUnwrap(admission["ownerID"] as? String)
+            let operation = try XCTUnwrap(archiveRecords(operationURL).first { ($0["id"] as? String)?.lowercased() == operationID.lowercased() })
+            XCTAssertEqual((operation["ownerID"] as? String)?.lowercased(), ownerID.lowercased())
+            XCTAssertEqual(operation["kind"] as? String, "voice_transcription")
+            XCTAssertEqual(operation["ownerLeaseManaged"] as? Bool, true)
+            let progress = try XCTUnwrap(operation["batchProgress"] as? [String: Any])
+            XCTAssertEqual(try XCTUnwrap(progress["items"] as? [[String: Any]]).count, paths.count)
+            return operation
+        }
+        let inspect = settings.buttons["automation.inspectTranscriptionRequest." + id]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8)); inspect.click()
+        let prepare = settings.buttons["automation.prepareTranscriptionExecution"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 8)); prepare.click()
+        XCTAssertTrue(settings.staticTexts["automation.transcriptionExecutionProvider"].waitForExistence(timeout: 10))
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.transcriptionExecutionModel"]).contains("isolated-ui-model"))
+        let start = settings.buttons["automation.confirmTranscriptionExecution"]
+        XCTAssertTrue(start.exists); XCTAssertFalse(start.isEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("transcription-review-operations/operations.json").path))
+        let consent = settings.checkBoxes["automation.transcriptionExecutionConsent"]
+        XCTAssertTrue(consent.exists); XCTAssertEqual(checkboxState(consent), false)
+        consent.click()
+        if changeAfterReview { try (originals[0] + Data("changed after consent".utf8)).write(to: URL(fileURLWithPath: paths[0])) }
+        start.click()
+        let message = settings.staticTexts["automation.transcriptionExecutionMessage"]
+        if changeAfterReview {
+            XCTAssertTrue(message.waitForExistence(timeout: 10))
+            let refused = expectation(for: NSPredicate { _, _ in self.visibleText(message).contains("admission could not be confirmed") }, evaluatedWith: nil)
+            wait(for: [refused], timeout: 10)
+            for path in paths {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json").path))
+            }
+            XCTAssertTrue(settings.buttons["automation.inspectTranscriptionRequest." + id].exists)
+            XCTAssertEqual(try linkedRequest()["state"] as? String, "awaitingReview")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: operationURL.path))
+        } else if mode == "blockSecond" {
+            let active = folder.appendingPathComponent("transcription-review-active.txt")
+            let pending = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: active.path) }, evaluatedWith: nil)
+            wait(for: [pending], timeout: 10)
+            app.typeKey("w", modifierFlags: .command)
+            app.typeKey(",", modifierFlags: .command)
+            _ = showAutomationTranscriptionRequests()
+            let retainedCancel = settings.buttons["automation.cancelRetainedTranscriptionExecution." + id]
+            XCTAssertTrue(retainedCancel.waitForExistence(timeout: 8))
+            let activeCancel = settings.buttons["automation.cancelTranscriptionExecution"]
+            if activeCancel.exists && activeCancel.isEnabled { activeCancel.click() }
+            else { XCTAssertTrue(retainedCancel.isEnabled); retainedCancel.click() }
+            let status = settings.staticTexts["automation.transcriptionRequestStatus." + id]
+            let cancelled = expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("Cancellation requested after admission") }, evaluatedWith: nil)
+            wait(for: [cancelled], timeout: 10)
+            XCTAssertFalse(settings.buttons["automation.inspectTranscriptionRequest." + id].exists)
+            let drained = expectation(for: NSPredicate { _, _ in
+                guard let record = try? operationRecord() else { return false }
+                return record["state"] as? String == "cancelled" && record["outcome"] as? String == "cancelled"
+            }, evaluatedWith: nil)
+            wait(for: [drained], timeout: 15)
+            let record = try operationRecord()
+            let progress = try XCTUnwrap(record["batchProgress"] as? [String: Any])
+            let items = try XCTUnwrap(progress["items"] as? [[String: Any]])
+            XCTAssertEqual(items.count, 2)
+            XCTAssertEqual(items[0]["outcome"] as? String, "draftSaved")
+            XCTAssertEqual(items[1]["outcome"] as? String, "cancelled")
+            let saved = folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: paths[0]).lastPathComponent).meta.json")
+            XCTAssertTrue(waitForTranscript("Synthetic review transcript", approved: false, at: saved))
+            let unfinished = folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: paths[1]).lastPathComponent).meta.json")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: unfinished.path))
+        } else {
+            XCTAssertTrue(message.waitForExistence(timeout: 15))
+            let finished = expectation(for: NSPredicate { _, _ in self.visibleText(message).contains("Transcription finished: verified") }, evaluatedWith: nil)
+            wait(for: [finished], timeout: 15)
+            for path in paths {
+                let sidecar = folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json")
+                let data = try JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any]
+                let draft = try XCTUnwrap(data?["voiceMemoTranscript"] as? [String: Any])
+                XCTAssertEqual(draft["generatedText"] as? String, "Synthetic review transcript")
+                XCTAssertNil(draft["approvedAt"])
+            }
+            XCTAssertFalse(settings.buttons["automation.inspectTranscriptionRequest." + id].exists)
+        }
+        for (carrier, original) in zip(carriers, carrierBytes) {
+            if changeAfterReview && carrier.path == paths[0] {
+                XCTAssertEqual(try Data(contentsOf: carrier), original + Data("changed after consent".utf8))
+            } else { XCTAssertEqual(try Data(contentsOf: carrier), original) }
+        }
+        if !changeAfterReview {
+            let request = try linkedRequest(), record = try operationRecord()
+            XCTAssertEqual(request["state"] as? String, "linked")
+            XCTAssertEqual(record["outcome"] as? String, mode == "blockSecond" ? "cancelled" : "verified")
+            let requestBytes = try Data(contentsOf: requestURL), operationBytes = try Data(contentsOf: operationURL)
+            let sidecars = paths.map { folder.appendingPathComponent(".photo_metadata/\(URL(fileURLWithPath: $0).lastPathComponent).meta.json") }
+            let savedBytes = sidecars.map { try? Data(contentsOf: $0) }
+            app.terminate(); app.launch()
+            app.typeKey(",", modifierFlags: .command)
+            _ = showAutomationTranscriptionRequests()
+            XCTAssertTrue(settings.staticTexts["automation.transcriptionRequestStatus." + id].waitForExistence(timeout: 8))
+            XCTAssertFalse(settings.buttons["automation.inspectTranscriptionRequest." + id].exists)
+            XCTAssertFalse(settings.buttons["automation.confirmTranscriptionExecution"].exists)
+            XCTAssertEqual(try Data(contentsOf: requestURL), requestBytes)
+            XCTAssertEqual(try Data(contentsOf: operationURL), operationBytes)
+            for (sidecar, original) in zip(sidecars, savedBytes) { XCTAssertEqual(try? Data(contentsOf: sidecar), original) }
+            for (carrier, original) in zip(carriers, carrierBytes) { XCTAssertEqual(try Data(contentsOf: carrier), original) }
+        }
+    }
+
+    @MainActor
     private func exerciseTranscriptionReview(changedRelationship: Bool) throws {
         let folder = try makePhotoFolder(count: 1)
         launch(workflow: "open-folder", folder: folder, transcriptionReview: true)
         app.typeKey(",", modifierFlags: .command)
-        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8))
-        app.staticTexts["Automation"].click()
-        let refresh = app.buttons["automation.refreshTranscriptionRequests"]
-        XCTAssertTrue(refresh.waitForExistence(timeout: 8)); refresh.click()
+        let settings = showAutomationTranscriptionRequests()
+        let refresh = settings.buttons["automation.refreshTranscriptionRequests"]
         let manifestURL = folder.appendingPathComponent("transcription-review-manifest.json")
         let manifestReady = expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: manifestURL.path) }, evaluatedWith: nil)
         wait(for: [manifestReady], timeout: 10)
@@ -199,45 +372,43 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             let relationship = folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")
             return (photo, try Data(contentsOf: photo), memo, try Data(contentsOf: memo), relationship, try Data(contentsOf: relationship))
         }
-        let inspect = app.buttons["automation.inspectTranscriptionRequest." + requestID]
+        let inspect = settings.buttons["automation.inspectTranscriptionRequest." + requestID]
         XCTAssertTrue(inspect.waitForExistence(timeout: 8))
-        XCTAssertTrue(visibleText(app.staticTexts["Transcription request identifier"]).contains(requestID))
+        XCTAssertTrue(visibleText(settings.staticTexts["Transcription request identifier"]).contains(requestID))
         if changedRelationship {
             try (originals[0].5 + Data("\n ".utf8)).write(to: originals[0].4)
             inspect.click()
-            XCTAssertTrue(app.staticTexts["automation.transcriptionReviewError"].waitForExistence(timeout: 8))
-            XCTAssertFalse(app.staticTexts["automation.transcriptionReviewProvider"].exists)
+            XCTAssertTrue(settings.staticTexts["automation.transcriptionReviewError"].waitForExistence(timeout: 8))
+            XCTAssertFalse(settings.staticTexts["automation.transcriptionReviewProvider"].exists)
             XCTAssertEqual(try Data(contentsOf: requestURL), retained)
             refresh.click()
         } else {
             inspect.click()
-            let provider = app.staticTexts["automation.transcriptionReviewProvider"]
+            let provider = settings.staticTexts["automation.transcriptionReviewProvider"]
             XCTAssertTrue(provider.waitForExistence(timeout: 8)); XCTAssertTrue(visibleText(provider).contains("Whisper"))
-            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewLanguage"]).contains("auto"))
-            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewTranslate"]).contains("Requested"))
-            XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionReviewGPU"]).contains("Requested"))
+            XCTAssertTrue(visibleText(settings.staticTexts["automation.transcriptionReviewLanguage"]).contains("auto"))
+            XCTAssertTrue(visibleText(settings.staticTexts["automation.transcriptionReviewTranslate"]).contains("Requested"))
+            XCTAssertTrue(visibleText(settings.staticTexts["automation.transcriptionReviewGPU"]).contains("Requested"))
             for index in paths.indices {
-                let photo = app.staticTexts["automation.transcriptionReviewPhoto.\(index)"]
+                let photo = settings.staticTexts["automation.transcriptionReviewPhoto.\(index)"]
                 XCTAssertTrue(photo.exists)
                 XCTAssertEqual(photo.label, "Photo \(index + 1) path")
                 XCTAssertTrue(visibleText(photo).contains(URL(fileURLWithPath: paths[index]).standardizedFileURL.path))
             }
             XCTAssertEqual(try Data(contentsOf: requestURL), retained)
         }
-        let cancel = app.buttons["automation.cancelTranscriptionRequest." + requestID]
+        let cancel = settings.buttons["automation.cancelTranscriptionRequest." + requestID]
         XCTAssertTrue(cancel.waitForExistence(timeout: 8)); cancel.click()
-        let status = app.staticTexts["automation.transcriptionRequestStatus." + requestID]
+        let status = settings.staticTexts["automation.transcriptionRequestStatus." + requestID]
         let cancelled = expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("Cancelled") }, evaluatedWith: nil)
         wait(for: [cancelled], timeout: 8)
         XCTAssertFalse(inspect.exists)
         let cancelledBytes = try Data(contentsOf: requestURL)
         app.terminate(); app.launch()
         app.typeKey(",", modifierFlags: .command)
-        XCTAssertTrue(app.staticTexts["Automation"].waitForExistence(timeout: 8)); app.staticTexts["Automation"].click()
-        XCTAssertTrue(app.buttons["automation.refreshTranscriptionRequests"].waitForExistence(timeout: 8))
-        app.buttons["automation.refreshTranscriptionRequests"].click()
-        XCTAssertTrue(app.staticTexts["automation.transcriptionRequestStatus." + requestID].waitForExistence(timeout: 8))
-        XCTAssertTrue(visibleText(app.staticTexts["automation.transcriptionRequestStatus." + requestID]).contains("Cancelled"))
+        _ = showAutomationTranscriptionRequests()
+        XCTAssertTrue(settings.staticTexts["automation.transcriptionRequestStatus." + requestID].waitForExistence(timeout: 8))
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.transcriptionRequestStatus." + requestID]).contains("Cancelled"))
         XCTAssertEqual(try Data(contentsOf: requestURL), cancelledBytes)
         for item in originals {
             XCTAssertEqual(try Data(contentsOf: item.0), item.1); XCTAssertEqual(try Data(contentsOf: item.2), item.3)
@@ -2585,11 +2756,13 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         resumePatchRecovery: Bool = false,
         transcriptionBatchMode: String? = nil,
         transcriptionReview: Bool = false,
-        transcriptionReviewCapacity: Bool = false
+        transcriptionReviewCapacity: Bool = false,
+        transcriptionReviewExecution: String? = nil
     ) {
         app = XCUIApplication()
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
         if transcriptionReviewCapacity { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] = "1" }
+        if let transcriptionReviewExecution { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"] = transcriptionReviewExecution }
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",

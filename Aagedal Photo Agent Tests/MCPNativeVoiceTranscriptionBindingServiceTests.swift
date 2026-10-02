@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
-@Suite("Read-only native rooted transcription binding")
+@Suite("Native rooted transcription binding and consented execution")
 struct MCPNativeVoiceTranscriptionBindingServiceTests {
     private struct Fixture: Sendable {
         let root: URL
@@ -21,8 +21,12 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
     private actor Probe {
         var captures = 0
         var readiness = 0
+        var generated: [URL] = []
+        var finished = 0
         func capture() -> Int { captures += 1; return captures }
         func ready() -> Int { readiness += 1; return readiness }
+        func generation(_ url: URL) -> Int { generated.append(url); return generated.count }
+        func drained() { finished += 1 }
     }
     nonisolated private final class ReservationProbe: @unchecked Sendable {
         private let lock = NSLock()
@@ -50,13 +54,16 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
         func now() -> Date { lock.withLock { Date().addingTimeInterval(offset) } }
     }
 
-    private func fixture(provider: String = "appleSpeech") throws -> Fixture {
+    private func fixture(provider: String = "appleSpeech", editorial: Bool = false, existingTranscript: Bool = false) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/native-transcription-binding-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         let box = MCPVoiceTranscriptionPlanStoreTests.Box()
         let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
         try authority.addRoot(root); try authority.setEnabled(true)
         let facade = MCPAutomationFacade(authorizationStore: authority)
+        if editorial || existingTranscript {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(".photo_metadata"), withIntermediateDirectories: false)
+        }
         var photos: [URL] = [], memos: [URL] = [], relationships: [URL] = [], inputs: [MCPJSONValue] = []
         for index in 0..<2 {
             let photo = root.appendingPathComponent("frame\(index).jpg"), memo = root.appendingPathComponent("memo\(index).wav")
@@ -64,6 +71,14 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
             try Data("photo \(index)".utf8).write(to: photo); try Data("wav \(index)".utf8).write(to: memo)
             try JSONSerialization.data(withJSONObject: ["schemaVersion": 2, "profileIdentifier": "reviewed",
                 "imageFilename": photo.lastPathComponent, "memoFilename": memo.lastPathComponent]).write(to: relationship)
+            if editorial || existingTranscript {
+                var object: [String: Any] = ["schemaVersion": 1, "sourceFile": photo.lastPathComponent,
+                    "pendingChanges": true, "metadata": ["caption": "Existing caption", "futureNested": ["retain": 42]],
+                    "futureExtension": ["enabled": false, "empty": [] as [String]]]
+                if existingTranscript { object["voiceMemoTranscript"] = ["preserve": "existing review"] }
+                try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(
+                    to: root.appendingPathComponent(".photo_metadata/\(photo.lastPathComponent).meta.json"))
+            }
             var input = try #require(facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
                 .filter { MCPVoiceTranscriptionPlanStore.Request.photoKeys.contains($0.key) }
             input["path"] = .string(photo.path)
@@ -105,6 +120,41 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
         try await service.prepare(requestID: #require(UUID(uuidString: f.request.requestID)), requestEpoch: f.epoch,
             provider: .apple(Locale(identifier: "en_US")))
     }
+
+    private nonisolated static func syntheticDraft(_ image: URL) async throws -> VoiceMemoTranscriptDraft {
+        let input = try await capture(image)
+        return .init(imageURL: image, memoURL: input.association.memoURL,
+            memoByteCount: input.memoRevision.byteCount, memoSHA256: input.memoRevision.sha256,
+            associationProfileIdentifier: input.association.profileIdentifier, localeIdentifier: "en_US",
+            provider: "Apple on-device speech", providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 1_700_000_000.25),
+            generatedText: "Editable generated text", reviewedText: "Editable generated text", approvedAt: nil)
+    }
+
+    private func executingService(_ f: Fixture, probe: Probe = Probe(),
+        facade: MCPAutomationFacade? = nil,
+        generate: @escaping @Sendable (URL) async throws -> VoiceMemoTranscriptDraft = Self.syntheticDraft,
+        readiness: @escaping @Sendable (AutomationVoiceTranscriptionProviderBinding) async throws -> Void = { _ in },
+        now: @escaping @Sendable () -> Date = Date.init) -> (MCPNativeVoiceTranscriptionBindingService, AutomationOperationRegistry) {
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let batches = AutomationVoiceTranscriptionBatchService(registry: registry, dependencies: .init(
+            capture: Self.capture, generate: { image, _ in
+                _ = await probe.generation(image)
+                do {
+                    let draft = try await generate(image)
+                    await probe.drained()
+                    return draft
+                } catch { await probe.drained(); throw error }
+            }, save: { draft, _ in
+                Issue.record("Rooted execution must install with its retained anchored lease"); return draft
+            }))
+        return (MCPNativeVoiceTranscriptionBindingService(requests: f.requests, plans: f.plans,
+            facade: facade ?? f.facade, batches: batches, readiness: readiness, now: now), registry)
+    }
+
+    private func transcriptURL(_ image: URL) -> URL {
+        image.deletingLastPathComponent().appendingPathComponent(".photo_metadata/\(image.lastPathComponent).meta.json")
+    }
     private func requireNoEffects(_ f: Fixture, archive: Data) throws {
         #expect(try Data(contentsOf: f.archive) == archive)
         #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
@@ -123,6 +173,12 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
         case "app":
             try FileManager.default.createDirectory(at: f.root.appendingPathComponent(".photo_metadata"), withIntermediateDirectories: false)
             try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sourceFile": f.photos[0].lastPathComponent, "pendingChanges": true, "metadata": ["caption": "changed"]]).write(to: f.root.appendingPathComponent(".photo_metadata/frame0.jpg.meta.json"))
+        case "private-directory":
+            let current = f.root.appendingPathComponent(".photo_metadata"), retained = f.root.appendingPathComponent("old-private-carriers")
+            try FileManager.default.moveItem(at: current, to: retained)
+            try FileManager.default.copyItem(at: retained, to: current)
+        case "new-private-directory":
+            try FileManager.default.createDirectory(at: f.root.appendingPathComponent(".photo_metadata"), withIntermediateDirectories: false)
         case "authority": try f.authority.setEnabled(false)
         case "cancel": _ = try f.requests.cancelBeforeAdmission(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
         default: throw SyntheticFailure.readiness
@@ -293,5 +349,321 @@ struct MCPNativeVoiceTranscriptionBindingServiceTests {
         #expect(try Data(contentsOf: f.archive) == archive)
         #expect(try Data(contentsOf: f.root.appendingPathComponent("operations/operations.json")) == operations)
         #expect(try registry.records().isEmpty)
+    }
+
+    @Test("Explicit native consent admits and links one exact ordered operation; rooted saves preserve editorial extensions", arguments: [false, true])
+    func consentedExecution(editorial: Bool) async throws {
+        let f = try fixture(editorial: editorial); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), (service, registry) = executingService(f, probe: probe)
+        let source = try f.photos.map { try Data(contentsOf: $0) }, audio = try f.memos.map { try Data(contentsOf: $0) }
+        let relationship = try f.relationships.map { try Data(contentsOf: $0) }
+        let originals = try f.photos.map { image -> [String: Any]? in
+            guard editorial else { return nil }
+            return try JSONSerialization.jsonObject(with: Data(contentsOf: transcriptURL(image))) as? [String: Any]
+        }
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let linked = try f.requests.inspect(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
+        #expect(linked.state == .linked && linked.operationID == accepted.id.uuidString.lowercased())
+        #expect(linked.admission?.ownerID == accepted.ownerID.uuidString.lowercased())
+        #expect(linked.intent == prepared.request.intent)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .verified)
+        #expect(completed.batchProgress?.items.map(\.outcome) == [.draftSaved, .draftSaved])
+        #expect(await probe.generated == prepared.batch.imageURLs)
+        #expect(try registry.records().count == 1)
+        for (index, image) in f.photos.enumerated() {
+            let data = try Data(contentsOf: transcriptURL(image))
+            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let transcript = try #require(object.removeValue(forKey: "voiceMemoTranscript") as? [String: Any])
+            #expect(transcript["generatedText"] as? String == "Editable generated text")
+            #expect(transcript["reviewedText"] as? String == "Editable generated text")
+            #expect(transcript["approvedAt"] == nil)
+            if let original = originals[index] { #expect(NSDictionary(dictionary: object) == NSDictionary(dictionary: original)) }
+            let lease = try MCPProcessReservation.acquirePhoto(image); lease.release()
+        }
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == source)
+        #expect(try f.memos.map { try Data(contentsOf: $0) } == audio)
+        #expect(try f.relationships.map { try Data(contentsOf: $0) } == relationship)
+        await #expect(throws: (any Error).self) { try await service.submit(prepared: prepared, nativeConsent: true) }
+        #expect(try registry.records().count == 1)
+    }
+
+    @Test("Declined native consent cannot consume request authority or create history")
+    func declinedConsent() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), (service, _) = executingService(f, probe: probe)
+        let archive = try Data(contentsOf: f.archive), prepared = try await prepare(service, f)
+        await #expect(throws: MCPNativeVoiceTranscriptionBindingService.Failure.consentRequired) {
+            try await service.submit(prepared: prepared, nativeConsent: false)
+        }
+        #expect(await probe.generated.isEmpty)
+        try requireNoEffects(f, archive: archive)
+    }
+
+    @Test("Existing review is refused under rooted whole-set authority before durable admission or inference")
+    func existingReview() async throws {
+        let f = try fixture(existingTranscript: true); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), (service, registry) = executingService(f, probe: probe)
+        let original = try f.photos.map { try Data(contentsOf: transcriptURL($0)) }
+        let archive = try Data(contentsOf: f.archive), prepared = try await prepare(service, f)
+        await #expect(throws: VoiceMemoTranscriptionError.existingTranscript) {
+            try await service.submit(prepared: prepared, nativeConsent: true)
+        }
+        #expect(await probe.generated.isEmpty)
+        #expect(try Data(contentsOf: f.archive) == archive)
+        #expect(try registry.records().isEmpty)
+        #expect(try f.photos.map { try Data(contentsOf: transcriptURL($0)) } == original)
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Post-consent await drift and failed readiness refuse admission", arguments: ["source", "wav-replacement", "relationship", "xmp", "app", "authority", "cancel", "refused", "expiry"])
+    func admissionRefusal(kind: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), clock = Clock()
+        let (service, registry) = executingService(f, probe: probe, readiness: { _ in
+            if await probe.ready() == 2 {
+                if kind == "refused" { throw SyntheticFailure.readiness }
+                if kind == "expiry" { clock.expire() }
+                else { try Self.mutate(f, kind: kind) }
+            }
+        }, now: { clock.now() })
+        let prepared = try await prepare(service, f)
+        await #expect(throws: (any Error).self) { try await service.submit(prepared: prepared, nativeConsent: true) }
+        #expect(await probe.generated.isEmpty)
+        #expect(try registry.records().isEmpty)
+        let current = try f.requests.inspect(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
+        #expect(current.admission == nil && current.operationID == nil)
+    }
+
+    @Test("Carrier and authority drift during pending inference stop the retained complete set", arguments: ["source", "wav", "source-replacement", "wav-replacement", "relationship", "xmp", "app", "private-directory", "new-private-directory", "authority"])
+    func executionDrift(kind: String) async throws {
+        let f = try fixture(editorial: kind == "private-directory"); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe()
+        let (service, _) = executingService(f, probe: probe, generate: { image in
+            let draft = try await Self.syntheticDraft(image)
+            try Self.mutate(f, kind: kind)
+            try await Task.sleep(for: .milliseconds(300))
+            return draft
+        })
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .failed)
+        #expect(await probe.generated.count == 1)
+        #expect(await probe.finished == 1)
+        for photo in f.photos {
+            if FileManager.default.fileExists(atPath: transcriptURL(photo).path) {
+                let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: transcriptURL(photo))) as? [String: Any])
+                #expect(object["voiceMemoTranscript"] == nil)
+            }
+            let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release()
+        }
+    }
+
+    @Test("Cancellation between admission and durable linkage never schedules recognition and releases the whole set")
+    func interruptedLinkage() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe()
+        let facade = MCPAutomationFacade(authorizationStore: f.authority, onVoiceMemoCaptureCheckpoint: {
+            do {
+                let id = UUID(uuidString: f.request.requestID)!
+                if try f.requests.inspect(id, requestEpoch: f.epoch).state == .admitted {
+                    _ = try f.requests.cancel(id, requestEpoch: f.epoch)
+                }
+            } catch { Issue.record("Exact durable request cancellation checkpoint failed: \(error)") }
+        })
+        let (service, registry) = executingService(f, probe: probe, facade: facade)
+        let prepared = try await prepare(service, f)
+        await #expect(throws: (any Error).self) { try await service.submit(prepared: prepared, nativeConsent: true) }
+        let record = try f.requests.inspect(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
+        #expect(record.state == .admitted && record.admission != nil && record.cancellationRequestedAt != nil)
+        #expect(record.linkedAt == nil)
+        #expect(await probe.generated.isEmpty)
+        let operations = try registry.records()
+        #expect(operations.count == 1 && operations.first?.outcome == .failed)
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[0]).path))
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Cancellation after enqueue but before entering retained work releases guarded photo leases")
+    func cancellationBeforeWork() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        let batches = AutomationVoiceTranscriptionBatchService(registry: registry, dependencies: .init(
+            capture: Self.capture, generate: { image, _ in
+                Issue.record("A durably cancelled queued operation entered recognition"); return try await Self.syntheticDraft(image)
+            }, save: { draft, _ in
+                Issue.record("A durably cancelled queued operation attempted persistence"); return draft
+            }))
+        let inputs = try await batches.prepare(imageURLs: f.photos)
+        let reservation = try f.plans.retainExecutionPreview(planID: f.request.planID, facade: f.facade)
+        let id = UUID()
+        let hooks = AutomationVoiceTranscriptionBatchService.LifecycleHooks(operationID: id, admission: { _ in },
+            didEnqueue: { record in _ = try registry.requestCancellation(record.id) }, cancellationCheck: { _ in })
+        let accepted = try await batches.submit(prepared: inputs, provider: .apple(Locale(identifier: "en_US")), lifecycle: hooks,
+            executionGuard: .init(check: {}, save: { draft, _ in
+                Issue.record("The rooted save boundary ran for queued cancellation"); return draft
+            }, finish: { reservation.release() }))
+        let completed = try await batches.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .cancelled)
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Whole-set drift after rooted draft installation retains uncertain save evidence and stops the suffix")
+    func uncertainRootedSave() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), originalSecondWAV = try Data(contentsOf: f.memos[1])
+        let installedURL = transcriptURL(f.photos[0])
+        let facade = MCPAutomationFacade(authorizationStore: f.authority, onCaptureCheckpoint: {
+            do {
+                guard FileManager.default.fileExists(atPath: installedURL.path),
+                      let object = try JSONSerialization.jsonObject(with: Data(contentsOf: installedURL)) as? [String: Any],
+                      object["voiceMemoTranscript"] != nil,
+                      try Data(contentsOf: f.memos[1]) == originalSecondWAV else { return }
+                // This checkpoint runs after the first draft's actual rooted rename.
+                // Its own bytes remain installed; the retained complete set is stale.
+                try Data("changed second WAV after first installed draft".utf8).write(to: f.memos[1])
+            } catch { Issue.record("Post-install drift checkpoint failed: \(error)") }
+        })
+        let (service, registry) = executingService(f, probe: probe, facade: facade)
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .recoveryRequired)
+        #expect(completed.batchProgress?.items.first?.outcome == .recoveryRequired)
+        #expect(completed.batchProgress?.items.last?.outcome == nil)
+        #expect(await probe.generated.count == 1)
+        #expect(await probe.finished == 1)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: installedURL)) as? [String: Any])
+        let draft = try #require(object["voiceMemoTranscript"] as? [String: Any])
+        #expect(draft["generatedText"] as? String == "Editable generated text")
+        #expect(draft["reviewedText"] as? String == "Editable generated text")
+        #expect(draft["approvedAt"] == nil)
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path))
+        let request = try f.requests.inspect(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
+        #expect(request.state == .linked && request.operationID == accepted.id.uuidString.lowercased())
+        await #expect(throws: (any Error).self) { try await service.submit(prepared: prepared, nativeConsent: true) }
+        #expect(try registry.records().count == 1)
+        #expect(await probe.generated.count == 1)
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Exact request cancellation drains inference and preserves a verified saved prefix", arguments: [false, true])
+    func executionCancellation(savedPrefix: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe()
+        let (service, registry) = executingService(f, probe: probe, generate: { image in
+            let draft = try await Self.syntheticDraft(image)
+            if !savedPrefix || image.lastPathComponent == "frame1.jpg" {
+                _ = try f.requests.cancel(UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch)
+                try await Task.sleep(for: .milliseconds(300))
+            }
+            return draft
+        })
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .cancelled)
+        #expect(completed.cancellationRequestedAt != nil)
+        #expect(await probe.finished == (savedPrefix ? 2 : 1))
+        #expect(await probe.generated.count == (savedPrefix ? 2 : 1))
+        #expect(FileManager.default.fileExists(atPath: transcriptURL(f.photos[0]).path) == savedPrefix)
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path))
+        #expect(try registry.records().count == 1)
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Readiness failure refuses further work and preserves any verified prefix", arguments: [false, true])
+    func executionReadinessFailure(savedPrefix: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe()
+        let (service, _) = executingService(f, probe: probe, readiness: { _ in
+            if savedPrefix {
+                if FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata/frame0.jpg.meta.json").path) {
+                    throw SyntheticFailure.readiness
+                }
+            } else if await probe.finished > 0 { throw SyntheticFailure.readiness }
+        })
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .failed)
+        #expect(await probe.generated.count == 1)
+        #expect(FileManager.default.fileExists(atPath: transcriptURL(f.photos[0]).path) == savedPrefix)
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path))
+    }
+
+    @Test("Admitted execution retains consent after preview expiry; failures keep the verified prefix", arguments: [false, true])
+    func expiryAndFailedPrefix(failSecond: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let probe = Probe(), clock = Clock()
+        let (service, _) = executingService(f, probe: probe, generate: { image in
+            clock.expire()
+            if failSecond, image.lastPathComponent == "frame1.jpg" { throw SyntheticFailure.inference }
+            return try await Self.syntheticDraft(image)
+        }, now: { clock.now() })
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == (failSecond ? .failed : .verified))
+        #expect(FileManager.default.fileExists(atPath: transcriptURL(f.photos[0]).path))
+        #expect(FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path) == !failSecond)
+    }
+
+    @Test("A generated draft cannot substitute the consented Apple locale or provider", arguments: ["locale", "provider", "model", "approved"])
+    func mismatchedProviderDraft(kind: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (service, _) = executingService(f, generate: { image in
+            let original = try await Self.syntheticDraft(image)
+            return .init(imageURL: original.imageURL, memoURL: original.memoURL, memoByteCount: original.memoByteCount,
+                memoSHA256: original.memoSHA256, associationProfileIdentifier: original.associationProfileIdentifier,
+                localeIdentifier: kind == "locale" ? "nb_NO" : original.localeIdentifier,
+                provider: kind == "provider" ? "Substituted provider" : original.provider,
+                providerModel: kind == "model" ? "Substituted model" : original.providerModel,
+                generatedAt: original.generatedAt, generatedText: original.generatedText, reviewedText: original.reviewedText,
+                approvedAt: kind == "approved" ? Date() : nil)
+        })
+        let prepared = try await prepare(service, f)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == .failed)
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[0]).path))
+        #expect(!FileManager.default.fileExists(atPath: transcriptURL(f.photos[1]).path))
+    }
+
+    @Test("Whisper execution saves only exact consented runtime/model/options provenance", arguments: ["exact", "model", "runtime", "options", "missing"])
+    func whisperExecution(mode: String) async throws {
+        let f = try fixture(provider: "whisper"); defer { try? FileManager.default.removeItem(at: f.root) }
+        let configuration = FFmpegWhisperTranscriptionProvider.Configuration(
+            executable: .init(url: f.root.appendingPathComponent("selected-ffmpeg"), byteCount: 100, sha256: String(repeating: "a", count: 64)),
+            buildIdentifier: "selected-build",
+            model: .init(url: f.root.appendingPathComponent("selected-model.bin"), byteCount: 200, sha256: String(repeating: "b", count: 64)),
+            modelIdentifier: "selected-model", language: "auto", useGPU: false, timeoutSeconds: 30)
+        let artifactProbe = Probe()
+        let native = FFmpegWhisperTranscriptionProvider(configuration: configuration, authorizeArtifacts: { current in
+            #expect(current == configuration); _ = await artifactProbe.ready()
+        }, run: { _ in throw SyntheticFailure.inference })
+        let (service, _) = executingService(f, generate: { image in
+            let input = try await Self.capture(image)
+            let provenance = FFmpegWhisperTranscriptProvenance(buildIdentifier: mode == "runtime" ? "other-build" : configuration.buildIdentifier,
+                executableSHA256: configuration.executable.sha256, executableByteCount: configuration.executable.byteCount,
+                modelIdentifier: configuration.modelIdentifier,
+                modelSHA256: mode == "model" ? String(repeating: "c", count: 64) : configuration.model.sha256,
+                modelByteCount: configuration.model.byteCount, requestedLanguage: configuration.language,
+                useGPU: mode == "options", segments: [.init(start: 0, end: 100, text: "Editable Whisper text")])
+            return .init(imageURL: image, memoURL: input.association.memoURL, memoByteCount: input.memoRevision.byteCount,
+                memoSHA256: input.memoRevision.sha256, associationProfileIdentifier: input.association.profileIdentifier,
+                localeIdentifier: "auto", provider: "FFmpeg Whisper", providerModel: configuration.modelIdentifier,
+                generatedAt: Date(), generatedText: "Editable Whisper text", reviewedText: "Editable Whisper text",
+                approvedAt: nil, whisperProvenance: mode == "missing" ? nil : provenance)
+        })
+        let prepared = try await service.prepare(requestID: UUID(uuidString: f.request.requestID)!, requestEpoch: f.epoch,
+            provider: .whisper(native), whisperKind: .curated)
+        let accepted = try await service.submit(prepared: prepared, nativeConsent: true)
+        let completed = try await service.waitForCompletion(accepted.id)
+        #expect(completed.outcome == (mode == "exact" ? .verified : .failed))
+        #expect(await artifactProbe.readiness >= 3)
+        for photo in f.photos { #expect(FileManager.default.fileExists(atPath: transcriptURL(photo).path) == (mode == "exact")) }
     }
 }

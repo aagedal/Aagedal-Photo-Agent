@@ -1,7 +1,8 @@
 import Foundation
+import CryptoKit
 
 /// Explicit UI-test seam. Real durable intent and source validation, isolated from
-/// production authorization, provider state and archives. No recognition is invoked.
+/// production authorization, provider state and archives. Execution uses only synthetic recognition.
 enum UITestTranscriptionReviewFixture {
     static func currentServiceForModel() -> (any AutomationTranscriptionReviewServing)? {
         service(configuration: .current, environment: ProcessInfo.processInfo.environment)
@@ -10,7 +11,52 @@ enum UITestTranscriptionReviewFixture {
     static func service(configuration: UITestLaunchConfiguration, environment: [String: String]) -> (any AutomationTranscriptionReviewServing)? {
         guard configuration.isEnabled, environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] == "1" else { return nil }
         return Worker(folder: configuration.folderURL,
-            includesRetainedIntent: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] == "1")
+            includesRetainedIntent: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] == "1",
+            executionMode: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"])
+    }
+
+    /// Two explicit launch gates isolate synthetic providers from host preferences/assets.
+    static func currentProviderForReview() -> FFmpegWhisperTranscriptionProvider? {
+        let configuration = UITestLaunchConfiguration.current
+        let environment = ProcessInfo.processInfo.environment
+        guard configuration.isEnabled, environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] == "1",
+              let mode = environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"],
+              let folder = configuration.folderURL else { return nil }
+        return try? provider(root: folder.resolvingSymlinksInPath(), mode: mode)
+    }
+    nonisolated static func provider(root: URL, mode: String = "complete") throws -> FFmpegWhisperTranscriptionProvider {
+        let input: @Sendable (String) throws -> FFmpegWhisperJobInput = { name in
+            let url = root.appendingPathComponent(name), data = try Data(contentsOf: url)
+            return .init(url: url, byteCount: Int64(data.count),
+                sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        }
+        let config = FFmpegWhisperTranscriptionProvider.Configuration(executable: try input("synthetic-review-runtime"),
+            buildIdentifier: "isolated-ui-runtime", model: try input("synthetic-review-model"),
+            modelIdentifier: "isolated-ui-model", language: "auto", useGPU: true, timeoutSeconds: 30, translate: true)
+        return .init(configuration: config, authorizeArtifacts: { retained in
+            guard retained == config, try input("synthetic-review-runtime") == config.executable,
+                  try input("synthetic-review-model") == config.model else { throw Failure.invalidPlan }
+        }, run: { request in
+            if mode == "blockSecond", request.audio.url.lastPathComponent == "transcription-review-1.wav" {
+                try Data("synthetic transcription active".utf8).write(to: root.appendingPathComponent("transcription-review-active.txt"))
+                while true { try await Task.sleep(for: .milliseconds(50)) }
+            }
+            return .init(request: request, transcript: .init(segments: [.init(start: 0, end: 10, text: "Synthetic review transcript")],
+                editableText: "Synthetic review transcript"))
+        })
+    }
+    private nonisolated static func silentWAV() -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            var little = value.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+        let size: UInt32 = 3200
+        data.append(Data("RIFF".utf8)); append(size + 36); data.append(Data("WAVEfmt ".utf8))
+        append(UInt32(16)); append(UInt16(1)); append(UInt16(1)); append(UInt32(16000))
+        append(UInt32(32000)); append(UInt16(2)); append(UInt16(16)); data.append(Data("data".utf8))
+        append(size); data.append(Data(repeating: 0, count: Int(size)))
+        return data
     }
 
     nonisolated final class ConfigurationBox: @unchecked Sendable {
@@ -35,9 +81,10 @@ enum UITestTranscriptionReviewFixture {
         nonisolated var unownedExecutor: UnownedSerialExecutor { filesystemQueue.asUnownedSerialExecutor() }
         let folder: URL?
         let includesRetainedIntent: Bool
+        let executionMode: String?
         private var underlying: AutomationTranscriptionReviewService?
-        init(folder: URL?, includesRetainedIntent: Bool) {
-            self.folder = folder; self.includesRetainedIntent = includesRetainedIntent
+        init(folder: URL?, includesRetainedIntent: Bool, executionMode: String?) {
+            self.folder = folder; self.includesRetainedIntent = includesRetainedIntent; self.executionMode = executionMode
         }
 
         private func service() throws -> AutomationTranscriptionReviewService {
@@ -65,7 +112,7 @@ enum UITestTranscriptionReviewFixture {
                     let photo = root.appendingPathComponent("transcription-review-\(index)-å.jpg")
                     let memo = root.appendingPathComponent("transcription-review-\(index).wav")
                     try Data("isolated photo \(index)".utf8).write(to: photo, options: .withoutOverwriting)
-                    try Data("isolated WAV intent \(index)".utf8).write(to: memo, options: .withoutOverwriting)
+                    try UITestTranscriptionReviewFixture.silentWAV().write(to: memo, options: .withoutOverwriting)
                     let relationship = root.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")
                     try JSONSerialization.data(withJSONObject: ["schemaVersion": 2,
                         "profileIdentifier": "custom-reviewed-profile", "imageFilename": photo.lastPathComponent,
@@ -90,7 +137,23 @@ enum UITestTranscriptionReviewFixture {
                     planID: planID, photoPaths: Array(paths.reversed()),
                     retainedRequestID: retainedID?.uuidString.lowercased())).write(to: manifestURL, options: .withoutOverwriting)
             }
-            let result = AutomationTranscriptionReviewService(plans: plans, facade: facade, requests: requests)
+            var binding: MCPNativeVoiceTranscriptionBindingService?
+            var registry: AutomationOperationRegistry?
+            if executionMode != nil {
+                for name in ["synthetic-review-runtime", "synthetic-review-model"] {
+                    let url = root.appendingPathComponent(name)
+                    if !FileManager.default.fileExists(atPath: url.path) {
+                        try Data("isolated deterministic artifact \(name)".utf8).write(to: url, options: .withoutOverwriting)
+                    }
+                }
+                let operations = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("transcription-review-operations"))
+                let batches = AutomationVoiceTranscriptionBatchService(registry: operations)
+                registry = operations
+                binding = MCPNativeVoiceTranscriptionBindingService(requests: requests, plans: plans,
+                    facade: facade, batches: batches, readiness: { _ in })
+            }
+            let result = AutomationTranscriptionReviewService(plans: plans, facade: facade, requests: requests,
+                bindingService: binding, operationRegistry: registry)
             underlying = result; return result
         }
         func requests() async throws -> [MCPVoiceTranscriptionReviewRequestStore.Record] { try await service().requests() }
@@ -98,6 +161,23 @@ enum UITestTranscriptionReviewFixture {
             try await service().inspect(request)
         }
         func cancel(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws { try await service().cancel(request) }
+        func prepareExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record,
+            provider: AutomationVoiceTranscriptionBatchService.Provider,
+            whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) async throws -> MCPNativeVoiceTranscriptionBindingService.PreparedBinding {
+            guard executionMode != nil else { throw Failure.invalidPlan }
+            return try await service().prepareExecution(request, provider: provider, whisperKind: whisperKind)
+        }
+        func submit(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record {
+            try await service().submit(prepared, nativeConsent: nativeConsent)
+        }
+        func inspectOperation(_ id: UUID) async throws -> AutomationOperationRegistry.Record { try await service().inspectOperation(id) }
+        func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record { try await service().waitForCompletion(id) }
+        func cancelExecution(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) async throws {
+            try await service().cancelExecution(prepared)
+        }
+        func cancelRetainedExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws {
+            try await service().cancelRetainedExecution(request)
+        }
         func requestCapacity() async throws -> MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot {
             try await service().requestCapacity()
         }

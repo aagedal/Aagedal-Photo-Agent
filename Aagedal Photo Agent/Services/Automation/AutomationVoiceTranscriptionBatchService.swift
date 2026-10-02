@@ -4,7 +4,7 @@ import Foundation
 /// this service grants no helper/root authority, downloads no assets and approves no text.
 /// Each generated draft is create-only. Saved drafts survive a later failed/cancelled item.
 actor AutomationVoiceTranscriptionBatchService {
-    enum Failure: Error, Equatable { case invalidPhotos, sourceChanged, invalidDraft }
+    enum Failure: Error, Equatable { case invalidPhotos, sourceChanged, invalidDraft, guardRefused, cancelledBeforeSave }
     enum Provider: Sendable {
         case apple(Locale)
         case whisper(FFmpegWhisperTranscriptionProvider)
@@ -38,6 +38,29 @@ actor AutomationVoiceTranscriptionBatchService {
         let cancellationCheck: @Sendable (UUID) throws -> Void
     }
 
+    /// A native rooted caller retains its whole-set lease for the operation's lifetime.
+    /// Checks execute after every suspension and while recognition is pending. Its save
+    /// boundary installs through the retained rooted descriptors instead of reacquiring
+    /// the same cross-process lease via the ordinary native persistence path.
+    nonisolated final class ExecutionGuard: Sendable {
+        let check: @Sendable () async throws -> Void
+        let poll: @Sendable () async throws -> Void
+        let save: @Sendable (VoiceMemoTranscriptDraft, Input) async throws -> VoiceMemoTranscriptDraft
+        let finish: @Sendable () -> Void
+
+        init(check: @escaping @Sendable () async throws -> Void,
+             poll: (@Sendable () async throws -> Void)? = nil,
+             save: @escaping @Sendable (VoiceMemoTranscriptDraft, Input) async throws -> VoiceMemoTranscriptDraft,
+             finish: @escaping @Sendable () -> Void) {
+            self.check = check; self.poll = poll ?? check; self.save = save; self.finish = finish
+        }
+
+        // The coordinator may refuse/cancel before entering the work closure. The
+        // final retained guard then releases its lease even when execute's defer
+        // never runs. Rooted release is idempotent and holds no lock across awaits.
+        deinit { finish() }
+    }
+
     nonisolated struct Dependencies: Sendable {
         let capture: @Sendable (URL) async throws -> Input
         let generate: @Sendable (URL, Provider) async throws -> VoiceMemoTranscriptDraft
@@ -47,7 +70,7 @@ actor AutomationVoiceTranscriptionBatchService {
             let admission = VoiceTranscriptionBatchInputReader()
             return Self(capture: { try await admission.capture($0) }, generate: { image, provider in
                 switch provider {
-                case .apple(let locale): try await service.transcribe(imageURL: image, locale: locale)
+                case .apple(let locale): try await service.transcribe(imageURL: image, locale: locale, requiresExactLocale: true)
                 case .whisper(let provider): try await service.transcribe(imageURL: image, provider: provider)
                 }
             }, save: { try await service.persistGeneratedDraft($0, expectedSourceRevision: $1.sourceRevision, expectedRelationshipRevision: $1.relationshipRevision) })
@@ -55,7 +78,8 @@ actor AutomationVoiceTranscriptionBatchService {
     }
 
     static let maximumPhotos = 8
-    private let registry: AutomationOperationRegistry
+    private nonisolated let registry: AutomationOperationRegistry
+    nonisolated var operationRegistry: AutomationOperationRegistry { registry }
     private let coordinator: AutomationOperationExecutionCoordinator
     private let dependencies: Dependencies
 
@@ -97,9 +121,11 @@ actor AutomationVoiceTranscriptionBatchService {
     /// Revalidate the entire consented set before any operation can run. A changed
     /// photo, WAV or relationship requires a fresh preview and fresh consent.
     func submit(prepared: PreparedBatch, provider: Provider,
-                lifecycle: LifecycleHooks? = nil) async throws -> AutomationOperationRegistry.Record {
+                lifecycle: LifecycleHooks? = nil,
+                executionGuard: ExecutionGuard? = nil) async throws -> AutomationOperationRegistry.Record {
         try await revalidate(prepared: prepared)
-        return try await enqueue(prepared.inputs, provider: provider, lifecycle: lifecycle)
+        try await executionGuard?.check()
+        return try await enqueue(prepared.inputs, provider: provider, lifecycle: lifecycle, executionGuard: executionGuard)
     }
 
     /// Read-only session revalidation: no operation, inference or draft is created.
@@ -115,7 +141,8 @@ actor AutomationVoiceTranscriptionBatchService {
     }
 
     private func enqueue(_ inputs: [Input], provider: Provider,
-                         lifecycle: LifecycleHooks? = nil) async throws -> AutomationOperationRegistry.Record {
+                         lifecycle: LifecycleHooks? = nil,
+                         executionGuard: ExecutionGuard? = nil) async throws -> AutomationOperationRegistry.Record {
         let retained = inputs
         let registry = registry, dependencies = dependencies
         let owner = await coordinator.ownerID
@@ -129,7 +156,7 @@ actor AutomationVoiceTranscriptionBatchService {
             try lifecycle?.cancellationCheck(id)
         }) { context in
             try await Self.execute(retained, provider: provider, dependencies: dependencies,
-                                   context: context, registry: registry, owner: owner)
+                                   context: context, registry: registry, owner: owner, executionGuard: executionGuard)
         }
     }
 
@@ -156,7 +183,8 @@ actor AutomationVoiceTranscriptionBatchService {
 
     private nonisolated static func execute(_ inputs: [Input], provider: Provider, dependencies: Dependencies,
         context: AutomationOperationExecutionCoordinator.Context, registry: AutomationOperationRegistry,
-        owner: UUID) async throws -> AutomationOperationRegistry.Outcome {
+        owner: UUID, executionGuard: ExecutionGuard? = nil) async throws -> AutomationOperationRegistry.Outcome {
+        defer { executionGuard?.finish() }
         var hadFailure = false
         for (index, input) in inputs.enumerated() {
             // A clean cancellation after a verified prefix leaves saved drafts intact.
@@ -172,14 +200,20 @@ actor AutomationVoiceTranscriptionBatchService {
             }
             var saving = false
             do {
+                try await checkGuard(executionGuard)
                 guard matches(input, try await dependencies.capture(input.imageURL)) else { throw Failure.sourceChanged }
+                try await checkGuard(executionGuard)
                 let draft = try await generateWithCancellation(input.imageURL, provider: provider,
-                                                               dependencies: dependencies, context: context)
+                    dependencies: dependencies, context: context, executionGuard: executionGuard)
                 try validate(draft, input: input)
+                try await checkGuard(executionGuard)
                 guard matches(input, try await dependencies.capture(input.imageURL)) else { throw Failure.sourceChanged }
+                try await checkGuard(executionGuard)
                 try await context.markEffectsMayHaveOccurred()
                 saving = true
-                let saved = try await dependencies.save(draft, input)
+                let saved: VoiceMemoTranscriptDraft
+                if let executionGuard { saved = try await executionGuard.save(draft, input) }
+                else { saved = try await dependencies.save(draft, input) }
                 // Durable semantic read-back must match the entire unapproved draft.
                 try validate(saved, input: input)
                 let dates = ISO8601DateFormatter()
@@ -194,13 +228,14 @@ actor AutomationVoiceTranscriptionBatchService {
                 let definitelyRefused = error as? VoiceMemoTranscriptionError == .existingTranscript
                     || error as? VoiceMemoTranscriptionError == .invalidGeneratedDraft
                     || error as? VoiceMemoTranscriptionError == .sourceChanged
+                    || error as? Failure == .guardRefused || error as? Failure == .cancelledBeforeSave
                 if saving && !definitelyRefused {
                     // A failed/late-cancelled save may have installed bytes. Do not infer
                     // rollback or replay inference; stop and retain uncertain evidence.
                     _ = try registry.finishBatchItem(context.operationID, ownerID: owner, index: index, outcome: .recoveryRequired)
                     return .recoveryRequired
                 }
-                if error is CancellationError {
+                if error is CancellationError || error as? Failure == .cancelledBeforeSave {
                     let requested = try registry.inspect(context.operationID).cancellationRequestedAt != nil
                     _ = try registry.finishBatchItem(context.operationID, ownerID: owner, index: index,
                                                      outcome: requested ? .cancelled : .failed)
@@ -210,6 +245,9 @@ actor AutomationVoiceTranscriptionBatchService {
                 _ = try registry.finishBatchItem(context.operationID, ownerID: owner, index: index,
                                                  outcome: stale ? .stale : .failed)
                 hadFailure = true
+                // A rooted guard refusal applies to the complete consented set. Never
+                // proceed to another item after authorization/readiness/carrier drift.
+                if error as? Failure == .guardRefused { return .failed }
             }
         }
         return hadFailure ? .failed : .verified
@@ -218,7 +256,8 @@ actor AutomationVoiceTranscriptionBatchService {
     /// Poll durable helper/native cancellation during recognition and drain provider
     /// teardown before the batch can acknowledge cancellation or release its capacity.
     private nonisolated static func generateWithCancellation(_ image: URL, provider: Provider,
-        dependencies: Dependencies, context: AutomationOperationExecutionCoordinator.Context) async throws -> VoiceMemoTranscriptDraft {
+        dependencies: Dependencies, context: AutomationOperationExecutionCoordinator.Context,
+        executionGuard: ExecutionGuard? = nil) async throws -> VoiceMemoTranscriptDraft {
         try await context.checkCancellation()
         return try await withThrowingTaskGroup(of: VoiceMemoTranscriptDraft.self) { group in
             group.addTask { try await dependencies.generate(image, provider) }
@@ -226,12 +265,21 @@ actor AutomationVoiceTranscriptionBatchService {
                 while true {
                     try await Task.sleep(for: .milliseconds(100))
                     try await context.checkCancellation()
+                    do { try await executionGuard?.poll() }
+                    catch is CancellationError { throw CancellationError() }
+                    catch { throw Failure.guardRefused }
                 }
             }
             defer { group.cancelAll() }
             guard let draft = try await group.next() else { throw Failure.invalidDraft }
             return draft
         }
+    }
+
+    private nonisolated static func checkGuard(_ executionGuard: ExecutionGuard?) async throws {
+        do { try await executionGuard?.check() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw Failure.guardRefused }
     }
 }
 

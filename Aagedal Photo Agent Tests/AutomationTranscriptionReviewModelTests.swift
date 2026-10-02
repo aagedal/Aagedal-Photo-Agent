@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Aagedal_Photo_Agent
 
-@Suite("Read-only native transcription intent inbox")
+@Suite("Native transcription intent review and explicit execution consent")
 struct AutomationTranscriptionReviewModelTests {
     private struct Fixture {
         let root: URL
@@ -58,6 +58,47 @@ struct AutomationTranscriptionReviewModelTests {
         var listSnapshot: [MCPVoiceTranscriptionReviewRequestStore.Record] = []
         var inspectionPending: Bool { heldInspection != nil }
         var listPending: Bool { heldList != nil }
+        var prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding?
+        var heldPreparation: CheckedContinuation<MCPNativeVoiceTranscriptionBindingService.PreparedBinding, Never>?
+        var holdPreparation = false
+        var preparationPending: Bool { heldPreparation != nil }
+        var executionRecord: AutomationOperationRegistry.Record?
+        var heldExecutionWait: CheckedContinuation<AutomationOperationRegistry.Record, Never>?
+        var executionWaitPending: Bool { heldExecutionWait != nil }
+        var waitFailures = 0
+        var submissionConsents: [Bool] = []
+        var executionCancellations = 0
+        func configureExecution(prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding,
+                                record: AutomationOperationRegistry.Record, holdPreparation: Bool = false, waitFailures: Int = 0) {
+            self.prepared = prepared; executionRecord = record
+            self.holdPreparation = holdPreparation; self.waitFailures = waitFailures
+        }
+        func prepareExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record,
+            provider: AutomationVoiceTranscriptionBatchService.Provider,
+            whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) async throws -> MCPNativeVoiceTranscriptionBindingService.PreparedBinding {
+            guard let prepared else { throw MCPNativeVoiceTranscriptionBindingService.Failure.providerUnavailable }
+            if holdPreparation { return await withCheckedContinuation { heldPreparation = $0 } }
+            return prepared
+        }
+        func finishPreparation() {
+            if let prepared { heldPreparation?.resume(returning: prepared) }; heldPreparation = nil
+        }
+        func submit(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record {
+            submissionConsents.append(nativeConsent)
+            guard let executionRecord else { throw MCPNativeVoiceTranscriptionBindingService.Failure.providerUnavailable }
+            return executionRecord
+        }
+        func inspectOperation(_ id: UUID) throws -> AutomationOperationRegistry.Record {
+            guard let executionRecord else { throw AutomationOperationRegistry.Failure.unknownOperation }; return executionRecord
+        }
+        func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record {
+            if waitFailures > 0 { waitFailures -= 1; throw AutomationOperationRegistry.Failure.unknownOperation }
+            return await withCheckedContinuation { heldExecutionWait = $0 }
+        }
+        func completeExecution(_ record: AutomationOperationRegistry.Record) {
+            executionRecord = record; heldExecutionWait?.resume(returning: record); heldExecutionWait = nil
+        }
+        func cancelExecution(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) { executionCancellations += 1 }
         var cancellations = 0
         var cleanupEpochs: [UUID] = []
         var snapshot: MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot
@@ -479,6 +520,174 @@ struct AutomationTranscriptionReviewModelTests {
         else { model.clear() }
         await service.finishCapacity(); try await Task.sleep(for: .milliseconds(50))
         #expect(model.capacity == nil && !model.isInspectingCapacity && !model.isRecoveringCapacity)
+    }
+
+    private func executionFixture(_ f: Fixture) async throws -> (MCPNativeVoiceTranscriptionBindingService.PreparedBinding, AutomationOperationRegistry.Record, AutomationOperationRegistry.Record) {
+        for name in ["synthetic-review-runtime", "synthetic-review-model"] {
+            try Data(name.utf8).write(to: f.root.appendingPathComponent(name))
+        }
+        let provider = try UITestTranscriptionReviewFixture.provider(root: f.root)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("test-execution-operations"))
+        let dependencies = AutomationVoiceTranscriptionBatchService.Dependencies(capture: { image in
+            guard case .available(let association) = try VoiceMemoTranscriptionService.lookupRegularAssociation(for: image) else {
+                throw VoiceMemoTranscriptionError.relationshipUnavailable
+            }
+            return .init(imageURL: image, sourceRevision: try await SourceImageRevision.capture(at: image),
+                association: association, memoRevision: try await SourceImageRevision.capture(at: association.memoURL),
+                relationshipRevision: try VoiceMemoRelationshipRevision.capture(for: image))
+        }, generate: { _, _ in throw VoiceMemoTranscriptionError.recognitionFailed }, save: { draft, _ in draft })
+        let batches = AutomationVoiceTranscriptionBatchService(registry: registry, dependencies: dependencies)
+        let binding = MCPNativeVoiceTranscriptionBindingService(requests: f.requests, plans: f.plans,
+            facade: f.facade, batches: batches, readiness: { _ in })
+        let prepared = try await binding.prepare(requestID: #require(UUID(uuidString: f.record.requestID)),
+            requestEpoch: #require(UUID(uuidString: f.record.requestEpoch)), provider: .whisper(provider), whisperKind: .curated)
+        let owner = UUID(), id = UUID(), lease = try registry.acquireOwnerLease(ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, operationID: id, ownerLease: lease)
+        let running = try registry.start(id, ownerID: owner)
+        let terminal = try registry.finish(id, ownerID: owner, outcome: .verified)
+        return (prepared, running, terminal)
+    }
+
+    @Test("Execution needs exact prepared review and fresh explicit consent") @MainActor
+    func explicitExecutionConsent() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, running, terminal) = try await executionFixture(f)
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        await service.configureExecution(prepared: prepared, record: running)
+        var begun = 0, ended = 0
+        let model = AutomationTranscriptionReviewModel(service: service,
+            beginExecution: { begun += 1; return true }, endExecution: { ended += 1 })
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.prepareExecution(provider: prepared.providerBinding.provider, whisperKind: .curated)
+        try await waitUntil { !model.isPreparingExecution }
+        #expect(model.executionReview?.providerBinding.identity == prepared.providerBinding.identity)
+        #expect(!model.executionConsent)
+        model.confirmExecution()
+        #expect(begun == 0 && !model.isRunning)
+        #expect(await service.submissionConsents.isEmpty)
+        model.executionConsent = true; model.confirmExecution()
+        try await waitUntil { await service.executionWaitPending }
+        #expect(begun == 1 && ended == 0 && model.isRunning && !model.executionConsent && model.executionReview == nil)
+        #expect(await service.submissionConsents == [true])
+        await service.completeExecution(terminal); try await waitUntil { !model.isRunning }
+        #expect(ended == 1 && model.operation == terminal)
+    }
+
+    @Test("Late provider preparation cannot restore snapshot or consent", arguments: ["refresh", "clear", "cancel", "pollFailure"]) @MainActor
+    func staleProviderReview(action: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, running, _) = try await executionFixture(f)
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        await service.configureExecution(prepared: prepared, record: running, holdPreparation: true)
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.executionConsent = true
+        model.prepareExecution(provider: prepared.providerBinding.provider, whisperKind: .curated)
+        try await waitUntil { await service.preparationPending }
+        if action == "refresh" { model.refresh(); try await waitUntil { !model.isLoading } }
+        else if action == "cancel" { model.cancel(f.record); try await waitUntil { !model.isLoading } }
+        else if action == "pollFailure" {
+            await service.configure(failList: true); model.refreshRequestEvidence()
+            try await waitUntil { !model.isRefreshingEvidence }
+        } else { model.clear() }
+        await service.finishPreparation(); try await Task.sleep(for: .milliseconds(50))
+        #expect(model.executionReview == nil && !model.executionConsent && !model.isPreparingExecution)
+        #expect(await service.submissionConsents.isEmpty)
+    }
+
+    @Test("Dismissal, failed waits and cancellation retain global capacity until owner terminal") @MainActor
+    func retainedExecutionCapacity() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, running, terminal) = try await executionFixture(f)
+        let service = ControlledService(record: f.record, review: try .init(f.preview))
+        await service.configureExecution(prepared: prepared, record: running, waitFailures: 2)
+        var begun = 0, ended = 0
+        let model = AutomationTranscriptionReviewModel(service: service,
+            beginExecution: { begun += 1; return true }, endExecution: { ended += 1 })
+        model.refresh(); try await waitUntil { !model.isLoading }
+        model.inspect(f.record); try await waitUntil { !model.isLoading }
+        model.prepareExecution(provider: prepared.providerBinding.provider, whisperKind: .curated)
+        try await waitUntil { !model.isPreparingExecution }
+        model.executionConsent = true; model.confirmExecution()
+        try await waitUntil { model.executionMessage?.contains("stop safely") == true }
+        model.clear()
+        #expect(model.isRunning && begun == 1 && ended == 0 && !model.executionConsent)
+        model.requestExecutionCancellation()
+        try await waitUntil { await service.executionCancellations > 0 }
+        #expect(model.isRunning && ended == 0)
+        try await waitUntil { await service.executionWaitPending }
+        await service.completeExecution(terminal); try await waitUntil { !model.isRunning }
+        #expect(ended == 1 && model.operation == terminal)
+    }
+
+    @Test("Concrete and existential execution cancellation both reach the durable service", arguments: ["concrete", "existential"])
+    func executionCancellationDispatch(route: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (prepared, _, _) = try await executionFixture(f)
+        let service = f.service
+        let originalCarriers = try (f.photos + f.memos).map { try Data(contentsOf: $0) }
+        let operationsURL = f.root.appendingPathComponent("test-execution-operations/operations.json")
+        let operations = try Data(contentsOf: operationsURL)
+        // A concrete actor await must resolve its implementation, even when the
+        // protocol supplies a fail-closed async default with the same base name.
+        if route == "concrete" { try await service.cancelExecution(prepared) }
+        else {
+            let existential: any AutomationTranscriptionReviewServing = service
+            try await existential.cancelExecution(prepared)
+        }
+        let cancelled = try f.requests.inspect(UUID(uuidString: f.record.requestID)!,
+            requestEpoch: UUID(uuidString: f.record.requestEpoch)!)
+        #expect(cancelled.state == .cancelled && cancelled.cancellationRequestedAt != nil)
+        #expect(cancelled.requestID == f.record.requestID && cancelled.requestEpoch == f.record.requestEpoch)
+        #expect(cancelled.intent == f.record.intent && cancelled.admission == nil)
+        #expect(try Data(contentsOf: operationsURL) == operations)
+        #expect(try (f.photos + f.memos).map { try Data(contentsOf: $0) } == originalCarriers)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
+    }
+
+    @Test("Concrete and existential retained cancellation and operation inspection use exact durable linkage", arguments: ["concrete", "existential"])
+    func retainedCancellationAndInspectionDispatch(route: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("dispatch-operations"))
+        let batches = AutomationVoiceTranscriptionBatchService(registry: registry)
+        let binding = MCPNativeVoiceTranscriptionBindingService(requests: f.requests, plans: f.plans,
+            facade: f.facade, batches: batches, readiness: { _ in })
+        let service = AutomationTranscriptionReviewService(plans: f.plans, facade: f.facade, requests: f.requests,
+            bindingService: binding, operationRegistry: registry)
+        let id = UUID(uuidString: f.record.requestID)!, epoch = UUID(uuidString: f.record.requestEpoch)!
+        let operationID = UUID(), ownerID = UUID()
+        _ = try f.requests.admit(id, requestEpoch: epoch, expected: f.record,
+            operationID: operationID, ownerID: ownerID, registry: registry)
+        let lease = try registry.acquireOwnerLease(ownerID: ownerID)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try registry.enqueue(kind: .voiceTranscription, ownerID: ownerID, operationID: operationID, ownerLease: lease)
+        let configured = try registry.configureBatch(operationID, ownerID: ownerID, itemCount: f.record.intent.photoCount)
+        let linked = try f.requests.link(id, requestEpoch: epoch, operationID: operationID, registry: registry)
+        let before: AutomationOperationRegistry.Record
+        let after: AutomationOperationRegistry.Record
+        if route == "concrete" {
+            before = try await service.inspectOperation(operationID)
+            try await service.cancelRetainedExecution(linked)
+            after = try await service.inspectOperation(operationID)
+        } else {
+            let existential: any AutomationTranscriptionReviewServing = service
+            before = try await existential.inspectOperation(operationID)
+            try await existential.cancelRetainedExecution(linked)
+            after = try await existential.inspectOperation(operationID)
+        }
+        #expect(before == configured)
+        #expect(after == (try registry.inspect(operationID)))
+        #expect(after.id == operationID && after.ownerID == ownerID && after.kind == .voiceTranscription)
+        #expect(after.cancellationRequestedAt != nil && !after.isTerminal)
+        #expect(after.batchProgress?.itemCount == f.record.intent.photoCount)
+        let cancelled = try f.requests.inspect(id, requestEpoch: epoch)
+        #expect(cancelled.state == .linked && cancelled.cancellationRequestedAt != nil)
+        #expect(cancelled.requestEpoch == linked.requestEpoch && cancelled.intent == linked.intent)
+        #expect(cancelled.admission == linked.admission && cancelled.operationID == operationID.uuidString.lowercased())
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
     }
 
     @Test("UI fixture requires both explicit opt-in gates")

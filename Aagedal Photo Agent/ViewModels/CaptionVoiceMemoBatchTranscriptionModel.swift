@@ -244,6 +244,8 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
             case .invalidPhotos: return "Select 1–8 different photos with supported WAV voice memos and separate sidecars."
             case .sourceChanged: return "A photo or voice memo changed after confirmation. Prepare the batch again."
             case .invalidDraft: return "The generated transcript could not be validated."
+            case .guardRefused: return "Transcription authorization or input changed. Review the batch again."
+            case .cancelledBeforeSave: return "Transcription was cancelled before saving this draft."
             }
         }
         return error.localizedDescription

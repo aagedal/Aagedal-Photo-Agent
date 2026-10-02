@@ -211,8 +211,10 @@ def probe(executable):
                         "cancel_voice_transcription_review_request"}
         require(review_tools.issubset(names), "Missing separate transcription review intent tools")
         require(capabilities["voiceTranscriptionReviewRequestsAvailable"] is True and
-                capabilities["voiceTranscriptionReviewNativeAdmissionAvailable"] is False,
-                "Transcription review overclaims execution authority")
+                capabilities["voiceTranscriptionReviewNativeAdmissionAvailable"] is True and
+                capabilities["voiceTranscriptionReviewOperationLinkageAvailable"] is True and
+                capabilities["operationExecutorsConnected"] is False,
+                "Transcription review must report separate native admission and unavailable helper execution")
         for identifier, tool in enumerate(sorted(review_tools), start=23):
             connection.send(request(identifier, "tools/call", {
                 "name": tool, "arguments": {"execute": True},

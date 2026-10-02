@@ -583,7 +583,7 @@ actor VoiceMemoTranscriptionService {
         return await availability(preferredLocale: preferredLocale)
     }
 
-    func transcribe(imageURL: URL, locale: Locale) async throws -> VoiceMemoTranscriptDraft {
+    func transcribe(imageURL: URL, locale: Locale, requiresExactLocale: Bool = false) async throws -> VoiceMemoTranscriptDraft {
         try Task.checkCancellation()
         let image = imageURL.standardizedFileURL
         let folder = image.deletingLastPathComponent()
@@ -596,6 +596,11 @@ actor VoiceMemoTranscriptionService {
         }
         let readiness = await availability(preferredLocale: locale)
         guard let selected = readiness.selectedLocale else {
+            throw VoiceMemoTranscriptionError.unsupportedLanguage
+        }
+        if requiresExactLocale,
+           selected.identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+            != locale.identifier.replacingOccurrences(of: "_", with: "-").lowercased() {
             throw VoiceMemoTranscriptionError.unsupportedLanguage
         }
         switch readiness.status {

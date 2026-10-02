@@ -47,6 +47,103 @@ struct MCPVoiceTranscriptionPlanStoreTests {
     private func planArguments(_ value: MCPJSONValue) throws -> [String: MCPJSONValue] {
         ["planID": try #require(value.objectValue?["planID"])]
     }
+    private func previewPhotos(_ preview: MCPJSONValue) throws -> [MCPJSONValue] {
+        guard case .array(let photos) = preview.objectValue?["photos"] else { throw MCPVoiceTranscriptionPlanStore.Failure.invalidStorage }
+        return photos
+    }
+    @Test("Native retained execution owns the whole set and advances only its own exact saved carriers")
+    func retainedExecution() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let plans = MCPVoiceTranscriptionPlanStore(), preview = try plans.prepare(arguments: f.arguments, facade: f.facade)
+        let id = try #require(preview.objectValue?["planID"]?.stringValue)
+        let retained = try plans.retainExecutionPreview(planID: id, facade: f.facade)
+        defer { retained.release() }
+        for photo in f.photos {
+            #expect(throws: MCPProcessReservationError.busy) { try MCPProcessReservation.acquirePhoto(photo) }
+        }
+        let paths = try previewPhotos(preview).map {
+            URL(fileURLWithPath: $0.objectValue!["canonicalPath"]!.stringValue!)
+        }
+        for (index, photo) in paths.enumerated() {
+            let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sourceFile": photo.lastPathComponent,
+                "pendingChanges": false, "metadata": ["caption": "untouched \(index)"],
+                "voiceMemoTranscript": ["schemaVersion": 1, "generatedText": "draft \(index)"]])
+            try retained.installDraft(data: data, photoURL: photo)
+            #expect(try retained.snapshot(for: photo).appSidecarBytes == data)
+            try retained.validate()
+        }
+        #expect(throws: MCPVoiceTranscriptionPlanStore.Failure.expiredPlan) {
+            try retained.withValidatedPreview(now: Date().addingTimeInterval(301)) { _ in }
+        }
+        // Expiry is an admission gate, not a timeout of consented recognition.
+        try retained.validate()
+        retained.release()
+        #expect(throws: (any Error).self) { try retained.validate() }
+        for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
+    }
+
+    @Test("Retained native authority refuses exact carrier or authorization drift", arguments: ["source", "wav", "relationship", "xmp", "draft", "authority"])
+    func retainedExecutionDrift(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let plans = MCPVoiceTranscriptionPlanStore(), preview = try plans.prepare(arguments: f.arguments, facade: f.facade)
+        let id = try #require(preview.objectValue?["planID"]?.stringValue)
+        let retained = try plans.retainExecutionPreview(planID: id, facade: f.facade)
+        defer { retained.release() }
+        switch kind {
+        case "source": try Data("changed".utf8).write(to: f.photos[1], options: .atomic)
+        case "wav": try Data("changed".utf8).write(to: f.memos[1], options: .atomic)
+        case "relationship": try (Data(contentsOf: f.relationships[1]) + Data(" ".utf8)).write(to: f.relationships[1], options: .atomic)
+        case "xmp": try Data("changed".utf8).write(to: f.photos[1].deletingPathExtension().appendingPathExtension("xmp"))
+        case "authority": try f.store.setEnabled(false)
+        default:
+            let folder = f.root.appendingPathComponent(".photo_metadata")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sourceFile": f.photos[1].lastPathComponent,
+                "pendingChanges": true, "metadata": ["caption": "changed"]]).write(to: folder.appendingPathComponent("\(f.photos[1].lastPathComponent).meta.json"))
+        }
+        #expect(throws: (any Error).self) { try retained.validate() }
+    }
+
+    @Test("Retained empty metadata directory identity cannot be replaced")
+    func retainedPrivateDirectoryIdentity() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let folder = f.root.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let plans = MCPVoiceTranscriptionPlanStore(), preview = try plans.prepare(arguments: f.arguments, facade: f.facade)
+        let retained = try plans.retainExecutionPreview(planID: #require(preview.objectValue?["planID"]?.stringValue), facade: f.facade)
+        defer { retained.release() }
+        try FileManager.default.moveItem(at: folder, to: f.root.appendingPathComponent("old-private"))
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        #expect(throws: MCPAutomationReadError.photoChanged) { try retained.validate() }
+    }
+
+    @Test("Rooted transcript installation cannot change an existing editorial field or unknown extension")
+    func preservedExistingCarrier() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let folder = f.root.appendingPathComponent(".photo_metadata")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let original: [String: Any] = ["schemaVersion": 1, "sourceFile": f.photos[0].lastPathComponent,
+            "pendingChanges": true, "metadata": ["caption": "original"], "future-extension": ["keep": true]]
+        try JSONSerialization.data(withJSONObject: original).write(to: folder.appendingPathComponent("\(f.photos[0].lastPathComponent).meta.json"))
+        var arguments = f.arguments
+        arguments["photos"] = .array(try f.photos.map { photo in
+            var value = try #require(f.facade.inspectPhotoVoiceMemo(path: photo.path).objectValue)
+                .filter { MCPVoiceTranscriptionPlanStore.Request.photoKeys.contains($0.key) }
+            value["path"] = .string(photo.path); return .object(value)
+        })
+        let plans = MCPVoiceTranscriptionPlanStore(), preview = try plans.prepare(arguments: arguments, facade: f.facade)
+        let retained = try plans.retainExecutionPreview(planID: #require(preview.objectValue?["planID"]?.stringValue), facade: f.facade)
+        defer { retained.release() }
+        let photo = URL(fileURLWithPath: try #require(previewPhotos(preview).first?.objectValue?["canonicalPath"]?.stringValue))
+        var replacement = original; replacement["voiceMemoTranscript"] = ["generatedText": "draft"]
+        replacement["future-extension"] = ["keep": false]
+        #expect(throws: MCPAutomationReadError.unsafeCarrier) {
+            try retained.installDraft(data: JSONSerialization.data(withJSONObject: replacement), photoURL: photo)
+        }
+        replacement["future-extension"] = original["future-extension"]
+        try retained.installDraft(data: JSONSerialization.data(withJSONObject: replacement), photoURL: photo)
+        try retained.validate()
+    }
     @Test("Whole ordered preview restores unchanged, including independent team preferences", arguments: [true, false])
     func restored(teamCreation: Bool) throws {
         let f = try fixture(teamCreation: teamCreation); defer { try? FileManager.default.removeItem(at: f.root) }

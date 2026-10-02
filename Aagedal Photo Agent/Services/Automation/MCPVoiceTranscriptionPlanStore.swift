@@ -151,6 +151,55 @@ nonisolated final class MCPVoiceTranscriptionPlanStore: @unchecked Sendable {
             }
         }
     }
+
+    /// A native consent caller retains kernel leases and original directory anchors
+    /// through provider teardown. Expiry gates admission, while admitted work checks
+    /// frozen authority and carrier generations even after the preview expires.
+    func retainExecutionPreview(planID id: String, facade: MCPAutomationFacade,
+                                now: Date = Date()) throws -> ExecutionReservation {
+        guard UUID(uuidString: id)?.uuidString.lowercased() == id else { throw Failure.invalidArguments }
+        let record = try lookup(id: id, now: now)
+        guard try facade.authorizationStore.load() == record.configuration else { throw Failure.authorityChanged }
+        let request = try Request(arguments: record.arguments)
+        let retained = try facade.retainVoiceMemoBatch(paths: request.paths)
+        do {
+            try retained.withValidatedInputs { inputs in
+                try Self.check(request: request, inputs: inputs)
+                guard Self.preview(request: request, inputs: inputs, id: id, createdAt: record.createdAt,
+                    expiresAt: record.expiresAt, durable: storage != nil) == record.preview else { throw Failure.stalePlan }
+                _ = try lookup(id: id, now: max(now, Date()))
+            }
+            return ExecutionReservation(preview: record.preview, retained: retained, validatePlan: { time in
+                guard try self.lookup(id: id, now: max(time, Date())).preview == record.preview else { throw Failure.stalePlan }
+            })
+        } catch { retained.release(); throw error }
+    }
+
+    final class ExecutionReservation: @unchecked Sendable {
+        let preview: MCPJSONValue
+        private let retained: MCPRetainedVoiceMemoBatch
+        private let validatePlan: @Sendable (Date) throws -> Void
+        fileprivate init(preview: MCPJSONValue, retained: MCPRetainedVoiceMemoBatch,
+                         validatePlan: @escaping @Sendable (Date) throws -> Void) {
+            self.preview = preview; self.retained = retained; self.validatePlan = validatePlan
+        }
+        func withValidatedPreview<Value>(now: Date, _ body: (MCPJSONValue) throws -> Value) throws -> Value {
+            try retained.withValidatedInputs { _ in
+                try validatePlan(now)
+                let result = try body(preview)
+                try validatePlan(now)
+                return result
+            }
+        }
+        func validate() throws { try retained.validate() }
+        func checkAuthority() throws { try retained.checkAuthority() }
+        func snapshot(for photoURL: URL) throws -> MCPPhotoCarrierSnapshot { try retained.snapshot(for: photoURL) }
+        func installDraft(data: Data, photoURL: URL,
+                          beforeInstall: @escaping @Sendable () throws -> Void = {}) throws {
+            try retained.installDraft(data: data, photoURL: photoURL, beforeInstall: beforeInstall)
+        }
+        func release() { retained.release() }
+    }
     private static func preview(request: Request, inputs: [[String: MCPJSONValue]], id: String,
                                 createdAt: Date, expiresAt: Date, durable: Bool) -> MCPJSONValue {
         var options = request.arguments; options.removeValue(forKey: "photos")

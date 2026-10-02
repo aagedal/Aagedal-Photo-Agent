@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Read-only presentation of an exact revalidated helper intent. Paths stay plain text.
+/// Presentation of an exact revalidated helper intent. Paths stay plain text.
 nonisolated struct AutomationTranscriptionReview: Sendable {
     let planID: String
     let paths: [String]
@@ -53,17 +53,42 @@ nonisolated struct AutomationTranscriptionReview: Sendable {
 }
 
 /// Implementations must bind every inspection and cancellation to the exact displayed
-/// request, including its original epoch. No method can admit provider execution.
+/// request, including its original epoch. Execution requires a separate native binding and consent.
 nonisolated protocol AutomationTranscriptionReviewServing: Sendable {
     func requests() async throws -> [MCPVoiceTranscriptionReviewRequestStore.Record]
     func requestCapacity() async throws -> MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot
     func recoverCancelledCapacity(expectedEpoch: UUID) async throws -> UUID
     func inspect(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws -> AutomationTranscriptionReview
     func cancel(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws
+    func prepareExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record,
+        provider: AutomationVoiceTranscriptionBatchService.Provider,
+        whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) async throws -> MCPNativeVoiceTranscriptionBindingService.PreparedBinding
+    func submit(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record
+    func inspectOperation(_ id: UUID) async throws -> AutomationOperationRegistry.Record
+    func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record
+    func cancelExecution(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) async throws
+    func cancelRetainedExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws
 }
 
 // Alternate services must explicitly support native maintenance; no helper fallback exists.
 extension AutomationTranscriptionReviewServing {
+    func cancelRetainedExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws {
+        throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+    }
+    func prepareExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record,
+        provider: AutomationVoiceTranscriptionBatchService.Provider,
+        whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) async throws -> MCPNativeVoiceTranscriptionBindingService.PreparedBinding {
+        throw MCPNativeVoiceTranscriptionBindingService.Failure.providerUnavailable
+    }
+    func submit(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record {
+        throw MCPNativeVoiceTranscriptionBindingService.Failure.providerUnavailable
+    }
+    func inspectOperation(_ id: UUID) async throws -> AutomationOperationRegistry.Record { throw AutomationOperationRegistry.Failure.unknownOperation }
+    func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record { throw AutomationOperationRegistry.Failure.unknownOperation }
+    func cancelExecution(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) async throws {
+        throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+    }
+
     func requestCapacity() async throws -> MCPVoiceTranscriptionReviewRequestStore.CapacitySnapshot {
         throw MCPVoiceTranscriptionReviewRequestStore.Failure.storageUnavailable
     }
@@ -81,12 +106,17 @@ actor AutomationTranscriptionReviewService: AutomationTranscriptionReviewServing
     private let facade: MCPAutomationFacade
     private let retainedRequests: MCPVoiceTranscriptionReviewRequestStore?
     private let inspectionTime: @Sendable () -> Date
+    private var bindingService: MCPNativeVoiceTranscriptionBindingService?
+    private var operationRegistry: AutomationOperationRegistry?
 
     init(plans: MCPVoiceTranscriptionPlanStore? = nil, facade: MCPAutomationFacade = .init(),
          requests: MCPVoiceTranscriptionReviewRequestStore? = nil,
-         inspectionTime: @escaping @Sendable () -> Date = { Date() }) {
+         inspectionTime: @escaping @Sendable () -> Date = { Date() },
+         bindingService: MCPNativeVoiceTranscriptionBindingService? = nil,
+         operationRegistry: AutomationOperationRegistry? = nil) {
         self.plans = plans ?? .init(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory())
         self.facade = facade; retainedRequests = requests; self.inspectionTime = inspectionTime
+        self.bindingService = bindingService; self.operationRegistry = operationRegistry
     }
 
     private func requestStore() throws -> MCPVoiceTranscriptionReviewRequestStore {
@@ -174,6 +204,60 @@ actor AutomationTranscriptionReviewService: AutomationTranscriptionReviewServing
         _ = try store.cancelBeforeAdmission(handles.id, requestEpoch: handles.epoch)
     }
 
+    private func executor() throws -> MCPNativeVoiceTranscriptionBindingService {
+        if let bindingService { return bindingService }
+        let registry = AutomationOperationRegistry(storageDirectory: try AutomationOperationRegistry.defaultStorageDirectory())
+        let batches = AutomationVoiceTranscriptionBatchService(registry: registry)
+        let binding = MCPNativeVoiceTranscriptionBindingService(requests: try requestStore(), plans: plans,
+            facade: facade, batches: batches, readiness: MCPNativeVoiceTranscriptionBindingService.liveReadiness,
+            now: inspectionTime)
+        operationRegistry = registry; bindingService = binding
+        return binding
+    }
+
+    func prepareExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record,
+        provider: AutomationVoiceTranscriptionBatchService.Provider,
+        whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) async throws -> MCPNativeVoiceTranscriptionBindingService.PreparedBinding {
+        _ = try inspect(request)
+        let handles = try Self.handles(request)
+        let prepared = try await executor().prepare(requestID: handles.id, requestEpoch: handles.epoch,
+            provider: provider, whisperKind: whisperKind)
+        guard prepared.request == request else { throw MCPNativeVoiceTranscriptionBindingService.Failure.requestChanged }
+        return prepared
+    }
+    func submit(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record {
+        try await executor().submit(prepared: prepared, nativeConsent: nativeConsent)
+    }
+    func inspectOperation(_ id: UUID) async throws -> AutomationOperationRegistry.Record {
+        guard let operationRegistry else { throw AutomationOperationRegistry.Failure.unknownOperation }
+        return try operationRegistry.inspect(id)
+    }
+    func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record {
+        try await executor().waitForCompletion(id)
+    }
+    func cancelExecution(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) async throws {
+        try saveCancellation(prepared.request)
+    }
+    func cancelRetainedExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) async throws {
+        let authorization = try facade.authorizationStore.load()
+        guard authorization.isEnabled else { throw MCPAuthorizationError.disabled }
+        let handles = try Self.handles(request)
+        guard request.state == .admitted || request.state == .linked,
+              try requestStore().inspect(handles.id, requestEpoch: handles.epoch) == request,
+              try facade.authorizationStore.load() == authorization else {
+            throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+        }
+        _ = try executor()
+        try saveCancellation(request)
+    }
+    private func saveCancellation(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) throws {
+        let handles = try Self.handles(request)
+        let cancelled = try requestStore().cancel(handles.id, requestEpoch: handles.epoch)
+        guard let id = cancelled.operationID.flatMap(UUID.init(uuidString:)), let operationRegistry else { return }
+        let current = try operationRegistry.inspect(id)
+        if !current.isTerminal { _ = try operationRegistry.requestCancellation(id) }
+    }
+
     private static func handles(_ record: MCPVoiceTranscriptionReviewRequestStore.Record) throws -> (id: UUID, epoch: UUID) {
         guard let id = UUID(uuidString: record.requestID), let epoch = UUID(uuidString: record.requestEpoch) else {
             throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidStorage
@@ -196,9 +280,23 @@ final class AutomationTranscriptionReviewModel {
     private(set) var isRefreshingEvidence = false
     var isBusyWithCapacity: Bool { isInspectingCapacity || isRecoveringCapacity }
     var canRecoverCancelledCapacity: Bool {
-        !isBusyWithCapacity && !isCancelling && (capacity?.cancelledBeforeAdmissionCount ?? 0) > 0
+        !isBusyWithCapacity && !isCancelling && !isRunning && (capacity?.cancelledBeforeAdmissionCount ?? 0) > 0
     }
     private let service: any AutomationTranscriptionReviewServing
+    private(set) var executionReview: MCPNativeVoiceTranscriptionBindingService.PreparedBinding?
+    var executionConsent = false
+    private(set) var isPreparingExecution = false
+    private(set) var isRunning = false
+    private(set) var isRequestingCancellation = false
+    private(set) var operation: AutomationOperationRegistry.Record?
+    private(set) var executionMessage: String?
+    private var executionGeneration = UUID()
+    private var preparationTask: Task<Void, Never>?
+    private var executionTask: Task<Void, Never>?
+    private var activeBinding: MCPNativeVoiceTranscriptionBindingService.PreparedBinding?
+    private var cancellationRequested = false
+    private let beginExecution: @MainActor () -> Bool
+    private let endExecution: @MainActor () -> Void
     private(set) var isCancelling = false
     private var inspectingRequest: MCPVoiceTranscriptionReviewRequestStore.Record?
     private var evidenceGeneration = UUID()
@@ -208,14 +306,115 @@ final class AutomationTranscriptionReviewModel {
     private var generation = UUID()
     private var task: Task<Void, Never>?
 
-    init(service: any AutomationTranscriptionReviewServing = AutomationTranscriptionReviewService()) {
-        self.service = service
+    init(service: any AutomationTranscriptionReviewServing = AutomationTranscriptionReviewService(),
+         beginExecution: @escaping @MainActor () -> Bool = { FFmpegWhisperSetupModel.shared.beginTranscription() },
+         endExecution: @escaping @MainActor () -> Void = { FFmpegWhisperSetupModel.shared.finishTranscription() }) {
+        self.service = service; self.beginExecution = beginExecution; self.endExecution = endExecution
+    }
+
+    func prepareExecution(provider: AutomationVoiceTranscriptionBatchService.Provider?,
+                          whisperKind: AutomationVoiceTranscriptionProviderBinding.WhisperKind?) {
+        guard !isRunning, !isCancelling, !isRecoveringCapacity, let selectedRequest, review != nil, message == nil else { return }
+        invalidateExecutionReview()
+        guard let provider else {
+            executionMessage = "The selected Settings provider is not ready. Complete its setup in Transcription Settings, then review again. No consent was granted."
+            return
+        }
+        isPreparingExecution = true
+        let expected = executionGeneration
+        preparationTask = Task { [weak self, service] in
+            do {
+                let prepared = try await service.prepareExecution(selectedRequest, provider: provider, whisperKind: whisperKind)
+                guard prepared.request == selectedRequest else { throw MCPNativeVoiceTranscriptionBindingService.Failure.requestChanged }
+                guard let self, self.executionGeneration == expected, self.selectedRequest == selectedRequest, !Task.isCancelled else { return }
+                self.executionReview = prepared
+                self.isPreparingExecution = false; self.preparationTask = nil
+            } catch {
+                guard let self, self.executionGeneration == expected, !Task.isCancelled else { return }
+                self.executionMessage = "Provider review was refused. The current Settings provider, language and options must exactly match this intent and be ready. Photos, authorization or existing reviews may also have changed. No consent was granted. " + error.localizedDescription
+                self.isPreparingExecution = false; self.preparationTask = nil
+            }
+        }
+    }
+
+    /// Owns a retained task: dismissing Settings invalidates only unconfirmed review.
+    func confirmExecution() {
+        guard executionConsent, !isRunning, !isPreparingExecution, !isRefreshingEvidence,
+              message == nil, let prepared = executionReview, selectedRequest == prepared.request else { return }
+        guard beginExecution() else {
+            executionMessage = "Finish the current transcription before starting this request."
+            return
+        }
+        invalidateExecutionReview()
+        invalidateEvidence()
+        activeBinding = prepared; operation = nil; executionMessage = nil
+        cancellationRequested = false; isRequestingCancellation = false; isRunning = true
+        executionTask = Task { [self, service] in
+            do {
+                if cancellationRequested {
+                    try await service.cancelExecution(prepared)
+                    finishExecution(); return
+                }
+                let record = try await service.submit(prepared, nativeConsent: true)
+                operation = record
+                if cancellationRequested { await saveExecutionCancellation(prepared) }
+                let polling = Task { [self, service] in
+                    while !Task.isCancelled {
+                        do {
+                            try await Task.sleep(for: .milliseconds(200))
+                            let current = try await service.inspectOperation(record.id)
+                            guard !Task.isCancelled else { return }
+                            operation = current
+                        } catch is CancellationError { return }
+                        catch { /* Only the retained owner wait proves teardown. */ }
+                    }
+                }
+                while true {
+                    do {
+                        let terminal = try await service.waitForCompletion(record.id)
+                        guard terminal.isTerminal else { throw AutomationOperationRegistry.Failure.invalidTransition }
+                        polling.cancel(); await polling.value
+                        operation = terminal
+                        executionMessage = "Transcription finished: \(terminal.outcome?.rawValue ?? "unknown"). Review saved transcript drafts in Caption; photo metadata requires separate approval."
+                        finishExecution(); refreshRequestEvidence(); return
+                    } catch {
+                        executionMessage = "Transcription status could not be confirmed. Waiting for the provider to stop safely. " + error.localizedDescription
+                        try? await Task.sleep(for: .milliseconds(300))
+                    }
+                }
+            } catch {
+                executionMessage = "Transcription admission could not be confirmed. Inspect retained request and operation evidence before preparing new work. " + error.localizedDescription
+                finishExecution(); refreshRequestEvidence()
+            }
+        }
+    }
+
+    func requestExecutionCancellation() {
+        guard isRunning, !isRequestingCancellation, let activeBinding else { return }
+        cancellationRequested = true; isRequestingCancellation = true
+        Task { [self] in await saveExecutionCancellation(activeBinding) }
+    }
+    private func saveExecutionCancellation(_ prepared: MCPNativeVoiceTranscriptionBindingService.PreparedBinding) async {
+        do { try await service.cancelExecution(prepared) }
+        catch {
+            isRequestingCancellation = false
+            executionMessage = "Cancellation could not be saved. Work is not confirmed stopped. " + error.localizedDescription
+        }
+    }
+    private func finishExecution() {
+        isRunning = false; isRequestingCancellation = false; executionTask = nil; activeBinding = nil
+        endExecution()
+    }
+    func invalidateExecutionReview() {
+        executionGeneration = UUID(); preparationTask?.cancel(); preparationTask = nil
+        executionReview = nil; executionConsent = false; isPreparingExecution = false
+        if !isRunning { executionMessage = nil }
     }
 
     /// A reload invalidates a prior source snapshot even when the durable list fails.
     /// Last recorded request statuses remain visible and are explicitly marked stale.
     func refresh() {
-        guard !isRecoveringCapacity, !isCancelling else { return }
+        guard !isRecoveringCapacity, !isCancelling, !isRunning else { return }
         begin()
         let expected = generation
         task = Task { [weak self, service] in
@@ -233,7 +432,7 @@ final class AutomationTranscriptionReviewModel {
     }
 
     func inspect(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) {
-        guard !isRecoveringCapacity, !isCancelling, requests.contains(request), request.state == .awaitingReview, message == nil else { return }
+        guard !isRecoveringCapacity, !isCancelling, !isRunning, requests.contains(request), request.state == .awaitingReview, message == nil else { return }
         begin()
         inspectingRequest = request
         let expected = generation
@@ -255,7 +454,7 @@ final class AutomationTranscriptionReviewModel {
     }
 
     func cancel(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) {
-        guard !isRecoveringCapacity, !isCancelling, requests.contains(request), request.state == .awaitingReview, message == nil else { return }
+        guard !isRecoveringCapacity, !isCancelling, !isRunning, requests.contains(request), request.state == .awaitingReview, message == nil else { return }
         invalidateCapacity()
         begin()
         isCancelling = true
@@ -280,6 +479,28 @@ final class AutomationTranscriptionReviewModel {
         }
     }
 
+    func cancelRetainedExecution(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) {
+        guard !isRunning, !isCancelling, !isRecoveringCapacity, message == nil,
+              requests.contains(request), request.state == .admitted || request.state == .linked else { return }
+        begin(); isCancelling = true
+        let expected = generation
+        task = Task { [weak self, service] in
+            var failure: Error?
+            do { try await service.cancelRetainedExecution(request) } catch { failure = error }
+            do {
+                let records = try await service.requests()
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.requests = records
+                if let failure { self.message = "Cancellation could not be confirmed. Retained evidence remains available. " + failure.localizedDescription }
+                self.finish()
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.message = "Cancellation and current request status could not be confirmed. Displayed request statuses may be out of date. Refresh before retrying."
+                self.finish()
+            }
+        }
+    }
+
     /// Polling preserves an exact selected review only while its retained record
     /// remains unchanged. A helper cancellation or read failure invalidates selection.
     func refreshRequestEvidence() {
@@ -294,14 +515,14 @@ final class AutomationTranscriptionReviewModel {
                 self.requests = records
                 if let selected = self.selectedRequest ?? self.inspectingRequest,
                    !records.contains(selected) || selected.state != .awaitingReview {
-                    self.invalidateReview()
+                    self.invalidateReview(clearingExecutionMessage: false)
                 }
                 // Status polling cannot revalidate a rejected source preview or clear
                 // its refusal. Explicit refresh owns retrying that review boundary.
                 self.isRefreshingEvidence = false; self.evidenceTask = nil
             } catch {
                 guard let self, self.evidenceGeneration == expected, !Task.isCancelled else { return }
-                self.invalidateReview()
+                self.invalidateReview(clearingExecutionMessage: false)
                 self.message = "Transcription requests could not be refreshed. Displayed request statuses may be out of date. Refresh before reviewing or cancelling."
                 self.isRefreshingEvidence = false; self.evidenceTask = nil
             }
@@ -309,7 +530,7 @@ final class AutomationTranscriptionReviewModel {
     }
 
     func inspectRequestCapacity() {
-        guard !isBusyWithCapacity, !isCancelling else { return }
+        guard !isBusyWithCapacity, !isCancelling, !isRunning else { return }
         capacity = nil; capacityMessage = nil; isInspectingCapacity = true
         let expected = capacityGeneration
         capacityTask = Task { [weak self, service] in
@@ -362,7 +583,10 @@ final class AutomationTranscriptionReviewModel {
         invalidateCapacity()
     }
 
-    private func invalidateReview() {
+    private func invalidateReview(clearingExecutionMessage: Bool = true) {
+        let retainedMessage = executionMessage
+        invalidateExecutionReview()
+        if !clearingExecutionMessage { executionMessage = retainedMessage }
         generation = UUID(); task?.cancel(); task = nil
         selectedRequest = nil; inspectingRequest = nil; review = nil; isLoading = false; isCancelling = false; message = nil
     }
@@ -381,7 +605,7 @@ final class AutomationTranscriptionReviewModel {
             return "Cancellation requested after admission. Work is not confirmed stopped or completed. Admission and operation evidence remains retained; this request cannot be replayed or removed. Inspect retained operation history."
         }
         return switch record.state {
-        case .awaitingReview: "Awaiting native intent review. Provider admission and execution are unavailable; no consent was granted."
+        case .awaitingReview: "Awaiting native intent and provider review. Explicit native consent is required before transcription can start."
         case .cancelled: "Cancelled before provider admission. No transcription was started by this request."
         case .admitted: "Admission evidence is retained, but an operation link is unconfirmed. Work is not confirmed stopped or completed. This request cannot be replayed or removed; inspect retained operation history."
         case .linked: "Operation linkage is retained. A link does not confirm execution, completion or success. This request cannot be replayed or removed; inspect retained operation history."

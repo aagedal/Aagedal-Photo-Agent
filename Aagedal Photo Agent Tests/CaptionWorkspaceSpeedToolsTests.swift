@@ -432,6 +432,23 @@ struct CaptionVoiceMemoTranscriptionTests {
     private let memoURL = URL(fileURLWithPath: "/caption/transcription.wav")
     private let locale = Locale(identifier: "en-US")
 
+    @Test("Consented batch locale cannot fall back to a different installed locale before recognition")
+    func exactConsentedLocale() async throws {
+        let found = association, selected = Locale(identifier: "en-GB")
+        let service = VoiceMemoTranscriptionService(runtime: VoiceMemoTranscriptionRuntime(
+            isAvailable: { true }, supportedLocales: { [selected] }, resolveLocale: { _ in selected },
+            assetStatus: { _ in .installed }, installAssets: { _ in }, makeRecognitionSession: { _, _ in
+                Issue.record("Substituted locale must be rejected before creating recognition")
+                throw VoiceMemoTranscriptionError.audioUnreadable
+            }), lookup: { _ in .available(found) }, captureRevision: { _ in
+                Issue.record("Substituted locale must be rejected before native capture")
+                throw VoiceMemoTranscriptionError.sourceChanged
+            }, startAccess: { _ in false })
+        await #expect(throws: VoiceMemoTranscriptionError.unsupportedLanguage) {
+            try await service.transcribe(imageURL: imageURL, locale: locale, requiresExactLocale: true)
+        }
+    }
+
     @Test("Batch completion refresh cannot replace a local review or navigate to an old photo")
     @MainActor
     func guardedBatchRefresh() async throws {

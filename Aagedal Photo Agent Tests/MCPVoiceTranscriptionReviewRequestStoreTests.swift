@@ -186,7 +186,8 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         var extra = args; extra["consent"] = .bool(true)
         #expect(try structured(f.tools.callTool(name: tool, arguments: extra))["code"] == .string("invalid_arguments"))
         let value = try structured(f.tools.callTool(name: tool, arguments: args))
-        for key in ["consentGranted", "executionAvailable", "commitAvailable", "nativeAdmissionAvailable", "operationLinkageAvailable"] { #expect(value[key] == .bool(false)) }
+        for key in ["consentGranted", "executionAvailable", "commitAvailable"] { #expect(value[key] == .bool(false)) }
+        for key in ["nativeAdmissionAvailable", "operationLinkageAvailable"] { #expect(value[key] == .bool(true)) }
         #expect(value["operationID"] == .null); #expect(value["photoCount"] == .integer(1))
         let handle = args.filter { $0.key != "planID" }
         #expect(try structured(f.tools.callTool(name: "get_voice_transcription_review_request", arguments: handle)) == value)
@@ -197,7 +198,7 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         #expect(try structured(f.tools.callTool(name: tool, arguments: args)) == cancelled)
         let capabilities = try structured(f.tools.callTool(name: "get_server_capabilities", arguments: [:]))
         #expect(capabilities["voiceTranscriptionReviewRequestProtocolVersion"] == .integer(1))
-        #expect(capabilities["voiceTranscriptionReviewNativeAdmissionAvailable"] == .bool(false))
+        #expect(capabilities["voiceTranscriptionReviewNativeAdmissionAvailable"] == .bool(true))
         for name in [tool, "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "list_voice_transcription_review_requests", "get_voice_transcription_review_capacity"] {
             let definition = try #require(f.tools.toolDefinitions(configuration: .init()).first { $0.objectValue?["name"] == .string(name) }?.objectValue)
             #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
@@ -316,6 +317,28 @@ struct MCPVoiceTranscriptionReviewRequestStoreTests {
         _ = try registry.enqueue(kind: kind, ownerID: ownerID, operationID: operationID, ownerLease: lease)
         if kind == .voiceTranscription { _ = try registry.configureBatch(operationID, ownerID: ownerID, itemCount: count) }
         return (registry, lease)
+    }
+
+    @Test("Helper cancellation of an exact linked native transcription stays a cooperative request")
+    func helperCancelsLinkedNativeWork() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), operation = UUID(), owner = UUID(), retained = try request(f, id: id)
+        _ = try f.requests.admit(id, requestEpoch: f.epoch, expected: retained,
+            operationID: operation, ownerID: owner, registry: f.operations)
+        let (registry, lease) = try queuedOperation(f, operationID: operation, ownerID: owner)
+        defer { withExtendedLifetime(lease) {} }
+        _ = try f.requests.link(id, requestEpoch: f.epoch, operationID: operation, registry: registry)
+        let handle: [String: MCPJSONValue] = ["requestID": .string(id.uuidString.lowercased()),
+            "requestEpoch": .string(f.epoch.uuidString.lowercased())]
+        let result = try structured(f.tools.callTool(name: "cancel_voice_transcription_review_request", arguments: handle))
+        #expect(result["state"] == .string("linked"))
+        #expect(result["operationID"] == .string(operation.uuidString.lowercased()))
+        #expect(result["cancellationRequested"] == .bool(true))
+        #expect(result["executionAvailable"] == .bool(false))
+        #expect(try registry.inspect(operation).outcome == nil)
+        #expect(try structured(f.tools.callTool(name: "cancel_voice_transcription_review_request", arguments: handle)) == result)
+        #expect(throws: CancellationError.self) { try f.requests.checkCancellation(id, requestEpoch: f.epoch, operationID: operation) }
+        #expect(try f.requests.capacitySnapshot().cancelledBeforeAdmissionCount == 0)
     }
 
     @Test("Only the exact live reserved operation can link", arguments: ["foreign", "owner", "kind", "count", "unmanaged", "cancelled", "running", "missing", "expired"])

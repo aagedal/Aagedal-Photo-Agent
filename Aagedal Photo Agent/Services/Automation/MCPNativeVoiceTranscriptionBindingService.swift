@@ -2,14 +2,15 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// Read-only native session bridge. Retained helper intent is evidence to review;
-/// preparing or revalidating this value never admits an operation or grants consent.
+/// Native session bridge. Retained helper intent is evidence to review; preparation
+/// grants no consent. Only the explicit native-consent entry point admits work.
 actor MCPNativeVoiceTranscriptionBindingService {
     enum Failure: Error, Equatable {
         case requestChanged
         case invalidRequestState
         case nativeInputChanged
         case providerUnavailable
+        case consentRequired
     }
 
     nonisolated struct PreparedBinding: Sendable {
@@ -72,6 +73,221 @@ actor MCPNativeVoiceTranscriptionBindingService {
         try await requireReadiness(prepared.providerBinding)
         try Task.checkCancellation()
         try validateRooted(prepared.request, batch: prepared.batch)
+    }
+
+    /// Called only by the native provider-review flow after explicit consent to this
+    /// retained request, ordered batch and concrete provider. The helper never calls
+    /// this entry point or receives the session-only binding or rooted reservation.
+    func submit(prepared: PreparedBinding, nativeConsent: Bool) async throws -> AutomationOperationRegistry.Record {
+        guard nativeConsent else { throw Failure.consentRequired }
+        try await revalidate(prepared)
+        let reservation = try plans.retainExecutionPreview(planID: prepared.request.planID, facade: facade, now: now())
+        var handedOff = false
+        defer { if !handedOff { reservation.release() } }
+        try Self.requireDraftAbsence(prepared, reservation: reservation)
+        let id = UUID(), registry = batches.operationRegistry
+        let requests = requests, now = now
+        guard let requestID = UUID(uuidString: prepared.request.requestID),
+              let epoch = UUID(uuidString: prepared.request.requestEpoch) else { throw Failure.requestChanged }
+        let lifecycle = AutomationVoiceTranscriptionBatchService.LifecycleHooks(operationID: id, admission: { owner in
+            try Task.checkCancellation()
+            try reservation.withValidatedPreview(now: now()) { preview in
+                try Self.requirePrepared(prepared, preview: preview)
+                try Self.requireDraftAbsence(prepared, reservation: reservation)
+                _ = try requests.admit(requestID, requestEpoch: epoch, expected: prepared.request,
+                    operationID: id, ownerID: owner, registry: registry, now: now())
+            }
+        }, didEnqueue: { record in
+            guard record.id == id else { throw Failure.requestChanged }
+            try reservation.withValidatedPreview(now: now()) { preview in
+                try Self.requirePrepared(prepared, preview: preview)
+                _ = try requests.link(requestID, requestEpoch: epoch, operationID: id, registry: registry, now: now())
+            }
+        }, cancellationCheck: { operationID in
+            guard operationID == id else { throw Failure.requestChanged }
+            try Self.requireLinkedRequest(prepared.request, requests: requests, registry: registry, operationID: id)
+        })
+        let executionGuard = AutomationVoiceTranscriptionBatchService.ExecutionGuard(check: {
+            try await self.checkExecution(prepared, reservation: reservation, operationID: id)
+        }, poll: {
+            try await self.pollExecution(prepared, reservation: reservation, operationID: id)
+        }, save: { draft, input in
+            try await self.saveRooted(draft, input: input, prepared: prepared, reservation: reservation, operationID: id)
+        }, finish: { reservation.release() })
+        let record = try await batches.submit(prepared: prepared.batch, provider: prepared.providerBinding.provider,
+            lifecycle: lifecycle, executionGuard: executionGuard)
+        handedOff = true
+        return record
+    }
+
+    func waitForCompletion(_ operationID: UUID) async throws -> AutomationOperationRegistry.Record {
+        try await batches.waitForCompletion(operationID)
+    }
+
+    func shutdown() async throws { try await batches.shutdown() }
+
+    private func checkExecution(_ prepared: PreparedBinding,
+        reservation: MCPVoiceTranscriptionPlanStore.ExecutionReservation, operationID: UUID) async throws {
+        try requireExecutionRequest(prepared.request, operationID: operationID)
+        try prepared.providerBinding.requireMatches(intent: prepared.request.intent)
+        try reservation.validate()
+        try await requireReadiness(prepared.providerBinding)
+        // Readiness can suspend for native or artifact checks. Recheck the complete
+        // retained rooted generation and exact cancellation link before inference.
+        try requireExecutionRequest(prepared.request, operationID: operationID)
+        try reservation.validate()
+        try Task.checkCancellation()
+    }
+
+    private func pollExecution(_ prepared: PreparedBinding,
+        reservation: MCPVoiceTranscriptionPlanStore.ExecutionReservation, operationID: UUID) throws {
+        try requireExecutionRequest(prepared.request, operationID: operationID)
+        try reservation.checkAuthority()
+        try Task.checkCancellation()
+    }
+
+    private func requireExecutionRequest(_ expected: MCPVoiceTranscriptionReviewRequestStore.Record, operationID: UUID) throws {
+        guard let id = UUID(uuidString: expected.requestID), let epoch = UUID(uuidString: expected.requestEpoch) else {
+            throw Failure.requestChanged
+        }
+        let current = try requests.inspect(id, requestEpoch: epoch)
+        if current.state == .awaitingReview { try requireCurrent(expected) }
+        else { try Self.requireLinkedRequest(expected, requests: requests, registry: batches.operationRegistry, operationID: operationID) }
+    }
+
+    private nonisolated static func requireLinkedRequest(_ expected: MCPVoiceTranscriptionReviewRequestStore.Record,
+        requests: MCPVoiceTranscriptionReviewRequestStore, registry: AutomationOperationRegistry, operationID: UUID) throws {
+        guard let id = UUID(uuidString: expected.requestID), let epoch = UUID(uuidString: expected.requestEpoch) else {
+            throw Failure.requestChanged
+        }
+        let current = try requests.inspect(id, requestEpoch: epoch)
+        guard current.intent == expected.intent, current.intentSHA256 == expected.intentSHA256,
+              current.batchIdentity == expected.batchIdentity, current.createdAt == expected.createdAt,
+              current.state == .linked, current.operationID == operationID.uuidString.lowercased(),
+              let admission = current.admission, admission.operationID == current.operationID else { throw Failure.requestChanged }
+        let operation = try registry.inspect(operationID)
+        guard operation.kind == .voiceTranscription, operation.ownerLeaseManaged == true,
+              operation.ownerID.uuidString.lowercased() == admission.ownerID,
+              operation.batchProgress?.itemCount == expected.intent.photoCount else { throw Failure.requestChanged }
+        if current.cancellationRequestedAt != nil {
+            // Only this exact durable link may project native/helper request cancellation
+            // onto history. This allows truthful cancelled acknowledgement after teardown.
+            if operation.cancellationRequestedAt == nil { _ = try registry.requestCancellation(operationID) }
+            throw CancellationError()
+        }
+        try requests.checkCancellation(id, requestEpoch: epoch, operationID: operationID)
+    }
+
+    private nonisolated static func requirePrepared(_ prepared: PreparedBinding, preview: MCPJSONValue) throws {
+        guard try MCPVoiceTranscriptionReviewRequestStore.Intent(preview: preview) == prepared.request.intent else {
+            throw Failure.requestChanged
+        }
+        try prepared.providerBinding.requireMatches(intent: prepared.request.intent)
+        guard prepared.batch.inputSnapshots.count == prepared.request.intent.photos.count else { throw Failure.nativeInputChanged }
+        for (input, photo) in zip(prepared.batch.inputSnapshots, prepared.request.intent.photos) {
+            try requireNativeMatches(input, photo: photo)
+        }
+    }
+
+    private nonisolated static func requireDraftAbsence(_ prepared: PreparedBinding,
+        reservation: MCPVoiceTranscriptionPlanStore.ExecutionReservation) throws {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        for input in prepared.batch.inputSnapshots {
+            guard let data = try reservation.snapshot(for: input.imageURL).appSidecarBytes else { continue }
+            let metadata = try decoder.decode(MetadataSidecar.self, from: data)
+            guard metadata.sourceFile == input.imageURL.lastPathComponent,
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw VoiceMemoTranscriptionError.invalidGeneratedDraft
+            }
+            guard object[MetadataSidecarService.voiceMemoTranscriptFieldName] == nil else {
+                throw VoiceMemoTranscriptionError.existingTranscript
+            }
+        }
+    }
+
+    private func saveRooted(_ draft: VoiceMemoTranscriptDraft, input: AutomationVoiceTranscriptionBatchService.Input,
+        prepared: PreparedBinding, reservation: MCPVoiceTranscriptionPlanStore.ExecutionReservation,
+        operationID: UUID) async throws -> VoiceMemoTranscriptDraft {
+        // The ordinary live save acquires its own photo lease; use the exact retained
+        // rooted installer here and the same in-process metadata serialization instead.
+        try Self.requireProviderDraft(draft, binding: prepared.providerBinding)
+        return try await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: input.imageURL)) {
+            do { try await self.checkExecution(prepared, reservation: reservation, operationID: operationID) }
+            catch is CancellationError { throw AutomationVoiceTranscriptionBatchService.Failure.cancelledBeforeSave }
+            catch { throw AutomationVoiceTranscriptionBatchService.Failure.guardRefused }
+            return try await self.installRooted(draft, input: input, prepared: prepared,
+                reservation: reservation, operationID: operationID)
+        }
+    }
+
+    private func installRooted(_ draft: VoiceMemoTranscriptDraft, input: AutomationVoiceTranscriptionBatchService.Input,
+        prepared: PreparedBinding, reservation: MCPVoiceTranscriptionPlanStore.ExecutionReservation,
+        operationID: UUID) throws -> VoiceMemoTranscriptDraft {
+        do {
+            try requireExecutionRequest(prepared.request, operationID: operationID)
+            try Task.checkCancellation()
+        } catch is CancellationError { throw AutomationVoiceTranscriptionBatchService.Failure.cancelledBeforeSave }
+        do { try reservation.validate() }
+        catch { throw AutomationVoiceTranscriptionBatchService.Failure.guardRefused }
+        let snapshot = try reservation.snapshot(for: input.imageURL)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.sortedKeys]
+        let original = try snapshot.appSidecarBytes ?? encoder.encode(MetadataSidecar(sourceFile: input.imageURL.lastPathComponent))
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let metadata = try decoder.decode(MetadataSidecar.self, from: original)
+        guard metadata.sourceFile == input.imageURL.lastPathComponent,
+              var object = try JSONSerialization.jsonObject(with: original) as? [String: Any] else {
+            throw VoiceMemoTranscriptionError.invalidGeneratedDraft
+        }
+        guard object[MetadataSidecarService.voiceMemoTranscriptFieldName] == nil else { throw VoiceMemoTranscriptionError.existingTranscript }
+        let transcript = VoiceMemoTranscriptRecord(sourceImageFilename: input.imageURL.lastPathComponent,
+            sourceMemoFilename: input.association.memoURL.lastPathComponent, memoByteCount: draft.memoByteCount,
+            memoSHA256: draft.memoSHA256, associationProfileIdentifier: draft.associationProfileIdentifier,
+            localeIdentifier: draft.localeIdentifier, provider: draft.provider, providerModel: draft.providerModel,
+            generatedAt: draft.generatedAt, generatedText: draft.generatedText, reviewedText: draft.reviewedText,
+            approvedAt: nil, whisperProvenance: draft.whisperProvenance)
+        let encoded = try encoder.encode(transcript)
+        object[MetadataSidecarService.voiceMemoTranscriptFieldName] = try JSONSerialization.jsonObject(with: encoded)
+        let patched = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        let requests = requests, registry = batches.operationRegistry
+        try reservation.installDraft(data: patched, photoURL: input.imageURL, beforeInstall: {
+            do {
+                try Task.checkCancellation()
+                try Self.requireLinkedRequest(prepared.request, requests: requests, registry: registry, operationID: operationID)
+            } catch is CancellationError { throw AutomationVoiceTranscriptionBatchService.Failure.cancelledBeforeSave }
+        })
+        // Rooted installation verified these exact bytes and promoted only its own
+        // app carrier generation. Decode the durable representation, including dates.
+        let saved = try decoder.decode(VoiceMemoTranscriptRecord.self, from: encoded)
+        return .init(imageURL: input.imageURL, memoURL: input.association.memoURL,
+            memoByteCount: saved.memoByteCount, memoSHA256: saved.memoSHA256,
+            associationProfileIdentifier: saved.associationProfileIdentifier, localeIdentifier: saved.localeIdentifier,
+            provider: saved.provider, providerModel: saved.providerModel, generatedAt: saved.generatedAt,
+            generatedText: saved.generatedText, reviewedText: saved.reviewedText, approvedAt: saved.approvedAt,
+            whisperProvenance: saved.whisperProvenance)
+    }
+
+    private nonisolated static func requireProviderDraft(_ draft: VoiceMemoTranscriptDraft,
+        binding: AutomationVoiceTranscriptionProviderBinding) throws {
+        switch binding.identity {
+        case .apple(let locale):
+            guard draft.localeIdentifier.replacingOccurrences(of: "_", with: "-").lowercased() == locale,
+                  draft.provider == "Apple on-device speech", draft.providerModel == "System managed; exact version unavailable",
+                  draft.whisperProvenance == nil else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+        case .whisper(_, let configuration):
+            guard let provenance = draft.whisperProvenance else { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+            do { try provenance.validate() }
+            catch { throw VoiceMemoTranscriptionError.invalidGeneratedDraft }
+            let expected = FFmpegWhisperTranscriptProvenance(buildIdentifier: configuration.buildIdentifier,
+                executableSHA256: configuration.executable.sha256, executableByteCount: configuration.executable.byteCount,
+                modelIdentifier: configuration.modelIdentifier, modelSHA256: configuration.model.sha256,
+                modelByteCount: configuration.model.byteCount, requestedLanguage: configuration.language,
+                useGPU: configuration.useGPU, translate: configuration.translate, segments: provenance.segments)
+            guard provenance == expected, draft.localeIdentifier == configuration.language,
+                  draft.provider == "FFmpeg Whisper", draft.providerModel == configuration.modelIdentifier,
+                  draft.generatedText == provenance.editableText.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                throw VoiceMemoTranscriptionError.invalidGeneratedDraft
+            }
+        }
     }
 
     /// Production Apple availability check. Supply this explicitly at construction;
