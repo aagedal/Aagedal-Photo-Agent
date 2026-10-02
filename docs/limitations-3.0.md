@@ -55,6 +55,11 @@ These are material product and evidence boundaries, not a list of unfinished int
 
 ## Reviewed automation publication
 
+- Helper transcription-review presentation requires the running app and its matching signed helper.
+  Copied, unsigned or differently installed peers refuse. `reviewRequired` acknowledges only a
+  presentation request; exact intent is revalidated in the native UI, and consent remains unchecked.
+  Direct helper execution, actual provider/device qualification and broader signed lifecycle gates
+  remain unfinished. An exact linked operation handle does not prove executor liveness or completion.
 - Native XMP publication requires a checked plan, dry run and separate session consent. It writes
   the sidecar and reconciles local history; helper clients cannot invoke physical publication.
 - Interrupted or uncertain publication retains original/candidate recovery bytes and blocks further

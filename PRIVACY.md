@@ -58,11 +58,20 @@ exports separately.
 
 ## Optional local automation
 
-The bundled MCP server is disabled by default and uses only STDIO with the local client process; it does
+The bundled MCP server is disabled by default and uses STDIO with the local client process; it does
 not open a listening network port. Enabling it does not itself grant photo access. You select each
 authorized folder separately in Settings, can remove a grant at any time, and can disable the server
 without deleting the folder list. The helper reloads enablement and grants for every tool call and refuses
 changed roots, paths outside those roots, links/aliases, special files, and hidden Photo Agent stores.
+
+With automation enabled, the running app also offers a private local Unix socket for authenticated
+transcription-review presentation. It opens no network port. Both sides verify the exact signed
+app/helper pair and kernel peer credentials. Only original request/epoch UUIDs and fixed status or
+linked-operation UUIDs cross that channel; it carries no paths, audio, transcript text or consent.
+The mode-0700 `/private/tmp/apa-native-<effective-user-id>` directory contains a mode-0600 socket
+and owner lock. Normal shutdown removes its socket; an inert owner-lock file may remain. Relaunch
+reclaims only proven stale safe sockets. A review response does not prove user consent or execution,
+and native Settings independently revalidates before presenting the request.
 
 After exact local plan review and approval, **Apply to Pending Draft** writes the reviewed descriptive
 values to the photo folder's app-owned `.photo_metadata` history. This preserves photo and XMP bytes

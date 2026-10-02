@@ -182,6 +182,40 @@ struct AutomationTranscriptionReviewModelTests {
         #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".photo_metadata").path))
     }
 
+    @Test("Helper presentation reloads the exact original epoch and grants no execution consent") @MainActor
+    func helperPresentationRequiresExactEpoch() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let model = AutomationTranscriptionReviewModel(service: f.service)
+        let id = try #require(UUID(uuidString: f.record.requestID))
+        let epoch = try #require(UUID(uuidString: f.record.requestEpoch))
+        model.executionConsent = true
+        model.inspectInvocation(requestID: id, requestEpoch: epoch)
+        try await waitUntil { !model.isLoading }
+        #expect(model.selectedRequest == f.record)
+        #expect(model.review?.paths == Array(f.photos.reversed()).map { $0.standardizedFileURL.path })
+        #expect(!model.executionConsent && model.executionReview == nil && !model.isRunning)
+        model.inspectInvocation(requestID: id, requestEpoch: UUID())
+        try await waitUntil { !model.isLoading }
+        #expect(model.selectedRequest == nil && model.review == nil && model.message != nil)
+        #expect(try f.requests.inspect(id, requestEpoch: epoch) == f.record)
+    }
+
+    @Test("Dismissal invalidates a suspended helper presentation before it selects intent") @MainActor
+    func helperPresentationRefusesLateInspection() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = ControlledService(record: f.record, review: try AutomationTranscriptionReview(f.preview))
+        await service.configure(holdInspection: true)
+        let model = AutomationTranscriptionReviewModel(service: service)
+        model.inspectInvocation(requestID: try #require(UUID(uuidString: f.record.requestID)),
+            requestEpoch: try #require(UUID(uuidString: f.record.requestEpoch)))
+        try await waitUntil { await service.inspectionPending }
+        model.clear()
+        await service.finishInspection()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(model.selectedRequest == nil && model.review == nil && !model.isLoading)
+        #expect(await service.submissionConsents.isEmpty)
+    }
+
     @Test("Changed WAV, revoked authorization and helper cancellation refuse selected intent", arguments: ["wav", "authorization", "cancelled"])
     func revalidate(kind: String) async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

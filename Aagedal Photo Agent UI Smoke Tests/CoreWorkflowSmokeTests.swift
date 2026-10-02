@@ -76,6 +76,37 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeTranscriptionInvocationOpensExactReviewWithoutConsent() throws {
+        let folder = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true,
+            transcriptionReviewExecution: "complete", transcriptionInvocation: true)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 12))
+        let provider = settings.staticTexts["automation.transcriptionReviewProvider"]
+        XCTAssertTrue(provider.waitForExistence(timeout: 12))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            folder.appendingPathComponent("transcription-review-manifest.json"))) as? [String: Any])
+        let id = try XCTUnwrap(manifest["requestID"] as? String)
+        XCTAssertTrue(visibleText(settings.staticTexts["Transcription request identifier"]).contains(id))
+        let requestURL = folder.appendingPathComponent("transcription-review-requests/operations.json")
+        let original = try Data(contentsOf: requestURL)
+        let review = settings.buttons["automation.prepareTranscriptionExecution"]
+        XCTAssertTrue(review.waitForExistence(timeout: 8)); review.click()
+        let consent = settings.checkBoxes["automation.transcriptionExecutionConsent"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 8))
+        XCTAssertEqual(checkboxState(consent), false)
+        XCTAssertFalse(settings.buttons["automation.confirmTranscriptionExecution"].isEnabled)
+        XCTAssertEqual(try Data(contentsOf: requestURL), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            folder.appendingPathComponent("transcription-review-operations/operations.json").path))
+        let paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        for path in paths {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(
+                ".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json").path))
+        }
+    }
+
+    @MainActor
     func testNativeTranscriptionReviewRefusesChangedRelationshipAndRetainsCancellation() throws {
         try exerciseTranscriptionReview(changedRelationship: true)
     }
@@ -2757,12 +2788,14 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionBatchMode: String? = nil,
         transcriptionReview: Bool = false,
         transcriptionReviewCapacity: Bool = false,
-        transcriptionReviewExecution: String? = nil
+        transcriptionReviewExecution: String? = nil,
+        transcriptionInvocation: Bool = false
     ) {
         app = XCUIApplication()
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
         if transcriptionReviewCapacity { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] = "1" }
         if let transcriptionReviewExecution { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"] = transcriptionReviewExecution }
+        if transcriptionInvocation { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_INVOCATION"] = "1" }
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",

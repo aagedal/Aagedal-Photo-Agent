@@ -3,6 +3,9 @@ import SwiftUI
 
 @main
 struct Aagedal_Photo_AgentApp: App {
+    @Environment(\.openSettings) private var openSettings
+    @State private var nativeInvocation = AutomationNativeInvocationController.shared
+    @State private var didPresentNativeInvocationUITest = false
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var updater = SparkleUpdaterService.shared
     @ObservedObject private var imageScaling = ImageScalingController.shared
@@ -46,10 +49,25 @@ struct Aagedal_Photo_AgentApp: App {
                 .environment(knownPeopleInterchangeController)
                 .onAppear {
                     AppStartupSignposts.shared.mainContentAppeared()
+                    if !didPresentNativeInvocationUITest,
+                       UITestLaunchConfiguration.current.isEnabled,
+                       ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_TRANSCRIPTION_INVOCATION"] == "1",
+                       let service = UITestTranscriptionReviewFixture.currentServiceForModel() {
+                        didPresentNativeInvocationUITest = true
+                        // Presentation-only fixture: transport authentication is tested
+                        // separately. Never touch host roots, models or provider consent.
+                        Task {
+                            guard let request = try? await service.requests().first,
+                                  let id = UUID(uuidString: request.requestID),
+                                  let epoch = UUID(uuidString: request.requestEpoch) else { return }
+                            nativeInvocation.present(requestID: id, requestEpoch: epoch)
+                        }
+                    }
                     // UI smoke launches use disposable fixtures and must not start unrelated
                     // migrations, cloud watchers, network refreshes, or backup prompts.
                     if !UITestLaunchConfiguration.current.isEnabled {
                         AppStartupWorkCoordinator.shared.startAfterFirstPaint()
+                        nativeInvocation.start()
                     }
                     if UITestLaunchConfiguration.current.isEnabled,
                        UITestLaunchConfiguration.current.workflow == .knownPeopleInterchange,
@@ -61,6 +79,11 @@ struct Aagedal_Photo_AgentApp: App {
                             commandRouter.send(.showKnownPeopleDatabase)
                         }
                     }
+                }
+                .onChange(of: nativeInvocation.pendingReview?.id) { _, id in
+                    guard id != nil else { return }
+                    openSettings()
+                    NSApp.activate(ignoringOtherApps: true)
                 }
         }
         .commands {
@@ -488,6 +511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
         AppStartupWorkCoordinator.shared.cancel()
+        AutomationNativeInvocationController.shared.stop()
     }
 
     @MainActor

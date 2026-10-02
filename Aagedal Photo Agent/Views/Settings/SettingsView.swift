@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @State private var nativeInvocation = AutomationNativeInvocationController.shared
     @Environment(AppCommandRouter.self) private var commandRouter
     @Environment(KnownPeopleInterchangeController.self) private var interchangeController
     @State private var settingsViewModel: SettingsViewModel
@@ -236,6 +237,7 @@ struct SettingsView: View {
         .frame(minWidth: 720, idealWidth: 760, minHeight: 560, idealHeight: 620)
         .onAppear {
             applyRequestedDestination()
+            if nativeInvocation.pendingReview != nil { selection = .automation }
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
@@ -248,6 +250,9 @@ struct SettingsView: View {
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
             applyRequestedDestination()
+        }
+        .onChange(of: nativeInvocation.pendingReview?.id) { _, id in
+            if id != nil { selection = .automation }
         }
         .onReceive(NotificationCenter.default.publisher(for: .templatesStorageDidChange)) { _ in
             templateViewModel.loadTemplates()

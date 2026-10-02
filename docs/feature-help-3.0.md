@@ -152,6 +152,13 @@ review handles. `list_voice_transcription_review_requests` takes no arguments;
 `get_voice_transcription_review_request` and `cancel_voice_transcription_review_request` accept only
 `requestID` and its original `requestEpoch`.
 
+To open that exact request, call `open_voice_transcription_review` with its original `requestID`
+and `requestEpoch` while the matching signed Photo Agent app is running. The app and bundled helper
+authenticate their private local connection. `reviewRequired` acknowledges the presentation request;
+the native UI independently revalidates and clears prior execution consent. An already linked request
+returns its exact operation ID for separate status inspection. Unavailable, copied or mismatched peers
+refuse. The tool cannot consent, start transcription, change providers or approve text.
+
 In **Settings → Automation → Transcription Intent Review**, refresh requests and choose
 **Inspect Transcription Intent** to revalidate the preview and display photo order and requested
 provider/language/translation/GPU options. **Cancel Before Admission** retains a cancelled intent.

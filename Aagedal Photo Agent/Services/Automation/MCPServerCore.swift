@@ -2440,6 +2440,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let operationRegistry: AutomationOperationRegistry?
     let nativeReviewRequests: MCPNativeReviewRequestStore?
     let voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore?
+    let nativeReviewInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
          patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(),
@@ -2447,13 +2448,17 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
          teamLibrary: MCPTeamLibrary? = nil,
          operationRegistry: AutomationOperationRegistry? = nil,
          nativeReviewRequests: MCPNativeReviewRequestStore? = nil,
-         voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore? = nil) {
+         voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore? = nil,
+         nativeReviewInvocation: @escaping @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response = { id, epoch in
+             try AutomationNativeInvocationChannel.Client().invoke(.init(requestID: id, requestEpoch: epoch))
+         }) {
         self.authorizationStore = authorizationStore
         self.automationFacade = MCPAutomationFacade(authorizationStore: authorizationStore)
         self.templateDiscovery = templateDiscovery ?? MCPTemplateDiscovery(authorizationStore: authorizationStore)
         self.operationRegistry = operationRegistry
         self.nativeReviewRequests = nativeReviewRequests
         self.voiceTranscriptionReviewRequests = voiceTranscriptionReviewRequests
+        self.nativeReviewInvocation = nativeReviewInvocation
         self.patchPlans = patchPlans
         self.voiceTranscriptionPlans = voiceTranscriptionPlans
         self.teamLibrary = teamLibrary ?? MCPTeamLibrary(authorizationStore: authorizationStore)
@@ -2461,6 +2466,13 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
 
     func toolDefinitions(configuration: MCPAuthorizationConfiguration) -> [MCPJSONValue] {
         [
+            definition(
+                name: "open_voice_transcription_review",
+                description: "Ask the running Photo Agent app to present one exact retained transcription request for native review. Requires Enable local automation, original lowercase requestID/requestEpoch, and the matching signed bundled app/helper. Both processes authenticate the local connection; no app launch, consent, provider change, download, inference or draft creation occurs. reviewRequired acknowledges a presentation request only; the UI revalidates before selection. An already linked request returns only its exactly matched operation handle, never completion. Cancelled, expired awaiting, uncertain admitted, mismatched and unavailable requests refuse. Explicit native provider review and consent remain required; direct helper execution is unavailable.",
+                properties: ["requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")])],
+                required: ["requestID", "requestEpoch"], idempotent: false, readOnly: false
+            ),
             definition(
                 name: "prepare_voice_transcription",
                 description: "Retain an immutable ordered transcription intent preview for 1–8 explicit photos with the exact source/app/XMP/relationship/audio revisions from get_photo_voice_memo. Requires Enable local automation. Writes bounded private preview coordination storage only; no transcription, draft, download, consent or execution is available. Provider must be appleSpeech, whisper or customWhisper. Explicit language, translate and useGPU are required; Apple accepts a bounded locale identifier with translate/useGPU false, Whisper accepts auto or two lowercase ASCII letters. Native runtime/model identity and readiness remain unresolved. The five-minute preview expires and is revalidated as a whole set on inspection.",
@@ -2740,7 +2752,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             let acceptedArguments: Set<String>
             switch name {
             case "request_voice_transcription_review": acceptedArguments = ["requestID", "requestEpoch", "planID"]
-            case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request": acceptedArguments = ["requestID", "requestEpoch"]
+            case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "open_voice_transcription_review": acceptedArguments = ["requestID", "requestEpoch"]
             case "request_iptc_patch_review": acceptedArguments = ["requestID", "requestEpoch", "planID", "purpose"]
             case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
@@ -2762,6 +2774,30 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             }
             let configuration = try authorizationStore.load()
             switch name {
+            case "open_voice_transcription_review":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                guard Set(arguments.keys) == ["requestID", "requestEpoch"],
+                      let id = canonicalUUID(arguments["requestID"]),
+                      let epoch = canonicalUUID(arguments["requestEpoch"]) else {
+                    throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidArguments
+                }
+                do {
+                    let response = try nativeReviewInvocation(id, epoch)
+                    guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                    guard response.status != .unavailable else {
+                        return failure(code: "native_review_unavailable", message: "The running app could not accept this exact request for native review. No consent was granted.")
+                    }
+                    return success([
+                        "scope": .string("authenticated-native-review-handoff"),
+                        "requestID": .string(id.uuidString.lowercased()), "requestEpoch": .string(epoch.uuidString.lowercased()),
+                        "status": .string(response.status.rawValue),
+                        "operationID": response.operationID.map { .string($0.uuidString.lowercased()) } ?? .null,
+                        "consentGranted": .bool(false), "executionStarted": .bool(false),
+                        "directHelperExecutionAvailable": .bool(false), "completionConfirmed": .bool(false)
+                    ])
+                } catch {
+                    return failure(code: "native_review_unavailable", message: "Native review requires the running app, its matching signed helper and a current exact request. No consent was granted.")
+                }
             case "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests",
                  "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
@@ -2931,6 +2967,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("transcription-provider-discovery"), .string("persisted-voice-memo-inspection"),
                         .string("immutable-voice-transcription-batch-preview"), .string("voice-transcription-preview-revalidation"),
                         .string("durable-voice-transcription-review-intent"),
+                        .string("authenticated-native-transcription-review-handoff"),
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
@@ -2944,6 +2981,9 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "voiceTranscriptionReviewRequestProtocolVersion": .integer(1),
                     "voiceTranscriptionReviewNativeAdmissionAvailable": .bool(true),
                     "voiceTranscriptionReviewOperationLinkageAvailable": .bool(true),
+                    "voiceTranscriptionReviewOpenToolAvailable": .bool(true),
+                    "nativeReviewInvocationTransport": .string("mutually-authenticated-local-socket"),
+                    "nativeReviewSessionAvailability": .string("checked-on-invocation"),
                     "helperCommitAvailable": .bool(false),
                     "teamCreationEnabled": .bool(configuration.isEnabled && configuration.allowsTeamCreation == true),
                 ])

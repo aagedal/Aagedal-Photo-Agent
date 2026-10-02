@@ -240,6 +240,10 @@
 		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
 		D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */; };
 		D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */; };
+		C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */; };
+		C12100000000000000000202 /* AutomationNativeInvocationChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */; };
+		C12100000000000000000302 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */; };
+		C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -516,6 +520,10 @@
 		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationTranscriptionReviewModelTests.swift; path = "AutomationTranscriptionReviewModelTests.swift"; sourceTree = "<group>"; };
 		D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionProviderBindingTests.swift; sourceTree = "<group>"; };
 		D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeVoiceTranscriptionBindingServiceTests.swift; sourceTree = "<group>"; };
+		C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannel.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationNativeInvocationChannel.swift"; sourceTree = SOURCE_ROOT; };
+		C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannelTests.swift; path = "AutomationNativeInvocationChannelTests.swift"; sourceTree = "<group>"; };
+		C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeTranscriptionReviewInvocationServiceTests.swift; path = "AutomationNativeTranscriptionReviewInvocationServiceTests.swift"; sourceTree = "<group>"; };
+		C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPNativeInvocationToolTests.swift; path = "MCPNativeInvocationToolTests.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -613,6 +621,9 @@
 				D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */,
 				D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */,
 				D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */,
+				C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */,
+				C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */,
+				C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */,
 				D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */,
 				C82000000000000000000001 /* MCPIPTCPatchApprovalStoreTests.swift */,
 				C76000000000000000000011 /* FFmpegWhisperOutputReaderTests.swift */,
@@ -802,6 +813,7 @@
 			children = (
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
+				C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */,
 				D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */,
 				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
@@ -1064,6 +1076,9 @@
 				D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */,
 				D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */,
 				D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */,
+				C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */,
+				C12100000000000000000302 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift in Sources */,
+				C12100000000000000000202 /* AutomationNativeInvocationChannelTests.swift in Sources */,
 				D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */,
 				C82000000000000000000002 /* MCPIPTCPatchApprovalStoreTests.swift in Sources */,
 				C76000000000000000000012 /* FFmpegWhisperOutputReaderTests.swift in Sources */,
@@ -1236,6 +1251,7 @@
 			files = (
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
+				C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */,
 				D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */,
 				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,

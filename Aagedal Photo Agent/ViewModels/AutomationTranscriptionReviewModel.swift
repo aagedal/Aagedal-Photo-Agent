@@ -453,6 +453,39 @@ final class AutomationTranscriptionReviewModel {
         }
     }
 
+    /// An authenticated helper may request native presentation, never consent.
+    /// Reload and inspect the exact original epoch again after the UI handoff;
+    /// expired, changed or retired intent cannot become a selected review.
+    func inspectInvocation(requestID: UUID, requestEpoch: UUID) {
+        guard !isRecoveringCapacity, !isCancelling, !isRunning else { return }
+        begin()
+        let expected = generation
+        task = Task { [weak self, service] in
+            do {
+                let records = try await service.requests()
+                guard let request = records.first(where: {
+                    $0.requestID == requestID.uuidString.lowercased()
+                        && $0.requestEpoch == requestEpoch.uuidString.lowercased()
+                }), request.state == .awaitingReview else {
+                    throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+                }
+                let review = try await service.inspect(request)
+                guard review.planID == request.planID else {
+                    throw MCPVoiceTranscriptionReviewRequestStore.Failure.invalidTransition
+                }
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.requests = records
+                self.selectedRequest = request
+                self.review = review
+                self.finish()
+            } catch {
+                guard let self, self.generation == expected, !Task.isCancelled else { return }
+                self.message = "The requested transcription intent cannot be reviewed. It may be cancelled, expired or changed. No consent was granted."
+                self.finish()
+            }
+        }
+    }
+
     func cancel(_ request: MCPVoiceTranscriptionReviewRequestStore.Record) {
         guard !isRecoveringCapacity, !isCancelling, !isRunning, requests.contains(request), request.state == .awaitingReview, message == nil else { return }
         invalidateCapacity()

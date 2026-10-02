@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AutomationTranscriptionReviewView: View {
+    @State private var nativeInvocation = AutomationNativeInvocationController.shared
     @State private var model: AutomationTranscriptionReviewModel
     @State private var whisperSetup = FFmpegWhisperSetupModel.shared
     @State private var managedWhisper = ManagedWhisperSetupModel.shared
@@ -148,7 +149,8 @@ struct AutomationTranscriptionReviewView: View {
         }
         .accessibilityElement(children: .contain)
         .task {
-            model.refresh()
+            // The initial helper event may already be inspecting its exact epoch.
+            if !model.isLoading && model.selectedRequest == nil && model.message == nil { model.refresh() }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
@@ -165,6 +167,11 @@ struct AutomationTranscriptionReviewView: View {
             Text("Only transcription requests cancelled before admission will be removed. Awaiting intent, admitted, linked and uncertain evidence stays retained. Removed requests cannot be retried; new intents need a new request ID and current epoch. Retained requests keep their original epoch. Current intent reviews will be cleared. This grants no consent, starts no transcription and changes no photo metadata.")
         }
         .onChange(of: providerSelectionIdentity) { _, _ in model.invalidateExecutionReview() }
+        .onChange(of: nativeInvocation.pendingReview, initial: true) { _, review in
+            guard let review else { return }
+            model.inspectInvocation(requestID: review.requestID, requestEpoch: review.requestEpoch)
+            nativeInvocation.consume(review)
+        }
         .onDisappear { model.clear() }
     }
 

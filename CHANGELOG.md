@@ -10,13 +10,21 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ### Highlights
 
+- Added an authenticated local handoff from the bundled helper to native transcription review.
+  `open_voice_transcription_review` opens an exact retained request/epoch in the running app;
+  both processes verify the matching signed pair. The UI revalidates and clears prior execution
+  consent. The response acknowledges review presentation or an exact linked operation handle,
+  never consent, inference or completion. Direct helper execution remains unfinished.
+- Fixed Apple speech cancellation returning before analyzer teardown completed. Recognition,
+  finalization and result collection now share one awaited cleanup task, retaining source access
+  until teardown finishes.
 - Added a separate transcription intent inbox in Automation Settings. MCP clients can queue
   epoch-bound requests for exact ordered previews, inspect their intent and cancel before admission.
   Native provider review now displays the exact locale or model/runtime and options, with separate
   explicit consent to durably linked execution. Whole-set rooted reservations guard recognition and
   verified create-only draft saves; existing transcripts refuse admission, changed inputs refuse saving,
   and cancellation retains saved drafts. Closing Settings preserves admitted work. Direct helper
-  execution and authenticated invocation remain unfinished. Explicit confirmed cleanup now retires
+  execution remains unfinished. Explicit confirmed cleanup now retires
   requests cancelled before admission while preserving awaiting and admitted evidence.
 - Added internal exact-operation transcription admission and linkage before recognition. Reserved
   operation identities and one-way retained admission prevent uncertain work from replaying;

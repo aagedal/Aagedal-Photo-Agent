@@ -27,6 +27,8 @@ private final class AutomationSettingsModel {
         do {
             try store.setEnabled(enabled)
             reload()
+            if enabled { AutomationNativeInvocationController.shared.start() }
+            else { AutomationNativeInvocationController.shared.stop() }
         } catch {
             message = error.localizedDescription
         }
@@ -115,8 +117,10 @@ private final class AutomationSettingsModel {
 
 struct AutomationSettingsView: View {
     @State private var model = AutomationSettingsModel()
+    @State private var nativeInvocation = AutomationNativeInvocationController.shared
 
     var body: some View {
+        ScrollViewReader { scroll in
         Form {
             Section("Local MCP Server") {
                 Toggle(
@@ -129,6 +133,10 @@ struct AutomationSettingsView: View {
                 Text("Off by default. When enabled, a local AI client can launch Photo Agent's bundled STDIO server. It does not listen on the network.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(nativeInvocation.isAvailable
+                    ? "Authenticated client review is available while Photo Agent is running. Opening a request grants no transcription consent."
+                    : "Client review requires the running app and its matching signed helper. You can also review retained requests below.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Allow team creation", isOn: Binding(
                     get: { model.configuration.allowsTeamCreation == true },
                     set: { model.setTeamCreation($0) }
@@ -199,6 +207,7 @@ struct AutomationSettingsView: View {
                 AutomationTranscriptionReviewView()
                     .id(model.configuration.authorizationRevision)
             }
+            .id("transcriptionIntentReview")
 
             Section("Operation History") {
                 AutomationOperationHistoryView()
@@ -227,6 +236,10 @@ struct AutomationSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Automation")
         .onAppear { model.reload() }
+        .onChange(of: nativeInvocation.pendingReview?.id, initial: true) { _, id in
+            if id != nil { scroll.scrollTo("transcriptionIntentReview", anchor: .top) }
+        }
+        }
     }
 
     private func clientSetup(_ title: String, text: String, copyLabel: String) -> some View {

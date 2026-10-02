@@ -101,6 +101,7 @@ def probe(executable):
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
                 "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
                 "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request",
+                "open_voice_transcription_review",
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
@@ -145,6 +146,17 @@ def probe(executable):
         capabilities = connection.receive(10)["result"]["structuredContent"]
         require(capabilities["operationExecutorsConnected"] is False,
                 "Update probe when production executors are integrated")
+        require("open_voice_transcription_review" in names and
+                capabilities["voiceTranscriptionReviewOpenToolAvailable"] is True and
+                capabilities["nativeReviewSessionAvailability"] == "checked-on-invocation",
+                "Missing authenticated native review handoff")
+        connection.send(request(101, "tools/call", {
+            "name": "open_voice_transcription_review",
+            "arguments": {"requestID": "not-a-uuid", "requestEpoch": "not-a-uuid", "consent": True},
+        }))
+        invocation = connection.receive(101)["result"]
+        require(invocation["isError"] is True and invocation["structuredContent"]["code"] == "invalid_arguments",
+                "Native review handoff accepted helper consent")
         require("inspect_iptc_patch_publication_requirements" in names,
                 "Missing native publication requirements inspection")
         connection.send(request(11, "tools/call", {

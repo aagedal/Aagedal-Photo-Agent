@@ -167,6 +167,12 @@ the support table and validation records.
   transcript saves. Existing transcripts refuse admission; cancellation preserves saved drafts. Closing
   Settings does not stop admitted work, and linked requests never replay. Helper tools can request
   cooperative cancellation and inspect the linked operation; direct helper execution remains unfinished.
+  `open_voice_transcription_review` asks the running app to open one exact original request/epoch.
+  A private local socket authenticates both processes against the matching signed app/helper pair.
+  The app repeats whole-set validation and the native UI clears previous execution consent.
+  `reviewRequired` acknowledges a presentation request only; an already linked request returns its
+  exactly matched operation handle without claiming completion. No provider consent or execution
+  authority crosses this channel. Copied, unsigned, mismatched, stale and unavailable peers refuse.
 - `create_team` adds a team with a complete numbered roster to the Teams library. Enable
   **Allow team creation** in Settings → Automation as well as local automation. With Teams iCloud
   sync on, the request stays local until you open **Teams → Review Imports**, review the roster and
