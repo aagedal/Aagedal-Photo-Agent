@@ -41,15 +41,39 @@ nonisolated private struct TranscriptionHistorySmokeEnvelope: Encodable {
 final class CoreWorkflowSmokeTests: XCTestCase {
     private var fixtureRoot: URL!
     private var app: XCUIApplication!
+    private var installedHelperInvocationCount = 0
+
+    nonisolated private var installedHelperToken: String? {
+        let environment = ProcessInfo.processInfo.environment
+        guard let token = environment["AAGEDAL_INSTALLED_HELPER_TOKEN"]
+            ?? environment["TEST_RUNNER_AAGEDAL_INSTALLED_HELPER_TOKEN"],
+            UUID(uuidString: token)?.uuidString.lowercased() == token else { return nil }
+        return token
+    }
+
+    nonisolated private var installedHelperRoot: URL? {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["AAGEDAL_INSTALLED_HELPER_ROOT"]
+            ?? environment["TEST_RUNNER_AAGEDAL_INSTALLED_HELPER_ROOT"],
+              path == "/private/tmp/apa-installed-qualification" else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
 
     override func setUpWithError() throws {
         continueAfterFailure = false
-        fixtureRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AagedalPhotoAgentUISmoke-\(UUID().uuidString)", isDirectory: true)
+        let temporaryRoot: URL
+        if installedHelperToken != nil {
+            guard let shared = installedHelperRoot else { throw BundledHelperSmokeFailure.externalOrchestratorRequired }
+            temporaryRoot = shared
+        } else { temporaryRoot = FileManager.default.temporaryDirectory }
+        fixtureRoot = temporaryRoot
+            .appendingPathComponent("AagedalPhotoAgentUISmoke-\(installedHelperToken ?? UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: fixtureRoot,
-            withIntermediateDirectories: true
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
+        installedHelperInvocationCount = 0
     }
 
     override func tearDownWithError() throws {
@@ -104,6 +128,148 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(
                 ".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json").path))
         }
+    }
+
+    /// Qualifies the actual nested helper and running app with production kernel
+    /// peer credentials and signature requirements. All authority and intent are
+    /// disposable; the deterministic provider is never submitted for execution.
+    @MainActor
+    func testSignedBundledHelperOpensExactTranscriptionReviewWithoutExecution() throws {
+        guard installedHelperToken != nil else {
+            throw XCTSkip("Run this qualification with scripts/ci/probe_installed_native_review.py so the real helper starts outside the XCTest runner sandbox. A standalone UI suite does not qualify this installed boundary.")
+        }
+        let folder = try makePhotoFolder(count: 1)
+        let socket = URL(fileURLWithPath: "/private/tmp/apa-integration-\(UUID().uuidString.lowercased())", isDirectory: true)
+        defer {
+            app?.terminate()
+            // The external orchestrator removes the inert socket directory only
+            // after confirming real listener teardown outside the runner sandbox.
+        }
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true,
+            transcriptionReviewExecution: "complete", transcriptionHelperSocket: socket)
+        let readyURL = folder.appendingPathComponent("transcription-helper-listener-ready.json")
+        let ready = NSPredicate { _, _ in FileManager.default.fileExists(atPath: readyURL.path) }
+        expectation(for: ready, evaluatedWith: app)
+        waitForExpectations(timeout: 15)
+        let readiness = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: readyURL)) as? [String: Any])
+        if let diagnostic = try? Data(contentsOf: folder.appendingPathComponent("transcription-helper-listener-failure.json")) {
+            let attachment = XCTAttachment(data: diagnostic, uniformTypeIdentifier: "public.json")
+            attachment.name = "Installed native listener startup failure"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCTAssertEqual(readiness["available"] as? Bool, true,
+            "The actual signed app/helper pair must authenticate; this qualification cannot use ad-hoc or injected authentication.")
+
+        var runnerBundle = Bundle(for: CoreWorkflowSmokeTests.self).bundleURL
+        while runnerBundle.pathExtension != "app", runnerBundle.path != "/" {
+            runnerBundle.deleteLastPathComponent()
+        }
+        guard runnerBundle.pathExtension == "app" else { throw BundledHelperSmokeFailure.invalidRunnerLocation }
+        let expectedApplication = runnerBundle.deletingLastPathComponent()
+            .appendingPathComponent("Aagedal Photo Agent.app", isDirectory: true).resolvingSymlinksInPath()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedApplication.path),
+            "The test-built application must exist beside the UI test runner.")
+        // Another installed copy can legitimately run with the same bundle ID.
+        // Resolve the test-built pair by its exact bundle location; leave all
+        // unrelated installations alone.
+        let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "aagedal.Aagedal-Photo-Agent")
+            .filter { !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath() == expectedApplication }
+        XCTAssertEqual(candidates.count, 1, "Qualification requires one exact running app pair.")
+        let running = try XCTUnwrap(candidates.first)
+        let executable = try XCTUnwrap(running.executableURL)
+        XCTAssertEqual(executable.deletingLastPathComponent().lastPathComponent, "MacOS")
+        XCTAssertEqual(executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .resolvingSymlinksInPath(), expectedApplication)
+        let helper = executable.deletingLastPathComponent().appendingPathComponent("photo-agent-mcp")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            folder.appendingPathComponent("transcription-review-manifest.json"))) as? [String: Any])
+        let id = try XCTUnwrap(manifest["requestID"] as? String)
+        let epoch = try XCTUnwrap(manifest["requestEpoch"] as? String)
+        let paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        let preservedURLs = ["transcription-review-manifest.json", "transcription-review-authorization.json",
+            "transcription-review-plans/plans.json", "transcription-review-requests/operations.json"].map {
+            folder.appendingPathComponent($0)
+        } + paths.flatMap { path -> [URL] in
+            let photo = URL(fileURLWithPath: path)
+            let memo = folder.appendingPathComponent(photo.lastPathComponent.contains("-2-") ? "transcription-review-2.wav" : "transcription-review-1.wav")
+            return [photo, memo, folder.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")]
+        }
+        let preserved = try preservedURLs.map { try Data(contentsOf: $0) }
+        func assertNoWrites() throws {
+            XCTAssertFalse(running.isTerminated)
+            XCTAssertEqual(running.executableURL, executable)
+            for (url, bytes) in zip(preservedURLs, preserved) { XCTAssertEqual(try Data(contentsOf: url), bytes, url.lastPathComponent) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("transcription-review-operations/operations.json").path))
+            for path in paths {
+                XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(
+                    ".photo_metadata/\(URL(fileURLWithPath: path).lastPathComponent).meta.json").path))
+            }
+        }
+        func invoke(epoch requestedEpoch: String) throws -> [String: Any] {
+            let result = try invokeBundledTranscriptionHelper(helper, applicationPID: running.processIdentifier, root: folder, socket: socket, requestID: id, requestEpoch: requestedEpoch)
+            XCTAssertFalse(running.isTerminated)
+            return result
+        }
+        func assertAcknowledgement(_ result: [String: Any]) throws {
+            XCTAssertEqual(result["isError"] as? Bool, false)
+            let value = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(value["scope"] as? String, "authenticated-native-review-handoff")
+            XCTAssertEqual(value["requestID"] as? String, id)
+            XCTAssertEqual(value["requestEpoch"] as? String, epoch)
+            XCTAssertEqual(value["status"] as? String, "reviewRequired")
+            XCTAssertTrue(value["operationID"] is NSNull)
+            for key in ["consentGranted", "executionStarted", "directHelperExecutionAvailable", "completionConfirmed"] {
+                XCTAssertEqual(value[key] as? Bool, false, key)
+            }
+        }
+        func assertRefusal(_ result: [String: Any]) throws {
+            XCTAssertEqual(result["isError"] as? Bool, true)
+            let value = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(value["code"] as? String, "native_review_unavailable")
+            XCTAssertNil(value["operationID"])
+        }
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        try assertRefusal(invoke(epoch: UUID().uuidString.lowercased()))
+        XCTAssertFalse(settings.staticTexts["automation.transcriptionReviewProvider"].exists)
+        try assertNoWrites()
+
+        try assertAcknowledgement(invoke(epoch: epoch))
+        XCTAssertTrue(settings.waitForExistence(timeout: 12))
+        XCTAssertTrue(settings.staticTexts["automation.transcriptionReviewProvider"].waitForExistence(timeout: 12))
+        XCTAssertTrue(visibleText(settings.staticTexts["Transcription request identifier"]).contains(id))
+        let prepare = settings.buttons["automation.prepareTranscriptionExecution"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 8)); prepare.click()
+        let consent = settings.checkBoxes["automation.transcriptionExecutionConsent"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 8))
+        XCTAssertEqual(checkboxState(consent), false)
+        XCTAssertFalse(settings.buttons["automation.confirmTranscriptionExecution"].isEnabled)
+        try assertNoWrites()
+        // A rejected stale handle leaves a current native review intact.
+        consent.click()
+        XCTAssertEqual(checkboxState(consent), true)
+        try assertRefusal(invoke(epoch: UUID().uuidString.lowercased()))
+        XCTAssertEqual(checkboxState(consent), true)
+        XCTAssertTrue(visibleText(settings.staticTexts["Transcription request identifier"]).contains(id))
+        try assertNoWrites()
+
+        // An accepted repeat is a fresh presentation and cannot reuse checked consent.
+        try assertAcknowledgement(invoke(epoch: epoch))
+        let cleared = NSPredicate { _, _ in !consent.exists }
+        expectation(for: cleared, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
+        XCTAssertTrue(prepare.waitForExistence(timeout: 8)); prepare.click()
+        XCTAssertTrue(consent.waitForExistence(timeout: 8))
+        XCTAssertEqual(checkboxState(consent), false)
+        XCTAssertFalse(settings.buttons["automation.confirmTranscriptionExecution"].isEnabled)
+        try assertNoWrites()
+        // XCTest's terminate() can force-kill without delivering AppKit's quit
+        // lifecycle. Use the real quit command to qualify listener shutdown.
+        app.typeKey("q", modifierFlags: .command)
+        let quit = NSPredicate { _, _ in self.app.state == .notRunning }
+        expectation(for: quit, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socket.appendingPathComponent("review.sock").path),
+            "The real app must release its native review listener on termination.")
     }
 
     @MainActor
@@ -2765,6 +2931,67 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         element.label + " " + (element.value as? String ?? "")
     }
 
+    private enum BundledHelperSmokeFailure: Error {
+        case timedOut, nonzeroExit, invalidOutput, invalidRunnerLocation, externalOrchestratorRequired, externalOrchestratorFailed
+    }
+
+    /// The CLI orchestrator launches the exact nested helper outside XCTest's
+    /// inherited sandbox. The rendezvous transports test inputs/results only;
+    /// production kernel peer and signature checks still decide authentication.
+    @MainActor
+    private func invokeBundledTranscriptionHelper(_ helper: URL, applicationPID: pid_t, root: URL, socket: URL,
+        requestID: String, requestEpoch: String) throws -> [String: Any] {
+        guard let token = installedHelperToken else { throw BundledHelperSmokeFailure.externalOrchestratorRequired }
+        installedHelperInvocationCount += 1
+        let call = installedHelperInvocationCount
+        let requestURL = fixtureRoot.appendingPathComponent("installed-helper-request-\(call).json")
+        let pendingURL = fixtureRoot.appendingPathComponent("installed-helper-pending-\(UUID().uuidString).json")
+        let responseURL = fixtureRoot.appendingPathComponent("installed-helper-response-\(call).json")
+        let request: [String: Any] = ["schemaVersion": 1, "token": token, "call": call,
+            "helperURL": helper.path, "applicationPID": applicationPID, "rootURL": root.path,
+            "socketDirectory": socket.path, "requestID": requestID, "requestEpoch": requestEpoch]
+        try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]).write(to: pendingURL, options: .withoutOverwriting)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pendingURL.path)
+        try FileManager.default.moveItem(at: pendingURL, to: requestURL)
+        let ready = NSPredicate { _, _ in FileManager.default.fileExists(atPath: responseURL.path) }
+        expectation(for: ready, evaluatedWith: app)
+        waitForExpectations(timeout: 25)
+        let envelopeBytes = try Data(contentsOf: responseURL)
+        guard envelopeBytes.count < 131_072,
+              let responseEnvelope = try JSONSerialization.jsonObject(with: envelopeBytes) as? [String: Any],
+              responseEnvelope["schemaVersion"] as? Int == 1,
+              responseEnvelope["token"] as? String == token,
+              responseEnvelope["call"] as? Int == call else { throw BundledHelperSmokeFailure.invalidOutput }
+        if let error = responseEnvelope["error"] as? String {
+            let attachment = XCTAttachment(string: error)
+            attachment.name = "Installed helper orchestrator refusal"; attachment.lifetime = .keepAlways; add(attachment)
+            throw BundledHelperSmokeFailure.externalOrchestratorFailed
+        }
+        guard responseEnvelope["exitCode"] as? Int == 0,
+              let stdout = responseEnvelope["stdout"] as? String,
+              let stderr = responseEnvelope["stderr"] as? String else { throw BundledHelperSmokeFailure.nonzeroExit }
+        if !stderr.isEmpty {
+            let attachment = XCTAttachment(string: stderr)
+            attachment.name = "Bundled helper diagnostics"; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCTAssertEqual(stderr, "", "Helper protocol diagnostics must remain empty.")
+        let data = Data(stdout.utf8)
+        guard data.count < 65_536 else { throw BundledHelperSmokeFailure.invalidOutput }
+        let attachment = XCTAttachment(string: String(decoding: data, as: UTF8.self))
+        attachment.name = "Bundled helper MCP responses"; attachment.lifetime = .keepAlways; add(attachment)
+        let lines = data.split(separator: 0x0a)
+        guard lines.count == 2 else { throw BundledHelperSmokeFailure.invalidOutput }
+        let initialize = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(lines[0])) as? [String: Any])
+        XCTAssertEqual(initialize["id"] as? Int, 1)
+        XCTAssertNotNil(initialize["result"])
+        XCTAssertNil(initialize["error"])
+        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(lines[1])) as? [String: Any])
+        XCTAssertEqual(response["jsonrpc"] as? String, "2.0")
+        XCTAssertEqual(response["id"] as? Int, 2)
+        XCTAssertNil(response["error"])
+        return try XCTUnwrap(response["result"] as? [String: Any])
+    }
+
     @MainActor
     private func launch(
         workflow: String,
@@ -2789,13 +3016,15 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionReview: Bool = false,
         transcriptionReviewCapacity: Bool = false,
         transcriptionReviewExecution: String? = nil,
-        transcriptionInvocation: Bool = false
+        transcriptionInvocation: Bool = false,
+        transcriptionHelperSocket: URL? = nil
     ) {
         app = XCUIApplication()
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
         if transcriptionReviewCapacity { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] = "1" }
         if let transcriptionReviewExecution { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"] = transcriptionReviewExecution }
         if transcriptionInvocation { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_INVOCATION"] = "1" }
+        if transcriptionHelperSocket != nil { app.launchEnvironment["AAGEDAL_UI_TEST_NATIVE_INVOCATION"] = "1" }
         app.launchArguments = [
             "-ApplePersistenceIgnoreState", "YES",
             "--ui-testing",
@@ -2813,6 +3042,10 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             app.launchArguments += ["-AppleLocale", localeIdentifier]
         }
         append("--ui-test-folder", folder)
+        if let transcriptionHelperSocket {
+            append("--ui-test-transcription-root", folder)
+            append("--ui-test-transcription-socket", transcriptionHelperSocket)
+        }
         append("--ui-test-source", source)
         append("--ui-test-destination", destination)
         append("--ui-test-profile-store", profileStore)

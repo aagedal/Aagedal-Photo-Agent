@@ -4,6 +4,37 @@ import Testing
 
 @Suite("Authenticated native review tool boundary")
 struct MCPNativeInvocationToolTests {
+    @Test("Installed-pair qualification requires both Debug launch gates and an isolated socket")
+    func installedQualificationGates() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/native-pair-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let socket = "/private/tmp/apa-integration-\(UUID().uuidString.lowercased())"
+        let args = ["app", "--ui-testing", "--ui-test-transcription-root", root.path,
+            "--ui-test-transcription-socket", socket]
+        let environment = ["AAGEDAL_UI_TEST_NATIVE_INVOCATION": "1"]
+        #expect(UITestNativeInvocationConfiguration.parse(arguments: args, environment: [:]) == nil)
+        #expect(UITestNativeInvocationConfiguration.parse(arguments: args.filter { $0 != "--ui-testing" }, environment: environment) == nil)
+        for unsafe in ["/tmp/apa-integration-\(UUID())", "/private/tmp/apa-integration-wrong", socket + "/child", "/private/tmp/apa-native-501"] {
+            var invalid = args; invalid[invalid.count - 1] = unsafe
+            #expect(UITestNativeInvocationConfiguration.parse(arguments: invalid, environment: environment) == nil)
+        }
+        #expect(UITestNativeInvocationConfiguration.parse(arguments: args + ["--ui-test-transcription-root", root.path], environment: environment) == nil)
+        #if DEBUG
+        let isolated = try #require(UITestNativeInvocationConfiguration.parse(arguments: args, environment: environment))
+        #expect(isolated.rootURL.path == root.path)
+        _ = try isolated.requests.capacitySnapshot()
+        #expect(try isolated.authorizationStore.load().isEnabled == false)
+        try isolated.authorizationStore.addRoot(root)
+        try isolated.authorizationStore.setEnabled(true)
+        #expect(try isolated.authorizationStore.load().isEnabled)
+        #expect(try isolated.authorizationStore.load().roots.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: isolated.socketDirectory.path))
+        #else
+        #expect(UITestNativeInvocationConfiguration.parse(arguments: args, environment: environment) == nil)
+        #endif
+    }
+
     nonisolated final class Calls: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0

@@ -69,6 +69,9 @@ struct Aagedal_Photo_AgentApp: App {
                         AppStartupWorkCoordinator.shared.startAfterFirstPaint()
                         nativeInvocation.start()
                     }
+                    if UITestNativeInvocationConfiguration.current != nil {
+                        nativeInvocation.start()
+                    }
                     if UITestLaunchConfiguration.current.isEnabled,
                        UITestLaunchConfiguration.current.workflow == .knownPeopleInterchange,
                        UITestLaunchConfiguration.current.knownPeopleRootURL != nil,

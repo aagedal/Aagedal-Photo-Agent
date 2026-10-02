@@ -4,6 +4,13 @@ import CryptoKit
 /// Explicit UI-test seam. Real durable intent and source validation, isolated from
 /// production authorization, provider state and archives. Execution uses only synthetic recognition.
 enum UITestTranscriptionReviewFixture {
+    /// Bootstrap disposable retained intent before the real signed listener starts.
+    /// This does not select a review, grant consent or inject a channel authenticator.
+    static func initializeForNativeInvocation() async throws {
+        guard let service = currentServiceForModel() else { throw Failure.invalidFolder }
+        _ = try await service.requests()
+    }
+
     static func currentServiceForModel() -> (any AutomationTranscriptionReviewServing)? {
         service(configuration: .current, environment: ProcessInfo.processInfo.environment)
     }
@@ -90,15 +97,37 @@ enum UITestTranscriptionReviewFixture {
         private func service() throws -> AutomationTranscriptionReviewService {
             if let underlying { return underlying }
             guard let folder else { throw Failure.invalidFolder }
-            let root = folder.resolvingSymlinksInPath()
+            let root: URL
+#if DEBUG
+            if let isolated = UITestNativeInvocationConfiguration.current {
+                guard isolated.rootURL.resolvingSymlinksInPath() == folder.resolvingSymlinksInPath() else { throw Failure.invalidFolder }
+                root = isolated.rootURL
+            } else { root = folder.resolvingSymlinksInPath() }
+#else
+            root = folder.resolvingSymlinksInPath()
+#endif
             var directory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &directory), directory.boolValue else {
                 throw Failure.invalidFolder
             }
             let box = ConfigurationBox()
-            let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
+            let memoryAuthority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
             let authorityURL = root.appendingPathComponent("transcription-review-authorization.json")
             let manifestURL = root.appendingPathComponent("transcription-review-manifest.json")
+            let authority: MCPAuthorizationStore
+#if DEBUG
+            if let isolated = UITestNativeInvocationConfiguration.current {
+                guard isolated.rootURL == root else { throw Failure.invalidFolder }
+                if !FileManager.default.fileExists(atPath: manifestURL.path) {
+                    try memoryAuthority.addRoot(root); try memoryAuthority.setEnabled(true)
+                    guard let data = box.read() else { throw Failure.invalidPlan }
+                    try data.write(to: authorityURL, options: .withoutOverwriting)
+                }
+                authority = isolated.authorizationStore
+            } else { authority = memoryAuthority }
+#else
+            authority = memoryAuthority
+#endif
             let facade = MCPAutomationFacade(authorizationStore: authority)
             let plans = MCPVoiceTranscriptionPlanStore(storageDirectory: root.appendingPathComponent("transcription-review-plans"))
             let requests = MCPVoiceTranscriptionReviewRequestStore(storageDirectory: root.appendingPathComponent("transcription-review-requests"))
@@ -106,7 +135,9 @@ enum UITestTranscriptionReviewFixture {
                 box.write(try Data(contentsOf: authorityURL))
                 _ = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: manifestURL))
             } else {
-                try authority.addRoot(root); try authority.setEnabled(true)
+                if !(try authority.load().isEnabled) {
+                    try authority.addRoot(root); try authority.setEnabled(true)
+                }
                 var inputs: [MCPJSONValue] = [], paths: [String] = []
                 for index in 1...2 {
                     let photo = root.appendingPathComponent("transcription-review-\(index)-å.jpg")
@@ -131,8 +162,12 @@ enum UITestTranscriptionReviewFixture {
                 if let retainedID {
                     _ = try requests.request(requestID: retainedID, requestEpoch: epoch, planID: planID, plans: plans, facade: facade)
                 }
-                guard let data = box.read() else { throw Failure.invalidPlan }
-                try data.write(to: authorityURL, options: .withoutOverwriting)
+                let data = try JSONEncoder().encode(authority.load())
+                // The installed-helper fixture authority writes directly to this file.
+                // Other fixtures retain their in-memory authority until initialization ends.
+                if !FileManager.default.fileExists(atPath: authorityURL.path) {
+                    try data.write(to: authorityURL, options: .withoutOverwriting)
+                }
                 try JSONEncoder().encode(Manifest(requestID: requestID.uuidString.lowercased(), requestEpoch: epoch.uuidString.lowercased(),
                     planID: planID, photoPaths: Array(paths.reversed()),
                     retainedRequestID: retainedID?.uuidString.lowercased())).write(to: manifestURL, options: .withoutOverwriting)

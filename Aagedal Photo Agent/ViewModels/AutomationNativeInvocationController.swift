@@ -22,20 +22,26 @@ final class AutomationNativeInvocationController {
     private var startup: Task<Void, Never>?
 
     func start() {
-        guard listener == nil, !isChecking, !UITestLaunchConfiguration.current.isEnabled else { return }
+        let fixture = UITestNativeInvocationConfiguration.current
+        guard listener == nil, !isChecking,
+              !UITestLaunchConfiguration.current.isEnabled || fixture != nil else { return }
         isChecking = true
         let expected = UUID(); generation = expected
         startup = Task { [weak self] in
             let candidate = await Task.detached(priority: .utility) {
+                var stage = "fixtureInitialization"
                 do {
-                    let facade = MCPAutomationFacade()
+                    if fixture != nil { try await UITestTranscriptionReviewFixture.initializeForNativeInvocation() }
+                    stage = "authorization"
+                    let facade = fixture?.facade ?? MCPAutomationFacade()
                     guard try facade.authorizationStore.load().isEnabled else { return nil as AutomationNativeInvocationChannel.Listener? }
                     let service = AutomationNativeTranscriptionReviewInvocationService(
-                        requests: .init(storageDirectory: try MCPVoiceTranscriptionReviewRequestStore.defaultStorageDirectory()),
-                        plans: .init(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory()),
+                        requests: try fixture?.requests ?? .init(storageDirectory: MCPVoiceTranscriptionReviewRequestStore.defaultStorageDirectory()),
+                        plans: fixture?.plans ?? .init(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory()),
                         facade: facade,
-                        registry: .init(storageDirectory: try AutomationOperationRegistry.defaultStorageDirectory()))
-                    let candidate = try AutomationNativeInvocationChannel.Listener { request in
+                        registry: try fixture?.registry ?? .init(storageDirectory: AutomationOperationRegistry.defaultStorageDirectory()))
+                    let candidate = try AutomationNativeInvocationChannel.Listener(
+                        directory: fixture?.socketDirectory ?? AutomationNativeInvocationChannel.defaultDirectory) { request in
                         switch try service.invoke(requestID: request.requestID, requestEpoch: request.requestEpoch) {
                         case .review:
                             Task { @MainActor in
@@ -48,9 +54,16 @@ final class AutomationNativeInvocationController {
                             return try .init(status: .linkedOperation, operationID: operationID)
                         }
                     }
+                    stage = "listenerStartup"
                     try candidate.start()
                     return candidate
-                } catch { return nil }
+                } catch {
+                    if let fixture {
+                        try? JSONSerialization.data(withJSONObject: ["stage": stage, "error": String(reflecting: error)]).write(
+                            to: fixture.rootURL.appendingPathComponent("transcription-helper-listener-failure.json"), options: .atomic)
+                    }
+                    return nil
+                }
             }.value
             guard let self, self.generation == expected, !Task.isCancelled else {
                 candidate?.stop()
@@ -60,6 +73,13 @@ final class AutomationNativeInvocationController {
             self.isAvailable = candidate != nil
             self.isChecking = false
             self.startup = nil
+            if let fixture {
+                let available = self.isAvailable
+                await Task.detached(priority: .utility) {
+                    try? JSONSerialization.data(withJSONObject: ["available": available]).write(
+                        to: fixture.rootURL.appendingPathComponent("transcription-helper-listener-ready.json"), options: .atomic)
+                }.value
+            }
         }
     }
 

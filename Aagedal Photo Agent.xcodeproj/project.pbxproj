@@ -240,6 +240,7 @@
 		C11700000000000000000202 /* AutomationTranscriptionReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */; };
 		D11900000000000000000102 /* AutomationVoiceTranscriptionProviderBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */; };
 		D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */; };
+		C12200000000000000000102 /* UITestNativeInvocationConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */; };
 		C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */; };
 		C12100000000000000000202 /* AutomationNativeInvocationChannelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */; };
 		C12100000000000000000302 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */; };
@@ -520,6 +521,7 @@
 		C11700000000000000000201 /* AutomationTranscriptionReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationTranscriptionReviewModelTests.swift; path = "AutomationTranscriptionReviewModelTests.swift"; sourceTree = "<group>"; };
 		D11900000000000000000101 /* AutomationVoiceTranscriptionProviderBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationVoiceTranscriptionProviderBindingTests.swift; sourceTree = "<group>"; };
 		D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeVoiceTranscriptionBindingServiceTests.swift; sourceTree = "<group>"; };
+		C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = UITestNativeInvocationConfiguration.swift; path = "Aagedal Photo Agent/Services/Automation/UITestNativeInvocationConfiguration.swift"; sourceTree = SOURCE_ROOT; };
 		C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannel.swift; path = "Aagedal Photo Agent/Services/Automation/AutomationNativeInvocationChannel.swift"; sourceTree = SOURCE_ROOT; };
 		C12100000000000000000201 /* AutomationNativeInvocationChannelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeInvocationChannelTests.swift; path = "AutomationNativeInvocationChannelTests.swift"; sourceTree = "<group>"; };
 		C12100000000000000000301 /* AutomationNativeTranscriptionReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutomationNativeTranscriptionReviewInvocationServiceTests.swift; path = "AutomationNativeTranscriptionReviewInvocationServiceTests.swift"; sourceTree = "<group>"; };
@@ -814,6 +816,7 @@
 				C5A000000000000000000001 /* main.swift */,
 				C5A000000000000000000005 /* MCPServerCore.swift */,
 				C12100000000000000000101 /* AutomationNativeInvocationChannel.swift */,
+				C12200000000000000000101 /* UITestNativeInvocationConfiguration.swift */,
 				D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */,
 				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
@@ -1252,6 +1255,7 @@
 				C5A000000000000000000002 /* main.swift in Sources */,
 				C5A000000000000000000006 /* MCPServerCore.swift in Sources */,
 				C12100000000000000000102 /* AutomationNativeInvocationChannel.swift in Sources */,
+				C12200000000000000000102 /* UITestNativeInvocationConfiguration.swift in Sources */,
 				D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */,
 				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
@@ -1611,6 +1615,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
+				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent UI Smoke Tests/InstalledHelperQualification.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				EXCLUDED_ARCHS = x86_64;
@@ -1630,6 +1635,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ARCHS = arm64;
+				CODE_SIGN_ENTITLEMENTS = "Aagedal Photo Agent UI Smoke Tests/InstalledHelperQualification.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				EXCLUDED_ARCHS = x86_64;

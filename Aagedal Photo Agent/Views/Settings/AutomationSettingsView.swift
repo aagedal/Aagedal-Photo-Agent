@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 @Observable
 private final class AutomationSettingsModel {
-    private let store = MCPAuthorizationStore()
+    private let store = UITestNativeInvocationConfiguration.current?.authorizationStore ?? MCPAuthorizationStore()
 
     var configuration = MCPAuthorizationConfiguration()
     var message: String?
