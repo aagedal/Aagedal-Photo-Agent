@@ -37,6 +37,13 @@ struct LicensesSettingsView: View {
             url: nil
         ),
         Component(
+            name: "llama.cpp",
+            detail: "Bundled local description assistant with Metal acceleration",
+            licenseName: "MIT",
+            licenseResource: "License-llama.cpp",
+            url: URL(string: "https://github.com/ggml-org/llama.cpp")
+        ),
+        Component(
             name: "c2patool",
             detail: "Bundled tool for C2PA content credentials — © Adobe",
             licenseName: "MIT",

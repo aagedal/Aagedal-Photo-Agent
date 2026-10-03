@@ -139,6 +139,7 @@ struct MetadataPanel: View {
     @FocusState private var focusedField: String?
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
+    @State private var descriptionAssistantSource: DescriptionAssistantRequest?
     @State private var showingStructuredKeywords = false
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
@@ -1258,6 +1259,18 @@ struct MetadataPanel: View {
         .environment(\.metadataEditorBuffers, editorBuffers)
         .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
         .environment(\.metadataEditorCurrentLoadID, MetadataEditorCurrentLoadIDReader(viewModel: viewModel))
+        .sheet(item: $descriptionAssistantSource) { source in
+            DescriptionAssistantView(source: source) { proposal, text in
+                guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
+                      proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
+                        editorLoadID: viewModel.editorBufferLoadID,
+                        description: viewModel.editingMetadata.description ?? "") else { return false }
+                viewModel.editingMetadata.description = text
+                viewModel.markChanged()
+                commitEdits()
+                return true
+            }
+        }
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
@@ -1668,6 +1681,21 @@ struct MetadataPanel: View {
                         MultipleValuesIndicator()
                     }
                     Spacer()
+                    Button {
+                        guard flushBufferedFields(), let imageURL = viewModel.selectedURLs.first else { return }
+                        descriptionAssistantSource = DescriptionAssistantRequest(
+                            imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
+                            originalDescription: viewModel.editingMetadata.description ?? "",
+                            action: .grammar, language: .bokmal)
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isBatchEdit || viewModel.isLoading || viewModel.selectedURLs.count != 1
+                        || (viewModel.editingMetadata.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Improve description with a local model")
+                    .accessibilityLabel("Improve description")
                     Button {
                         openVariableReference(for: .description)
                     } label: {

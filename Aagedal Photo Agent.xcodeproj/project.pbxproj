@@ -247,6 +247,9 @@
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
 		C12400000000000000000102 /* CaptionVoiceMemoAssociationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */; };
 		C12600000000000000000102 /* CaptionVoiceMemoMediaKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */; };
+		BEA510000000000000000001 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000001 /* MLXLLM */; };
+		BEA510000000000000000002 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000002 /* MLXVLM */; };
+		BEA510000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000003 /* MLXLMCommon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -561,6 +564,9 @@
 			files = (
 				8ED369F42F8CF02C00FB9A33 /* SwiftMediaMetadata in Frameworks */,
 				8ED36A042F8CF03000FB9A33 /* Sparkle in Frameworks */,
+				BEA510000000000000000003 /* MLXLMCommon in Frameworks */,
+				BEA510000000000000000002 /* MLXVLM in Frameworks */,
+				BEA510000000000000000001 /* MLXLLM in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -899,6 +905,11 @@
 			fileSystemSynchronizedGroups = (
 				8E0556B52F28C3F600BCFB49 /* Aagedal Photo Agent */,
 			);
+			packageProductDependencies = (
+				BEA520000000000000000001 /* MLXLLM */,
+				BEA520000000000000000002 /* MLXVLM */,
+				BEA520000000000000000003 /* MLXLMCommon */,
+			);
 			name = "Aagedal Photo Agent";
 			productName = "Aagedal Photo Agent";
 			productReference = 8E0556B32F28C3F600BCFB49 /* Aagedal Photo Agent.app */;
@@ -991,6 +1002,7 @@
 			mainGroup = 8E0556AA2F28C3F600BCFB49;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				BEA530000000000000000001 /* mlx-swift-lm */,
 				8ED369F22F8CF02C00FB9A33 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */,
 				8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
@@ -1039,6 +1051,8 @@
 			);
 			inputPaths = (
 				"$(SRCROOT)/scripts/write_whisper_runtime_descriptor.py",
+				"$(SRCROOT)/scripts/llama/bundle_runtime.py",
+				"$(SRCROOT)/Vendor/llama.cpp",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/c2patool",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/ffmpeg",
 			);
@@ -1047,10 +1061,11 @@
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/whisper-runtime.json",
 				"$(DERIVED_FILE_DIR)/c2patool.signed",
 				"$(DERIVED_FILE_DIR)/ffmpeg.signed",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/llama.cpp",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
+			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\n/usr/bin/python3 \"$SRCROOT/scripts/llama/bundle_runtime.py\" \"$SRCROOT/Vendor/llama.cpp\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers/llama.cpp\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1737,6 +1752,11 @@
 				minimumVersion = 2.6.0;
 			};
 		};
+		BEA530000000000000000001 /* mlx-swift-lm */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {kind = exactVersion; version = 2.30.6; };
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1750,6 +1770,9 @@
 			package = 8ED36A022F8CF03000FB9A33 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
 		};
+		BEA520000000000000000001 /* MLXLLM */ = {isa = XCSwiftPackageProductDependency; package = BEA530000000000000000001 /* mlx-swift-lm */; productName = MLXLLM; };
+		BEA520000000000000000002 /* MLXVLM */ = {isa = XCSwiftPackageProductDependency; package = BEA530000000000000000001 /* mlx-swift-lm */; productName = MLXVLM; };
+		BEA520000000000000000003 /* MLXLMCommon */ = {isa = XCSwiftPackageProductDependency; package = BEA530000000000000000001 /* mlx-swift-lm */; productName = MLXLMCommon; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8E0556AB2F28C3F600BCFB49 /* Project object */;

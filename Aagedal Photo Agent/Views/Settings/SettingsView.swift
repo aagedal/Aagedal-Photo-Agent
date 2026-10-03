@@ -116,6 +116,7 @@ struct SettingsView: View {
         case general
         case rawDecoding
         case transcription
+        case descriptionAssistant
         case developControls
         case metadata
         case keywordLists
@@ -141,6 +142,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "General"
             case .transcription: return "Transcription"
+            case .descriptionAssistant: return "Description Assistant"
             case .rawDecoding: return "RAW Decoding"
             case .developControls: return "Develop Sliders"
             case .metadata: return "Metadata"
@@ -167,6 +169,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "gear"
             case .transcription: return "waveform"
+            case .descriptionAssistant: return "wand.and.stars"
             case .rawDecoding: return "camera.aperture"
             case .developControls: return "slider.horizontal.3"
             case .metadata: return "tag"
@@ -199,6 +202,7 @@ struct SettingsView: View {
                     row(.general)
                     row(.rawDecoding)
                     row(.transcription)
+                    row(.descriptionAssistant)
                     row(.developControls)
                 }
                 Section("Library & Metadata") {
@@ -309,6 +313,7 @@ struct SettingsView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .transcription: TranscriptionSettingsView()
+        case .descriptionAssistant: Form { DescriptionAssistantModelSetupView() }.formStyle(.grouped)
         case .general: generalTab
         case .rawDecoding: rawDecodingTab
         case .developControls: developControlsTab
