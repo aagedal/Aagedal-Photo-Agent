@@ -120,14 +120,14 @@ actor AutomationOperationExecutionCoordinator {
             let fallback = await context.fallbackOutcome()
             let record = try registry.inspect(id)
             if record.cancellationRequestedAt != nil {
-                return try registry.acknowledgeCancellation(id, ownerID: ownerID,
-                    outcome: fallback == .failed ? .cancelled : .recoveryRequired)
+                return try finishExecution(id, outcome: fallback == .failed ? .cancelled : .recoveryRequired,
+                    acknowledgingCancellation: true)
             }
             // Task cancellation without a durable request is not evidence of an
             // acknowledged helper request or of a successfully reversed write.
-            return try registry.finish(id, ownerID: ownerID, outcome: fallback)
+            return try finishExecution(id, outcome: fallback)
         } catch {
-            return try registry.finish(id, ownerID: ownerID, outcome: await context.fallbackOutcome())
+            return try finishExecution(id, outcome: await context.fallbackOutcome())
         }
         if outcome == .cancelled {
             // The work closure may return this only after establishing that no
@@ -137,10 +137,28 @@ actor AutomationOperationExecutionCoordinator {
                 // A mistaken executor return must not strand a running record after
                 // its retained task exits. Without a durable request, preserve the
                 // same conservative outcome used for an unexpected thrown error.
-                return try registry.finish(id, ownerID: ownerID, outcome: await context.fallbackOutcome())
+                return try finishExecution(id, outcome: await context.fallbackOutcome())
             }
-            return try registry.acknowledgeCancellation(id, ownerID: ownerID)
+            return try finishExecution(id, outcome: .cancelled, acknowledgingCancellation: true)
         }
-        return try registry.finish(id, ownerID: ownerID, outcome: outcome)
+        return try finishExecution(id, outcome: outcome)
+    }
+
+    /// An executor's terminal claim can conflict with durable batch evidence, including
+    /// a thrown error while an item remains running. Close that inconsistency without
+    /// claiming a definite failure or clean cancellation after the retained work exits.
+    private func finishExecution(_ id: UUID, outcome: AutomationOperationRegistry.Outcome,
+                                 acknowledgingCancellation: Bool = false) throws -> AutomationOperationRegistry.Record {
+        do {
+            if acknowledgingCancellation {
+                return try registry.acknowledgeCancellation(id, ownerID: ownerID, outcome: outcome)
+            }
+            return try registry.finish(id, ownerID: ownerID, outcome: outcome)
+        } catch AutomationOperationRegistry.Failure.invalidTransition {
+            if acknowledgingCancellation {
+                return try registry.acknowledgeCancellation(id, ownerID: ownerID, outcome: .recoveryRequired)
+            }
+            return try registry.finish(id, ownerID: ownerID, outcome: .recoveryRequired)
+        }
     }
 }

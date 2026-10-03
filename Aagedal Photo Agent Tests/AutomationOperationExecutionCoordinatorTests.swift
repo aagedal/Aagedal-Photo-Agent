@@ -153,6 +153,60 @@ struct AutomationOperationExecutionCoordinatorTests {
         #expect(try await runner.shutdown().isEmpty)
     }
 
+    @Test("Inconsistent batch completion closes with recovery instead of stranding ownership",
+          arguments: [AutomationOperationRegistry.Outcome.verified, .failed, .stale, .cancelled])
+    func inconsistentBatchCompletion(outcome: AutomationOperationRegistry.Outcome) async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry, maximumConcurrentOperations: 1)
+        let owner = await runner.ownerID
+        let record = try await runner.submit(kind: .voiceTranscription, didEnqueue: { record in
+            _ = try registry.configureBatch(record.id, ownerID: owner, itemCount: 2)
+        }) { context in
+            let operationID = await context.operationID
+            _ = try registry.startBatchItem(operationID, ownerID: owner, index: 0)
+            if outcome == .cancelled { _ = try registry.requestCancellation(operationID) }
+            return outcome
+        }
+        let terminal = try await runner.waitForCompletion(record.id)
+        #expect(terminal.isTerminal)
+        #expect(terminal.outcome == .recoveryRequired)
+        #expect(terminal.state == (outcome == .cancelled ? .cancelled : .completed))
+        #expect(terminal.batchProgress?.items.first?.state == .running)
+        #expect(!terminal.canRemove)
+        #expect(try await runner.waitForCompletion(record.id) == terminal)
+        let next = try await runner.submit(kind: .metadataTemplate) { _ in .verified }
+        #expect(try await runner.waitForCompletion(next.id).outcome == .verified)
+        #expect(try await runner.shutdown().isEmpty)
+    }
+
+    @Test("A batch throw with an unfinished item retains uncertainty", arguments: [false, true])
+    func unfinishedBatchThrow(cancelled: Bool) async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let owner = await runner.ownerID
+        let record = try await runner.submit(kind: .voiceTranscription, didEnqueue: { record in
+            _ = try registry.configureBatch(record.id, ownerID: owner, itemCount: 1)
+        }) { context in
+            let operationID = await context.operationID
+            _ = try registry.startBatchItem(operationID, ownerID: owner, index: 0)
+            if cancelled {
+                _ = try registry.requestCancellation(operationID)
+                throw CancellationError()
+            }
+            throw InjectedFailure.write
+        }
+        let terminal = try await runner.waitForCompletion(record.id)
+        #expect(terminal.isTerminal)
+        #expect(terminal.outcome == .recoveryRequired)
+        #expect(terminal.state == (cancelled ? .cancelled : .completed))
+        #expect(terminal.batchProgress?.items.first?.state == .running)
+        #expect(!terminal.canRemove)
+    }
+
     @Test("Graceful shutdown waits for writes and recovers only stopped unresolved ownership")
     func shutdown() async throws {
         let root = try directory()

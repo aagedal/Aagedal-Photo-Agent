@@ -28,6 +28,8 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Latest hardening continuation:** [Cycle 125: operation terminal recovery, Whisper preflight and signed helper packaging](release/cycle-125-operation-terminal-whisper-preflight-2026-10-03.md) closes inconsistent batch outcomes conservatively, refuses unclaimed model artifacts before transfer, and corrects the development-signed description runtime layout. Broad release gates remain open.
+
 **Latest implementation continuation:** [Cycle 124: existing Sony folder linking and automatic Import qualification](release/cycle-124-existing-sony-folder-linking-2026-10-02.md) adds explicit initial voice-memo linking for folders opened directly. Production matching checks all three pairs from the provided Sony A1 sample; verified copy and receipt persistence qualify automatic Import linking on disposable copies. Existing native provider/model/distribution and broader release gates remain open. [Cycle 123](release/cycle-123-native-helper-transcription-start-2026-10-02.md) records authenticated one-use helper start. The [release handoff](release/release-completion-handoff-2026-10-02.md) distinguishes remaining engineering, resource setup and later acceptance.
 
 ## Portfolio

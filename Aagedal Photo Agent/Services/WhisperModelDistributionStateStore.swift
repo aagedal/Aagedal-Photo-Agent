@@ -73,6 +73,28 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Refuse proposals that cannot be installed before starting a network transfer.
+    /// This is only a preflight; installation repeats these checks after suspension.
+    func preflightInstallation(_ receipt: WhisperModelDescriptorReceipt,
+                               expectedGeneration: UUID?) async throws {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.validateInstallationProposal(receipt, expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func validateInstallationProposal(_ receipt: WhisperModelDescriptorReceipt,
+                                              expectedGeneration: UUID?) throws {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        let existing = try read(directoryFD: fd)
+        guard existing?.0.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        if existing == nil { try rejectUnclaimedModelArtifacts(directoryFD: fd) }
+        guard receipt.descriptor.modelID == modelID else { throw WhisperModelDistributionTrust.TrustError.wrongModel }
+        _ = try existing.map { try trust.updating($0.1, to: receipt) } ?? trust.initialState(receipt)
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+    }
+
     /// nil generation means first acceptance, never reset an existing ledger.
     func accept(_ receipt: WhisperModelDescriptorReceipt, expectedGeneration: UUID?) async throws -> Snapshot {
         try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
