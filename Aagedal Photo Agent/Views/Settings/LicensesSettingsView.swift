@@ -11,7 +11,8 @@ struct LicensesSettingsView: View {
         var id: String { name }
     }
 
-    private static let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    private static let appVersion = Bundle.main.object(forInfoDictionaryKey: "AagedalReleaseVersion") as? String
+        ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     private static let components: [Component] = [
         Component(

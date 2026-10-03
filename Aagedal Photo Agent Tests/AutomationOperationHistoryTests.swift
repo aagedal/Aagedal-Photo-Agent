@@ -76,7 +76,7 @@ struct AutomationOperationHistoryTests {
         }
         let status = AutomationOperationHistoryView.status(record)
         #expect(status.contains("editable transcript draft") || status.contains("Editable transcript drafts"))
-        #expect(status.contains("unapproved"))
+        #expect(status.contains("Saved text is ready for metadata variables"))
         #expect(status.contains("IPTC metadata is unchanged"))
         if outcome != .verified { #expect(status.contains("1 editable transcript draft remains saved")) }
         let progress = try #require(record.batchProgress)

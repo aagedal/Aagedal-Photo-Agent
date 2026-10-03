@@ -108,7 +108,8 @@ app_matches_release() {
   local embedded_revision
   embedded_revision="$(artifact_app_source_revision "$1")"
   [ -d "$1" ] \
-    && [ "$(artifact_app_version "$1")" = "$VERSION" ] \
+    && [ "$(artifact_app_version "$1")" = "$BUNDLE_VERSION" ] \
+    && [ "$(/usr/libexec/PlistBuddy -c 'Print :AagedalReleaseVersion' "$1/Contents/Info.plist" 2>/dev/null || artifact_app_version "$1")" = "$VERSION" ] \
     && [ "$(artifact_app_build "$1")" = "$BUILD" ] \
     && [[ "$embedded_revision" =~ ^[0-9a-f]{40}$ ]] \
     && [ "$embedded_revision" = "$SOURCE_REVISION" ]
@@ -289,7 +290,13 @@ ok "Xcode: $DEVELOPER_DIR"
 # with whatever is set in the Xcode project — no hand-editing here.
 SETTINGS="$(xcodebuild -scheme "$SCHEME" -configuration Release -showBuildSettings 2>/dev/null)"
 get() { awk -F' = ' -v k="$1" '$0 ~ "^[[:space:]]*"k" = "{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' <<<"$SETTINGS"; }
-VERSION="$(get MARKETING_VERSION)"
+BUNDLE_VERSION="$(get MARKETING_VERSION)"
+VERSION="$(get AAGEDAL_RELEASE_VERSION)"
+VERSION="${VERSION:-$BUNDLE_VERSION}"
+CHANNEL_ITEM=""
+if [[ "$VERSION" == *-beta.* ]]; then
+  CHANNEL_ITEM="            <sparkle:channel>beta</sparkle:channel>"
+fi
 BUILD="$(get CURRENT_PROJECT_VERSION)"
 TEAM_ID="$(get DEVELOPMENT_TEAM)"
 MIN_OS="$(get MACOSX_DEPLOYMENT_TARGET)"
@@ -299,7 +306,7 @@ ok "Version $VERSION (build $BUILD), team $TEAM_ID, min macOS $MIN_OS"
 # Keep the public support promise tied to the release being produced. A stale
 # policy is a release-blocking documentation defect because it can tell users of
 # the current build that they are ineligible for security fixes.
-RELEASE_LINE="${VERSION%.*}.x"
+RELEASE_LINE="${BUNDLE_VERSION%.*}.x"
 if ! grep -Fq "Supported release line: \`$RELEASE_LINE\`" SECURITY.md; then
   die "SECURITY.md must declare 'Supported release line: \`$RELEASE_LINE\`' before releasing $VERSION."
 fi
@@ -487,6 +494,7 @@ PUBDATE="$(date '+%a, %d %b %Y %H:%M:%S %z')"
 DMG_URL="$RELEASE_URL_BASE/$DMG_STEM-$VERSION.dmg"
 ITEM="        <item>
             <title>Version $VERSION</title>
+$CHANNEL_ITEM
             <pubDate>$PUBDATE</pubDate>
             <sparkle:version>$BUILD</sparkle:version>
             <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>

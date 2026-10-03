@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){2}")
+RELEASE_VERSION_PATTERN = re.compile(r"[0-9]+(?:\.[0-9]+){2}(?:-beta\.[1-9][0-9]*)?")
 SOURCE_REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 DEVELOPMENT_AURAFACE_PUBLIC_KEY = base64.b64decode(
     "1A0bQ1ZA4sVlGfHc3/jnRz9On108K+v/0xjnqMGGDDs=", validate=True
@@ -28,6 +29,7 @@ class ReleaseSettings:
     version: str
     build: int
     minimum_system_version: str
+    release_version: str
 
 
 def require(condition: bool, message: str) -> None:
@@ -56,7 +58,16 @@ def read_release_settings(root: Path) -> ReleaseSettings:
         re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", minimum_system_version) is not None,
         f"invalid MACOSX_DEPLOYMENT_TARGET: {minimum_system_version}",
     )
-    return ReleaseSettings(version, int(build_text), minimum_system_version)
+    release_version = (
+        unique_build_setting(project, "AAGEDAL_RELEASE_VERSION").strip('"')
+        if re.search(r"^\s*AAGEDAL_RELEASE_VERSION\s*=", project, re.MULTILINE)
+        else version
+    )
+    require(RELEASE_VERSION_PATTERN.fullmatch(release_version) is not None,
+            f"invalid AAGEDAL_RELEASE_VERSION: {release_version}")
+    require(release_version.split("-", 1)[0] == version,
+            "AAGEDAL_RELEASE_VERSION must match MARKETING_VERSION")
+    return ReleaseSettings(version, int(build_text), minimum_system_version, release_version)
 
 
 def decoded_base64(value: str, field: str, expected_bytes: int) -> bytes:
@@ -112,11 +123,12 @@ def validate_built_app_source_revision(app: Path, expected_source_revision: str)
 
 
 def validate_changelog(root: Path, settings: ReleaseSettings) -> None:
+    version = settings.release_version
     changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     heading = re.search(
-        rf"^##[ \t]+{re.escape(settings.version)}(?:[ \t]+[^\n]*)?$", changelog, re.MULTILINE
+        rf"^##[ \t]+{re.escape(version)}(?:[ \t]+[^\n]*)?$", changelog, re.MULTILINE
     )
-    require(heading is not None, f"CHANGELOG.md has no section for {settings.version}")
+    require(heading is not None, f"CHANGELOG.md has no section for {version}")
     section_start = heading.end()
     next_heading = re.search(r"^##\s+", changelog[section_start:], re.MULTILINE)
     section_end = section_start + next_heading.start() if next_heading else len(changelog)
@@ -166,10 +178,13 @@ def validate_appcast(root: Path, settings: ReleaseSettings) -> int:
         short_version = child_text(item, "shortVersionString")
         build_text = child_text(item, "version")
         minimum_system_version = child_text(item, "minimumSystemVersion")
-        require(VERSION_PATTERN.fullmatch(short_version) is not None,
+        require(RELEASE_VERSION_PATTERN.fullmatch(short_version) is not None,
                 f"appcast item {index} has invalid shortVersionString: {short_version}")
         require(build_text.isdigit() and int(build_text) > 0,
                 f"appcast item {short_version} has invalid build: {build_text}")
+        channel = child_text(item, "channel")
+        require(channel == ("beta" if "-beta." in short_version else ""),
+                f"appcast item {short_version} has incorrect release channel")
         build = int(build_text)
         require(short_version not in versions, f"appcast has duplicate version {short_version}")
         require(build not in builds, f"appcast has duplicate build {build}")
@@ -203,7 +218,7 @@ def validate_appcast(root: Path, settings: ReleaseSettings) -> int:
             f"appcast item {short_version} EdDSA signature",
             64,
         )
-        if short_version == settings.version:
+        if short_version == settings.release_version:
             current_build = build
 
     if current_build is not None:
@@ -218,6 +233,10 @@ def validate_appcast(root: Path, settings: ReleaseSettings) -> int:
 def validate(root: Path, *, require_production_model_key: bool = False) -> tuple[ReleaseSettings, int]:
     settings = read_release_settings(root)
     validate_info_plist(root, require_production_model_key=require_production_model_key)
+    if settings.release_version != settings.version:
+        info = plistlib.loads((root / "Aagedal Photo Agent/Info.plist").read_bytes())
+        require(info.get("AagedalReleaseVersion") == "$(AAGEDAL_RELEASE_VERSION)",
+                "beta Info.plist must derive AagedalReleaseVersion from AAGEDAL_RELEASE_VERSION")
     validate_changelog(root, settings)
     validate_security_policy(root, settings)
     item_count = validate_appcast(root, settings)
@@ -243,7 +262,7 @@ def main() -> int:
         return 1
     print(
         "release metadata validation passed: "
-        f"{settings.version} ({settings.build}), macOS {settings.minimum_system_version}, "
+        f"{settings.release_version} ({settings.build}), macOS {settings.minimum_system_version}, "
         f"{item_count} published appcast item(s)"
     )
     return 0

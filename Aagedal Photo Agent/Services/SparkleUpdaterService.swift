@@ -14,6 +14,13 @@ private final class SparkleFeedFallbackDelegate: NSObject, SPUUpdaterDelegate {
         self.backupFeedURL = backupFeedURL
     }
 
+    // Beta downloads opt in to subsequent betas and the eventual stable release.
+    // Stable installations continue to receive only the default channel.
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        let version = Bundle.main.object(forInfoDictionaryKey: "AagedalReleaseVersion") as? String ?? ""
+        return version.contains("-beta.") ? ["beta"] : []
+    }
+
     func feedURLString(for updater: SPUUpdater) -> String? {
         didLoadAppcast = false
         return isUsingBackupFeed ? backupFeedURL : nil

@@ -4,7 +4,7 @@ A native macOS desktop application for photo metadata management and face recogn
 
 **License:** GPL-3.0
 
-The next release is 3.0. See the [3.0 feature guide](docs/feature-help-3.0.md),
+The next release is **3.0.0-beta.1**, a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
 [known limitations](docs/limitations-3.0.md), and [privacy draft](PRIVACY.md) for the release-candidate
 behavior and boundaries.
 
@@ -403,6 +403,12 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 ### Per release
 
 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
+   Keep the bundle version numeric (for example `3.0.0`). Set `AAGEDAL_RELEASE_VERSION`
+   to `3.0.0-beta.1` for a beta, or to the numeric version for a stable release.
+   Every beta and subsequent stable release must have a strictly increasing build.
+   Beta DMGs and archives use the full beta identity; generated appcast items carry
+   `sparkle:channel=beta`. Only beta installations opt into that channel; the eventual
+   stable release remains available to them through the default channel.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
    AuraFace is bundled for this release. The release assistant verifies the exported app contains
    `Contents/Resources/AuraFaceR100.mlmodelc` with the reviewed model weights before notarization.
@@ -414,7 +420,10 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    Before accessing signing credentials or building, it rejects a dirty worktree and verifies a successful CI run tied to the exact `HEAD` SHA. The accepted run is recorded under `build/release/`. It then archives, exports with Developer ID, notarizes and staples the app and DMG, Sparkle-signs the DMG, and inserts the appcast item. When an archive or valid exported app has matching version/build metadata **and** the source-revision marker written by the script, its terminal menu can resume from that artifact instead of rebuilding; unmarked or stale-revision artifacts are rejected. Set `RELEASE_BUILD_MODE=reuse` or `RELEASE_BUILD_MODE=rebuild` to make that choice non-interactively.
 5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
 6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
-7. Bump the cask in the `aagedal/homebrew-tap` repo.
+7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
+   For public betas, publish a GitHub prerelease with tag `3.0.0-beta.1`, attach the
+   notarized DMG and its SHA-256, and leave the stable cask/latest release unchanged.
+   Include the beta limitations and backup guidance from the changelog.
 
 An emergency can bypass the CI lookup only with `RELEASE_TEST_GATE_OVERRIDE=EMERGENCY`, a written `RELEASE_TEST_GATE_OVERRIDE_REASON` of at least 20 characters, and confirmation by typing (or setting `RELEASE_TEST_GATE_OVERRIDE_CONFIRM` to) the full current SHA. The script prints a prominent warning and records the revision, operator, timestamp, and reason in `build/release/release-test-gate.json` and the append-only-per-worktree `release-test-gate-audit.jsonl`. Preserve those files with the release records. An override does not permit releasing uncommitted source.
 

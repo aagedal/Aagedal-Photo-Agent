@@ -97,7 +97,7 @@ struct MCPServerCoreTests {
         #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.mp3"}"#,
         #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","imageIdentity":{"byteCount":true,"sha256":"bad"}}"#,
         #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","memoIdentity":{"byteCount":-1,"sha256":"bad"}}"#,
-        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","approvedTranscriptMemoSHA256":42}"#,
+        #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","memoIdentity":{"byteCount":5,"sha256":42}}"#,
         #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","provenance":"unexpected"}"#,
         #"{"schemaVersion":2,"profileIdentifier":"p","imageFilename":"frame.jpg","memoFilename":"memo.wav","imageDiscoveryHint":{"canonicalPath":false}}"#,
     ])

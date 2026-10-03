@@ -2,7 +2,15 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 3.0.0 — Unreleased
+## 3.0.0-beta.1 — Public beta candidate
+
+This is the first public beta of 3.0, intended for testing. See
+[known limitations](docs/limitations-3.0.md) and the
+[release qualification handoff](docs/release/release-completion-handoff-2026-10-02.md).
+Use copies of photos and back up application data before testing. This beta uses the
+same application identity and data locations as the stable app; installing it replaces
+that app. Older versions may not understand data written by 3.0.
+
 
 - Added Counter photo markup with independent color sequences, automatic renumbering after deletion,
   and count evidence in Analysis and PDF reports. Photo layers can be filtered by type and color,

@@ -75,6 +75,66 @@ sparkle:edSignature="{signature}" length="123" type="application/octet-stream" /
         self.assertEqual(settings.build, 738)
         self.assertEqual(items, 1)
 
+    def configure_beta(self, release_version: str = "3.0.0-beta.1") -> None:
+        path = self.root / "Aagedal Photo Agent.xcodeproj/project.pbxproj"
+        path.write_text(path.read_text() + f'AAGEDAL_RELEASE_VERSION = "{release_version}";\n')
+        path = self.root / "Aagedal Photo Agent/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        info["AagedalReleaseVersion"] = "$(AAGEDAL_RELEASE_VERSION)"
+        path.write_bytes(plistlib.dumps(info))
+        path = self.root / "CHANGELOG.md"
+        path.write_text(path.read_text().replace("## 3.0.0", f"## {release_version}"))
+
+    def test_beta_metadata_and_published_channel_pass(self) -> None:
+        self.configure_beta()
+        self.write_appcast(version="3.0.0-beta.1", build="738")
+        path = self.root / "appcast.xml"
+        path.write_text(path.read_text().replace("<item>", "<item><sparkle:channel>beta</sparkle:channel>"))
+        settings, _ = validator.validate(self.root)
+        self.assertEqual(settings.release_version, "3.0.0-beta.1")
+        self.assertEqual(settings.version, "3.0.0")
+
+    def test_stable_release_must_advance_published_beta_build(self) -> None:
+        self.write_appcast(version="3.0.0-beta.1", build="738")
+        path = self.root / "appcast.xml"
+        path.write_text(path.read_text().replace("<item>", "<item><sparkle:channel>beta</sparkle:channel>"))
+        self.write_project(version="3.0.0", build="739")
+        validator.validate(self.root)
+        self.write_project(version="3.0.0", build="738")
+        with self.assertRaisesRegex(ValueError, "must exceed every published"):
+            validator.validate(self.root)
+
+    def test_beta_cannot_be_published_to_stable_channel(self) -> None:
+        self.configure_beta()
+        self.write_appcast(version="3.0.0-beta.1", build="738")
+        with self.assertRaisesRegex(ValueError, "incorrect release channel"):
+            validator.validate(self.root)
+
+    def test_stable_cannot_be_published_to_beta_channel(self) -> None:
+        path = self.root / "appcast.xml"
+        path.write_text(path.read_text().replace("<item>", "<item><sparkle:channel>beta</sparkle:channel>"))
+        with self.assertRaisesRegex(ValueError, "incorrect release channel"):
+            validator.validate(self.root)
+
+    def test_beta_version_must_match_numeric_bundle_version(self) -> None:
+        self.configure_beta("3.1.0-beta.1")
+        with self.assertRaisesRegex(ValueError, "must match MARKETING_VERSION"):
+            validator.validate(self.root)
+
+    def test_beta_requires_embedded_release_identity(self) -> None:
+        self.configure_beta()
+        self.write_info_plist()
+        with self.assertRaisesRegex(ValueError, "AagedalReleaseVersion"):
+            validator.validate(self.root)
+
+    def test_malformed_beta_version_is_rejected(self) -> None:
+        for version in ("3.0.0-beta.0", "3.0.0-beta.01", "3.0.0-beta", "3.0.0-rc.1"):
+            with self.subTest(version=version):
+                self.write_project(version="3.0.0", build="738")
+                self.configure_beta(version)
+                with self.assertRaisesRegex(ValueError, "invalid AAGEDAL_RELEASE_VERSION"):
+                    validator.read_release_settings(self.root)
+
     def test_current_published_version_must_match_project_build(self) -> None:
         self.write_appcast(version="3.0.0", build="737")
         with self.assertRaisesRegex(ValueError, "does not match project build"):
