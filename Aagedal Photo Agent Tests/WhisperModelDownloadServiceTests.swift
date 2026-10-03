@@ -63,6 +63,58 @@ struct WhisperModelDownloadServiceTests {
         #expect(try await reuse.installedURL(for: model()) == nil)
     }
 
+    @Test("GGUF filenames share verification and cannot escape the storage folder")
+    func ggufFileName() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = bytes
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+        })
+        var artifact = model()
+        artifact.fileName = "borealis-4b-Q4_K_M.gguf"
+        let result = try await service.download(artifact)
+        #expect(result.lastPathComponent == artifact.fileName)
+        #expect(try Data(contentsOf: result) == bytes)
+        artifact.fileName = "../escape.gguf"
+        do {
+            _ = try await service.download(artifact)
+            Issue.record("An unsafe filename was admitted")
+        } catch { #expect(error as? WhisperModelDownloadService.DownloadError == .invalidModel) }
+    }
+
+    @Test("Description models use distinct verified files and switch without redownloading")
+    func descriptionModelCatalog() async throws {
+        let catalog = DescriptionAssistantDownloadModel.allCases
+        #expect(catalog.count == 2)
+        #expect(Set(catalog.map { $0.artifact.id }).count == 2)
+        #expect(Set(catalog.map { $0.artifact.fileName }).count == 2)
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = bytes
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+        })
+        let offline = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
+            throw URLError(.notConnectedToInternet)
+        })
+        for option in catalog {
+            let pinned = option.artifact
+            #expect(pinned.byteCount > 2_000_000_000 && pinned.byteCount < 3_000_000_000)
+            #expect(pinned.sha256.count == 64 && pinned.sha256.allSatisfy { $0.isHexDigit })
+            #expect(pinned.url.pathComponents.dropLast().last?.count == 40)
+            #expect(pinned.url.lastPathComponent == pinned.fileName)
+            let fixture = WhisperDownloadableModel(id: pinned.id, title: pinned.title,
+                byteCount: Int64(bytes.count),
+                sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+                url: pinned.url, fileName: pinned.fileName)
+            let downloaded = try await service.download(fixture)
+            #expect(downloaded.lastPathComponent == pinned.fileName)
+            #expect(try await offline.download(fixture) == downloaded)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 2)
+    }
+
     @Test("Corrupt and truncated downloads never publish and partial files are removed", arguments: [false, true])
     func invalidDownload(truncated: Bool) async throws {
         let root = try fixture()

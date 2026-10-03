@@ -9,6 +9,8 @@ nonisolated struct WhisperDownloadableModel: Identifiable, Hashable, Sendable {
     let byteCount: Int64
     let sha256: String
     let url: URL
+    // Optional filename lets other local model backends share the verified transfer.
+    var fileName: String? = nil
 
     static let revision = "5359861c739e955e79d9a303bcbc70fb988958b1"
     static let catalog: [Self] = [
@@ -44,8 +46,8 @@ actor WhisperModelDownloadService {
         case invalidModel, unsafeStorage, storageChanged, invalidResponse, sizeMismatch, checksumMismatch, busy
         var errorDescription: String? {
             switch self {
-            case .invalidModel: "The selected Whisper model is invalid."
-            case .unsafeStorage: "The Whisper model storage location is not a private regular file or directory."
+            case .invalidModel: "The selected downloadable model is invalid."
+            case .unsafeStorage: "The local model storage location is not a private regular file or directory."
             case .storageChanged: "The model storage changed during download. Please try again."
             case .invalidResponse: "The model server returned an invalid response. Please try again."
             case .sizeMismatch: "The downloaded model has an unexpected size. Please try again."
@@ -193,7 +195,13 @@ actor WhisperModelDownloadService {
               model.byteCount > 0, model.byteCount <= 4_000_000_000,
               model.sha256.count == 64, model.sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
               model.url.scheme == "https" else { throw DownloadError.invalidModel }
-        return directory.appendingPathComponent("ggml-\(model.id).bin")
+        let name = model.fileName ?? "ggml-\(model.id).bin"
+        guard !name.isEmpty, name != ".", name != "..",
+              name.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0)
+                  || (48...57).contains($0) || [45, 46, 95].contains($0) }) else {
+            throw DownloadError.invalidModel
+        }
+        return directory.appendingPathComponent(name)
     }
 
     private func validateStorage(create: Bool) throws {

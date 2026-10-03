@@ -153,6 +153,49 @@
       "runtimeCapabilities": [
         "produce 512-dimensional face embeddings on device"
       ]
+    },
+    {
+      "id": "llama-cpp-description",
+      "artifactPath": "Vendor/llama.cpp",
+      "artifactFiles": {
+        "LICENSE": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+        "libggml-base.0.dylib": "eb23d7c5d4a91305103cbe476cd1f9b73c531c74c5ddb073e95eae2b9d899fe5",
+        "libggml-blas.0.dylib": "0ebd85672738258463cd43b0473d9894ee6bb2f4745160b4bdbe1bf770d4232e",
+        "libggml-cpu.0.dylib": "eb87e110c68ba8d82814409b61e009b4c1d2583aad551ac059d583d332a10c19",
+        "libggml-metal.0.dylib": "90744987bb2bb423c94b6f4beedead43c9f13c364a1504ccbdba25e9e7f86981",
+        "libggml-rpc.0.dylib": "6959ae504d43d69b08e9a4801f8368d04a27dc85b0e79a4ed61c14672698215a",
+        "libggml.0.dylib": "8b369b1dcc974e4a233c45e7259b37250556d25586e266c96546f17ce00ab1d9",
+        "libllama-common.0.dylib": "2d82bac5d3d8aafcddcd061c04fa6eab7fb6924ac0224af2942037b586ce3e3e",
+        "libllama-completion-impl.dylib": "daaf5b422b1a7e293d4153afd2301c1a0f47cbbae514f377fe048f827b4e1b5c",
+        "libllama.0.dylib": "8054a3792616d2aabb5cea69de9529efaadf3f056f28889553224290c2e3882f",
+        "llama-completion": "fa1e729425b5b8cf23377d4ade0baa5f9152ccf53dace5dec9900aecdebea494",
+        "runtime.json": "4effa75f57d74e84c588b4c218bd21e849c66a359c7bc904c0d0b07e9621dbd9"
+      },
+      "required": true,
+      "version": "b11377",
+      "upstream": {
+        "url": "https://github.com/ggml-org/llama.cpp",
+        "revision": "9bf55f4a3",
+        "releaseTag": "b11377",
+        "archiveURL": "https://github.com/ggml-org/llama.cpp/releases/download/b11377/llama-b11377-bin-macos-arm64.tar.gz",
+        "archiveSHA256": "f06daae194a06948c6c534960d8d211219c46168b84b7951ab7d651d25d71c69"
+      },
+      "license": "MIT",
+      "licensePath": "Aagedal Photo Agent/Resources/Licenses/License-llama.cpp.txt",
+      "buildRecipe": {
+        "repositoryPath": "scripts/llama/prepare_runtime.py",
+        "revision": "sha256:b09f308dbe377c293e9d7697f8313fdc2ae83f12cd9e8108b7fda125ea42ee77",
+        "supportingFiles": {
+          "scripts/llama/bundle_runtime.py": "sha256:f17b903bdc03e2a4c5b47acac3bda2a37a2f5340aa2aec47abf241673e677f0e"
+        }
+      },
+      "targetArchitectures": [
+        "arm64"
+      ],
+      "runtimeCapabilities": [
+        "Local Gemma 3 text completion with Metal acceleration; no listening server"
+      ],
+      "additionalLicensePaths": []
     }
   ]
 }

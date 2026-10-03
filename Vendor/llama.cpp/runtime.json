@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/ggml-org/llama.cpp",
+  "tag": "b11377",
+  "archiveURL": "https://github.com/ggml-org/llama.cpp/releases/download/b11377/llama-b11377-bin-macos-arm64.tar.gz",
+  "archiveSHA256": "f06daae194a06948c6c534960d8d211219c46168b84b7951ab7d651d25d71c69",
+  "architecture": "arm64",
+  "license": "MIT",
+  "files": {
+    "libggml-base.0.dylib": "eb23d7c5d4a91305103cbe476cd1f9b73c531c74c5ddb073e95eae2b9d899fe5",
+    "libggml-blas.0.dylib": "0ebd85672738258463cd43b0473d9894ee6bb2f4745160b4bdbe1bf770d4232e",
+    "libggml-cpu.0.dylib": "eb87e110c68ba8d82814409b61e009b4c1d2583aad551ac059d583d332a10c19",
+    "libggml-metal.0.dylib": "90744987bb2bb423c94b6f4beedead43c9f13c364a1504ccbdba25e9e7f86981",
+    "libggml-rpc.0.dylib": "6959ae504d43d69b08e9a4801f8368d04a27dc85b0e79a4ed61c14672698215a",
+    "libggml.0.dylib": "8b369b1dcc974e4a233c45e7259b37250556d25586e266c96546f17ce00ab1d9",
+    "libllama-common.0.dylib": "2d82bac5d3d8aafcddcd061c04fa6eab7fb6924ac0224af2942037b586ce3e3e",
+    "libllama-completion-impl.dylib": "daaf5b422b1a7e293d4153afd2301c1a0f47cbbae514f377fe048f827b4e1b5c",
+    "libllama.0.dylib": "8054a3792616d2aabb5cea69de9529efaadf3f056f28889553224290c2e3882f",
+    "llama-completion": "fa1e729425b5b8cf23377d4ade0baa5f9152ccf53dace5dec9900aecdebea494"
+  }
+}
