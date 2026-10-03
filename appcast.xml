@@ -11,6 +11,125 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.1</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Sat, 03 Oct 2026 16:51:42 +0200</pubDate>
+            <sparkle:version>740</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Added **Find matching voice memo…** in Caption for existing Sony photo/WAV folders opened</li>
+                    <li>Added `start_voice_transcription` through the matching signed helper and running app. Native exact</li>
+                    <li>Fixed persistent automation clients retaining cached folder/enablement authority. Authorization</li>
+                    <li>Added an authenticated local handoff from the bundled helper to native transcription review.</li>
+                    <li>Fixed Apple speech cancellation returning before analyzer teardown completed. Recognition,</li>
+                    <li>Added a separate transcription intent inbox in Automation Settings. MCP clients can queue</li>
+                    <li>Added internal exact-operation transcription admission and linkage before recognition. Reserved</li>
+                    <li>Native batch transcription now refuses raw relationship rewrites and equal-byte carrier</li>
+                    <li>Added immutable automation previews for ordered voice-transcription batches of up to eight</li>
+                    <li>Added read-only automation inspection of saved photo/WAV relationships with rooted file</li>
+                    <li>Transcribe a captured selection of up to eight voice memos from Caption after explicit</li>
+                    <li>Restore identified interrupted XMP publications from Automation Settings after a separate confirmation.</li>
+                    <li>Expand automation template field references to retained people, creators, organisations and</li>
+                    <li>Restore missing signed Whisper rollback-candidate content without changing the active model,</li>
+                    <li>Close automation operations conservatively when an executor reports cancellation without a</li>
+                    <li>Retain installed XMP and app-history identities during reviewed publication, including interrupted</li>
+                    <li>Resolve bounded acyclic `{field:key}` chains in automation template previews and report every</li>
+                    <li>Add internal recovery of missing Whisper model content using the existing authenticated ledger,</li>
+                    <li>Added **Inspect Retained Recovery** and **Resolve Unchanged Staging** in Automation Settings.</li>
+                    <li>Added bounded retained scalar `{field:key}` variables to automation template previews, with</li>
+                    <li>Added internal verified duplicate cleanup for legacy Whisper staging files; production signed</li>
+                    <li>Fixed intermittent automation plan preparation refusal at fractional-second expiry boundaries.</li>
+                    <li>Added per-photo `{filename}` resolution to single and batch automation template previews for</li>
+                    <li>Added native **Publish Approved XMP** with exact-candidate consent, recoverable XMP installation,</li>
+                    <li>Added verified-byte signed Whisper install/update/rollback transactions; production descriptor</li>
+                    <li>Added native **Approve XMP Candidate** consent after a verified dry run, with separate C2PA and</li>
+                    <li>Expanded literal template previews to Media Topic, Genre and Image Supplier structured values.</li>
+                    <li>Serialized signed Whisper release-ledger transitions across cooperating processes; installed-model</li>
+                    <li>Expanded literal metadata-template previews to creators, organisations, scene/subject codes, date,</li>
+                    <li>Added separate exact-candidate XMP publication-consent and persistent signed Whisper release-state</li>
+                    <li>Added `preview_metadata_template` to local automation: exact template/photo revisions, read-only</li>
+                    <li>Added bounded XMP recovery-material storage and signed Whisper descriptor/transition foundations.</li>
+                    <li>Added **Verify XMP Dry Run** to native proofreading review. It checks a temporary production-written</li>
+                    <li>Managed Whisper lookup and download now bind verification and transfer staging to the admitted</li>
+                    <li>Added native automation operation history with cancellation requests and confirmed removal of</li>
+                    <li>Managed Whisper model removal is now bound to the validated cache directory, succeeds when the</li>
+                    <li>Settings → Automation can now apply an exactly reviewed and approved proofreading plan to a</li>
+                    <li>Added repeatable bundled Whisper process checks for model refusal, CPU inference, canonical</li>
+                    <li>Bundled Whisper model setup now recovers cleanly from cancelled downloads and failed removal.</li>
+                    <li>MCP proofreading previews now record expected values for every production metadata verification</li>
+                    <li>Moved Whisper provider, files, language, translation, GPU and consent setup into Settings →</li>
+                    <li>Custom Whisper now saves language, English translation and GPU request settings, and retains</li>
+                    <li>MCP exposes durable operation status and cooperative cancellation requests. Production workflow</li>
+                    <li>Proofreading consent now handles expiry and delayed approval completion safely after clearing,</li>
+                    <li>Settings → Automation now displays exact proofreading plans with before/proposed values,</li>
+                    <li>Custom Whisper selections now survive Caption closure and app relaunch through security-scoped</li>
+                    <li>Local MCP now discovers transcription provider IDs and setup guidance, with explicit unknown</li>
+                    <li>Caption now offers explicit Custom FFmpeg Whisper setup, execution consent and transcription into</li>
+                    <li>IPTC previews now bind exact carrier hashes, production preservation baselines and RAW-safe write-policy</li>
+                    <li>Read-only IPTC proofreading plans now survive helper restart in a private, bounded local archive.</li>
+                    <li>Added internal custom Whisper artifact identity admission with explicit unverified provenance,</li>
+                    <li>Corrected the candidate FFmpeg Whisper emitter to bound timestamps to supplied audio and retain</li>
+                    <li>Fixed persistent MCP clients timing out during initialization: the helper now responds to</li>
+                    <li>IPTC proofreading previews now share production field normalization and validation, retain exact</li>
+                    <li>Added an internal FFmpeg Whisper transcription adapter with source revalidation and durable</li>
+                    <li>Added read-only `get_iptc_patch_plan` retrieval with immutable previews, expiry and fresh</li>
+                    <li>Added the internal FFmpeg Whisper process runner with exact input snapshots, bounded output,</li>
+                    <li>Added read-only MCP `prepare_iptc_patch` previews for supported descriptive text, Keywords and</li>
+                    <li>FFmpeg AVIF export now retains the selected color primaries and transfer when encoding</li>
+                    <li>Local MCP now distinguishes invalid JSON from invalid requests, rejects malformed lifecycle</li>
+                    <li>Template import confirmation now binds the exact previewed folder and JSON inventory,</li>
+                    <li>Added read-only MCP `list_templates` discovery by stable UUID for explicitly authorized</li>
+                    <li>Image conversion now restricts FFmpeg input and output protocols to local files and</li>
+                    <li>Template saves and deletion now check the exact loaded file bytes and storage-folder</li>
+                    <li>Template saves preserve supported extension fields. Unsupported nested Develop settings,</li>
+                    <li>Metadata and Develop template rows expose separate, named Edit and Trash actions.</li>
+                    <li>Metadata and Develop template editors retain the storage folder where the template was</li>
+                    <li>Develop templates now have a versioned JSON format with legacy migration; newer or</li>
+                    <li>Added the read-only MCP `list_metadata_fields` catalog, with stable editorial JSON keys,</li>
+                    <li>Existing metadata and Develop template editors now refuse saves when their original</li>
+                    <li>Metadata and Develop template transactions now reserve their storage folder across</li>
+                    <li>Delete Group & Photos now reserves its folder before Trash, reconciles the confirmed</li>
+                    <li>Individual face deletion now removes only the selected face IDs from the latest saved</li>
+                    <li>Photo-based face deletion without a loaded folder now holds one reservation from loading</li>
+                    <li>Photo-based face deletion now reserves fallback folder loading before corrupt-data recovery,</li>
+                    <li>Opening a folder now reserves face-data expiration and corrupt-document recovery against</li>
+                    <li>Interactive face-data saves and deletion now reserve their folder against overlapping local</li>
+                    <li>Face scans now reserve their folder against overlapping MCP reads and retained photo writes through</li>
+                    <li>Added `get_photo_metadata` to the bundled local MCP helper. It reads one authorized photo and returns</li>
+                    <li>Bundled the reviewed AuraFace face model with the app so face recognition works offline immediately, without a separate model download.</li>
+                    <li>Updated SwiftMediaMetadata to 3.0.1. Sony RTMD track discovery now avoids materializing top-level</li>
+                    <li>Added the first local automation foundation: a separately signed, hardened-runtime STDIO MCP</li>
+                    <li>Retained field mutations, variable/template metadata completion, Write All and Primary Develop</li>
+                    <li>Automation Settings now supplies copyable setup for Codex CLI, Claude Code, OpenCode 1.x and</li>
+                    <li>Local automation now reports the same supported photo input extensions used by the Browser,</li>
+                    <li>Local automation can now inspect one authorized photo's opaque source, adjacent XMP and owned</li>
+                    <li>Move and Reject now preserve proven voice-memo companions with verified staging, rollback and</li>
+                    <li>RAW archive now preserves a proven voice memo as an independent WAV plus relationship record</li>
+                    <li>Voice-memo relationships now retain photo and WAV content identity. Caption can recover a missing</li>
+                    <li>Caption can find a moved voice-memo relationship inside a user-selected folder. Exact photo and</li>
+                    <li>Caption can explicitly transcribe an associated WAV with Apple on-device speech. Language assets</li>
+                    <li>Deadline profiles now explicitly exclude voice-memo WAVs, include proven companions when</li>
+                    <li>Added source-revision-bound Image Analysis with Pixel Analysis and OSINT modes, linked true-pixel</li>
+                    <li>Added synchronized two-image comparison with side-by-side, stacked, and wipe layouts across Browser,</li>
+                    <li>Reworked Pixel Analysis around a larger, full-height image surface with Evidence and Scopes in</li>
+                    <li>Added Caption Workspace, Batch Rename, Deadline profiles, frozen preflight, and verified staged</li>
+                    <li>Expanded the descriptive IPTC/XMP model with editorial role, organisation, country-code, rights,</li>
+                    <li>Separated Headline carrier writes from localized Title: Headline edits no longer create, clear,</li>
+                    <li>Added local delivery receipts and resumable workflow evidence in Activity, with explicit cleanup and</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.1/Aagedal-Photo-Agent-3.0.0-beta.1.dmg"
+                sparkle:version="740"
+                sparkle:shortVersionString="3.0.0-beta.1"
+                sparkle:edSignature="8CgtiRnxMsdHhAfBZ2yVWJt6EbNaceCNpwhpt87jGIHKkhyvanC3EpggynyeIDZPgVMZw/BtLsHVl5tRGcJdDA=="
+                length="192826714"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 2.2.0</title>
             <pubDate>Thu, 30 Jul 2026 20:30:39 +0200</pubDate>
             <sparkle:version>428</sparkle:version>
