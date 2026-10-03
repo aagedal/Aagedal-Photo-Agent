@@ -439,7 +439,7 @@ struct CaptionVoiceMemoPlayerView: View {
     private var whisperPanel: some View {
         HStack {
             WhisperLanguagePicker(selection: $whisperSetup.language)
-                .frame(maxWidth: 220)
+                .frame(width: 310)
                 .disabled(whisperSetup.isTranscribing || transcriptModel.isTranscribing)
             Button("Transcribe", systemImage: "text.bubble") {
                 let provider = whisperSetup.choice == .whisper
