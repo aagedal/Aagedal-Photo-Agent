@@ -246,6 +246,7 @@
 		F4ED01000000000000000002 /* MetadataEditorReadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4ED01000000000000000001 /* MetadataEditorReadServiceTests.swift */; };
 		FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */; };
 		C12400000000000000000102 /* CaptionVoiceMemoAssociationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */; };
+		C12600000000000000000102 /* CaptionVoiceMemoMediaKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -528,6 +529,7 @@
 		F5EF7DA0399318BA929901BE /* Aagedal Photo Agent/Models/EditorialDateCreated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Models/EditorialDateCreated.swift"; sourceTree = SOURCE_ROOT; };
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
 		C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoAssociationServiceTests.swift; sourceTree = "<group>"; };
+		C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoMediaKeyTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -624,6 +626,7 @@
 				D11300000000000000000201 /* AutomationOperationBatchProgressTests.swift */,
 				D11400000000000000000101 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift */,
 				C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */,
+				C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */,
 				D11300000000000000000101 /* AutomationVoiceTranscriptionBatchTests.swift */,
 				D11900000000000000000201 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift */,
 				C12100000000000000000401 /* MCPNativeInvocationToolTests.swift */,
@@ -1090,6 +1093,7 @@
 				D11300000000000000000202 /* AutomationOperationBatchProgressTests.swift in Sources */,
 				D11400000000000000000102 /* CaptionVoiceMemoBatchTranscriptionModelTests.swift in Sources */,
 				C12400000000000000000102 /* CaptionVoiceMemoAssociationServiceTests.swift in Sources */,
+				C12600000000000000000102 /* CaptionVoiceMemoMediaKeyTests.swift in Sources */,
 				D11300000000000000000102 /* AutomationVoiceTranscriptionBatchTests.swift in Sources */,
 				D11900000000000000000202 /* MCPNativeVoiceTranscriptionBindingServiceTests.swift in Sources */,
 				C12100000000000000000402 /* MCPNativeInvocationToolTests.swift in Sources */,

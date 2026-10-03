@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Combine
 import UniformTypeIdentifiers
 
@@ -298,6 +299,10 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryImageURL = nil
             reassociationImageURL = nil
         }
+        .background {
+            CaptionVoiceMemoMediaKeyMonitor(model: model)
+                .frame(width: 0, height: 0)
+        }
         .onDisappear {
             model.stop()
             recoveryModel.cancel()
@@ -479,6 +484,66 @@ struct CaptionVoiceMemoPlayerView: View {
             return "No relationship with the exact photo and WAV bytes was found in the selected folder."
         case nil:
             return nil
+        }
+    }
+}
+
+nonisolated enum CaptionVoiceMemoMediaKey {
+    static func isPlayPause(subtype: Int16, data: Int) -> Bool {
+        // NX_SUBTYPE_AUX_CONTROL_BUTTONS carries NX_KEYTYPE_PLAY in the upper word.
+        subtype == 8 && (data >> 16) & 0xffff == 16
+    }
+
+    static func isInitialPress(data: Int) -> Bool {
+        let flags = data & 0xffff
+        // The lower word contains the key state (0x0a down / 0x0b up) and repeat bit.
+        return (flags >> 8) & 0xff == 0x0a && flags & 1 == 0
+    }
+}
+
+/// The monitor belongs to the captions window and is removed when its view leaves the hierarchy.
+private struct CaptionVoiceMemoMediaKeyMonitor: NSViewRepresentable {
+    let model: CaptionVoiceMemoPlaybackModel
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.model = model
+        return view
+    }
+
+    func updateNSView(_ view: MonitorView, context: Context) {
+        view.model = model
+    }
+
+    static func dismantleNSView(_ view: MonitorView, coordinator: ()) {
+        view.removeMonitor()
+    }
+
+    final class MonitorView: NSView {
+        var model: CaptionVoiceMemoPlaybackModel?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            removeMonitor()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                guard let self, let window = self.window, NSApp.isActive,
+                      NSApp.keyWindow === window, window.attachedSheet == nil,
+                      let model = self.model, case .available = model.state,
+                      CaptionVoiceMemoMediaKey.isPlayPause(subtype: event.subtype.rawValue, data: event.data1)
+                else { return event }
+                if CaptionVoiceMemoMediaKey.isInitialPress(data: event.data1) {
+                    Task { await model.toggle() }
+                }
+                // Consume releases and repeats too, so one press toggles playback only once.
+                return nil
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
         }
     }
 }
