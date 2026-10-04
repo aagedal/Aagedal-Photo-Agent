@@ -60,7 +60,8 @@ jobs:
           } | tee "$RUNNER_TEMP/model-reproduction.log"
 
       # CI uses ad-hoc signing; distribution and authenticated helper qualification
-      # require the separately signed release candidate.
+      # require the separately signed release candidate. Restricted iCloud
+      # entitlements cannot launch under an ad-hoc signature without a profile.
       - name: Clean build for testing
         env:
           DERIVED_DATA: ${{ runner.temp }}/AagedalPhotoAgentDerivedData
@@ -72,7 +73,7 @@ jobs:
             -destination 'platform=macOS' \
             -parallel-testing-enabled NO \
             -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_ENTITLEMENTS= \
             clean build-for-testing \
             | tee "$RUNNER_TEMP/build-for-testing.log"
 
@@ -89,7 +90,7 @@ jobs:
             -parallel-testing-enabled NO \
             -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RESULT_BUNDLE" \
-            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_ENTITLEMENTS= \
             test-without-building \
             | tee "$RUNNER_TEMP/test-without-building.log"
 

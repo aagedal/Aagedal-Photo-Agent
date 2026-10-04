@@ -91,3 +91,15 @@ Final integrated verification passes: 3,834 tests / 380 suites, 123.140 seconds,
 The user chose a second public beta rather than a final stable release. Debug and Release now use `AAGEDAL_RELEASE_VERSION=3.0.0-beta.2`, numeric bundle short version `3.0.0`, and build `741`, above published Beta 1 build `740`. The changelog has a distinct unreleased Beta 2 section; Beta 1's historical notes remain intact. README points to the next beta. The existing beta-channel behavior continues through the release-version label.
 
 The published appcast remains unchanged: Beta 2 has no fabricated enclosure, signature, checksum or publication record. Commit-specific CI, final candidate packaging/signing/notarization, remaining manual testing and publication remain outstanding. Earlier build 739/740 artifacts are historical and cannot be reused as Beta 2.
+
+
+### Beta 2 remote CI launch correction
+
+The first restored CI run on `d9874fdd78e9e623045625dc67e2dbab1749c808`
+([run 37233213654](https://github.com/aagedal/Aagedal-Photo-Agent/actions/runs/37233213654))
+passed repository validation, pinned model reproduction and the clean build.
+Test execution failed before any tests ran: RunningBoard rejected the test-host
+launch. Build logs show the ad-hoc app retained restricted iCloud entitlements,
+without an Apple provisioning profile. CI now overrides `CODE_SIGN_ENTITLEMENTS=`
+for its build and test commands. Release project entitlements remain intact;
+CI does not qualify iCloud functionality or distribution signatures.
