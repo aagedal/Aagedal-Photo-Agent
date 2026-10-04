@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import Metal
 import Foundation
 import Testing
 import MLXVLM
@@ -924,6 +925,10 @@ struct CaptionVoiceMemoTranscriptionTests {
         }
     }
 
+    nonisolated private static func isOnMainThread() -> Bool {
+        Thread.isMainThread
+    }
+
     @Test("transcription binds a trimmed draft to exact WAV identity and runs off MainActor")
     @MainActor
     func exactDraft() async throws {
@@ -938,7 +943,7 @@ struct CaptionVoiceMemoTranscriptionTests {
             assetStatus: { _ in .installed },
             installAssets: { _ in },
             transcribe: { url, selected in
-                #expect(queue.isIsolatingCurrentContext() == true)
+                #expect(!Self.isOnMainThread())
                 #expect(url == found.memoURL)
                 #expect(selected.identifier == selectedLocale.identifier)
                 return "  A verified local transcript.  "
@@ -947,7 +952,10 @@ struct CaptionVoiceMemoTranscriptionTests {
         let service = VoiceMemoTranscriptionService(
             runtime: runtime,
             filesystemQueue: queue,
-            lookup: { _ in .available(found) },
+            lookup: { _ in
+                #expect(queue.isIsolatingCurrentContext() == true)
+                return .available(found)
+            },
             captureRevision: { _ in revision },
             now: { Date(timeIntervalSince1970: 123) },
             startAccess: { _ in false }
@@ -2103,7 +2111,9 @@ struct BorealisModelConfigurationTests {
 
 @Suite("Description assistant native MLX runtime")
 struct DescriptionAssistantMLXRuntimeTests {
-    @Test("The app's bundled Metal runtime evaluates a small Gemma 3 decoder")
+    @Test("The app's bundled Metal runtime evaluates a small Gemma 3 decoder",
+          .enabled(if: MTLCreateSystemDefaultDevice()?.name.hasPrefix("Apple M") == true,
+                   "Requires a physical Apple silicon GPU; the CI virtual GPU cannot execute this decoder"))
     func decoderSmoke() throws {
         let data = Data("""
         {"model_type":"gemma3_text","hidden_size":16,"num_hidden_layers":2,

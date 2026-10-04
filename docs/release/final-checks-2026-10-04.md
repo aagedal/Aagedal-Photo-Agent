@@ -103,3 +103,19 @@ launch. Build logs show the ad-hoc app retained restricted iCloud entitlements,
 without an Apple provisioning profile. CI now overrides `CODE_SIGN_ENTITLEMENTS=`
 for its build and test commands. Release project entitlements remain intact;
 CI does not qualify iCloud functionality or distribution signatures.
+
+
+### Beta 2 CI portability checks
+
+The corrected test-host launch run
+([37234462480](https://github.com/aagedal/Aagedal-Photo-Agent/actions/runs/37234462480))
+ran all 3,834 tests: 3,829 passed, two skipped, three failed. The failures were
+an async recognition callback's overly specific serial-queue assertion, expected
+Apple team/runtime fields on the ad-hoc CI helper, and the legacy MLX Gemma decoder
+trapping on the Apple Virtual Machine GPU. The executor test now separately checks
+background recognition and serial filesystem lookup. Helper protocol/launch and
+signature presence remain checked in CI; Apple-signed builds retain the original
+team/runtime assertions. The Metal decoder smoke explicitly requires a physical
+Apple silicon GPU and reports a hardware skip on the virtual runner. It remains
+part of physical-machine qualification. Focused local ad-hoc verification passed,
+including actual Metal decoder evaluation (`build/beta2-ci-portability-tests.log`).
