@@ -450,7 +450,12 @@ struct ContentView: View {
                     reviewOrSaveBusy: metadataViewModel.isSaving || metadataViewModel.isProcessingFolder,
                     providerBusy: FFmpegWhisperSetupModel.shared.isTranscribing,
                     onClose: { isShowingVoiceMemoBatch = false },
-                    onReset: { prepareSelectedVoiceMemoBatch(imageURLs: voiceMemoBatchModel.selectedImageURLs) }
+                    onReset: { prepareSelectedVoiceMemoBatch(imageURLs: voiceMemoBatchModel.selectedImageURLs,
+                        languageIdentifier: voiceMemoBatchModel.selectedLanguageIdentifier) },
+                    onSelectLanguage: { language in
+                        prepareSelectedVoiceMemoBatch(imageURLs: voiceMemoBatchModel.selectedImageURLs,
+                            languageIdentifier: language)
+                    }
                 )
             }
             .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
@@ -1380,7 +1385,7 @@ struct ContentView: View {
         mainViewMode = .editing
     }
 
-    private func prepareSelectedVoiceMemoBatch(imageURLs: [URL]? = nil) {
+    private func prepareSelectedVoiceMemoBatch(imageURLs: [URL]? = nil, languageIdentifier: String? = nil) {
         // Right-click preserves an existing multi-selection. Freeze Browser order before any
         // association or provider check can suspend and the user can change selection.
         let urls = imageURLs ?? browserViewModel.visibleImages.filter {
@@ -1394,25 +1399,38 @@ struct ContentView: View {
         let reviewBusy = metadataViewModel.isSaving || metadataViewModel.isProcessingFolder
         let setup = FFmpegWhisperSetupModel.shared
         let providerBusy = setup.isTranscribing
+        // Withdraw the old confirmation synchronously before provider restoration suspends.
+        // A language change must never leave the previous batch start button available.
+        voiceMemoBatchModel.dismissConfirmation()
         voiceMemoBatchPreparationTask = Task {
             defer { voiceMemoBatchPreparationTask = nil }
             await setup.restoreSelections()
             let provider: AutomationVoiceTranscriptionBatchService.Provider?
             let languageTitle: String
+            let selectedLanguage: String
+            let languages: [WhisperTranscriptionLanguage.Option]
             switch setup.choice {
             case .appleSpeech:
-                let availability = await VoiceMemoTranscriptionService().availability(preferredLocale: .current)
-                let locale = availability.selectedLocale ?? .current
+                let requestedLocale = languageIdentifier.map { Locale(identifier: $0) } ?? .current
+                let availability = await VoiceMemoTranscriptionService().availability(preferredLocale: requestedLocale)
+                let locale = availability.selectedLocale ?? requestedLocale
+                selectedLanguage = locale.identifier
+                languages = availability.supportedLocales.map { .init(id: $0.identifier,
+                    title: Locale.current.localizedString(forIdentifier: $0.identifier) ?? $0.identifier) }.sorted { $0.title < $1.title }
                 provider = availability.status == .installed ? .apple(locale) : nil
                 languageTitle = Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
             case .whisper:
+                selectedLanguage = languageIdentifier ?? setup.language
+                languages = WhisperTranscriptionLanguage.options
                 await ManagedWhisperSetupModel.shared.refresh()
-                provider = setup.isLanguageValid ? ManagedWhisperSetupModel.shared.provider(language: setup.language,
+                provider = WhisperTranscriptionLanguage.isValid(selectedLanguage) ? ManagedWhisperSetupModel.shared.provider(language: selectedLanguage,
                     useGPU: setup.useGPU, translate: setup.translate).map { .whisper($0) } : nil
-                languageTitle = WhisperTranscriptionLanguage.title(for: setup.language) + (setup.translate ? " · Translate into English" : " · Original language")
+                languageTitle = WhisperTranscriptionLanguage.title(for: selectedLanguage) + (setup.translate ? " · Translate into English" : " · Original language")
             case .customWhisper:
-                provider = setup.isLanguageValid ? setup.provider().map { .whisper($0) } : nil
-                languageTitle = WhisperTranscriptionLanguage.title(for: setup.language) + (setup.translate ? " · Translate into English" : " · Original language")
+                selectedLanguage = languageIdentifier ?? setup.language
+                languages = WhisperTranscriptionLanguage.options
+                provider = WhisperTranscriptionLanguage.isValid(selectedLanguage) ? setup.provider(language: selectedLanguage).map { .whisper($0) } : nil
+                languageTitle = WhisperTranscriptionLanguage.title(for: selectedLanguage) + (setup.translate ? " · Translate into English" : " · Original language")
             }
             if !reviewBusy, !providerBusy, provider != nil,
                (1...AutomationVoiceTranscriptionBatchService.maximumPhotos).contains(urls.count) {
@@ -1425,6 +1443,7 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
             await voiceMemoBatchModel.prepare(imageURLs: urls, provider: provider,
                 providerTitle: setup.choice.title, languageTitle: languageTitle,
+                languageIdentifier: selectedLanguage, availableLanguages: languages,
                 reviewOrSaveBusy: reviewBusy, providerBusy: providerBusy)
             if !Task.isCancelled { isShowingVoiceMemoBatch = true }
         }

@@ -5,6 +5,35 @@ import Testing
 @MainActor
 @Suite("Sidebar expansion")
 struct SidebarExpansionTests {
+    @Test("Expanding a cached child discovers disclosure state for newly visible descendants")
+    func cachedExpansionPrefetchesVisibleDescendants() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let child = root.appendingPathComponent("Child", isDirectory: true)
+        let grandchild = child.appendingPathComponent("Grandchild", isDirectory: true)
+        let descendant = grandchild.appendingPathComponent("Descendant", isDirectory: true)
+        let empty = child.appendingPathComponent("Empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: descendant, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let viewModel = BrowserViewModel()
+        viewModel.subfoldersByOpenFolder[root] = [child]
+        viewModel.subfoldersByOpenFolder[child] = [grandchild, empty]
+        #expect(viewModel.subfoldersByOpenFolder[grandchild] == nil)
+
+        viewModel.toggleFolderExpansion(child, in: .open)
+        for _ in 0..<200 {
+            if viewModel.subfoldersByOpenFolder[grandchild] != nil,
+               viewModel.subfoldersByOpenFolder[empty] != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(viewModel.subfoldersByOpenFolder[grandchild]?.map { $0.resolvingSymlinksInPath() }
+            == [descendant.resolvingSymlinksInPath()])
+        #expect(viewModel.subfoldersByOpenFolder[empty] == [])
+        #expect(viewModel.currentFolderURL == nil)
+        #expect(viewModel.isExpanded(child, in: .open))
+        #expect(!viewModel.isExpanded(grandchild, in: .open))
+    }
+
     @Test("A nested favorite expands independently from the same folder's favorite root")
     func overlappingFavoritesHaveIndependentExpansion() {
         let picturesURL = URL(fileURLWithPath: "/Pictures", isDirectory: true)

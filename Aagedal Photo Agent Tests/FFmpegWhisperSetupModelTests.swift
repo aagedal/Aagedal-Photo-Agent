@@ -43,6 +43,29 @@ struct FFmpegWhisperSetupModelTests {
         #expect(!setup.isTranscribing)
     }
 
+    @Test("A batch language override preserves Settings and the admitted model")
+    func batchLanguageOverride() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let folder = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let setup = FFmpegWhisperSetupModel(defaults: preferences)
+        await setup.select(folder.appendingPathComponent("ffmpeg"), executable: true)
+        await setup.select(folder.appendingPathComponent("model"), executable: false)
+        setup.language = "no"
+        setup.executionConsent = true
+        await setup.prepare()
+        let original = try #require(setup.provider()).configurationSnapshot
+        let override = try #require(setup.provider(language: "de"))
+        try await override.validateReadiness()
+        #expect(override.configurationSnapshot.language == "de")
+        #expect(override.configurationSnapshot.model == original.model)
+        #expect(override.configurationSnapshot.executable == original.executable)
+        #expect(setup.language == "no")
+        #expect(FFmpegWhisperSetupModel(defaults: preferences).language == "no")
+        #expect(setup.provider(language: "de:translate=true") == nil)
+    }
+
     private func defaults() -> (UserDefaults, String) {
         let suite = "WhisperSetupTests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

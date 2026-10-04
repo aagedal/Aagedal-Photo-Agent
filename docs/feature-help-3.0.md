@@ -84,7 +84,8 @@ Archive, source reassociation, reviewed Apple on-device transcription, transcrip
 and explicit WAV delivery policy are implemented with the boundaries described below and in Known
 Limitations. Configure the provider in **Settings → Transcription**. Caption contains playback, Transcribe, and a compact read-only transcript; language selection is available in Caption and Settings. Custom file selection, translation, GPU and consent controls live in Settings.
 Select **Whisper** to use the embedded FFmpeg engine. Choose Tiny (about 78 MB), Base
-(about 148 MB), or Small (about 488 MB), then explicitly download the model in Settings.
+(about 148 MB), Small (about 488 MB), multilingual Turbo (about 1.6 GB), or multilingual Large v3
+(about 3.1 GB), then explicitly download the model in Settings.
 Norwegian Tiny, Small, Medium (about 1.5 GB), and Large (about 3.1 GB) from NbAiLab are also available.
 Choose a Norwegian model and select **Norwegian** for Norwegian voice memos.
 Downloads come from pinned whisper.cpp or NbAiLab model repositories over HTTPS; the app checks the exact
@@ -112,7 +113,10 @@ an explicit action and do not send voice memos, photos or transcripts to the hos
 
 To transcribe several memos, select 1–8 photos in Browser, right-click a selected thumbnail,
 and choose **Transcribe Voice Memos…**. The batch retains that selection in Browser order. Check the photo names,
-provider and language in the confirmation, grant consent, then press **Transcribe N Photos**.
+provider and language in the confirmation. Select a language for this batch (or **Detect Automatically**
+with Whisper), then press **Transcribe N Photos** to authorize and start it. The batch language choice
+does not change your Settings default; changing it rechecks the captured selection. Apple Speech lists
+supported locales and requires the chosen on-device language to be installed.
 Every photo needs a supported saved WAV relationship. Photos sharing a metadata sidecar cannot
 be included together. Existing saved transcripts refuse preparation; an active or unsaved current review must finish before a batch starts.
 The chosen provider must already be ready. This action downloads no language or model assets and

@@ -4,7 +4,7 @@ A native macOS desktop application for photo metadata management and face recogn
 
 **License:** GPL-3.0
 
-The next release is **3.0.0-beta.1**, a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
+The next release is **3.0.0-beta.2**, a public testing release. See the [3.0 feature guide](docs/feature-help-3.0.md),
 [known limitations](docs/limitations-3.0.md), and [privacy draft](PRIVACY.md) for the release-candidate
 behavior and boundaries.
 
@@ -195,7 +195,7 @@ the support table and validation records.
   Player numbers must be unique integers from 0 through 9999. Unknown names, numbers and colours
   should be verified from a reliable source before submission.
 - **Settings → Transcription** selects **Apple Speech**, **Whisper** with embedded FFmpeg,
-  or advanced **Custom FFmpeg Whisper**. Download Tiny, Base or Small explicitly in the app;
+  or advanced **Custom FFmpeg Whisper**. Download Tiny, Base, Small, multilingual Turbo or Large v3 explicitly in the app;
   installed models are checked against pinned size/SHA-256 before use. Inference stays local,
   and Caption retains compact playback, Transcribe and review controls. Language, English translation
   and GPU request settings persist and are recorded in each editable draft. Custom files still require
@@ -406,7 +406,7 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 
 1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in the Xcode project.
    Keep the bundle version numeric (for example `3.0.0`). Set `AAGEDAL_RELEASE_VERSION`
-   to `3.0.0-beta.1` for a beta, or to the numeric version for a stable release.
+   to `3.0.0-beta.2` for a beta, or to the numeric version for a stable release.
    Every beta and subsequent stable release must have a strictly increasing build.
    Beta DMGs and archives use the full beta identity; generated appcast items carry
    `sparkle:channel=beta`. Only beta installations opt into that channel; the eventual
@@ -423,7 +423,7 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
 5. Upload the DMG to `https://aagedal.me/apps/photoagent/`, using the exact filename printed by the script.
 6. Commit and push the generated `appcast.xml` to GitHub, tag the release, then synchronize the website fallback appcast and legacy Codeberg copy.
 7. For stable releases, bump the cask in the `aagedal/homebrew-tap` repo.
-   For public betas, publish a GitHub prerelease with tag `3.0.0-beta.1`, attach the
+   For public betas, publish a GitHub prerelease with tag `3.0.0-beta.2`, attach the
    notarized DMG and its SHA-256, and leave the stable cask/latest release unchanged.
    Include the beta limitations and backup guidance from the changelog.
 

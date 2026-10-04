@@ -77,25 +77,15 @@ struct ActivityHistoryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Activity History")
-                    .font(.headline)
-                if transcriptionModel.isRunning {
-                    Button(transcriptionModel.isRequestingCancellation ? "Cancelling…" : "Cancel Transcription", role: .cancel) {
-                        Task { await transcriptionModel.requestCancellation() }
-                    }
-                    .disabled(transcriptionModel.isRequestingCancellation)
-                    .accessibilityIdentifier("activity.transcription.cancel")
-                }
-                Spacer()
-                Picker("", selection: $filter) {
-                    ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .accessibilityLabel("Activity filter")
+            Text("Activity History")
+                .font(.headline)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("", selection: $filter) {
+                ForEach(Filter.allCases) { Text($0.rawValue).tag($0) }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Activity filter")
 
             Divider()
 
@@ -775,6 +765,20 @@ private struct ActiveTranscriptionRow: View {
                 Text(model.isRequestingCancellation ? "Cancelling transcription…" : "Transcribing voice memos")
                     .font(.caption.weight(.semibold))
                 Spacer()
+                Button {
+                    Task { await model.requestCancellation() }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isRequestingCancellation)
+                .help(model.isRequestingCancellation ? "Cancelling transcription…" : "Cancel this voice memo transcription batch")
+                .accessibilityLabel("Cancel voice memo transcription batch")
+                .accessibilityIdentifier("activity.transcription.cancel")
             }
             Text("\(model.activeProviderTitle ?? "") · \(model.activeLanguageTitle ?? "")")
                 .font(.caption2).foregroundStyle(.secondary)

@@ -2486,7 +2486,13 @@ final class BrowserViewModel {
     /// large volume can't stall the UI; the row shows a spinner until the
     /// cache fills in.
     func ensureSubfoldersLoaded(for url: URL) {
-        guard subfoldersByOpenFolder[url] == nil, !pendingSubfolderLoads.contains(url) else { return }
+        if subfoldersByOpenFolder[url] != nil {
+            // A previous parent's prefetch already loaded this folder, but not the
+            // children now becoming visible when it expands.
+            prefetchGrandchildren(of: url)
+            return
+        }
+        guard !pendingSubfolderLoads.contains(url) else { return }
         pendingSubfolderLoads.insert(url)
         let service = fileSystemService
         Task.detached(priority: .userInitiated) {
@@ -2741,6 +2747,7 @@ final class BrowserViewModel {
             guard let self else { return }
             let subs = (try? await self.fileSystemService.listSubfolders(at: url)) ?? []
             self.subfoldersByOpenFolder[url] = subs
+            self.prefetchGrandchildren(of: url)
         }
     }
 

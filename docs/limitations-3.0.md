@@ -290,7 +290,7 @@ compiled in, while transcription restricts protocols to local files, uses exact 
 and enforces cancellation/deadlines and canonical output validation. This protocol restriction is not
 a general process sandbox. See [artifact provenance](provenance/ffmpeg-whisper-bundled.md).
 
-Settings → Transcription offers explicit Tiny/Base/Small downloads from a pinned immutable model
+Settings → Transcription offers explicit Tiny/Base/Small, multilingual Turbo/Large v3, and Norwegian NbAiLab downloads from a pinned immutable model
 revision, with byte-count/SHA-256 verification, progress, cancellation, local installation and removal.
 Checksum verification establishes that the downloaded bytes match the app's catalog; it is not a
 signed update channel, independent model safety review or an accuracy guarantee. No speech, photo or

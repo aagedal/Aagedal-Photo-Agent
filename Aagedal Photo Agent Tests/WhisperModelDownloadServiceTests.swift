@@ -22,8 +22,8 @@ struct WhisperModelDownloadServiceTests {
 
     @Test("Catalog pins multilingual weights to immutable revisions and exact identities")
     func catalog() {
-        #expect(WhisperDownloadableModel.catalog.map(\.id) == ["tiny", "base", "small", "nb-tiny", "nb-small", "nb-medium", "nb-large"])
-        #expect(WhisperDownloadableModel.catalog.map(\.byteCount) == [77_691_713, 147_951_465, 487_601_967,
+        #expect(WhisperDownloadableModel.catalog.map(\.id) == ["tiny", "base", "small", "large-v3-turbo", "large-v3", "nb-tiny", "nb-small", "nb-medium", "nb-large"])
+        #expect(WhisperDownloadableModel.catalog.map(\.byteCount) == [77_691_713, 147_951_465, 487_601_967, 1_624_555_275, 3_095_033_483,
             77_691_730, 487_601_984, 1_533_763_076, 3_095_033_483])
         for model in WhisperDownloadableModel.catalog {
             let revision = model.url.pathComponents.dropLast().last ?? ""

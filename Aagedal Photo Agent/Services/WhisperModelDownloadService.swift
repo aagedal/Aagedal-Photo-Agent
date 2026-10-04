@@ -17,6 +17,8 @@ nonisolated struct WhisperDownloadableModel: Identifiable, Hashable, Sendable {
         model("tiny", "Tiny", 77_691_713, "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"),
         model("base", "Base", 147_951_465, "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"),
         model("small", "Small", 487_601_967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
+        model("large-v3-turbo", "Turbo (Multilingual)", 1_624_555_275, "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
+        model("large-v3", "Large v3 (Multilingual)", 3_095_033_483, "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2"),
         norwegian("tiny", "8b38492d0e4111d5d6ad825e979cb082a2da013a", 77_691_730,
             "2f9dd799ee36b6a9c8d642e9b1df8ecf2135efdd5a91b1d9ca0b3c0decda535f"),
         norwegian("small", "e9bb5cb83cb74c96239fd506163aa97cff2fce4c", 487_601_984,

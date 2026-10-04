@@ -189,12 +189,12 @@ final class FFmpegWhisperSetupModel {
         await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
     }
 
-    func provider(run: @escaping FFmpegWhisperTranscriptionProvider.Run = {
+    func provider(language selectedLanguage: String? = nil, run: @escaping FFmpegWhisperTranscriptionProvider.Run = {
         try await FFmpegWhisperJobRunner().run($0)
     }) -> FFmpegWhisperTranscriptionProvider? {
-        guard executionConsent, isReady, isLanguageValid, let receipt, let executableAccess, let modelAccess else { return nil }
+        guard executionConsent, isReady, WhisperTranscriptionLanguage.isValid(selectedLanguage ?? language), let receipt, let executableAccess, let modelAccess else { return nil }
         let authorize = admission.authorizer(for: receipt)
-        return FFmpegWhisperTranscriptionProvider(configuration: receipt.configuration(language: language, useGPU: useGPU, translate: translate),
+        return FFmpegWhisperTranscriptionProvider(configuration: receipt.configuration(language: selectedLanguage ?? language, useGPU: useGPU, translate: translate),
             authorizeArtifacts: { configuration in
                 // Strong captures keep sandbox grants alive until the provider's run completes.
                 _ = executableAccess.url

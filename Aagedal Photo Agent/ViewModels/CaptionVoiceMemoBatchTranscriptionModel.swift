@@ -33,8 +33,14 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
         let languageTitle: String
         fileprivate let prepared: AutomationVoiceTranscriptionBatchService.PreparedBatch
         fileprivate let provider: AutomationVoiceTranscriptionBatchService.Provider
+        var outputModeTitle: String? {
+            guard case .whisper(let whisper) = provider else { return nil }
+            return whisper.configurationSnapshot.translate ? "Output: Translate into English" : "Output: Original language"
+        }
     }
 
+    private(set) var selectedLanguageIdentifier = "auto"
+    private(set) var availableLanguages: [WhisperTranscriptionLanguage.Option] = []
     private(set) var snapshot: Snapshot?
     private(set) var selectedImageURLs: [URL] = []
     private(set) var activeImageURLs: [URL] = []
@@ -133,10 +139,13 @@ final class CaptionVoiceMemoBatchTranscriptionModel {
 
     func prepare(imageURLs: [URL], provider: AutomationVoiceTranscriptionBatchService.Provider?,
                  providerTitle: String, languageTitle: String,
+                 languageIdentifier: String = "auto", availableLanguages: [WhisperTranscriptionLanguage.Option] = [],
                  reviewOrSaveBusy: Bool, providerBusy: Bool) async {
         guard !isRunning, !isChecking else { return }
         generation &+= 1
         let requested = generation
+        selectedLanguageIdentifier = languageIdentifier
+        self.availableLanguages = availableLanguages
         selectedImageURLs = imageURLs.map(\.standardizedFileURL)
         snapshot = nil
         errorMessage = nil

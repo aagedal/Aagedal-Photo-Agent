@@ -2,7 +2,27 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
-## 3.0.0-beta.1 — Public beta candidate
+## 3.0.0-beta.2 — 2026-10-04
+
+This second public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md).
+
+### Highlights
+
+- Added the local Description Assistant with reviewed grammar and wording proposals,
+  Bokmål/Nynorsk/English support, and explicit Borealis/Gemma 3 Q4 model downloads.
+- Added batch transcription language selection without changing the Settings default.
+- Added multilingual Whisper Turbo and Large v3 model downloads, plus Norwegian NbAiLab models.
+- Simplified batch transcription: pressing **Transcribe N Photos** authorizes and starts the batch.
+- Moved transcription cancellation beside the active process as a red circled X, and gave
+  Activity History a separate heading above its filters.
+- Fixed nested sidebar folders missing disclosure chevrons until they were opened.
+- Added voice-memo play/pause support for the media key and widened the Caption language picker.
+- Restored required bundled AuraFace model validation and hardened operation recovery,
+  model admission, and signed description-runtime packaging.
+- Separated normal face scans from explicitly confirmed **Faces + Jerseys** scans.
+
+## 3.0.0-beta.1 — 2026-10-03
+
 
 This is the first public beta of 3.0, intended for testing. See
 [known limitations](docs/limitations-3.0.md) and the

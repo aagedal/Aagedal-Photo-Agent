@@ -7,7 +7,7 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
     let providerBusy: Bool
     let onClose: () -> Void
     let onReset: () -> Void
-    @State private var consent = false
+    let onSelectLanguage: (String) -> Void
     @State private var isConfirmingReset = false
 
     private var imageURLs: [URL] { model.snapshot?.imageURLs ?? model.selectedImageURLs }
@@ -32,12 +32,26 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
             if let snapshot = model.snapshot {
                 Text("Provider: \(snapshot.providerTitle)")
                     .accessibilityIdentifier("caption.voiceMemo.batch.provider")
-                Text("Language: \(snapshot.languageTitle)")
-                    .accessibilityIdentifier("caption.voiceMemo.batch.language")
+            }
+            if !model.availableLanguages.isEmpty {
+                Picker("Transcription language", selection: Binding(
+                    get: { model.selectedLanguageIdentifier },
+                    set: { onSelectLanguage($0) }
+                )) {
+                    ForEach(model.availableLanguages) { language in
+                        Text(language.title).tag(language.id)
+                    }
+                }
+                .disabled(model.isChecking || (model.snapshot == nil && model.errorMessage == nil)
+                    || model.isRunning || model.isResetting || providerBusy || reviewOrSaveBusy)
+                .accessibilityIdentifier("caption.voiceMemo.batch.language")
+            }
+            if let snapshot = model.snapshot {
+                if let outputMode = snapshot.outputModeTitle {
+                    Text(outputMode).foregroundStyle(.secondary)
+                }
                 Text("Transcription runs in the background. View progress, cancel the batch, and check results in Activity in the sidebar. Saved transcripts are available in Caption through {voiceMemoTranscript}.")
                     .foregroundStyle(.secondary)
-                Toggle("Allow local transcription of these selected voice memos", isOn: $consent)
-                    .accessibilityIdentifier("caption.voiceMemo.batch.consent")
                 if reviewOrSaveBusy || providerBusy {
                     Text("Finish the active review or transcription before confirming this batch.")
                         .foregroundStyle(.orange)
@@ -65,12 +79,12 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
                 .accessibilityIdentifier("caption.voiceMemo.batch.cancelConfirmation")
                 if model.snapshot != nil {
                     Button("Transcribe \(imageURLs.count) Photos") {
-                        if model.start(consent: consent, reviewOrSaveBusy: reviewOrSaveBusy, providerBusy: providerBusy) {
+                        if model.start(consent: true, reviewOrSaveBusy: reviewOrSaveBusy, providerBusy: providerBusy) {
                             onClose()
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!consent || reviewOrSaveBusy || providerBusy || model.isChecking || model.isRunning || model.isResetting)
+                    .disabled(reviewOrSaveBusy || providerBusy || model.isChecking || model.isRunning || model.isResetting)
                     .accessibilityIdentifier("caption.voiceMemo.batch.confirm")
                 }
             }
@@ -85,7 +99,6 @@ struct CaptionVoiceMemoBatchTranscriptionView: View {
             isPresented: $isConfirmingReset, titleVisibility: .visible) {
             Button("Reset Selected Transcripts", role: .destructive) {
                 let selectedImageURLs = imageURLs
-                consent = false
                 Task {
                     if await model.resetTranscripts(imageURLs: selectedImageURLs) { onReset() }
                 }

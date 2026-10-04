@@ -741,7 +741,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         prepare.click()
         let confirm = app.buttons["caption.voiceMemo.batch.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-        XCTAssertFalse(confirm.isEnabled)
+        XCTAssertTrue(confirm.isEnabled)
+        XCTAssertFalse(app.checkBoxes["caption.voiceMemo.batch.consent"].exists)
         for index in fixture.items.indices {
             let target = app.staticTexts["caption.voiceMemo.batch.target.\(index)"]
             XCTAssertTrue(visibleText(target).contains(fixture.items[index].imageURL.lastPathComponent))
@@ -752,7 +753,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         for index in fixture.items.indices { XCTAssertEqual(try Data(contentsOf: fixture.items[index].sidecarURL), originals[index].3) }
         prepare.click()
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
         XCTAssertTrue(confirm.isEnabled)
         confirm.click()
         let close = app.buttons["caption.voiceMemo.batch.close"]
@@ -797,7 +797,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         prepare.click()
         let confirm = app.buttons["caption.voiceMemo.batch.confirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 10))
-        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
         confirm.click()
         let active = fixture.folder.appendingPathComponent("batch-second-active.txt")
         let recognition = expectation(for: NSPredicate { _, _ in
@@ -847,7 +846,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         var changed = try Data(contentsOf: fixture.items[1].memoURL)
         changed.append(1)
         try changed.write(to: fixture.items[1].memoURL, options: .atomic)
-        app.checkBoxes["caption.voiceMemo.batch.consent"].click()
         confirm.click()
         XCTAssertTrue(app.staticTexts["caption.voiceMemo.batch.sheet.error"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["caption.voiceMemo.batch.close"].waitForExistence(timeout: 10))
