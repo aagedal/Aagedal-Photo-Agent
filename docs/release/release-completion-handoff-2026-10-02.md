@@ -9,6 +9,13 @@ testing is not ready: production automation executors, model lifecycle integrati
 and broader release qualification remain unfinished. Preparing the resources below
 now can prevent a wait when those workflows reach verification.
 
+**2026-10-03 continuation:** [Cycle 125](cycle-125-operation-terminal-whisper-preflight-2026-10-03.md)
+fixes inconsistent durable batch completion, adds signed model install preflight and
+repairs the recent description runtime's development-signed bundle layout. It does
+not close production provider/executor or manual acceptance gates below. The current
+branch includes the separately requested description assistant; its existing packaging
+must work, while historical 3.1 deferral does not add further description-model scope.
+
 ## Work the agent owns
 
 1. Qualify the implemented guarded helper transcription start using exact one-use native

@@ -2137,6 +2137,8 @@ struct LlamaCPPDescriptionBackendTests {
     @Test("Xcode embeds the executable and all required libraries")
     func bundledRuntime() async throws {
         let executable = try LlamaCPPDescriptionBackend.executable()
+        #expect(executable.deletingLastPathComponent().lastPathComponent == "llama-runtime")
+        #expect(executable.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Resources")
         let version = try await Process.run(executableURL: executable, arguments: ["--version"])
         #expect((version.stdout + version.stderr).contains("11377"))
     }

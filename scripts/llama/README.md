@@ -20,7 +20,9 @@ python3 scripts/llama/prepare_runtime.py
 ```
 
 The Xcode “Sign Bundled Binaries” phase verifies artifact hashes, copies the runtime to
-`Contents/Helpers/llama.cpp`, and signs libraries followed by the executable with the
+`Contents/Resources/llama-runtime` (alongside its manifest and license),
+removes the obsolete generated `Contents/Helpers/llama.cpp` and
+`Contents/Helpers/llama-runtime` folders on incremental builds, and signs libraries followed by the executable with the
 app's signing identity for release builds. It does not download anything during builds.
 
 Inference currently launches a local, single-use completion process with the caption

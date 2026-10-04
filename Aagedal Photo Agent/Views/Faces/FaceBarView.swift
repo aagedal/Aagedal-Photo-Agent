@@ -66,6 +66,7 @@ struct FaceBarView: View {
             // Scan button (rescan/reset lives in its context menu and the expanded view's overflow menu)
             HStack(spacing: 2) {
                 scanButton
+                jerseyScanButton
 
                 Button {
                     applyAllNamesToMetadata()
@@ -361,7 +362,7 @@ struct FaceBarView: View {
             VStack(spacing: 2) {
                 Image(systemName: "camera.viewfinder")
                     .font(.system(size: 20))
-                Text("Scan")
+                Text("Faces")
                     .font(.system(size: 10))
             }
             .frame(width: 56, height: 56)
@@ -371,8 +372,29 @@ struct FaceBarView: View {
         .disabled(viewModel.isScanning)
         .help(viewModel.isScanning
               ? "Another folder is being face-scanned. Follow or cancel it in Activity."
-              : "Click to scan new images. Option+click to force full rescan.")
+              : "Scan faces in new images without jersey OCR. Option+click to force a full face rescan.")
         .contextMenu { rescanMenuItems }
+    }
+
+    private var jerseyScanButton: some View {
+        Button {
+            guard let folderURL else { return }
+            confirmFaceAndJerseyScan(viewModel: viewModel, imageURLs: imageURLs, folderURL: folderURL)
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "tshirt")
+                    .font(.system(size: 20))
+                Text("Faces + Jerseys")
+                    .font(.system(size: 9))
+            }
+            .frame(width: 82, height: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(folderURL == nil || viewModel.isScanning || !viewModel.faceModelAvailability.isAvailable)
+        .help("Scan this folder for faces and jersey numbers. Jersey OCR takes longer than a face-only scan.")
+        .accessibilityLabel("Scan faces and jersey numbers")
+        .accessibilityIdentifier("scanFacesAndJerseys")
     }
 
     /// Scan done with both named & unnamed groups → Refine. Auto-merges confident matches,
@@ -450,13 +472,13 @@ struct FaceBarView: View {
         }
         .buttonStyle(.plain)
         .onHover { isHoveringDone = $0 }
-        .help("Scan for new images. Option+click to force a full rescan.")
+        .help("Scan faces in new images without jersey OCR. Option+click to force a full face rescan.")
         .contextMenu { rescanMenuItems }
     }
 
     @ViewBuilder
     private var rescanMenuItems: some View {
-        Button("Rescan Folder (Force Full)") {
+        Button("Rescan Faces (Force Full)") {
             guard let folderURL else { return }
             viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
         }

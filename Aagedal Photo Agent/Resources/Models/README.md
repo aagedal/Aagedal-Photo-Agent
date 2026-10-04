@@ -6,13 +6,14 @@ The face-recognition feature is built from this developer-only CoreML source pac
 Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage   (~125 MB)
 ```
 
-This file is **excluded from git** (see the repo `.gitignore`) because of its size. When present in a release
-checkout, Xcode compiles it into `Contents/Resources/AuraFaceR100.mlmodelc` and the release assistant requires
-that reviewed payload in the exported app. Clean development and CI builds still build without the local
-package; those builds show **Unavailable** and refuse face scans before changing face data.
+This package is **excluded from git** because of its size, but is required for every app
+build. Provision the reviewed package in each worktree before building. Xcode compiles it
+into `Contents/Resources/AuraFaceR100.mlmodelc`; the app build validates its pinned weights
+and fails if the compiled payload is missing or invalid. Users receive it in the app bundle
+and do not need a separate download.
 
-The release assistant checks the compiled model and its pinned weights before notarization. The local package
-must be present and hash-validated for a bundled release; it remains outside the Git repository.
+The release assistant also validates the model before notarization. The source package
+remains outside Git; omission builds are no longer ordinary supported app builds.
 
 ## What the model is
 

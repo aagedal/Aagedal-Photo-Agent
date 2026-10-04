@@ -774,6 +774,62 @@ struct WhisperModelDistributionStateStoreTests {
         }
     }
 
+    @Test("Signed installer refuses missing-ledger content and staging before any transfer")
+    func signedInstallPreflightRefusesLostLedgerArtifacts() async throws {
+        for staged in [false, true] {
+            let fixture = try Fixture()
+            defer { fixture.cleanUp() }
+            let store = try fixture.store()
+            let bytes = Data("retained signed release".utf8)
+            let receipt = try fixture.receipt(2, bytes: bytes)
+            let artifact: URL
+            if staged {
+                _ = try await store.accept(receipt, expectedGeneration: nil)
+                artifact = fixture.directory.appendingPathComponent(".tiny.\(UUID().uuidString).model-staging")
+                try bytes.write(to: artifact)
+            } else {
+                let source = fixture.directory.appendingPathComponent("source")
+                try bytes.write(to: source)
+                _ = try await store.install(receipt, from: source, expectedGeneration: nil)
+                artifact = try #require(await store.installedURL())
+            }
+            try FileManager.default.removeItem(at: fixture.stateURL)
+            let count = TransferCount()
+            let cache = fixture.directory.appendingPathComponent("cache")
+            let downloads = WhisperModelDownloadService(directory: cache, fetch: { _, destination, _ in
+                await count.increment()
+                try bytes.write(to: destination)
+            })
+            let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+            let proposal = try fixture.receipt(3, bytes: bytes)
+            await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+                try await lifecycle.install(descriptorData: try proposal.descriptor.canonicalData(),
+                                            signature: try fixture.key.signature(for: proposal.descriptor.canonicalData()), expectedGeneration: nil)
+            }
+            #expect(await count.value == 0)
+            #expect(!FileManager.default.fileExists(atPath: cache.path))
+            #expect(!FileManager.default.fileExists(atPath: fixture.stateURL.path))
+            #expect(try Data(contentsOf: artifact) == bytes)
+        }
+    }
+
+    @Test("Signed installer refuses a store for a different model before transfer")
+    func signedInstallPreflightRefusesWrongStoreModel() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let count = TransferCount()
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"),
+            fetch: { _, _, _ in await count.increment(); throw URLError(.notConnectedToInternet) })
+        let store = try WhisperModelDistributionStateStore(directory: fixture.directory, modelID: "base", trust: fixture.trust)
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        let receipt = try fixture.receipt(1)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.wrongModel) {
+            try await lifecycle.install(descriptorData: try receipt.descriptor.canonicalData(),
+                                        signature: try fixture.key.signature(for: receipt.descriptor.canonicalData()), expectedGeneration: nil)
+        }
+        #expect(await count.value == 0)
+    }
+
     @Test("Cleanup authenticates authority and preflights unsafe candidates before deleting")
     func cleanupFailsClosed() async throws {
         let fixture = try Fixture()

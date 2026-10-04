@@ -186,7 +186,7 @@
         "repositoryPath": "scripts/llama/prepare_runtime.py",
         "revision": "sha256:b09f308dbe377c293e9d7697f8313fdc2ae83f12cd9e8108b7fda125ea42ee77",
         "supportingFiles": {
-          "scripts/llama/bundle_runtime.py": "sha256:f17b903bdc03e2a4c5b47acac3bda2a37a2f5340aa2aec47abf241673e677f0e"
+          "scripts/llama/bundle_runtime.py": "sha256:06f5041210cbe84771bd3874186cf40d99227bfa59e3a41c618f9a59401d7d05"
         }
       },
       "targetArchitectures": [

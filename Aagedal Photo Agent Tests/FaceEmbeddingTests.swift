@@ -3055,3 +3055,21 @@ struct KnownPeopleAdditionThumbnailTests {
         }
     }
 }
+
+@Suite("Explicit jersey scan intent", .serialized)
+struct ExplicitJerseyScanIntentTests {
+    @Test @MainActor
+    func savedSportsPreferenceDoesNotEnableFaceOCR() {
+        let key = UserDefaultsKeys.sportsModeEnabled
+        let previous = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .unavailable)
+        #expect(!model.detectionConfig.sportsModeEnabled)
+    }
+
+}

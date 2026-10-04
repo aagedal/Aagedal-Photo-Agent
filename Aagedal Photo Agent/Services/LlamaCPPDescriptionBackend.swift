@@ -4,7 +4,7 @@ import Foundation
 /// owns admission/cancellation; a future batch worker can reuse the same request API.
 nonisolated enum LlamaCPPDescriptionBackend {
     static func executable(bundle: Bundle = .main) throws -> URL {
-        let url = bundle.bundleURL.appendingPathComponent("Contents/Helpers/llama.cpp/llama-completion")
+        let url = bundle.bundleURL.appendingPathComponent("Contents/Resources/llama-runtime/llama-completion")
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
             throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey:
                 "The bundled llama.cpp runtime is missing. Rebuild or reinstall the app."])

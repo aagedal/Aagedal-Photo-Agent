@@ -227,6 +227,9 @@ actor WhisperSignedModelLifecycle {
         } else {
             _ = try trust.initialState(receipt)
         }
+        // The store also rejects missing-ledger artifacts and mismatched model/trust
+        // authority before downloading. A nil snapshot is not proof of first use.
+        try await store.preflightInstallation(receipt, expectedGeneration: expectedGeneration)
         let source = try await downloads.download(receipt.downloadableModel, progress: progress)
         // The store rechecks its generation, signature, byte count and hash under its
         // own transaction lock before committing the release record.

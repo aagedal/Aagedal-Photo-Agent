@@ -540,7 +540,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Resources/Models/AuraFaceR100.mlpackage,
 			);
 			target = 8E0556B22F28C3F600BCFB49 /* Aagedal Photo Agent */;
 		};
@@ -1046,6 +1045,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		8E05580A2F9EC00000BCFB49 /* Sign Bundled Binaries */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -1061,11 +1061,11 @@
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/whisper-runtime.json",
 				"$(DERIVED_FILE_DIR)/c2patool.signed",
 				"$(DERIVED_FILE_DIR)/ffmpeg.signed",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/llama.cpp",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/llama-runtime",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\n/usr/bin/python3 \"$SRCROOT/scripts/llama/bundle_runtime.py\" \"$SRCROOT/Vendor/llama.cpp\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Helpers/llama.cpp\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
+			shellScript = "set -e\n[ -d \"$SRCROOT/Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage\" ] || { echo \"error: Required bundled AuraFace source package is missing; provision the reviewed local model before building.\"; exit 1; }\n/usr/bin/python3 \"$SRCROOT/scripts/ci/validate_model_bundle.py\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\n/usr/bin/python3 \"$SRCROOT/scripts/llama/bundle_runtime.py\" \"$SRCROOT/Vendor/llama.cpp\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/llama-runtime\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
