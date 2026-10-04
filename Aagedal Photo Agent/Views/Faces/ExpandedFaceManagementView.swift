@@ -304,9 +304,13 @@ struct ExpandedFaceManagementView: View {
             SelectionInfoView(selectionState: selectionState, viewModel: viewModel)
 
             Menu {
-                Button("Rescan Folder (Force Full)") {
+                Button("Rescan Faces (Force Full)") {
                     guard let folderURL else { return }
                     viewModel.scanFolder(imageURLs: images.map(\.url), folderURL: folderURL, forceFullScan: true)
+                }
+                Button("Scan Faces + Jerseys") {
+                    guard let folderURL else { return }
+                    confirmFaceAndJerseyScan(viewModel: viewModel, imageURLs: images.map(\.url), folderURL: folderURL)
                 }
                 Button("Delete Face Data", role: .destructive) {
                     guard let folderURL else { return }

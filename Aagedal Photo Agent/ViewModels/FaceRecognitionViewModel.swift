@@ -591,8 +591,8 @@ final class FaceRecognitionViewModel {
         // Fast is the default. Thorough adds tiled detection for small/off-angle group-shot faces.
         config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
 
-        // Sports tagging
-        config.sportsModeEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled)
+        // OCR is an explicit scan action, independent of the legacy saved Sports toggle.
+        config.sportsModeEnabled = false
         let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
         config.sportsOCRConfidenceThreshold = Float(ocrConf ?? 0.5)
         let minHeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
@@ -824,7 +824,7 @@ final class FaceRecognitionViewModel {
 
                 guard evidence.faceData != nil else { return }
                 if self.deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
-                    if UserDefaults.standard.bool(forKey: UserDefaultsKeys.sportsModeEnabled) {
+                    if self.folderHasJerseyData {
                         self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
                     }
                     self.applyKnownPeopleMatches()
@@ -943,8 +943,13 @@ final class FaceRecognitionViewModel {
     ///   - imageURLs: All image URLs in the folder
     ///   - folderURL: The folder being scanned
     ///   - forceFullScan: If true, deletes existing data and rescans all images
-    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false) {
+    ///   - includeJerseyNumbers: Explicitly runs jersey OCR alongside a full face rescan.
+    ///     The caller must confirm that existing face groups/names will be reset.
+    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false) {
         guard !isScanning else { return }
+        // Jersey detection cannot reuse a face-only completion signature. This explicit
+        // combined action is a full reset; callers present the reset confirmation.
+        let forceFullScan = forceFullScan || includeJerseyNumbers
         guard faceModelAvailability.isAvailable else {
             errorMessage = faceModelAvailability.detail
             return
@@ -962,7 +967,9 @@ final class FaceRecognitionViewModel {
         // A scan invalidates the face set the prewarm was working from.
         lensPrewarmTask?.cancel()
 
-        let config = detectionConfig
+        var preparedConfig = detectionConfig
+        preparedConfig.sportsModeEnabled = includeJerseyNumbers
+        let config = preparedConfig
         let detectionService = self.detectionService
         let folderLoadService = self.folderLoadService
         let fileSignatureService = self.fileSignatureService
@@ -1097,7 +1104,6 @@ final class FaceRecognitionViewModel {
             let initialNumbers: [NumberDetection] = existingData?.numberDetections?.filter { number in
                 unchangedFiles.contains(number.imageURL.path)
             } ?? []
-
             // Remove faces from deleted/modified files
             let removedFaceIDs = Set(existingData?.faces.filter { face in
                 toRemove.contains(face.imageURL.path)

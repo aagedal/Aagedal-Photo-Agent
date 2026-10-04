@@ -676,8 +676,7 @@ struct SettingsView: View {
             }
 
             Section("Sports Tagging (Experimental)") {
-                Toggle("Detect jersey numbers during scans", isOn: $settingsViewModel.sportsModeEnabled)
-                Text("Runs jersey-number OCR alongside face detection. Detected numbers show as boxes in the full-screen face overlay (press F): orange when attached to a player's face, red for back-turned players. Applies to new scans — force a full rescan to re-detect.")
+                Text("Face scans skip jersey-number OCR. Use the separate Faces + Jerseys action in the face bar when you need sports tagging. Detected numbers show in the full-screen face overlay (press F): orange beside a face, red for back-turned players.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

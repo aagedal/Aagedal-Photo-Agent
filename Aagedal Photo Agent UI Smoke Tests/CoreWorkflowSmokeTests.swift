@@ -95,6 +95,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testExplicitJerseyScanCancellation() throws {
+        let photos = try makePhotoFolder(count: 2)
+        launch(workflow: "open-folder", folder: photos)
+        let jerseys = app.buttons["scanFacesAndJerseys"]
+        XCTAssertTrue(jerseys.waitForExistence(timeout: 15))
+        let enabled = NSPredicate(format: "enabled == true")
+        expectation(for: enabled, evaluatedWith: jerseys)
+        waitForExpectations(timeout: 15)
+        jerseys.click()
+        XCTAssertTrue(app.staticTexts["Rescan Faces + Jerseys?"].waitForExistence(timeout: 5))
+        app.dialogs.firstMatch.buttons["Cancel"].click()
+        XCTAssertTrue(jerseys.isEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photos.appendingPathComponent(".face_data").path))
+    }
+
+    @MainActor
     func testNativeTranscriptionReviewInspectionCancellationAndRelaunch() throws {
         try exerciseTranscriptionReview(changedRelationship: false)
     }
