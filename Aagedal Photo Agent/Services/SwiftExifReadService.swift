@@ -187,7 +187,7 @@ final class SwiftExifReadService {
             var dict = metadata.asMetadataDict(fileURL: url)
             // Mark files that have a C2PA manifest with the legacy sentinel
             // key so `TechnicalMetadata.dictHasC2PA` returns true.
-            if let c2pa = metadata.c2pa, !c2pa.manifests.isEmpty {
+            if Self.hasContentCredentials(metadata) {
                 dict["JUMD-c2pa-marker"] = "present"
             }
             // The ACR crop-convention conversion needs the sensor-frame aspect.
@@ -206,6 +206,24 @@ final class SwiftExifReadService {
             )
             return nil
         }
+    }
+
+    /// Presence is independent of whether every assertion in a manifest can be decoded.
+    nonisolated static func hasContentCredentials(_ metadata: ImageMetadata) -> Bool {
+        if metadata.c2pa != nil { return true }
+        let payload: Data?
+        switch metadata.container {
+        case .jpeg(let file): payload = try? C2PAReader.extractJUMBFFromJPEG(file)
+        case .tiff(let file): payload = C2PAReader.extractJUMBFFromTIFF(file)
+        case .png(let file): payload = C2PAReader.extractJUMBFFromPNG(file)
+        case .jpegXL(let file): payload = C2PAReader.extractJUMBFFromJPEGXL(file)
+        case .avif(let file): payload = C2PAReader.extractJUMBFFromAVIF(file)
+        case .heif(let file): payload = C2PAReader.extractJUMBFFromHEIF(file)
+        case .webp(let file): payload = C2PAReader.extractJUMBFFromWebP(file)
+        default: payload = nil
+        }
+        // JUMBF can contain unrelated metadata; require the C2PA namespace label.
+        return payload?.range(of: Data("c2pa".utf8)) != nil
     }
 
     /// Read many files concurrently, returning their dicts (failures omitted).

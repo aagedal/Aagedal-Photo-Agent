@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 /// `TechnicalMetadata.init(from:)` turns a raw EXIF/ImageIO dictionary into the formatted
@@ -510,4 +511,16 @@ private nonisolated final class SwiftExifTechnicalMetadataAccessProbe: @unchecke
     var invocationCount: Int { lock.withLock { count } }
     var receivedFileURLs: [URL?] { lock.withLock { fileURLs } }
     var ranOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
+@Suite("C2PA browser presence")
+struct C2PABrowserPresenceTests {
+    @Test("Embedded credentials remain visible when manifest decoding is unavailable")
+    func undecodedManifest() {
+        let file = PNGFile(chunks: [PNGChunk(type: "caBX", data: Data("c2pa\0undecodable assertion".utf8), crc: 0)])
+        #expect(SwiftExifReadService.hasContentCredentials(ImageMetadata(container: .png(file), format: .png)))
+        let unrelated = PNGFile(chunks: [PNGChunk(type: "caBX", data: Data("other metadata".utf8), crc: 0)])
+        #expect(!SwiftExifReadService.hasContentCredentials(ImageMetadata(container: .png(unrelated), format: .png)))
+        #expect(!SwiftExifReadService.hasContentCredentials(ImageMetadata()))
+    }
 }

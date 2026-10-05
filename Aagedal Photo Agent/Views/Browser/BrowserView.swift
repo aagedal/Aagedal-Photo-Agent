@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
+    @State private var descriptionBatchURLs: [URL] = []
+    @State private var showingDescriptionBatch = false
     @FocusState private var searchFieldFocused: Bool
     var faceCount: Int = 0
     var faceGroupCount: Int = 0
@@ -27,6 +29,9 @@ struct BrowserView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
+            .sheet(isPresented: $showingDescriptionBatch) {
+                BatchDescriptionAssistantView(urls: descriptionBatchURLs, browser: viewModel)
+            }
             .toolbar {
                 if providesToolbar {
                     ToolbarItemGroup(placement: .automatic) {
@@ -42,6 +47,13 @@ struct BrowserView: View {
                             .padding(8)
 
                         filterMenu
+                        Button {
+                            descriptionBatchURLs = viewModel.selectedImages.filter { $0.isImageFile }.map(\.url)
+                            showingDescriptionBatch = true
+                        } label: { Image(systemName: "wand.and.stars") }
+                        .help("Improve selected descriptions with a local model")
+                        .accessibilityLabel("Batch improve descriptions")
+                        .disabled(viewModel.selectedImages.filter { $0.isImageFile }.isEmpty)
                     }
 
                     ToolbarItemGroup(placement: .automatic) {

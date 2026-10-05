@@ -24,16 +24,19 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
     let action: DescriptionAssistantAction
     let language: DescriptionAssistantLanguage
     let people: [CaptionConfirmedPerson]
+    let editorialPrompt: String
 
     init(id: UUID = UUID(), imageURL: URL, editorLoadID: UUID?, originalDescription: String,
          action: DescriptionAssistantAction, language: DescriptionAssistantLanguage,
-         people: [CaptionConfirmedPerson] = []) {
+         people: [CaptionConfirmedPerson] = [],
+         editorialPrompt: String = UserDefaults.standard.string(forKey: "descriptionAssistantEditorialPrompt") ?? DescriptionAssistantRequest.defaultEditorialPrompt) {
         self.id = id
         self.imageURL = imageURL
         self.editorLoadID = editorLoadID
         self.originalDescription = originalDescription
         self.action = action
         self.language = language
+        self.editorialPrompt = editorialPrompt
         self.people = people.sorted {
             if $0.normalizedFaceRect.midX != $1.normalizedFaceRect.midX {
                 return $0.normalizedFaceRect.midX < $1.normalizedFaceRect.midX
@@ -50,11 +53,13 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
             && editorLoadID == self.editorLoadID && description == originalDescription
     }
 
+    static let defaultEditorialPrompt = "Write a concise, factual journalistic image description. Clearly explain when, where, what and who whenever those facts are supplied. Use direct, neutral language and concrete details. Do not guess missing dates, places or identities; omit unavailable facts. Avoid promotional language and unsupported interpretation."
+
     func prompt() throws -> String {
         guard !originalDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DescriptionAssistantError.emptyDescription
         }
-        guard originalDescription.count <= 12_000, people.count <= 100 else {
+        guard originalDescription.count <= 12_000, people.count <= 100, editorialPrompt.count <= 8_000 else {
             throw DescriptionAssistantError.inputTooLong
         }
         // JSON encodes all editorial text as data, including quotes/newlines in names.
@@ -68,6 +73,8 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
         return """
         You are editing a factual photo caption. Write in \(language.rawValue).
         \(action == .grammar ? "Correct spelling, punctuation and grammar with minimal edits." : "Improve clarity and natural wording while keeping the original meaning and tone.")
+        Editorial guidance:
+        \(editorialPrompt)
         Preserve all facts, proper names, numbers, dates, scores and quotations. Do not invent
         identities, actions, roles, locations or events. Do not expand abbreviations by guessing.
         Preserve template variables and code-replacement placeholders exactly as written.
