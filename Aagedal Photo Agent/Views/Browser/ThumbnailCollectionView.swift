@@ -8,6 +8,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     /// Fired on mouseDown so the split-view container can mark this pane active.
     var onFocus: (() -> Void)?
+    var onImproveDescriptions: (() -> Void)?
 
     private var isDragging = false
     private var mouseDownLocation: NSPoint?
@@ -383,6 +384,13 @@ final class ThumbnailCollectionView: NSCollectionView {
             && viewModel.selectedImages.allSatisfy(\.isImageFile)
         menu.addItem(transcriptionItem)
 
+        let descriptionItem = NSMenuItem(title: "Improve Descriptions with AI…", action: #selector(contextImproveDescriptions(_:)), keyEquivalent: "")
+        descriptionItem.target = self
+        descriptionItem.isEnabled = onImproveDescriptions != nil
+            && !viewModel.selectedImages.isEmpty
+            && viewModel.selectedImages.allSatisfy(\.isImageFile)
+        menu.addItem(descriptionItem)
+
         // Copy File Path(s)
         let copyItem = NSMenuItem(title: "Copy File Path(s)", action: #selector(contextCopyFilePaths(_:)), keyEquivalent: "")
         copyItem.target = self
@@ -536,6 +544,11 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     // MARK: - Context Menu Actions
+
+    @objc private func contextImproveDescriptions(_ sender: NSMenuItem) {
+        onFocus?()
+        onImproveDescriptions?()
+    }
 
     @objc private func contextTranscribeVoiceMemos(_ sender: NSMenuItem) {
         commandRouter?.send(.transcribeVoiceMemosSelected)

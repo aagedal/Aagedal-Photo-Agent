@@ -48,8 +48,7 @@ struct BrowserView: View {
 
                         filterMenu
                         Button {
-                            descriptionBatchURLs = viewModel.selectedImages.filter { $0.isImageFile }.map(\.url)
-                            showingDescriptionBatch = true
+                            presentDescriptionBatch()
                         } label: { Image(systemName: "wand.and.stars") }
                         .help("Improve selected descriptions with a local model")
                         .accessibilityLabel("Batch improve descriptions")
@@ -126,7 +125,11 @@ struct BrowserView: View {
             }
         } else {
             ZStack {
-                CollectionViewGridRepresentable(viewModel: viewModel, onFocus: onFocus)
+                CollectionViewGridRepresentable(
+                    viewModel: viewModel,
+                    onFocus: onFocus,
+                    onImproveDescriptions: presentDescriptionBatch
+                )
 
                 // Bottom-left overlays
                 VStack(alignment: .leading, spacing: 6) {
@@ -225,6 +228,12 @@ struct BrowserView: View {
                 }
             }
         }
+    }
+
+    private func presentDescriptionBatch() {
+        descriptionBatchURLs = viewModel.selectedImages.filter { $0.isImageFile }.map(\.url)
+        guard !descriptionBatchURLs.isEmpty else { return }
+        showingDescriptionBatch = true
     }
 
     private func errorBanner(_ message: String) -> some View {
