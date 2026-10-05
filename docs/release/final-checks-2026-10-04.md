@@ -119,3 +119,15 @@ team/runtime assertions. The Metal decoder smoke explicitly requires a physical
 Apple silicon GPU and reports a hardware skip on the virtual runner. It remains
 part of physical-machine qualification. Focused local ad-hoc verification passed,
 including actual Metal decoder evaluation (`build/beta2-ci-portability-tests.log`).
+
+
+### Beta 2 publication — 2026-10-05
+
+Beta 2 build 741 was published from exact source
+`1e1ad5d351babc67db23360c6173b0b9bf7140c8` after clean CI success, a complete
+local signed suite, Developer ID archive/export, accepted app/DMG notarizations,
+stapled tickets and final mounted-package/Sparkle verification. Both primary and
+Codeberg feeds are live. The release record includes source identity, checksums,
+notarization IDs, public download verification and the website fallback follow-up:
+[public Beta 2 release record](public-beta-2-release-2026-10-05.md).
+Stable 3.0 readiness remains open.

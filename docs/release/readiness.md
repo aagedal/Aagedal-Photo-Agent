@@ -14,6 +14,11 @@
 **Coordinator task:** `01a087bc-ce74-72d2-9c16-829b5a984ff9`
 **Automation:** `aagedal-photo-agent-3-0-coordinator` — recorded by prior cycles as active every 10 minutes in the coordinator task above. This cycle does not change or revalidate that schedule.
 
+**Public beta update — 2026-10-05:** [3.0.0 Beta 2, build 741](public-beta-2-release-2026-10-05.md)
+is published with exact-source clean CI, local signed tests and a verified notarized
+DMG. Canonical GitHub and Codeberg update feeds are synchronized. This beta does
+not close stable acceptance; the listed manual/provider/hardware gaps remain open.
+
 ## Current evidence
 
 [Cycle 122 installed native review and fresh shared authority](cycle-122-installed-native-review-authority-2026-10-02.md)
