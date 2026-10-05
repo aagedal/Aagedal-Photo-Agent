@@ -1325,6 +1325,8 @@ final class BrowserViewModel {
                     xmpMetadataMap: xmpMetadataMap,
                     nativeHDRByURL: hdrSnapshot.isHDRByImageURL
                 )
+                // Publish badges as each batch completes, rather than waiting for the whole folder.
+                rebuildSortedCache()
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }

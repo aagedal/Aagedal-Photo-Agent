@@ -1941,6 +1941,18 @@ struct DescriptionAssistantRequestTests {
             originalDescription: description, action: .grammar, language: language, people: people)
     }
 
+    @Test("Custom editorial guidance replaces the default while factual constraints remain")
+    func customEditorialPrompt() throws {
+        let item = DescriptionAssistantRequest(imageURL: image, editorLoadID: loadID,
+            originalDescription: "A press conference.", action: .wording, language: .english,
+            editorialPrompt: "Use two short sentences.")
+        let prompt = try item.prompt()
+        #expect(prompt.contains("Use two short sentences."))
+        #expect(!prompt.contains(DescriptionAssistantRequest.defaultEditorialPrompt))
+        #expect(prompt.contains("Do not invent"))
+        #expect(DescriptionAssistantRequest.defaultEditorialPrompt.contains("when, where, what and who"))
+    }
+
     @Test("A proposal cannot overwrite a changed caption, another photo or another load")
     func staleProposal() {
         let item = request()

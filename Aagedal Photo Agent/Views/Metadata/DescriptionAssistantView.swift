@@ -6,6 +6,7 @@ struct DescriptionAssistantModelSetupView: View {
     @State private var choosingModel = false
     @State private var choosingMLX = false
     @State private var downloadModel: DescriptionAssistantDownloadModel = .borealis
+    @AppStorage("descriptionAssistantEditorialPrompt") private var editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt
     var body: some View {
         Section("Description Model") {
             Text(setup.directory.map { $0.pathExtension.lowercased() != "gguf" } == true
@@ -39,6 +40,12 @@ struct DescriptionAssistantModelSetupView: View {
                 Text("Use an existing converted MLX folder. GGUF is the default download.").font(.caption)
             }
 
+        }
+        Section("Description Prompt") {
+            TextEditor(text: $editorialPrompt).frame(minHeight: 140)
+                .accessibilityLabel("Editorial description prompt")
+            Text("Used for individual and batch improvements. The model edits existing descriptions using supplied facts; it does not inspect the image.").font(.caption).foregroundStyle(.secondary)
+            Button("Restore Journalistic Default") { editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt }
         }
         .onAppear {
             setup.refreshDownloadedModels()
@@ -163,5 +170,115 @@ struct DescriptionAssistantView: View {
             } catch is CancellationError { errorMessage = "Generation cancelled." }
             catch { errorMessage = error.localizedDescription }
         }
+    }
+}
+
+/// Captures a fixed selection and stages reviewed captions through the existing metadata queue.
+struct BatchDescriptionAssistantView: View {
+    let urls: [URL]
+    @Bindable var browser: BrowserViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var language: DescriptionAssistantLanguage = .bokmal
+    @State private var action: DescriptionAssistantAction = .wording
+    @State private var proposals: [DescriptionAssistantProposal] = []
+    @State private var reviewed: [UUID: String] = [:]
+    @State private var messages: [String] = []
+    @State private var completed = 0
+    @State private var task: Task<Void, Never>?
+    @State private var setup = DescriptionAssistantModelSetup.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Improve \(urls.count) Descriptions").font(.title2)
+            Text("Suggestions use each photo’s current description and your prompt in Settings. Review each result before queuing it for saving.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Picker("Action", selection: $action) {
+                    ForEach(DescriptionAssistantAction.allCases) { Text($0.rawValue).tag($0) }
+                }
+                Picker("Language", selection: $language) {
+                    ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
+                }
+            }.disabled(task != nil)
+            if setup.directory == nil {
+                Text("Download or select a description model in Settings first.")
+            }
+            if task != nil { ProgressView(value: Double(completed), total: Double(urls.count)) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(proposals) { proposal in
+                        Text(proposal.request.imageURL.lastPathComponent).font(.headline)
+                        Text(proposal.request.originalDescription).font(.caption).textSelection(.enabled)
+                        TextEditor(text: Binding(get: { reviewed[proposal.id] ?? proposal.text },
+                                                 set: { reviewed[proposal.id] = $0 })).frame(height: 100)
+                        Button("Queue Reviewed Description") { apply(proposal) }.disabled(task != nil)
+                    }
+                    ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
+                        Text(message).font(.caption).textSelection(.enabled)
+                    }
+                }
+            }
+            HStack {
+                Button("Close") { task?.cancel(); dismiss() }
+                Spacer()
+                if task != nil {
+                    Text("\(completed) of \(urls.count)")
+                    Button("Cancel Generation") { task?.cancel() }
+                } else {
+                    Button("Generate Suggestions") { generate() }
+                        .disabled(setup.directory == nil || setup.isInstalling || !proposals.isEmpty)
+                }
+            }
+        }.padding(24).frame(width: 740, height: 620)
+            .onDisappear { task?.cancel() }
+    }
+
+    private func generate() {
+        guard let directory = setup.directory, task == nil else { return }
+        let prompt = UserDefaults.standard.string(forKey: "descriptionAssistantEditorialPrompt")
+            ?? DescriptionAssistantRequest.defaultEditorialPrompt
+        completed = 0
+        messages = []
+        task = Task {
+            defer { task = nil }
+            for url in urls {
+                do {
+                    try Task.checkCancellation()
+                    await browser.prepareMetadataReviewEditor(for: url)
+                    guard let editor = browser.metadataReviewEditor(for: url) else {
+                        messages.append("\(url.lastPathComponent): Could not load metadata.")
+                        completed += 1
+                        continue
+                    }
+                    let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: editor.id,
+                        originalDescription: browser.metadataReviewText(for: .description, imageURL: url),
+                        action: action, language: language, editorialPrompt: prompt)
+                    let proposal = try await DescriptionAssistantService.shared.generate(request, modelDirectory: directory)
+                    try Task.checkCancellation()
+                    proposals.append(proposal)
+                } catch is CancellationError { break }
+                catch { messages.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+                completed += 1
+            }
+        }
+    }
+
+    private func apply(_ proposal: DescriptionAssistantProposal) {
+        let url = proposal.request.imageURL
+        let text = reviewed[proposal.id] ?? proposal.text
+        guard let editor = browser.metadataReviewEditor(for: url),
+              !browser.isMetadataReviewFrozen(for: url),
+              proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
+                description: browser.metadataReviewText(for: .description, imageURL: url)),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            messages.append("\(url.lastPathComponent): Metadata changed or is unavailable. Generate a fresh suggestion.")
+            return
+        }
+        browser.updateMetadataReviewText(text, field: .description, for: url, editorID: editor.id)
+        do {
+            try browser.captureMetadataReviewDrafts(for: url)
+            proposals.removeAll { $0.id == proposal.id }
+            messages.append("\(url.lastPathComponent): Description queued for saving.")
+        } catch { messages.append("\(url.lastPathComponent): \(error.localizedDescription)") }
     }
 }
