@@ -3509,6 +3509,7 @@ final class MetadataViewModel {
                         // validating text that transcription has since replaced.
                         if error as? VoiceMemoTranscriptVariableError == .transcriptChanged,
                            !request.hasVerifiedPreparedRecord,
+                           !request.replay.receipt.hasCommitted,
                            let origin = retainedVariableOrigins.removeValue(forKey: request.id) {
                             failureMessage += " Use Retry Variable Writes to prepare the original template with the current transcript."
                             retainedVariableWrites.removeAll { $0.id == request.id }
