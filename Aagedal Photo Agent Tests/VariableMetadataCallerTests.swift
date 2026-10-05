@@ -662,6 +662,14 @@ struct VariableMetadataCallerTests {
 
         #expect(await executor.requests.isEmpty)
         #expect(model.variableBatchOutcome?.attention?.message.contains("transcript changed") == true)
+
+        await probe.setValues([changed, changed, changed], for: url)
+        model.retryVariableWrites()
+        await model.waitForVariableProcessing()
+        let retried = await executor.requests
+        #expect(retried.count == 1)
+        #expect(retried.first?.sidecar.metadata.description == "Changed approval")
+        #expect(!model.hasRetainedVariableWrites)
     }
 
     @Test("Transcript append applies immediately without a confirmation")

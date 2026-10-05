@@ -2499,6 +2499,34 @@ struct ContentView: View {
         // Import already opened the folder on start — nothing else needed.
     }
 
+    private var hasActiveSidebarWork: Bool {
+        importViewModel.isImporting || ftpViewModel.isUploading || ftpViewModel.isRendering
+            || faceRecognitionViewModel.isScanning || voiceMemoBatchModel.isRunning
+            || metadataViewModel.isProcessingFolder || isRenderingEditedFolder
+    }
+
+    private var sidebarOverallProgress: Double? {
+        var fractions: [Double] = []
+        if importViewModel.isImporting {
+            guard importViewModel.importPhase == .copying else { return nil }
+            fractions.append(Double(importViewModel.copiedFiles) / Double(max(importViewModel.totalFiles, 1)))
+        }
+        if ftpViewModel.isRendering {
+            fractions.append(Double(ftpViewModel.renderCompletedCount) / Double(max(ftpViewModel.renderTotalCount, 1)))
+        } else if ftpViewModel.isUploading { fractions.append(ftpViewModel.overallProgress) }
+        if faceRecognitionViewModel.isScanning {
+            fractions.append(Double(faceRecognitionViewModel.scanProcessedCount) / Double(max(faceRecognitionViewModel.scanTotalCount, 1)))
+        }
+        if voiceMemoBatchModel.isRunning {
+            fractions.append(Double(voiceMemoBatchModel.record?.batchProgress?.items.filter { $0.state == .completed }.count ?? 0)
+                / Double(max(voiceMemoBatchModel.activeImageURLs.count, 1)))
+        }
+        if isRenderingEditedFolder { fractions.append(Double(renderExportCurrent) / Double(max(renderExportTotal, 1))) }
+        if metadataViewModel.isProcessingFolder { return nil }
+        guard !fractions.isEmpty else { return nil }
+        return min(max(fractions.reduce(0, +) / Double(fractions.count), 0), 1)
+    }
+
     // MARK: - Sidebar
 
     private func sidebarSectionHeader(_ title: String) -> some View {
@@ -2608,8 +2636,7 @@ struct ContentView: View {
                 .padding(.vertical, 6)
             }
 
-            if faceRecognitionViewModel.isScanning
-                || voiceMemoBatchModel.isRunning
+            if hasActiveSidebarWork
                 || !activityHistory.entries.isEmpty
                 || !deliveryReceiptLibrary.receipts.isEmpty
                 || !deliveryWorkflowActivity.workflows.isEmpty
@@ -2625,12 +2652,13 @@ struct ContentView: View {
                         workflowActivity: deliveryWorkflowActivity,
                         onResumeWorkflow: { workflowIdentifier in
                             resumeDeadlineWorkflow(workflowIdentifier)
-                        }
+                        },
+                        isWorking: hasActiveSidebarWork,
+                        overallProgress: sidebarOverallProgress
                     )
-                    Spacer()
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             }
 
             if isRenderingEditedFolder {
