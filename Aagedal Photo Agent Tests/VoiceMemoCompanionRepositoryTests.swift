@@ -582,10 +582,19 @@ struct VoiceMemoCompanionRepositoryTests {
             memoURL: sourceMemo
         )
 
+        let notifications = ImportedVoiceMemoNotificationProbe()
+        let observer = NotificationCenter.default.addObserver(
+            forName: MetadataSidecarService.voiceMemoTranscriptDidChange, object: nil, queue: nil
+        ) { notification in
+            guard let notifiedImage = notification.object as? URL, notifiedImage == image else { return }
+            notifications.record(try? VoiceMemoCompanionRepository().lookup(for: notifiedImage))
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
         let saved = try VoiceMemoCompanionRepository().saveImportedAssociations(
             [association],
             results: [imageResult, memoResult]
         )
+        #expect(notifications.availableCount == 1)
         #expect(saved == 1)
         #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .available(
             VoiceMemoAssociation(
@@ -1383,5 +1392,14 @@ private actor RenameRefreshSidecarGate {
         released = true
         pendingLoad?.resume()
         pendingLoad = nil
+    }
+}
+
+nonisolated private final class ImportedVoiceMemoNotificationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var availableCount: Int { lock.withLock { count } }
+    func record(_ lookup: VoiceMemoCompanionRepository.Lookup?) {
+        if case .available = lookup { lock.withLock { count += 1 } }
     }
 }

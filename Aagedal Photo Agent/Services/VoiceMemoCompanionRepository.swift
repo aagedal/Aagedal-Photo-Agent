@@ -1003,6 +1003,10 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             return first
         }
         try writeBatchWithRollback(unique)
+        for entry in unique {
+            let imageURL = entry.url.deletingLastPathComponent().appendingPathComponent(entry.record.imageFilename)
+            NotificationCenter.default.post(name: MetadataSidecarService.voiceMemoTranscriptDidChange, object: imageURL.standardizedFileURL)
+        }
         return unique.count
     }
 

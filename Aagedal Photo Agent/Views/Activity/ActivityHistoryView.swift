@@ -12,24 +12,38 @@ struct ActivityHistoryButton: View {
     var receiptLibrary: DeliveryReceiptLibraryModel
     var workflowActivity: DeliveryWorkflowActivityModel
     let onResumeWorkflow: (UUID) -> Bool
+    var isWorking = false
+    var overallProgress: Double? = nil
     @State private var isShowingHistory = false
 
     var body: some View {
         Button {
             isShowingHistory = true
         } label: {
-            Group {
-                if faceViewModel.isScanning {
-                    Label("Face Scan \(faceViewModel.scanProgress)", systemImage: "viewfinder")
-                } else if transcriptionModel.isRunning {
-                    Label("Transcribing \(transcriptionModel.savedDraftImageURLs.count)/\(transcriptionModel.activeImageURLs.count)", systemImage: "waveform")
-                } else {
-                    Label("Activity", systemImage: "clock.arrow.circlepath")
+            VStack(alignment: .leading, spacing: 6) {
+                Group {
+                    if faceViewModel.isScanning {
+                        Label("Face Scan \(faceViewModel.scanProgress)", systemImage: "viewfinder")
+                    } else if transcriptionModel.isRunning {
+                        Label("Transcribing \(transcriptionModel.savedDraftImageURLs.count)/\(transcriptionModel.activeImageURLs.count)", systemImage: "waveform")
+                    } else {
+                        Label("Activity", systemImage: "clock.arrow.circlepath")
+                    }
+                }
+                .font(.callout.weight(.medium))
+                if isWorking {
+                    if let overallProgress {
+                        ProgressView(value: overallProgress)
+                    } else {
+                        ProgressView().progressViewStyle(.linear)
+                    }
                 }
             }
-            .font(.caption)
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .popover(isPresented: $isShowingHistory, arrowEdge: .bottom) {
             ActivityHistoryView(
                 history: history,

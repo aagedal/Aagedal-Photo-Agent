@@ -3502,9 +3502,25 @@ final class MetadataViewModel {
                         let current = try await voiceMemoTranscriptContextLoader(request.imageURL)
                         guard current == expected else { throw VoiceMemoTranscriptVariableError.transcriptChanged }
                     } catch {
+                        var failureMessage = error.localizedDescription
+                        // A refused, never-prepared transcript request has no durable resolved
+                        // values to replay. Retain its original template admission so the next
+                        // explicit retry can load the current transcript instead of repeatedly
+                        // validating text that transcription has since replaced.
+                        if error as? VoiceMemoTranscriptVariableError == .transcriptChanged,
+                           !request.hasVerifiedPreparedRecord,
+                           !request.replay.receipt.hasCommitted,
+                           let origin = retainedVariableOrigins.removeValue(forKey: request.id) {
+                            failureMessage += " Use Retry Variable Writes to prepare the original template with the current transcript."
+                            retainedVariableWrites.removeAll { $0.id == request.id }
+                            retainedVariableEditorCheckpoints.removeValue(forKey: request.id)
+                            if !retainedVariableAdmissions.contains(where: { $0.id == origin.id }) {
+                                retainedVariableAdmissions.append(origin)
+                            }
+                        }
                         planningResults[Self.variablePhotoKey(request.imageURL)] = .init(
                             imageURL: request.imageURL,
-                            failure: error is CancellationError ? nil : error.localizedDescription,
+                            failure: error is CancellationError ? nil : failureMessage,
                             wasCancelled: error is CancellationError
                         )
                     }

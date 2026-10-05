@@ -4,7 +4,7 @@ import SwiftMediaMetadata
 @testable import Aagedal_Photo_Agent
 
 private actor VariableCallerExecutor {
-    enum Response: Sendable { case success, failed, cancelledAfterXMP, unverifiedJSON }
+    enum Response: Sendable { case success, failed, cancelledAfterXMP, unverifiedJSON, committedUnverifiedJSON }
     private(set) var requests: [VariableMetadataWriteRequest] = []
     private var gate: CheckedContinuation<Void, Never>?
     let pauses: Set<Int>
@@ -25,6 +25,11 @@ private actor VariableCallerExecutor {
                 preparedSidecar: request.sidecar,
                 physicalResult: .init(requestID: request.id, imageURL: request.imageURL, didWriteXMP: true, wasCancelled: true),
                 wasCancelled: true)
+        case .committedUnverifiedJSON:
+            request.replay.receipt.markCommitted(request.sidecar)
+            return .init(requestID: request.id, imageURL: request.imageURL,
+                failure: "Injected committed preparation verification failure",
+                committedButUnverifiedSidecarURL: request.folderURL.appendingPathComponent(".photo_metadata/uncertain.meta.json"))
         case .unverifiedJSON:
             return .init(requestID: request.id, imageURL: request.imageURL,
                 failure: "Injected prepare verification failure",
@@ -662,6 +667,44 @@ struct VariableMetadataCallerTests {
 
         #expect(await executor.requests.isEmpty)
         #expect(model.variableBatchOutcome?.attention?.message.contains("transcript changed") == true)
+
+        await probe.setValues([changed, changed, changed], for: url)
+        model.retryVariableWrites()
+        await model.waitForVariableProcessing()
+        let retried = await executor.requests
+        #expect(retried.count == 1)
+        #expect(retried.first?.sidecar.metadata.description == "Changed approval")
+        #expect(!model.hasRetainedVariableWrites)
+    }
+
+    @Test("Changed transcripts never reprepare committed but unverified metadata")
+    @MainActor
+    func changedTranscriptPreservesUnverifiedPreparation() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/variables-transcript-committed")
+        let url = folder.appendingPathComponent("one.jpg")
+        let approved = VoiceMemoTranscriptVariableContext(
+            reviewedText: "Approved text", generatedAt: Date(timeIntervalSince1970: 200),
+            memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "sony-test")
+        let changed = VoiceMemoTranscriptVariableContext(
+            reviewedText: "New text", generatedAt: Date(timeIntervalSince1970: 201),
+            memoByteCount: 20, memoSHA256: String(repeating: "a", count: 64),
+            associationProfileIdentifier: "sony-test")
+        let probe = VariableTranscriptContextProbe(values: [url: [approved, approved, approved]])
+        let executor = VariableCallerExecutor(responses: [.committedUnverifiedJSON])
+        let model = makeModel([url: snapshot(url, metadata: IPTCMetadata(description: "Existing"))],
+            executor: executor, transcriptLoader: { try await probe.load($0) })
+        try await load(model, url: url)
+        model.applyTemplateFieldsAndProcessVariables(["description": "{voiceMemoTranscript}"], to: [ImageFile(url: url)])
+        await model.waitForVariableProcessing()
+        await probe.setValues([changed, changed, changed], for: url)
+        for _ in 0..<2 {
+            model.retryVariableWrites()
+            await model.waitForVariableProcessing()
+            #expect(model.variableBatchOutcome?.attention?.message.contains("transcript changed") == true)
+        }
+        #expect(await executor.requests.count == 1)
+        #expect(model.hasRetainedVariableWrites)
     }
 
     @Test("Transcript append applies immediately without a confirmation")
