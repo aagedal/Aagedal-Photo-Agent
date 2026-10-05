@@ -1,0 +1,4 @@
+# Reference-tested with Python 3.12; TorchScript is unsupported on Python 3.14+.
+torch==2.4.1
+Pillow==11.3.0
+numpy==1.26.4
