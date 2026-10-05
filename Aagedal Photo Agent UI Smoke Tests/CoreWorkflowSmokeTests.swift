@@ -2807,17 +2807,19 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
-    func testDeadlineRunsPreflightAndPublishesReadiness() throws {
+    func testDeadlineIsHiddenForRelease30() throws {
         let photos = try makePhotoFolder(count: 1)
         let profileStore = fixtureRoot
             .appendingPathComponent("DeadlineProfiles", isDirectory: true)
             .appendingPathComponent("profiles.json")
         launch(workflow: "deadline", folder: photos, profileStore: profileStore)
 
-        XCTAssertTrue(app.descendants(matching: .any)["deadline.workspace"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["deadline.currentPhase"].waitForExistence(timeout: 20))
-        XCTAssertTrue(app.staticTexts["deadline.readinessSummary"].exists)
-        XCTAssertTrue(app.staticTexts["deadline.nextRequiredAction"].exists)
+        XCTAssertTrue(app.buttons["Workspace"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.descendants(matching: .any)["deadline.workspace"].exists)
+        app.buttons["Workspace"].click()
+        XCTAssertTrue(app.menuItems["Caption Workspace"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.menuItems["Deadline Workspace"].exists)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: profileStore.path))
     }
 
     @MainActor

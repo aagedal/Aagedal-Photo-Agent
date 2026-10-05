@@ -3,7 +3,7 @@
 **Status:** release-candidate draft  
 **Last reviewed:** 2026-09-15
 
-This guide covers the new 3.0 investigation, comparison, versioning, caption, rename, and deadline
+This guide covers the new 3.0 investigation, comparison, versioning, caption, and rename
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
 shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they differ from examples here.
 
@@ -17,9 +17,6 @@ button for leaving the review table.
 - **Caption Workspace** works through the visible folder with a compact field navigator, validation,
   Previous, Save & Next, Write & Next, templates, Copy Previous, and Fix Next Issue. Save keeps the
   app-sidecar edit; Write commits through the supported metadata path and only advances after success.
-- **Deadline Workspace** builds a frozen preflight for the selected/visible images and a selected
-  Deadline profile. Resolve blockers with Fix Next Issue, review warnings, then stage and send supported
-  derivatives. A failed or cancelled retained workflow can be inspected, resumed, or removed in Activity.
 - **Image Analysis** opens the selected image. Analysis work is bound to that source revision and never
   silently writes analysis locations, notes, annotations, or findings into IPTC/XMP.
 - **Compare Two Images** is enabled when exactly two images are selected.
@@ -512,15 +509,14 @@ In Develop, the version control starts at **Primary (XMP)**.
 
 Named versions live in Photo Agent's app-private JSON store. Other applications see only Primary XMP.
 
-## Rename and deadline delivery
+## Batch Rename
 
 Batch Rename previews the full rename plan, companion artifacts, collisions, and rollback boundary before
 moving files. Original Filename is written only through the supported metadata contract.
 
-Deadline Send accepts staged derivatives only: SDR JPEG/TIFF or HDR Adaptive JPEG gain-map/16-bit TIFF.
-It refuses originals and XMP-sidecar-only delivery. A successful FTP/FTPS/SFTP response and optional
-remote size observation are acknowledgements, not a remote cryptographic hash. Review Activity for the
-privacy-limited receipt and any explicitly retained workflow.
+Deadline Workspace and its profile management are deferred to 3.1 and hidden in 3.0. Existing saved
+profiles and retained delivery evidence are preserved. Activity can still show and remove retained
+workflows, but resuming them through Deadline Workspace is unavailable in 3.0.
 
 ## External authenticity checks
 

@@ -1198,6 +1198,11 @@ and receipt evidence. Seventy-seven focused tests pass; see
 
 ### Deadline UI
 
+**Release scope — 2026-10-05:** Deadline Workspace and its profile management are deferred to 3.1.
+The 3.0 UI hides workspace navigation and Activity resume, and Caption ignores saved Deadline
+profiles. Implementation, saved profiles, and retained delivery evidence remain intact. Complete
+profile editing and the first-use usability pass are prerequisites for restoring the entry points.
+
 - [x] Redesign the Deadline Workspace information hierarchy based on hands-on testing. Make the
   selected profile, current phase, readiness summary, next required action, planned outputs, and
   Send eligibility understandable without knowledge of the internal preflight model; provide
