@@ -11,6 +11,35 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.2</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Mon, 05 Oct 2026 08:26:37 +0200</pubDate>
+            <sparkle:version>741</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Added the local Description Assistant with reviewed grammar and wording proposals, Bokmål/Nynorsk/English support, and explicit Borealis/Gemma 3 Q4 model downloads.</li>
+                    <li>Added batch transcription language selection without changing the Settings default.</li>
+                    <li>Added multilingual Whisper Turbo and Large v3 model downloads, plus Norwegian NbAiLab models.</li>
+                    <li>Simplified batch transcription: pressing <strong>Transcribe N Photos</strong> authorizes and starts the batch.</li>
+                    <li>Moved transcription cancellation beside the active process as a red circled X, and gave Activity History a separate heading above its filters.</li>
+                    <li>Fixed nested sidebar folders missing disclosure chevrons until they were opened.</li>
+                    <li>Added voice-memo play/pause support for the media key and widened the Caption language picker.</li>
+                    <li>Restored required bundled AuraFace model validation and hardened operation recovery, model admission, and signed description-runtime packaging.</li>
+                    <li>Separated normal face scans from explicitly confirmed <strong>Faces + Jerseys</strong> scans.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.2/Aagedal-Photo-Agent-3.0.0-beta.2.dmg"
+                sparkle:version="741"
+                sparkle:shortVersionString="3.0.0-beta.2"
+                sparkle:edSignature="UUFiwUVrUib5UXe0fPpTf3ImhAsb5qErCNH5U4A9m3gKwIG9n5sEJgJXS9X2pBTQbqdfU6Y4kY18kDWGb/OeCg=="
+                length="205253666"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 3.0.0-beta.1</title>
             <sparkle:channel>beta</sparkle:channel>
             <pubDate>Sat, 03 Oct 2026 16:51:42 +0200</pubDate>
