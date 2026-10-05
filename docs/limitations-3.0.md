@@ -85,8 +85,8 @@ These are material product and evidence boundaries, not a list of unfinished int
   round trips through every Adobe Bridge, Photo Mechanic, HEIC/HEIF, RAW, or delivery-server combination.
 - External tools can interpret metadata differently. Consult the
   [metadata support table](metadata-field-support.md) before relying on a particular carrier/write mode.
-- Deadline Send supports staged SDR JPEG/TIFF and HDR Adaptive JPEG gain-map/16-bit TIFF derivatives only.
-  Original-file and XMP-sidecar-only delivery are rejected.
+- Deadline Workspace and its profile management are deferred to 3.1 and hidden in 3.0.
+  Saved profiles and delivery evidence are retained; Deadline workflow resume is unavailable.
 - FTP/FTPS/SFTP protocol success and remote existence/size are non-cryptographic acknowledgements. SFTP
   supports password/netrc authentication, not SSH private keys, and a narrow local path
   time-of-check/time-of-use interval remains before `curl` opens a verified staged file.
@@ -104,7 +104,7 @@ These are material product and evidence boundaries, not a list of unfinished int
   remain literal. The supported Description, Extended Description, Headline and Instructions
   destinations are enforced. Processing variables starts directly; one invalid transcript or audio
   identity refuses the entire transcript batch before mutation. Native accessibility and relaunch
-  workflow validation remain incomplete. Deadline profiles
+  workflow validation remain incomplete. The deferred Deadline implementation has profiles that
   explicitly exclude WAV companions,
   include proven companions when available, or require one for every image. Included audio is
   exact-revision-bound, staged, verified, uploaded and recorded in privacy-safe receipts. Injected

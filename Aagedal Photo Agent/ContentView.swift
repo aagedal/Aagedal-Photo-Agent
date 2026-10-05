@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 // MARK: - Main View Mode
 
 enum MainViewMode {
+    /// Deadline UI is deferred to 3.1; keep its implementation and saved data intact.
+    static let isDeadlineAvailable = false
+
     case browser           // Normal photo browsing
     case caption           // Keyboard-first, sidecar-safe captioning workspace
     case deadline          // Delivery preflight and fix-next workspace
@@ -302,7 +305,9 @@ struct ContentView: View {
         contentWithStateHandlers
             .task {
                 _ = await settingsViewModel.refreshC2PACertificateStatus(requestID: UUID())
-                await deadlineProfileLibrary.loadIfNeeded()
+                if MainViewMode.isDeadlineAvailable {
+                    await deadlineProfileLibrary.loadIfNeeded()
+                }
                 await deadlineRenameRecipeLibrary.loadIfNeeded()
                 await deliveryReceiptLibrary.reload()
                 await deliveryWorkflowActivity.reload()
@@ -1056,7 +1061,7 @@ struct ContentView: View {
                     metadataViewModel: metadataViewModel,
                     browserViewModel: browserViewModel,
                     settingsViewModel: settingsViewModel,
-                    deadlineProfile: deadlineProfileLibrary.selectedProfile,
+                    deadlineProfile: MainViewMode.isDeadlineAvailable ? deadlineProfileLibrary.selectedProfile : nil,
                     initialFocusedField: pendingDeadlineCaptionField,
                     onApplyTemplate: { append in
                         captionTemplateAppendOverride = append
@@ -1309,6 +1314,7 @@ struct ContentView: View {
     }
 
     private func resumeDeadlineWorkflow(_ identifier: UUID) -> Bool {
+        guard MainViewMode.isDeadlineAvailable else { return false }
         do {
             try flushMetadataForTransition()
             pendingDeadlineResumeWorkflowIdentifier = identifier
@@ -1463,7 +1469,7 @@ struct ContentView: View {
     }
 
     private func openDeadlineWorkspace() {
-        guard mainViewMode != .deadline else { return }
+        guard MainViewMode.isDeadlineAvailable, mainViewMode != .deadline else { return }
         leaveEditWorkspaceIfNeeded {
             if !browserViewModel.selectedImages.contains(where: \.isImageFile),
                let firstVisible = browserViewModel.visibleImages.first(where: \.isImageFile) {
@@ -1547,6 +1553,7 @@ struct ContentView: View {
         case .batchRename:
             browserViewModel.renameSelected()
         case .deadline:
+            guard MainViewMode.isDeadlineAvailable else { return }
             if deadlineProfileLibrary.selectedProfile == nil {
                 await deadlineProfileLibrary.create(name: "UI Smoke Deadline")
             }
@@ -2026,15 +2033,17 @@ struct ContentView: View {
             }
             .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
 
-            Button {
-                openDeadlineWorkspace()
-            } label: {
-                Label(
-                    "Deadline Workspace",
-                    systemImage: mainViewMode == .deadline ? "checkmark" : "paperplane"
-                )
+            if MainViewMode.isDeadlineAvailable {
+                Button {
+                    openDeadlineWorkspace()
+                } label: {
+                    Label(
+                        "Deadline Workspace",
+                        systemImage: mainViewMode == .deadline ? "checkmark" : "paperplane"
+                    )
+                }
+                .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
             }
-            .disabled(browserViewModel.visibleImages.first(where: \.isImageFile) == nil)
 
             Button {
                 openImageAnalysis()

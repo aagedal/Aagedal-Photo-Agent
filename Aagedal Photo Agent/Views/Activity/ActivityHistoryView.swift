@@ -320,7 +320,7 @@ private struct DeliveryWorkflowRow: View {
             .font(.caption2)
 
             HStack(spacing: 10) {
-                if workflow.canResume {
+                if MainViewMode.isDeadlineAvailable && workflow.canResume {
                     Button("Resume This Workflow", action: resume)
                         .disabled(isBusy)
                 }
