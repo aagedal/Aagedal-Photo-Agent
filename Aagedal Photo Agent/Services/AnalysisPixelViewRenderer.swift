@@ -347,9 +347,14 @@ nonisolated enum AnalysisPixelViewRenderer {
         context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
         let bytes = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
         let original = Array(UnsafeBufferPointer(start: bytes, count: width * height * 4))
-        let luminance = (0..<(width * height)).map { i in
-            (54 * Int(original[i * 4]) + 183 * Int(original[i * 4 + 1])
-                + 19 * Int(original[i * 4 + 2])) / 256
+        var luminance = [Int](repeating: 0, count: width * height)
+        for i in luminance.indices {
+            if i.isMultiple(of: width), Task.isCancelled { return nil }
+            let offset = i * 4
+            let red: Int = 54 * Int(original[offset])
+            let green: Int = 183 * Int(original[offset + 1])
+            let blue: Int = 19 * Int(original[offset + 2])
+            luminance[i] = (red + green + blue) / 256
         }
         if mode == .cloneDetection {
             struct Block {
