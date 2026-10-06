@@ -20,7 +20,10 @@ struct StructuredKeywordEditor: View {
 
     /// Which tree this editor loads and saves. Defaults to the keyword tree;
     /// the Person Shown editor passes `.personShown`.
-    var service: StructuredKeywordService = .shared
+    var service: StructuredKeywordService = .legacy
+    /// Custom library lists use the same editor with a snapshot and coordinated save.
+    var initialTree: [StructuredKeyword]? = nil
+    var saveHandler: (([StructuredKeyword]) async throws -> Bool)? = nil
     /// Title shown in the editor header.
     var title: String = "Structured Keywords"
     /// Capitalized noun for a leaf node, used in buttons/menus ("Add \(leafNoun)").
@@ -63,10 +66,10 @@ struct StructuredKeywordEditor: View {
         }
         .frame(minWidth: 540, idealWidth: 680, minHeight: 520, idealHeight: 620)
         .task {
-            await service.reload()
+            if initialTree == nil { await service.reload() }
             guard !Task.isCancelled else { return }
             load()
-            feedback = service.loadError
+            feedback = initialTree == nil ? service.loadError : nil
             isLoading = false
         }
         .onDisappear {
@@ -176,7 +179,7 @@ struct StructuredKeywordEditor: View {
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
             Button(isSaving ? "Saving…" : "Save") { save() }
-                .disabled(isLoading || isSaving || service.hasReadFailure)
+                .disabled(isLoading || isSaving || (initialTree == nil && service.hasReadFailure))
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
         }
@@ -582,7 +585,7 @@ struct StructuredKeywordEditor: View {
     // MARK: - Load / Save / Import / Export
 
     private func load() {
-        let parsed = service.roots
+        let parsed = initialTree ?? service.roots
         root = EditableStructuredKeyword.root(from: parsed)
         // Expand the first level by default so the user immediately sees structure.
         for child in root.children where child.hasChildren {
@@ -600,7 +603,10 @@ struct StructuredKeywordEditor: View {
         saveTask = Task {
             defer { isSaving = false }
             do {
-                if try await service.saveTree(cleaned), !Task.isCancelled { dismiss() }
+                let saved: Bool
+                if let saveHandler { saved = try await saveHandler(cleaned) }
+                else { saved = try await service.saveTree(cleaned) }
+                if saved, !Task.isCancelled { dismiss() }
             } catch {
                 guard !Task.isCancelled else { return }
                 feedback = "Save failed: \(error.localizedDescription)"

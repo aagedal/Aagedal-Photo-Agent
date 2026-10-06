@@ -8,6 +8,7 @@ nonisolated enum KeywordListKey: Hashable, CustomStringConvertible, Sendable {
     case approved(ApprovedListField)
     case structured
     case structuredPersonShown
+    case structuredLibrary
 
     /// Relative path under the store root. The path is stable per-key — do not
     /// change it once shipped, or migration logic will need to handle a rename.
@@ -19,6 +20,8 @@ nonisolated enum KeywordListKey: Hashable, CustomStringConvertible, Sendable {
             return "approved/\(field.rawValue).txt"
         case .structured:
             return "structured/keywords.txt"
+        case .structuredLibrary:
+            return "structured/library.json"
         case .structuredPersonShown:
             return "structured/personShown.txt"
         }
@@ -30,7 +33,7 @@ nonisolated enum KeywordListKey: Hashable, CustomStringConvertible, Sendable {
         switch self {
         case .quick: return "quick"
         case .approved: return "approved"
-        case .structured, .structuredPersonShown: return "structured"
+        case .structured, .structuredPersonShown, .structuredLibrary: return "structured"
         }
     }
 
@@ -46,6 +49,8 @@ nonisolated enum KeywordListKey: Hashable, CustomStringConvertible, Sendable {
             return "Approved \(field.displayName)"
         case .structured:
             return "Structured Keywords"
+        case .structuredLibrary:
+            return "Structured Keyword Lists and Selection"
         case .structuredPersonShown:
             return "Structured Person Shown"
         }
@@ -372,6 +377,7 @@ final class KeywordListsStore {
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
         keys.append(.structured)
         keys.append(.structuredPersonShown)
+        keys.append(.structuredLibrary)
         return keys
     }
 
@@ -414,7 +420,7 @@ final class KeywordListsStore {
                 try reservation.validate(for: sourceURL)
                 try reservation.validate(for: destURL)
                 try CloudCoordinatedIO.writeText(joined, to: destURL)
-            case .structured, .structuredPersonShown:
+            case .structured, .structuredPersonShown, .structuredLibrary:
                 guard !CloudCoordinatedIO.itemExists(at: destURL) else { continue }
                 let data = try CloudCoordinatedIO.readData(at: sourceURL)
                 _ = try decodeManagedText(data)

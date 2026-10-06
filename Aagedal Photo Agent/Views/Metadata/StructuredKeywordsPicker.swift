@@ -33,9 +33,9 @@ struct StructuredKeywordsPicker: View {
     /// Placeholder shown in the search field.
     var searchPrompt: String = "Search keywords or synonyms…"
     /// Title shown when no tree file is loaded.
-    var emptyTitle: String = "No structured keywords file loaded"
+    var emptyTitle: String = "No active structured keywords"
     /// Subtitle pointing the user at the relevant Settings location.
-    var emptySubtitle: String = "Choose a PhotoMechanic-style tree file in Settings → Metadata → Structured Keywords."
+    var emptySubtitle: String = "Enable or add a list in Settings → Metadata → Keywords → Structured Keyword Lists."
 
     @State private var searchText: String = ""
     @State private var feedback: Feedback?

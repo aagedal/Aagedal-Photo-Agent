@@ -187,11 +187,13 @@ struct StructuredKeywordServiceTests {
             encoding: .utf8
         )
 
-        #expect(source.contains("try await settingsViewModel.structuredKeywords.importListURL(url)"))
+        let librarySource = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Views/Settings/StructuredKeywordLibrarySettings.swift"), encoding: .utf8)
+        #expect(librarySource.contains("try await TextFileImportService.shared.loadText"))
+        #expect(librarySource.contains("importTask?.cancel()"))
+        #expect(librarySource.contains("guard !Task.isCancelled"))
         #expect(source.contains("try await settingsViewModel.structuredPersonShown.importListURL(url)"))
-        #expect(source.contains("structuredKeywordsImportTask?.cancel()"))
         #expect(source.contains("structuredPersonShownImportTask?.cancel()"))
-        #expect(source.contains("settingsViewModel.structuredKeywords.cancelImport()"))
         #expect(source.contains("settingsViewModel.structuredPersonShown.cancelImport()"))
     }
 }
@@ -614,5 +616,181 @@ private nonisolated final class StructuredKeywordReplacementReadProbe: @unchecke
             guard ContinuousClock.now < deadline else { throw StructuredKeywordSettingsImportProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+}
+
+@MainActor
+@Suite("Structured keyword libraries and IPTC languages")
+struct StructuredKeywordLibraryTests {
+    @Test("System language uses all IPTC languages, variants, and US English fallback")
+    func languageMatching() {
+        let examples: [(String, IPTCMediaTopicsLanguage)] = [
+            ("ar-SA", .arabic), ("zh-Hans-CN", .chinese), ("da-DK", .danish),
+            ("en-GB", .englishUK), ("en-US", .englishUS), ("fr-CA", .french),
+            ("de-DE", .german), ("nb-NO", .norwegianBokmal), ("nn-NO", .norwegianNynorsk),
+            ("no-NO", .norwegianBokmal), ("pt-PT", .portuguese), ("pt-BR", .portugueseBrazil),
+            ("es-MX", .spanish), ("sv-SE", .swedish), ("ja-JP", .englishUS),
+            ("se-NO", .englishUS), // Northern Sami is not Swedish.
+        ]
+        for (locale, expected) in examples {
+            #expect(IPTCMediaTopicsLanguage.resolve(override: nil, preferredLanguages: [locale]) == expected)
+        }
+        #expect(IPTCMediaTopicsLanguage.resolve(override: "fr", preferredLanguages: ["nb-NO"]) == .french)
+        #expect(IPTCMediaTopicsLanguage.resolve(override: nil, preferredLanguages: ["ja-JP", "fr-FR"]) == .englishUS)
+    }
+
+    @Test("Single selection, multiple selection, and explicit empty selection round-trip")
+    func selectionPersistence() throws {
+        var document = StructuredKeywordLibraryDocument()
+        #expect(document.activeIDs.contains(StructuredKeywordLibraryDocument.iptcID))
+        document.setMode(.single)
+        #expect(document.activeIDs == [StructuredKeywordLibraryDocument.iptcID])
+        document.setActive(StructuredKeywordLibraryDocument.legacyID, active: true)
+        #expect(document.activeIDs == [StructuredKeywordLibraryDocument.legacyID])
+        document.setActive(StructuredKeywordLibraryDocument.legacyID, active: false)
+        document.languageOverride = "no-NN"
+        #expect(try StructuredKeywordLibraryDocument.decode(document.encoded()) == document)
+        document.setMode(.multiple)
+        document.setActive(StructuredKeywordLibraryDocument.iptcID, active: true)
+        document.setActive(StructuredKeywordLibraryDocument.legacyID, active: true)
+        #expect(document.activeIDs.count == 2)
+    }
+
+    @Test("Malformed libraries cannot overwrite valid state")
+    func invalidLibrary() throws {
+        var document = StructuredKeywordLibraryDocument()
+        document.lists = [.init(id: StructuredKeywordLibraryDocument.iptcID, name: "Collision", text: "wrong")]
+        let text = try document.encoded()
+        #expect(throws: (any Error).self) { try StructuredKeywordLibraryDocument.decode(text) }
+        document = StructuredKeywordLibraryDocument()
+        document.schemaVersion = 99
+        let future = try document.encoded()
+        #expect(throws: (any Error).self) { try StructuredKeywordLibraryDocument.decode(future) }
+    }
+
+    @Test("Archive append retains conflicting lists and destination selection")
+    func appendLibrary() {
+        var existing = StructuredKeywordLibraryDocument()
+        existing.lists = [.init(id: "one", name: "Original", text: "First")]
+        var imported = StructuredKeywordLibraryDocument()
+        imported.lists = [.init(id: "one", name: "Other", text: "Second")]
+        let merged = existing.appending(imported)
+        #expect(merged.lists.count == 2)
+        #expect(Set(merged.lists.map(\.id)).count == 2)
+        #expect(merged.activeIDs == existing.activeIDs)
+        #expect(existing.appending(existing).lists.count == 1)
+    }
+
+    @Test("Bundled vocabulary contains all 13 languages and stable topic identities")
+    func bundledVocabulary() throws {
+        let url = try #require(Bundle.main.url(forResource: "IPTCMediaTopics", withExtension: "json"))
+        let vocabulary = try JSONDecoder().decode(IPTCMediaTopics.self, from: Data(contentsOf: url))
+        #expect(vocabulary.roots.count == 17)
+        #expect(vocabulary.concepts.count > 1000)
+        #expect(Set(vocabulary.concepts.values.flatMap { $0.labels.keys }) == Set(IPTCMediaTopicsLanguage.allCases.map(\.rawValue)))
+        let english = vocabulary.tree(language: .englishUS)
+        for language in IPTCMediaTopicsLanguage.allCases {
+            let roots = vocabulary.tree(language: language)
+            #expect(roots.count == 17)
+            #expect(roots.map(\.id) == english.map(\.id))
+        }
+        #expect(vocabulary.tree(language: .norwegianBokmal).first?.name != english.first?.name)
+        let untranslated = try #require(vocabulary.concepts["20001396"])
+        #expect(untranslated.labels["en-GB"] == "physical security")
+    }
+
+    @Test("Active lists aggregate without list-name keywords and survive reload")
+    func activeLists() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("library-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let library = StructuredKeywordLibrary()
+            await library.reload()
+            #expect(!library.hasReadFailure)
+            let legacy = StructuredKeywordService()
+            _ = try await legacy.saveTree([StructuredKeyword(name: "Legacy Term", kind: .keyword)])
+            let service = StructuredKeywordService(library: library)
+            await service.reload()
+            #expect(service.search("Legacy Term").count == 1)
+            let customID = UUID().uuidString
+            _ = try await library.update {
+                $0.lists.append(.init(id: customID, name: "Client List", text: "Parent\n\tChild\n\t\t{Alias}\n"))
+                $0.setMode(.single)
+                $0.setActive(customID, active: true)
+                $0.languageOverride = "fr"
+            }
+            #expect(service.search("Legacy Term").isEmpty)
+            #expect(service.expansion(forName: "Alias") == ["Parent", "Child", "Alias"])
+            #expect(service.allKeywordNames() == ["Parent", "Child", "Alias"])
+            #expect(!service.allKeywordNames().contains("Client List"))
+            await library.reload()
+            #expect(library.document.activeIDs == [customID])
+            #expect(library.effectiveLanguage == .french)
+            #expect(service.expansion(forName: "Child") == ["Parent", "Child", "Alias"])
+            // Changing selection never rewrites the existing user's tree.
+            #expect(try String(contentsOf: root.appendingPathComponent("structured/keywords.txt"), encoding: .utf8).contains("Legacy Term"))
+            _ = try await library.update { $0.setActive(customID, active: false) }
+            #expect(service.roots.isEmpty)
+            let candidates = KeywordListsArchive.inventoryCandidates(for: [.structuredLibrary], rootURL: root)
+            #expect(candidates.first?.format == .library)
+            #expect(KeywordListsArchive.enumerateKeys().contains(.structuredLibrary))
+        }
+    }
+}
+
+@MainActor
+@Suite("IPTC vocabulary updates")
+struct IPTCMediaTopicsUpdateTests {
+    private func official(release: String = "2026-08-01T12:00:00+00:00", childParent: String = "01000000") -> Data {
+        Data("""
+        {"uri":"http://cv.iptc.org/newscodes/mediatopic/",
+         "dateReleased":"\(release)",
+         "hasTopConcept":["http://cv.iptc.org/newscodes/mediatopic/01000000"],
+         "conceptSet":[
+          {"uri":"http://cv.iptc.org/newscodes/mediatopic/01000000","prefLabel":{"en-US":"Arts","fr":"Arts"}},
+          {"uri":"http://cv.iptc.org/newscodes/mediatopic/20000002","prefLabel":{"en-US":"Painting","fr":"Peinture"},"broader":["http://cv.iptc.org/newscodes/mediatopic/\(childParent)"]},
+          {"uri":"http://cv.iptc.org/newscodes/mediatopic/20000003","prefLabel":{"en-US":"Retired"},"retired":"2020-01-01T00:00:00+00:00"}
+         ]}
+        """.utf8)
+    }
+
+    @Test("Official downloads retain translations and omit retired topics")
+    func decodeDownload() throws {
+        let vocabulary = try IPTCMediaTopicsUpdateService.decodeOfficial(official())
+        #expect(vocabulary.concepts.count == 2)
+        #expect(vocabulary.tree(language: .french).first?.children.first?.name == "Peinture")
+        let invalid = official(childParent: "99999999")
+        #expect(throws: (any Error).self) { try IPTCMediaTopicsUpdateService.decodeOfficial(invalid) }
+    }
+
+    @Test("Successful updates persist offline and automatic checks are throttled")
+    func cachedUpdates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("iptc-update-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = official()
+        let service = IPTCMediaTopicsUpdateService(cacheURL: root.appendingPathComponent("vocabulary.json"), download: { data })
+        let current = try IPTCMediaTopicsUpdateService.decodeOfficial(official(release: "2026-07-02T12:00:00+00:00"))
+        let now = Date()
+        let updated = try #require(try await service.refresh(current: current, force: false, now: now))
+        #expect(updated.vocabulary.release == "2026-08-01T12:00:00+00:00")
+        #expect(await service.cached()?.vocabulary.release == updated.vocabulary.release)
+        #expect(try await service.refresh(current: updated.vocabulary, force: false, now: now.addingTimeInterval(60)) == nil)
+        #expect(try await service.refresh(current: updated.vocabulary, force: true, now: now.addingTimeInterval(60)) != nil)
+        #expect(try await service.refresh(current: updated.vocabulary, force: false, now: now.addingTimeInterval(8 * 24 * 60 * 60)) != nil)
+    }
+
+    @Test("Failed checks preserve the cached vocabulary and older releases cannot downgrade it")
+    func failedAndOlderUpdates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("iptc-failure-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("vocabulary.json")
+        let older = official(release: "2026-07-02T12:00:00+00:00")
+        let current = try IPTCMediaTopicsUpdateService.decodeOfficial(official())
+        let service = IPTCMediaTopicsUpdateService(cacheURL: url, download: { older })
+        _ = try await service.refresh(current: current, force: true)
+        #expect(await service.cached()?.vocabulary.release == current.release)
+        let failing = IPTCMediaTopicsUpdateService(cacheURL: url, download: { Data("invalid".utf8) })
+        await #expect(throws: (any Error).self) { try await failing.refresh(current: current, force: true) }
+        #expect(await failing.cached()?.vocabulary.release == current.release)
     }
 }

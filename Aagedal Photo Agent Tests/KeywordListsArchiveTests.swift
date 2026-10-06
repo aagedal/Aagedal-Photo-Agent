@@ -57,6 +57,37 @@ struct KeywordListsArchiveTests {
         }
     }
 
+    @Test("Structured libraries round-trip selection and language and append complete trees")
+    func libraryRoundTrip() async throws {
+        try await withIsolatedStore {
+            let store = KeywordListsStore.shared
+            var original = StructuredKeywordLibraryDocument()
+            let id = UUID().uuidString
+            original.lists = [.init(id: id, name: "Editorial", text: "News\n\tLocal\n")]
+            original.mode = .single
+            original.activeIDs = [id]
+            original.languageOverride = "no-NB"
+            try await store.fixtureWriteText(original.encoded(), to: .structuredLibrary)
+            let zip = tempZip()
+            defer { try? FileManager.default.removeItem(at: zip) }
+            #expect(try await KeywordListsArchive.exportAll(to: zip) == 1)
+            try await store.fixtureDelete(.structuredLibrary)
+            #expect(try await KeywordListsArchive.importAll(from: zip, mode: .replace) == 1)
+            let restoredText = try #require(try await store.fixtureReadText(.structuredLibrary))
+            #expect(try StructuredKeywordLibraryDocument.decode(restoredText) == original)
+
+            var destination = StructuredKeywordLibraryDocument()
+            destination.lists = [.init(id: UUID().uuidString, name: "Client", text: "Portrait\n")]
+            try await store.fixtureWriteText(destination.encoded(), to: .structuredLibrary)
+            #expect(try await KeywordListsArchive.importAll(from: zip, mode: .merge) == 1)
+            let mergedText = try #require(try await store.fixtureReadText(.structuredLibrary))
+            let merged = try StructuredKeywordLibraryDocument.decode(mergedText)
+            #expect(merged.lists.map(\.name) == ["Client", "Editorial"])
+            #expect(merged.activeIDs == destination.activeIDs)
+            #expect(merged.languageOverride == destination.languageOverride)
+        }
+    }
+
     @Test("Import in .merge mode appends new entries without disturbing existing order")
     func mergeMode() async throws {
         try await withIsolatedStore {
