@@ -24,7 +24,7 @@ enum KeywordListScope {
             return false
         case .keywords:
             switch key {
-            case .approved, .structured, .structuredPersonShown: return true
+            case .approved, .structured, .structuredPersonShown, .structuredLibrary: return true
             case .quick: return false
             }
         }

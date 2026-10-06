@@ -388,6 +388,8 @@ struct KeywordListEditor: View {
             return "Approved \(field.displayName).txt"
         case .quick(let type):
             return type.defaultFilename
+        case .structuredLibrary:
+            return "Structured Keyword Lists.json"
         case .structured:
             return "Structured Keywords.txt"
         case .structuredPersonShown:

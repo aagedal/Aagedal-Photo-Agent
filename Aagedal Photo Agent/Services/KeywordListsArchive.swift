@@ -104,6 +104,7 @@ nonisolated struct KeywordListsArchiveInventoryCandidate: Equatable, Sendable {
     nonisolated enum Format: Equatable, Sendable {
         case flat
         case structured
+        case library
     }
 
     let identifier: String
@@ -177,6 +178,8 @@ final class KeywordListsArchiveInventoryService {
             switch candidate.format {
             case .flat:
                 entryCount = ApprovedListParser.parseString(try KeywordListsStore.decodeManagedText(data), csv: false).count
+            case .library:
+                entryCount = try StructuredKeywordLibraryDocument.decode(KeywordListsStore.decodeManagedText(data)).lists.count
             case .structured:
                 entryCount = try Self.structuredKeywordCount(in: data)
             }
@@ -893,7 +896,17 @@ enum KeywordListsArchive {
                 let importedText = try String(contentsOf: fileURL, encoding: .utf8)
                 let committedText: String
                 let committedEntryCount: Int
-                if entry.kind == "structured" || entry.kind == "structuredPersonShown" {
+                if entry.kind == "structuredLibrary" {
+                    let imported = try StructuredKeywordLibraryDocument.decode(importedText)
+                    if route.mode == .append, CloudCoordinatedIO.itemExists(at: route.destinationURL) {
+                        let existing = try StructuredKeywordLibraryDocument.decode(
+                            KeywordListsStore.decodeManagedText(CloudCoordinatedIO.readData(at: route.destinationURL)))
+                        committedText = try existing.appending(imported).encoded()
+                    } else {
+                        committedText = try imported.encoded()
+                    }
+                    committedEntryCount = try StructuredKeywordLibraryDocument.decode(committedText).lists.count
+                } else if entry.kind == "structured" || entry.kind == "structuredPersonShown" {
                     // Append has historically meant replace for structured trees.
                     committedText = importedText
                     committedEntryCount = entry.entryCount
@@ -1031,6 +1044,7 @@ enum KeywordListsArchive {
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
         keys.append(.structured)
         keys.append(.structuredPersonShown)
+        keys.append(.structuredLibrary)
         return keys
     }
 
@@ -1038,6 +1052,7 @@ enum KeywordListsArchive {
         switch key {
         case .quick(let type): return "quick.\(type.rawValue)"
         case .approved(let field): return "approved.\(field.rawValue)"
+        case .structuredLibrary: return "structuredLibrary"
         case .structured: return "structured"
         case .structuredPersonShown: return "structuredPersonShown"
         }
@@ -1058,6 +1073,7 @@ enum KeywordListsArchive {
                 kind: kindString(for: key),
                 format: {
                     switch key {
+                    case .structuredLibrary: .library
                     case .quick, .approved: .flat
                     case .structured, .structuredPersonShown: .structured
                     }
@@ -1090,6 +1106,7 @@ enum KeywordListsArchive {
     }
 
     private static func resolveKey(forKind kind: String, path: String) -> KeywordListKey? {
+        if kind == "structuredLibrary" { return .structuredLibrary }
         if kind == "structured" { return .structured }
         if kind == "structuredPersonShown" { return .structuredPersonShown }
         if kind.hasPrefix("quick.") {

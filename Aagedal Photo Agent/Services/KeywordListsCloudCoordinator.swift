@@ -88,7 +88,10 @@ final class KeywordListsCloudCoordinator {
         q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
         // Match any file under our Lists folder. NSMetadataItemPathKey returns
         // an absolute path; the predicate ignores the schema and matches by prefix.
-        q.predicate = NSPredicate(format: "%K LIKE %@", NSMetadataItemFSNameKey, "*.txt")
+        q.predicate = NSPredicate(
+            format: "%K LIKE %@ OR %K == %@",
+            NSMetadataItemFSNameKey, "*.txt", NSMetadataItemFSNameKey, "library.json"
+        )
 
         let center = NotificationCenter.default
         observers.append(center.addObserver(

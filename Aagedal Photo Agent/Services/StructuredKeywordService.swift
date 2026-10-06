@@ -33,7 +33,9 @@ struct StructuredKeywordActivation: Hashable {
 @Observable
 final class StructuredKeywordService {
     /// Keyword tree: activation includes keyword-ancestors + node + synonyms.
-    static let shared = StructuredKeywordService()
+    static let shared = StructuredKeywordService(library: .shared)
+    /// The original editable tree, without the active-library aggregation.
+    static let legacy = StructuredKeywordService()
     /// Person Shown tree: activation writes the node name + synonyms only —
     /// category ancestors are navigation-only and never applied as names.
     static let personShown = StructuredKeywordService(key: .structuredPersonShown, includesAncestors: false)
@@ -54,26 +56,31 @@ final class StructuredKeywordService {
 
 
     /// Bumped on any state change so SwiftUI views re-render.
-    private(set) var version: Int = 0
+    private var snapshotVersion: Int = 0
+    var version: Int { snapshotVersion &+ (library?.version ?? 0) }
+    private let library: StructuredKeywordLibrary?
 
     /// Surfaced to Settings if the loaded file failed to parse. nil = no error.
     private(set) var loadError: String?
     /// A failed read cannot safely seed an editor; an empty readable tree remains editable.
     private(set) var hasReadFailure = false
 
-    private(set) var roots: [StructuredKeyword] = []
+    private var storedRoots: [StructuredKeyword] = []
+    var roots: [StructuredKeyword] { library?.roots(including: storedRoots) ?? storedRoots }
     private(set) var sourcePath: String?
 
     @ObservationIgnored nonisolated(unsafe) private var changeObserver: NSObjectProtocol?
 
     init(
         key: KeywordListKey = .structured,
+        library: StructuredKeywordLibrary? = nil,
         includesAncestors: Bool = true,
         textImportService: TextFileImportService = .shared,
         persistenceService: KeywordListEditorPersistenceService = .shared,
         storageURL: ((KeywordListKey) -> URL)? = nil,
         resolveStorageURL: ((KeywordListKey) async throws -> URL)? = nil
     ) {
+        self.library = library
         self.key = key
         self.includesAncestors = includesAncestors
         self.textImportService = textImportService
@@ -412,7 +419,7 @@ final class StructuredKeywordService {
 
     // MARK: - Internals
 
-    private func bumpVersion() { version &+= 1 }
+    private func bumpVersion() { snapshotVersion &+= 1 }
 
     private func invalidateLoad() {
         loadTask?.cancel()
@@ -422,7 +429,7 @@ final class StructuredKeywordService {
 
     private func clearSnapshot() {
         invalidateLoad()
-        roots = []
+        storedRoots = []
         sourcePath = nil
         loadError = nil
         hasReadFailure = false
@@ -487,7 +494,7 @@ final class StructuredKeywordService {
     private func install(text: String) {
         let parsed = StructuredKeywordParser.parseString(text)
         hasReadFailure = false
-        roots = parsed
+        storedRoots = parsed
         sourcePath = storageURL(key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()

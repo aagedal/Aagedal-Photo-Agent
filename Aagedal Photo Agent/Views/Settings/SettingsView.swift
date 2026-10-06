@@ -49,12 +49,6 @@ struct SettingsView: View {
     @State private var approvedKeywordsImportRequestID: UUID?
     @State private var editingApprovedKeywords = false
 
-    // Structured Keywords state
-    @State private var structuredKeywordsErrorMessage: String?
-    @State private var structuredKeywordsImportTask: Task<Void, Never>?
-    @State private var structuredKeywordsImportRequestID: UUID?
-    @State private var editingStructuredKeywords = false
-
     // Structured Person Shown state
     @State private var structuredPersonShownErrorMessage: String?
     @State private var structuredPersonShownImportTask: Task<Void, Never>?
@@ -249,7 +243,6 @@ struct SettingsView: View {
         }
         .onDisappear {
             cancelApprovedKeywordsImport()
-            cancelStructuredKeywordsImport()
             cancelStructuredPersonShownImport()
         }
         .onChange(of: settingsViewModel.requestedDestination) { _, _ in
@@ -1483,111 +1476,8 @@ struct SettingsView: View {
 
     // MARK: - Structured Keywords Section
 
-    @ViewBuilder
     private var structuredKeywordsSection: some View {
-        let service = settingsViewModel.structuredKeywords
-        let displayPath = service.sourcePath
-        let isLoaded = service.isLoaded
-        let keywordCount = service.keywordCount
-
-        Section("Structured Keywords") {
-            HStack {
-                if let displayPath {
-                    Text((displayPath as NSString).lastPathComponent)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.secondary)
-                        .help(displayPath)
-                } else {
-                    Text("No file chosen").foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Edit…") {
-                    editingStructuredKeywords = true
-                }
-                .help("Edit the structured keywords tree in-app")
-                Button(isLoaded ? "Import…" : "Import File…") {
-                    chooseStructuredKeywordsFile()
-                }
-                if isLoaded {
-                    Button(role: .destructive) {
-                        Task {
-                            do {
-                                try await service.clearList()
-                                structuredKeywordsErrorMessage = nil
-                            } catch {
-                                structuredKeywordsErrorMessage = error.localizedDescription
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Clear structured keywords")
-                }
-            }
-
-            if isLoaded, keywordCount > 0 {
-                Text("\(keywordCount.formatted()) keywords")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let loadError = service.loadError {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(loadError)
-                        .foregroundStyle(.orange)
-                }
-                .font(.caption)
-            }
-
-            if let structuredKeywordsErrorMessage {
-                Text(structuredKeywordsErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            Text("PhotoMechanic-style tree file. Use tabs to indent children, {braces} for synonyms, and [brackets] for non-keyword category headers. Open the picker via the tree icon next to the Keywords field or via Metadata → Structured Keywords.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func chooseStructuredKeywordsFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.plainText]
-        panel.message = "Choose a structured keywords file (.txt)"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        cancelStructuredKeywordsImport()
-        let requestID = UUID()
-        structuredKeywordsImportRequestID = requestID
-        structuredKeywordsErrorMessage = nil
-        structuredKeywordsImportTask = Task { @MainActor in
-            do {
-                try await settingsViewModel.structuredKeywords.importListURL(url)
-                guard structuredKeywordsImportRequestID == requestID else { return }
-                structuredKeywordsErrorMessage = nil
-            } catch {
-                guard structuredKeywordsImportRequestID == requestID else { return }
-                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                structuredKeywordsErrorMessage = description
-            }
-            guard structuredKeywordsImportRequestID == requestID else { return }
-            structuredKeywordsImportRequestID = nil
-            structuredKeywordsImportTask = nil
-        }
-    }
-
-    private func cancelStructuredKeywordsImport() {
-        structuredKeywordsImportRequestID = nil
-        structuredKeywordsImportTask?.cancel()
-        structuredKeywordsImportTask = nil
-        settingsViewModel.structuredKeywords.cancelImport()
+        StructuredKeywordLibrarySettings()
     }
 
     // MARK: - Structured Person Shown Section
@@ -1749,9 +1639,6 @@ struct SettingsView: View {
                 title: "Approved Keywords",
                 storeKey: .approved(.keywords)
             )
-        }
-        .sheet(isPresented: $editingStructuredKeywords) {
-            StructuredKeywordEditor()
         }
         .sheet(isPresented: $showingExportSheet) {
             KeywordListsExportSheet(scope: .keywords) { result in

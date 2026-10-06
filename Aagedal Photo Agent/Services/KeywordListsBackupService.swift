@@ -731,6 +731,7 @@ final class KeywordListsBackupService {
         keys.append(contentsOf: ApprovedListField.allCases.map { KeywordListKey.approved($0) })
         keys.append(.structured)
         keys.append(.structuredPersonShown)
+        keys.append(.structuredLibrary)
         return keys
     }()
 
@@ -952,6 +953,8 @@ final class KeywordListsBackupService {
         switch key {
         case .structured, .structuredPersonShown:
             return StructuredKeywordParser.parseString(text).reduce(0) { $0 + countKeywords(in: $1) }
+        case .structuredLibrary:
+            return (try? StructuredKeywordLibraryDocument.decode(text).lists.count + 2) ?? 0
         case .quick, .approved:
             return ApprovedListParser.parseString(text, csv: false).count
         }

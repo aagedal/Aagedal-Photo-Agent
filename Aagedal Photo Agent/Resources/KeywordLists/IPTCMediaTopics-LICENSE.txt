@@ -1,0 +1,13 @@
+IPTC Media Topics
+Copyright 2026 IPTC, International Press Telecommunications Council
+Source: https://cv.iptc.org/newscodes/mediatopic?format=json&lang=all
+Release: 2026-07-02T12:00:00+00:00
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+Adaptation: preferred labels in all supplied languages and broader relationships
+converted to a compact hierarchy. Retired concepts omitted. Definitions and
+external mappings are not included. Missing translations fall back to English
+(US), or English (UK) where the source has no US label.
+1085 active concepts; 17 top-level topics.
+IPTC does not endorse this application.
