@@ -13,6 +13,9 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
     case alpha
     case edges
     case compressionResidual
+    case noiseResidual
+    case levelSweep
+    case cloneDetection
 
     var displayName: String {
         switch self {
@@ -23,6 +26,9 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .luminance: "Luminance"
         case .alpha: "Alpha"
         case .edges: "Edges"
+        case .noiseResidual: "Noise Residual"
+        case .levelSweep: "Level Sweep"
+        case .cloneDetection: "Clone Detection"
         case .compressionResidual: "Compression Residual"
         }
     }
@@ -36,6 +42,9 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .luminance: "Luma"
         case .alpha: "Alpha"
         case .edges: "Edges"
+        case .noiseResidual: "Noise"
+        case .levelSweep: "Levels"
+        case .cloneDetection: "Clones"
         case .compressionResidual: "Residual"
         }
     }
@@ -56,6 +65,12 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
             "Source alpha coverage · opaque white, transparent black"
         case .edges:
             "Core Image CIEdges · intensity 3.0 · display-referred sRGB"
+        case .noiseResidual:
+            "2,048 px max · sRGB luminance − 3×3 median · absolute difference ×8"
+        case .levelSweep:
+            "2,048 px max · Metal-backed Core Image · sRGB luminance · adjustable 32/255-wide contrast window"
+        case .cloneDetection:
+            "1,024 px max · 8×8 blocks on a 4 px grid · tolerant luminance-cell matches · ≥3 consistent translations · cyan highlights"
         case .compressionResidual:
             "2,048 px max preview · ImageIO JPEG 0.90 · |linear sRGB − re-encode| ×12 · alpha over 50% gray"
         }
@@ -63,6 +78,12 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
 
     var limitationLabel: String? {
         switch self {
+        case .noiseResidual:
+            "Texture, edges, compression, and camera processing affect residuals; differences do not establish manipulation."
+        case .levelSweep:
+            "Contrast enhancement can exaggerate ordinary gradients and compression boundaries; it does not establish manipulation."
+        case .cloneDetection:
+            "Repeated scene texture can match naturally. This baseline misses rotated, scaled, recolored, or off-grid copies; no matches do not establish authenticity."
         case .edges:
             "Edge strength is affected by focus, sharpening, noise, resizing, and scene texture; it does not establish manipulation."
         case .compressionResidual:
