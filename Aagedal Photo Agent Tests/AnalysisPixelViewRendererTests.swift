@@ -6,6 +6,82 @@ import Testing
 
 @Suite("Analysis pixel views")
 struct AnalysisPixelViewRendererTests {
+    @Test("noise residual is dark on a uniform image and responds to texture")
+    func noiseResidualResponse() throws {
+        let uniform = try makePatternImage(width: 32, height: 24, checkerboard: false)
+        let context = try #require(CGContext(
+            data: nil, width: 32, height: 24, bitsPerComponent: 8, bytesPerRow: 128,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.draw(uniform, in: CGRect(x: 0, y: 0, width: 32, height: 24))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 16, y: 12, width: 1, height: 1))
+        let textured = try #require(context.makeImage())
+        let quiet = try #require(AnalysisPixelViewRenderer.render(uniform, mode: .noiseResidual))
+        let noisy = try #require(AnalysisPixelViewRenderer.render(textured, mode: .noiseResidual))
+        #expect(quiet.width == 32 && quiet.height == 24)
+        #expect(try meanRGB(quiet) < 1)
+        #expect(try meanRGB(noisy) > meanRGB(quiet))
+    }
+
+    @Test("level sweep changes the inspected brightness window")
+    func levelSweepWindow() throws {
+        let source = try makeSourceImage(red: 0.5, green: 0.5, blue: 0.5)
+        let low = try #require(AnalysisPixelViewRenderer.renderForensicView(
+            source, mode: .levelSweep, level: 32
+        ))
+        let high = try #require(AnalysisPixelViewRenderer.renderForensicView(
+            source, mode: .levelSweep, level: 224
+        ))
+        #expect(try meanRGB(low) > meanRGB(high) + 100)
+        let lowKey = AnalysisDerivedViewCacheKey(sourceIdentifier: "test", mode: .levelSweep,
+                                               source: source, levelSweepCenter: 32)
+        let highKey = AnalysisDerivedViewCacheKey(sourceIdentifier: "test", mode: .levelSweep,
+                                                source: source, levelSweepCenter: 224)
+        #expect(lowKey != highKey)
+    }
+
+    @Test("clone detection excludes uniform regions")
+    func cloneDetectionFlatRegion() throws {
+        let source = try makePatternImage(width: 32, height: 24, checkerboard: false)
+        let output = try #require(AnalysisPixelViewRenderer.render(source, mode: .cloneDetection))
+        #expect(output.width == source.width && output.height == source.height)
+        #expect(abs(try meanRGB(output) - meanRGB(source)) < 1)
+    }
+
+    @Test("clone detection highlights separated repeated textured blocks")
+    func cloneDetectionRepeatedRegion() throws {
+        let source = try makeCloneFixture(perturbed: false)
+        let output = try #require(AnalysisPixelViewRenderer.render(source, mode: .cloneDetection))
+        #expect(try renderedBytes(output) != renderedBytes(source))
+    }
+
+    @Test("clone detection tolerates small changes in copied texture")
+    func cloneDetectionPerturbedCopy() throws {
+        let source = try makeCloneFixture(perturbed: true)
+        let output = try #require(AnalysisPixelViewRenderer.render(source, mode: .cloneDetection))
+        #expect(try renderedBytes(output) != renderedBytes(source))
+    }
+
+    private func makeCloneFixture(perturbed: Bool) throws -> CGImage {
+        var bytes = [UInt8](repeating: 96, count: 64 * 48 * 4)
+        for i in stride(from: 3, to: bytes.count, by: 4) { bytes[i] = 255 }
+        for y in 0..<16 { for x in 0..<16 {
+            let value = 32 + ((x * 37 + y * 53 + x * y * 7) % 180)
+            for (offsetX, offsetY, adjustment) in [(4, 4, 0), (36, 20, perturbed ? 3 : 0)] {
+                let i = ((y + offsetY) * 64 + x + offsetX) * 4
+                for channel in 0..<3 { bytes[i + channel] = UInt8(value + adjustment) }
+            }
+        }}
+        let context = try #require(CGContext(
+            data: &bytes, width: 64, height: 48, bitsPerComponent: 8, bytesPerRow: 256,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try #require(context.makeImage())
+    }
+
     @Test("normal view preserves the source image")
     func normalPreservesSource() throws {
         let source = try makeSourceImage(red: 0.8, green: 0.4, blue: 0.2, alpha: 0.75)

@@ -9,16 +9,19 @@ import Foundation
 nonisolated struct AnalysisDerivedViewCacheKey: Hashable, Sendable {
     let sourceIdentifier: String
     let mode: AnalysisPixelViewMode
+    let levelSweepCenter: Int
     let pixelWidth: Int
     let pixelHeight: Int
 
     init(
         sourceIdentifier: String,
         mode: AnalysisPixelViewMode,
-        source: CGImage
+        source: CGImage,
+        levelSweepCenter: Int = 128
     ) {
         self.sourceIdentifier = sourceIdentifier
         self.mode = mode
+        self.levelSweepCenter = mode == .levelSweep ? min(255, max(0, levelSweepCenter)) : 128
         pixelWidth = source.width
         pixelHeight = source.height
     }
@@ -234,7 +237,9 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
         let renderer = renderer
         let renderTask = Task.detached(priority: .utility) { () -> CGImage? in
             guard !Task.isCancelled else { return nil }
-            let rendered = renderer(source, mode)
+            let rendered = mode == .levelSweep
+                ? AnalysisPixelViewRenderer.renderForensicView(source, mode: mode, level: key.levelSweepCenter)
+                : renderer(source, mode)
             return Task.isCancelled ? nil : rendered
         }
         let renderID = renderRegistry.insert(renderTask)

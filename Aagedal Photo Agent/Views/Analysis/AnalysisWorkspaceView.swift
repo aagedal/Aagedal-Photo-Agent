@@ -6,12 +6,14 @@ private enum AnalysisPixelInspectorSection: String, CaseIterable {
     case evidence
     case scopes
     case layers
+    case metadata
 
     var label: String {
         switch self {
         case .evidence: "Evidence"
         case .scopes: "Scopes"
         case .layers: "Layers"
+        case .metadata: "Metadata"
         }
     }
 }
@@ -23,6 +25,9 @@ struct AnalysisWorkspaceView: View {
     private static let googleSynthIDCheckURL = URL(
         string: "https://gemini.google.com/"
     )!
+    private static let imageWhispererURL = URL(
+        string: "https://imagewhisperer.org/"
+    )!
 
     @Bindable var model: AnalysisWorkspaceModel
     let folderImages: [ImageFile]
@@ -30,6 +35,8 @@ struct AnalysisWorkspaceView: View {
     let onSelectImage: (ImageFile) -> Void
     let onOpenImportedProject: (URL) -> Void
     let onClose: () -> Void
+    @State private var metadataNoteRequest: AnalysisMetadataNoteRequest?
+    @State private var isVerificationToolsPresented = false
     @State private var selectedFindingID: String?
     @State private var isLoupeEnabled = true
     @State private var pixelInspectionSample: ImageInspectionSample?
@@ -38,6 +45,11 @@ struct AnalysisWorkspaceView: View {
     @State private var selectedScopeRegion: CGRect?
     @State private var scopeWorkspaceState = AnalysisScopeWorkspaceState()
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
+    @State private var levelSweepCenter = 128.0
+    @State private var comparisonPixelMode: AnalysisPixelViewMode?
+    @State private var pixelComparisonLayout: ComparisonLayout = .sideBySide
+    @State private var pixelWipePosition: CGFloat = 0.5
+    @State private var pixelWipeAngle: CGFloat = 0
     @State private var pixelInspectorSection: AnalysisPixelInspectorSection = .evidence
     @State private var photoAnnotationTool: AnalysisAnnotationTool = .select
     @State private var mapAnnotationTool: AnalysisAnnotationTool = .select
@@ -97,6 +109,17 @@ struct AnalysisWorkspaceView: View {
                     isTimestampEditorPresented = false
                 },
                 onCancel: { isTimestampEditorPresented = false }
+            )
+        }
+        .sheet(item: $metadataNoteRequest) { request in
+            AnalysisMetadataNoteEditor(
+                request: request,
+                onSave: { observation in
+                    guard model.analysisCase?.id == request.caseID, !model.sourceChanged else { return }
+                    model.setObservation(observation)
+                    metadataNoteRequest = nil
+                },
+                onCancel: { metadataNoteRequest = nil }
             )
         }
         .sheet(isPresented: $isObservationEditorPresented) {
@@ -210,6 +233,7 @@ struct AnalysisWorkspaceView: View {
             resetForSourceChange()
         }
         .onChange(of: model.analysisCase?.id) {
+            metadataNoteRequest = nil
             selectedAnnotationID = nil
             selectedMapAnnotationID = nil
             cancelRenderedExports()
@@ -330,8 +354,20 @@ struct AnalysisWorkspaceView: View {
                 .fixedSize()
                 .disabled(model.analysisCase == nil)
                 .help(
-                    "Choose a geometry-preserving channel, alpha, edge, or compression view"
+                    "Choose a channel, alpha, edge, compression, noise, level sweep, or clone view"
                 )
+            }
+
+            if model.workspaceMode == .pixelAnalysis {
+                Toggle(isOn: Binding(
+                    get: { comparisonPixelMode != nil },
+                    set: { comparisonPixelMode = $0 ? .normal : nil }
+                )) {
+                    Label("Compare", systemImage: "rectangle.split.2x1")
+                }
+                .toggleStyle(.button)
+                .disabled(model.analysisCase == nil)
+                .help("Compare two pixel view modes with linked zoom and pan")
             }
 
             Toggle(isOn: $isLoupeEnabled) {
@@ -342,6 +378,8 @@ struct AnalysisWorkspaceView: View {
             .accessibilityHint("Press Z while pointing at the image to toggle the loupe")
 
             Spacer()
+
+            externalVerificationLinks
 
             if let reportExportProgress {
                 ProgressView(value: reportExportProgress)
@@ -831,6 +869,8 @@ struct AnalysisWorkspaceView: View {
                     analysisDetail
                         .frame(minHeight: 210, idealHeight: 340)
                 }
+            case .metadata:
+                sourceFactsDetail
             case .scopes:
                 AnalysisScopeWorkspace(
                     sourceImage: displayedScopeImage,
@@ -1054,6 +1094,7 @@ struct AnalysisWorkspaceView: View {
 
                 Button {
                     selectedFindingID = nil
+                    if model.workspaceMode == .pixelAnalysis { pixelInspectorSection = .metadata }
                 } label: {
                     HStack {
                         Label("Source Facts", systemImage: "checkmark.shield")
@@ -1065,8 +1106,6 @@ struct AnalysisWorkspaceView: View {
                 .buttonStyle(.plain)
                 .padding(.vertical, 4)
                 .accessibilityLabel("Source Facts")
-
-                watermarkCheckLinks
 
                 if !model.findings.isEmpty {
                     Text("FINDINGS")
@@ -1138,39 +1177,151 @@ struct AnalysisWorkspaceView: View {
         .padding(14)
     }
 
-    private var watermarkCheckLinks: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("WATERMARK CHECKS")
-                .font(.caption.weight(.semibold))
+    private var externalVerificationLinks: some View {
+        Button {
+            isVerificationToolsPresented = true
+        } label: {
+            Image(systemName: "checkmark.shield")
+        }
+        .accessibilityLabel("External Verification Tools")
+        .help("External verification tools: source search, provenance, and image forensics")
+        .popover(isPresented: $isVerificationToolsPresented, arrowEdge: .trailing) {
+            verificationToolsPopover
+        }
+    }
+
+    private var verificationToolsPopover: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("External Verification Tools")
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        isVerificationToolsPresented = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close verification tools")
+                }
+
+                verificationToolsHeading("Source and context")
+                verificationToolLink("TinEye", url: URL(string: "https://tineye.com/")!,
+                                     description: "Find matching images and earlier uses online.")
+                verificationToolLink("Google Lens", url: URL(string: "https://lens.google/")!,
+                                     description: "Find related images, objects, and location clues.")
+
+                Divider()
+                verificationToolsHeading("Provenance and watermarks")
+                verificationToolLink("Content Credentials Verify",
+                                     url: URL(string: "https://verify.contentauthenticity.org/")!,
+                                     description: "Inspect signed C2PA provenance and editing history when available.")
+                verificationToolLink("Check Meta Content Seal", url: Self.metaContentSealCheckURL,
+                                     description: "Open Meta’s official identification page.")
+                verificationToolLink("Check SynthID in Gemini", url: Self.googleSynthIDCheckURL,
+                                     description: "Upload an image in Gemini and ask whether it contains SynthID.")
+
+                Divider()
+                verificationToolsHeading("Manipulation analysis")
+                verificationToolLink("ImageWhisperer", url: Self.imageWhispererURL,
+                                     description: "Investigate possible AI generation or image manipulation.")
+                verificationToolLink("Forensically", url: URL(string: "https://29a.ch/photo-forensics/")!,
+                                     description: "Inspect clone patterns, noise, compression, and metadata in your browser.")
+
+                Divider()
+                Text("Results are supporting evidence, not proof of authenticity. Missing credentials or watermarks do not establish manipulation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Links open the provider’s site. Photo Agent does not upload the image; you choose what to share there.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(20)
+        }
+        .frame(width: 380, height: 580)
+    }
+
+    private func verificationToolsHeading(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func verificationToolLink(_ title: String, url: URL, description: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Link(destination: url) {
+                Label(title, systemImage: "arrow.up.right.square")
+            }
+            .help(description)
+            Text(description)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-
-            Link(destination: Self.metaContentSealCheckURL) {
-                Label("Check Meta Content Seal", systemImage: "arrow.up.right.square")
-            }
-            .help("Open Meta's official identification page")
-
-            Link(destination: Self.googleSynthIDCheckURL) {
-                Label("Check SynthID in Gemini", systemImage: "arrow.up.right.square")
-            }
-            .help("Open Gemini, then upload the image and ask whether it contains SynthID")
-
-            Text("Opens the provider’s site. Photo Agent does not upload the image; you choose what to share there.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .contain)
     }
 
     private func sourcePreview(showMarkupToolbar: Bool) -> some View {
         VStack(spacing: 10) {
+            if model.workspaceMode == .pixelAnalysis, comparisonPixelMode != nil {
+                HStack(spacing: 10) {
+                    Text("Compare with").font(.caption)
+                    Picker("Comparison pixel view", selection: Binding(
+                        get: { comparisonPixelMode ?? .normal },
+                        set: { comparisonPixelMode = $0 }
+                    )) {
+                        ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 200)
+                    Picker("Comparison layout", selection: $pixelComparisonLayout) {
+                        Text("Side by Side").tag(ComparisonLayout.sideBySide)
+                        Text("Stacked").tag(ComparisonLayout.stacked)
+                        Text("Wipe").tag(ComparisonLayout.wipe)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    if pixelComparisonLayout == .wipe {
+                        Slider(value: $pixelWipePosition, in: 0...1)
+                            .frame(width: 110)
+                            .accessibilityLabel("Wipe position")
+                        Slider(value: $pixelWipeAngle, in: -180...180)
+                            .frame(width: 90)
+                            .accessibilityLabel("Wipe angle")
+                        Text("\(Int(pixelWipeAngle))°").font(.caption.monospacedDigit())
+                    }
+                }
+                .padding(.horizontal, 10)
+                if let comparisonPixelMode, comparisonPixelMode != .normal {
+                    Text("Comparison: \(comparisonPixelMode.methodLabel)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if let limitation = comparisonPixelMode.limitationLabel {
+                        Text(limitation).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if pixelViewMode != .normal {
                 Text(pixelViewMode.methodLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .accessibilityLabel("Pixel view method: \(pixelViewMode.methodLabel)")
+            }
+
+            if pixelViewMode == .levelSweep || comparisonPixelMode == .levelSweep {
+                HStack {
+                    Text("Brightness window")
+                        .font(.caption)
+                    Slider(value: $levelSweepCenter, in: 0...255, step: 1)
+                        .accessibilityLabel("Level sweep brightness center")
+                    Text("\(Int(levelSweepCenter))/255")
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 60, alignment: .trailing)
+                }
             }
 
             if let limitation = pixelViewMode.limitationLabel {
@@ -1185,6 +1336,11 @@ struct AnalysisWorkspaceView: View {
                 url: model.sourceURL,
                 representation: model.displayPreference,
                 pixelViewMode: pixelViewMode,
+                levelSweepCenter: Int(levelSweepCenter),
+                comparisonPixelMode: model.workspaceMode == .pixelAnalysis ? comparisonPixelMode : nil,
+                comparisonLayout: pixelComparisonLayout,
+                wipePosition: $pixelWipePosition,
+                wipeAngle: pixelWipeAngle,
                 developSettings: model.developSettings,
                 sourceOrientation: model.sourceOrientation,
                 displayTransform: model.displayTransform,
@@ -1405,6 +1561,30 @@ struct AnalysisWorkspaceView: View {
     }
 
     @ViewBuilder
+    private var sourceFactsDetail: some View {
+        SourceFactsDetailView(
+            facts: model.sourceFacts,
+            rawMetadata: model.rawMetadata,
+            run: model.sourceFactsRun,
+            isReadOnly: model.sourceChanged || model.analysisCase == nil,
+            onAddMetadataNote: { field, value in
+                guard let analysisCase = model.analysisCase, !model.sourceChanged else { return }
+                metadataNoteRequest = AnalysisMetadataNoteRequest(
+                    caseID: analysisCase.id,
+                    sourceName: model.sourceFacts?.filename ?? model.sourceURL?.lastPathComponent ?? "Source",
+                    field: field,
+                    value: value
+                )
+            },
+            onCancel: {
+                if let id = model.sourceFactsRun?.analyzerID { model.cancelAnalyzer(id) }
+            },
+            onRetry: {
+                if let id = model.sourceFactsRun?.analyzerID { model.retryAnalyzer(id) }
+            }
+        )
+    }
+
     private var analysisDetail: some View {
         VStack(spacing: 0) {
             Group {
@@ -1430,21 +1610,15 @@ struct AnalysisWorkspaceView: View {
                         }
                     )
                 } else {
-                    SourceFactsDetailView(
-                        facts: model.sourceFacts,
-                        rawMetadata: model.rawMetadata,
-                        run: model.sourceFactsRun,
-                        onCancel: {
-                            if let id = model.sourceFactsRun?.analyzerID {
-                                model.cancelAnalyzer(id)
-                            }
-                        },
-                        onRetry: {
-                            if let id = model.sourceFactsRun?.analyzerID {
-                                model.retryAnalyzer(id)
-                            }
-                        }
-                    )
+                    if model.workspaceMode == .pixelAnalysis {
+                        ContentUnavailableView(
+                            "Select a Finding",
+                            systemImage: "doc.text.magnifyingglass",
+                            description: Text("Select a finding to inspect its evidence, or open the Metadata tab for source facts.")
+                        )
+                    } else {
+                        sourceFactsDetail
+                    }
                 }
             }
             .frame(maxHeight: .infinity)
@@ -2641,6 +2815,60 @@ private struct AnalysisTimestampEditor: View {
     }
 }
 
+private struct AnalysisMetadataNoteRequest: Identifiable {
+    let id = UUID()
+    let caseID: UUID
+    let sourceName: String
+    let field: String
+    let value: String
+}
+
+private struct AnalysisMetadataNoteEditor: View {
+    let request: AnalysisMetadataNoteRequest
+    let onSave: (AnalysisObservation) -> Void
+    let onCancel: () -> Void
+    @State private var comment = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Metadata to Case Note")
+                .font(.headline)
+            Text(request.sourceName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(request.field).font(.subheadline.weight(.semibold))
+                    Text(request.value).textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 160)
+            Text("Comment (optional)").font(.subheadline)
+            TextEditor(text: $comment)
+                .frame(height: 120)
+                .border(Color.secondary.opacity(0.3))
+                .accessibilityLabel("Metadata case note comment")
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Add Note") {
+                    let trimmed = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let evidence = "Source: \(request.sourceName)\n\(request.field): \(request.value)"
+                    onSave(AnalysisObservation(
+                        title: "Metadata: \(request.field)",
+                        note: evidence + (trimmed.isEmpty ? "" : "\n\nComment: \(trimmed)")
+                    ))
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
 private struct AnalysisObservationEditor: View {
     let onSave: (AnalysisObservation) -> Void
     let onCancel: () -> Void
@@ -3074,6 +3302,8 @@ private struct SourceFactsDetailView: View {
     let facts: AnalysisSourceFacts?
     let rawMetadata: [AnalysisRawMetadataEntry]
     let run: AnalysisAnalyzerRun?
+    let isReadOnly: Bool
+    let onAddMetadataNote: (String, String) -> Void
     let onCancel: () -> Void
     let onRetry: () -> Void
 
@@ -3155,6 +3385,13 @@ private struct SourceFactsDetailView: View {
                                         .textSelection(.enabled)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .contextMenu {
+                                    Button("Add to Case Note…", systemImage: "note.text.badge.plus") {
+                                        onAddMetadataNote("\(entry.namespace) · \(entry.key)", entry.value)
+                                    }
+                                    .disabled(isReadOnly)
+                                }
                             }
                         }
                         .padding(.top, 8)
@@ -3195,6 +3432,13 @@ private struct SourceFactsDetailView: View {
                     .textSelection(.enabled)
             }
             .font(.caption)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button("Add to Case Note…", systemImage: "note.text.badge.plus") {
+                    onAddMetadataNote(label, value)
+                }
+                .disabled(isReadOnly)
+            }
         }
     }
 
@@ -3397,6 +3641,11 @@ private struct AnalysisSourceThumbnail: View {
     let url: URL?
     let representation: AnalysisSourceRepresentation
     let pixelViewMode: AnalysisPixelViewMode
+    let levelSweepCenter: Int
+    let comparisonPixelMode: AnalysisPixelViewMode?
+    let comparisonLayout: ComparisonLayout
+    @Binding var wipePosition: CGFloat
+    let wipeAngle: CGFloat
     let developSettings: CameraRawSettings?
     let sourceOrientation: Int
     let displayTransform: DisplayImageTransform?
@@ -3422,6 +3671,8 @@ private struct AnalysisSourceThumbnail: View {
     @State private var sourceCGImage: CGImage?
     @State private var sourceImage: NSImage?
     @State private var image: NSImage?
+    @State private var comparisonImage: NSImage?
+    @State private var loadedComparisonKey: AnalysisDerivedViewCacheKey?
     @State private var loupeSourceIdentity: SourcePreviewIdentity?
     @State private var loupeSourceCGImage: CGImage?
     @State private var loupeLoadFailedIdentity: SourcePreviewIdentity?
@@ -3457,24 +3708,8 @@ private struct AnalysisSourceThumbnail: View {
                         .opacity(0.16)
                     ZStack {
                     if let image {
-                    if pixelViewMode == .compressionResidual, let sourceImage {
-                        HStack(spacing: 8) {
-                            analysisImagePane(
-                                fullResolutionReferenceImage ?? sourceImage,
-                                label: "Reference"
-                            )
-                            analysisImagePane(
-                                displayedZoomedImage ?? image,
-                                label: "Compression Residual"
-                            )
-                        }
-                    } else {
-                        analysisImagePane(
-                            displayedZoomedImage ?? image,
-                            label: pixelViewMode.displayName,
-                            showsLabel: false
-                        )
-                    }
+                    pixelImageContent(image)
+
 
                     if let inspectionSample {
                         ForEach(
@@ -3792,6 +4027,7 @@ private struct AnalysisSourceThumbnail: View {
                 url: url,
                 representation: representation,
                 pixelViewMode: pixelViewMode,
+                levelSweepCenter: levelSweepCenter,
                 sourceOrientation: sourceOrientation,
                 renderToken: FullScreenImageCache.renderToken(
                     settings: developSettings,
@@ -3799,11 +4035,7 @@ private struct AnalysisSourceThumbnail: View {
                 )
             )
         ) {
-            image = nil
-            resetZoom()
-            cancelPolygonDraft()
-            onImageLoaded(nil)
-            guard let url else { return }
+            guard let url else { image = nil; onImageLoaded(nil); return }
             let sourceIdentity = SourcePreviewIdentity(
                 url: url,
                 representation: representation,
@@ -3813,6 +4045,13 @@ private struct AnalysisSourceThumbnail: View {
                     isEdited: representation == .developed
                 )
             )
+            if loadedSourceIdentity != sourceIdentity {
+                image = nil
+                comparisonImage = nil
+                resetZoom()
+                cancelPolygonDraft()
+                onImageLoaded(nil)
+            }
             let loadedImage: NSImage
             let source: CGImage
             if loadedSourceIdentity == sourceIdentity,
@@ -3868,7 +4107,8 @@ private struct AnalysisSourceThumbnail: View {
             let cacheKey = AnalysisDerivedViewCacheKey(
                 sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
                 mode: mode,
-                source: source
+                source: source,
+                levelSweepCenter: levelSweepCenter
             )
             let rendered = await AnalysisDerivedViewService.shared.image(
                 for: cacheKey,
@@ -3879,6 +4119,18 @@ private struct AnalysisSourceThumbnail: View {
                 ? loadedImage
                 : NSImage(cgImage: rendered, size: loadedImage.size)
             onImageLoaded(rendered)
+        }
+        .task(id: comparisonRenderKey) {
+            guard let key = comparisonRenderKey,
+                  let source = comparisonRenderSource else {
+                comparisonImage = nil
+                loadedComparisonKey = nil
+                return
+            }
+            let rendered = await AnalysisDerivedViewService.shared.image(for: key, source: source)
+            guard !Task.isCancelled, let rendered else { return }
+            comparisonImage = NSImage(cgImage: rendered, size: NSSize(width: rendered.width, height: rendered.height))
+            loadedComparisonKey = key
         }
         .task(id: loupeLoadIdentity) {
             guard let identity = loupeLoadIdentity,
@@ -3918,7 +4170,8 @@ private struct AnalysisSourceThumbnail: View {
             let key = AnalysisDerivedViewCacheKey(
                 sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
                 mode: identity.pixelViewMode,
-                source: source
+                source: source,
+                levelSweepCenter: identity.levelSweepCenter
             )
             let rendered = await AnalysisDerivedViewService.shared.image(for: key, source: source)
             guard !Task.isCancelled, let rendered else { return }
@@ -3955,6 +4208,7 @@ private struct AnalysisSourceThumbnail: View {
             url: source.url,
             representation: source.representation,
             pixelViewMode: pixelViewMode,
+            levelSweepCenter: levelSweepCenter,
             sourceOrientation: source.sourceOrientation,
             renderToken: source.renderToken
         )
@@ -3966,9 +4220,79 @@ private struct AnalysisSourceThumbnail: View {
         return zoomedImage
     }
 
-    private var fullResolutionReferenceImage: NSImage? {
-        guard zoomedPreviewIdentity != nil, let source = loupeSourceCGImage else { return nil }
-        return NSImage(cgImage: source, size: NSSize(width: source.width, height: source.height))
+    private var comparisonRenderSource: CGImage? {
+        if zoomScale > 1, loupeSourceIdentity == loupeLoadIdentity,
+           let source = loupeSourceCGImage { return source }
+        return sourceCGImage
+    }
+
+    private var comparisonRenderKey: AnalysisDerivedViewCacheKey? {
+        guard let mode = comparisonPixelMode, let source = comparisonRenderSource,
+              let identity = loadedSourceIdentity else { return nil }
+        return AnalysisDerivedViewCacheKey(sourceIdentifier: identity.derivedViewCacheIdentifier,
+                                           mode: mode, source: source, levelSweepCenter: levelSweepCenter)
+    }
+
+    @ViewBuilder
+    private func pixelImageContent(_ primary: NSImage) -> some View {
+        let primaryImage = displayedZoomedImage ?? primary
+        if let mode = comparisonPixelMode {
+            switch comparisonLayout {
+            case .sideBySide:
+                HStack(spacing: 8) {
+                    analysisImagePane(primaryImage, label: pixelViewMode.displayName)
+                    comparisonImagePane(mode)
+                }
+            case .stacked:
+                VStack(spacing: 8) {
+                    analysisImagePane(primaryImage, label: pixelViewMode.displayName)
+                    comparisonImagePane(mode)
+                }
+            case .wipe:
+                ZStack {
+                    analysisImagePane(primaryImage, label: pixelViewMode.displayName, showsLabel: false)
+                    comparisonImagePane(mode, showsLabel: false)
+                        .mask(ComparisonWipeMask(position: wipePosition, angleDegrees: wipeAngle))
+                    GeometryReader { geometry in
+                        let rect = CGRect(origin: .zero, size: geometry.size)
+                        ComparisonWipeDivider(position: wipePosition, angleDegrees: wipeAngle)
+                            .stroke(.white, lineWidth: 2)
+                            .overlay {
+                                ComparisonWipeDivider(position: wipePosition, angleDegrees: wipeAngle)
+                                    .stroke(.white.opacity(0.001), lineWidth: 24)
+                                    .contentShape(ComparisonWipeDivider(position: wipePosition, angleDegrees: wipeAngle).stroke(lineWidth: 24))
+                                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                                        wipePosition = ComparisonWipeGeometry.position(
+                                            for: value.location, in: rect, angleDegrees: wipeAngle
+                                        )
+                                    })
+                                    .help("Drag to move the wipe")
+                            }
+                    }
+                    VStack {
+                        HStack {
+                            Text(mode.displayName)
+                            Spacer()
+                            Text(pixelViewMode.displayName)
+                        }
+                        .font(.caption).padding(6).background(.ultraThinMaterial)
+                        Spacer()
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+        } else {
+            analysisImagePane(primaryImage, label: pixelViewMode.displayName, showsLabel: false)
+        }
+    }
+
+    @ViewBuilder
+    private func comparisonImagePane(_ mode: AnalysisPixelViewMode, showsLabel: Bool = true) -> some View {
+        if loadedComparisonKey == comparisonRenderKey, let comparisonImage {
+            analysisImagePane(comparisonImage, label: mode.displayName, showsLabel: showsLabel)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
     private func setZoom(
@@ -4181,7 +4505,12 @@ private struct AnalysisSourceThumbnail: View {
 
     private func paneRects(in containerSize: CGSize) -> [CGRect] {
         let bounds = CGRect(origin: .zero, size: containerSize)
-        guard pixelViewMode == .compressionResidual else { return [bounds] }
+        guard comparisonPixelMode != nil, comparisonLayout != .wipe else { return [bounds] }
+        if comparisonLayout == .stacked {
+            let height = max(0, (containerSize.height - 8) / 2)
+            return [CGRect(x: 0, y: 0, width: containerSize.width, height: height),
+                    CGRect(x: 0, y: height + 8, width: containerSize.width, height: height)]
+        }
         let gap: CGFloat = 8
         let paneWidth = max(0, (containerSize.width - gap) / 2)
         return [
@@ -4511,6 +4840,7 @@ private struct PreviewIdentity: Hashable {
     let url: URL?
     let representation: AnalysisSourceRepresentation
     let pixelViewMode: AnalysisPixelViewMode
+    let levelSweepCenter: Int
     let sourceOrientation: Int
     let renderToken: String?
 }

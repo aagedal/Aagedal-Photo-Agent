@@ -1363,7 +1363,7 @@ private struct ComparisonImageLayer: View {
     }
 }
 
-nonisolated private struct ComparisonWipeMask: Shape {
+nonisolated struct ComparisonWipeMask: Shape {
     var position: CGFloat
     var angleDegrees: CGFloat
 
@@ -1390,7 +1390,7 @@ nonisolated private struct ComparisonWipeMask: Shape {
     }
 }
 
-nonisolated private struct ComparisonWipeDivider: Shape {
+nonisolated struct ComparisonWipeDivider: Shape {
     var position: CGFloat
     var angleDegrees: CGFloat
 
