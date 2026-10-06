@@ -45,8 +45,11 @@ struct AnalysisWorkspaceView: View {
     @State private var selectedScopeRegion: CGRect?
     @State private var scopeWorkspaceState = AnalysisScopeWorkspaceState()
     @State private var pixelViewMode: AnalysisPixelViewMode = .normal
+    @State private var pixelChannel: AnalysisPixelChannel = .rgb
     @State private var levelSweepCenter = 128.0
+    @State private var isLevelSweepEditing = false
     @State private var comparisonPixelMode: AnalysisPixelViewMode?
+    @State private var comparisonPixelChannel: AnalysisPixelChannel = .rgb
     @State private var pixelComparisonLayout: ComparisonLayout = .sideBySide
     @State private var pixelWipePosition: CGFloat = 0.5
     @State private var pixelWipeAngle: CGFloat = 0
@@ -277,6 +280,7 @@ struct AnalysisWorkspaceView: View {
         selectedScopeRegion = nil
         scopeSourceMode = .fullImage
         pixelViewMode = .normal
+        pixelChannel = .rgb
         selectedAnnotationID = nil
         selectedMapAnnotationID = nil
         mapDraftCoordinateCount = 0
@@ -340,12 +344,22 @@ struct AnalysisWorkspaceView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityLabel("Analysis Mode")
-            .frame(maxWidth: 280)
+            .fixedSize(horizontal: true, vertical: false)
             .disabled(model.analysisCase == nil)
 
             if model.workspaceMode == .pixelAnalysis {
+                Picker("Channel", selection: $pixelChannel) {
+                    ForEach(AnalysisPixelChannel.allCases, id: \.self) { channel in
+                        Text(channel.displayName).tag(channel)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                .disabled(model.analysisCase == nil || pixelViewMode == .alpha)
+                .help("Analyze RGB or an individual channel; Alpha shows source coverage")
+
                 Picker("Pixel View", selection: $pixelViewMode) {
-                    ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
+                    ForEach(AnalysisPixelViewMode.analysisModes, id: \.self) { mode in
                         Text(mode.displayName)
                             .tag(mode)
                     }
@@ -354,7 +368,7 @@ struct AnalysisWorkspaceView: View {
                 .fixedSize()
                 .disabled(model.analysisCase == nil)
                 .help(
-                    "Choose a channel, alpha, edge, compression, noise, level sweep, or clone view"
+                    "Choose an alpha, edge, compression, noise, level sweep, or clone view"
                 )
             }
 
@@ -1267,17 +1281,26 @@ struct AnalysisWorkspaceView: View {
         VStack(spacing: 10) {
             if model.workspaceMode == .pixelAnalysis, comparisonPixelMode != nil {
                 HStack(spacing: 10) {
-                    Text("Compare with").font(.caption)
+                    Text("Compare").font(.caption)
+                        .fixedSize()
                     Picker("Comparison pixel view", selection: Binding(
                         get: { comparisonPixelMode ?? .normal },
                         set: { comparisonPixelMode = $0 }
                     )) {
-                        ForEach(AnalysisPixelViewMode.allCases, id: \.self) { mode in
+                        ForEach(AnalysisPixelViewMode.analysisModes, id: \.self) { mode in
                             Text(mode.displayName).tag(mode)
                         }
                     }
                     .labelsHidden()
                     .frame(maxWidth: 200)
+                    Picker("Comparison channel", selection: $comparisonPixelChannel) {
+                        ForEach(AnalysisPixelChannel.allCases, id: \.self) { channel in
+                            Text(channel.displayName).tag(channel)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 120)
+                    .disabled(comparisonPixelMode == .alpha)
                     Picker("Comparison layout", selection: $pixelComparisonLayout) {
                         Text("Side by Side").tag(ComparisonLayout.sideBySide)
                         Text("Stacked").tag(ComparisonLayout.stacked)
@@ -1296,16 +1319,16 @@ struct AnalysisWorkspaceView: View {
                     }
                 }
                 .padding(.horizontal, 10)
-                if let comparisonPixelMode, comparisonPixelMode != .normal {
-                    Text("Comparison: \(comparisonPixelMode.methodLabel)")
+                if let comparisonPixelMode, comparisonPixelMode != .normal || comparisonPixelChannel != .rgb {
+                    Text("Comparison: \(comparisonPixelChannel.displayName) · \(comparisonPixelMode.methodLabel)")
                         .font(.caption2).foregroundStyle(.secondary)
                     if let limitation = comparisonPixelMode.limitationLabel {
                         Text(limitation).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
-            if pixelViewMode != .normal {
-                Text(pixelViewMode.methodLabel)
+            if pixelViewMode != .normal || pixelChannel != .rgb {
+                Text("\(pixelChannel.displayName) · \(pixelViewMode.methodLabel)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -1316,7 +1339,7 @@ struct AnalysisWorkspaceView: View {
                 HStack {
                     Text("Brightness window")
                         .font(.caption)
-                    Slider(value: $levelSweepCenter, in: 0...255, step: 1)
+                    Slider(value: $levelSweepCenter, in: 0...255, step: 1, onEditingChanged: { isLevelSweepEditing = $0 })
                         .accessibilityLabel("Level sweep brightness center")
                     Text("\(Int(levelSweepCenter))/255")
                         .font(.caption.monospacedDigit())
@@ -1336,8 +1359,11 @@ struct AnalysisWorkspaceView: View {
                 url: model.sourceURL,
                 representation: model.displayPreference,
                 pixelViewMode: pixelViewMode,
+                pixelChannel: pixelChannel,
                 levelSweepCenter: Int(levelSweepCenter),
+                isLevelSweepEditing: isLevelSweepEditing,
                 comparisonPixelMode: model.workspaceMode == .pixelAnalysis ? comparisonPixelMode : nil,
+                comparisonPixelChannel: comparisonPixelChannel,
                 comparisonLayout: pixelComparisonLayout,
                 wipePosition: $pixelWipePosition,
                 wipeAngle: pixelWipeAngle,
@@ -3641,8 +3667,11 @@ private struct AnalysisSourceThumbnail: View {
     let url: URL?
     let representation: AnalysisSourceRepresentation
     let pixelViewMode: AnalysisPixelViewMode
+    let pixelChannel: AnalysisPixelChannel
     let levelSweepCenter: Int
+    let isLevelSweepEditing: Bool
     let comparisonPixelMode: AnalysisPixelViewMode?
+    let comparisonPixelChannel: AnalysisPixelChannel
     let comparisonLayout: ComparisonLayout
     @Binding var wipePosition: CGFloat
     let wipeAngle: CGFloat
@@ -3671,12 +3700,16 @@ private struct AnalysisSourceThumbnail: View {
     @State private var sourceCGImage: CGImage?
     @State private var sourceImage: NSImage?
     @State private var image: NSImage?
+    @State private var previewFailed = false
     @State private var comparisonImage: NSImage?
     @State private var loadedComparisonKey: AnalysisDerivedViewCacheKey?
+    @State private var failedComparisonKey: AnalysisDerivedViewCacheKey?
     @State private var loupeSourceIdentity: SourcePreviewIdentity?
     @State private var loupeSourceCGImage: CGImage?
     @State private var loupeLoadFailedIdentity: SourcePreviewIdentity?
     @State private var zoomedImage: NSImage?
+    @State private var inspectionViewCGImage: CGImage?
+    @State private var inspectionRenderFailedIdentity: PreviewIdentity?
     @State private var loadedZoomedPreviewIdentity: PreviewIdentity?
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDraft: CGRect?
@@ -3774,6 +3807,9 @@ private struct AnalysisSourceThumbnail: View {
                         }
                     }
 
+                    } else if previewFailed {
+                        ContentUnavailableView("Analysis Preview Unavailable", systemImage: "photo.badge.exclamationmark",
+                                               description: Text("Try another analysis mode or source representation."))
                     } else {
                         ProgressView()
                             .tint(.white)
@@ -3907,10 +3943,11 @@ private struct AnalysisSourceThumbnail: View {
 
                 if isLoupeEnabled, let inspectionSample {
                     AnalysisTruePixelLoupe(
-                        sourceImage: loupeSourceIdentity == loupeLoadIdentity
-                            ? loupeSourceCGImage
-                            : nil,
-                        isUnavailable: loupeLoadFailedIdentity == loupeLoadIdentity,
+                        sourceImage: loupeViewImage,
+                        isUnavailable: loupeLoadFailedIdentity == loupeLoadIdentity
+                            || (inspectionRenderFailedIdentity != nil && inspectionRenderFailedIdentity == zoomedPreviewIdentity),
+                        viewLabel: pixelViewLabel(pixelViewMode, channel: pixelChannel),
+                        isBoundedPreview: [.compressionResidual, .noiseResidual, .levelSweep, .cloneDetection].contains(pixelViewMode),
                         normalizedDisplayPoint: inspectionSample.normalizedDisplayPoint,
                         sourcePixel: inspectionSample.sourcePixel,
                         representation: representation,
@@ -4027,7 +4064,9 @@ private struct AnalysisSourceThumbnail: View {
                 url: url,
                 representation: representation,
                 pixelViewMode: pixelViewMode,
-                levelSweepCenter: levelSweepCenter,
+                pixelChannel: pixelChannel,
+                levelSweepCenter: pixelViewMode == .levelSweep ? levelSweepCenter : 128,
+                isLevelSweepEditing: pixelViewMode == .levelSweep && isLevelSweepEditing,
                 sourceOrientation: sourceOrientation,
                 renderToken: FullScreenImageCache.renderToken(
                     settings: developSettings,
@@ -4035,6 +4074,7 @@ private struct AnalysisSourceThumbnail: View {
                 )
             )
         ) {
+            previewFailed = false
             guard let url else { image = nil; onImageLoaded(nil); return }
             let sourceIdentity = SourcePreviewIdentity(
                 url: url,
@@ -4108,19 +4148,28 @@ private struct AnalysisSourceThumbnail: View {
                 sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
                 mode: mode,
                 source: source,
-                levelSweepCenter: levelSweepCenter
+                levelSweepCenter: levelSweepCenter,
+                channel: pixelChannel,
+                isInteracting: isLevelSweepEditing
             )
             let rendered = await AnalysisDerivedViewService.shared.image(
                 for: cacheKey,
                 source: source
             )
-            guard !Task.isCancelled, let rendered else { return }
-            image = mode == .normal
+            guard !Task.isCancelled else { return }
+            guard let rendered else {
+                previewFailed = true
+                image = nil
+                onImageLoaded(nil)
+                return
+            }
+            image = mode == .normal && pixelChannel == .rgb
                 ? loadedImage
                 : NSImage(cgImage: rendered, size: loadedImage.size)
-            onImageLoaded(rendered)
+            if mode != .levelSweep || !isLevelSweepEditing { onImageLoaded(rendered) }
         }
         .task(id: comparisonRenderKey) {
+            failedComparisonKey = nil
             guard let key = comparisonRenderKey,
                   let source = comparisonRenderSource else {
                 comparisonImage = nil
@@ -4128,7 +4177,8 @@ private struct AnalysisSourceThumbnail: View {
                 return
             }
             let rendered = await AnalysisDerivedViewService.shared.image(for: key, source: source)
-            guard !Task.isCancelled, let rendered else { return }
+            guard !Task.isCancelled else { return }
+            guard let rendered else { failedComparisonKey = key; return }
             comparisonImage = NSImage(cgImage: rendered, size: NSSize(width: rendered.width, height: rendered.height))
             loadedComparisonKey = key
         }
@@ -4163,6 +4213,8 @@ private struct AnalysisSourceThumbnail: View {
         }
         .task(id: zoomedPreviewIdentity) {
             zoomedImage = nil
+            inspectionViewCGImage = nil
+            inspectionRenderFailedIdentity = nil
             loadedZoomedPreviewIdentity = nil
             guard let identity = zoomedPreviewIdentity,
                   let sourceIdentity = loupeSourceIdentity,
@@ -4171,10 +4223,14 @@ private struct AnalysisSourceThumbnail: View {
                 sourceIdentifier: sourceIdentity.derivedViewCacheIdentifier,
                 mode: identity.pixelViewMode,
                 source: source,
-                levelSweepCenter: identity.levelSweepCenter
+                levelSweepCenter: identity.levelSweepCenter,
+                channel: identity.pixelChannel,
+                isInteracting: identity.isLevelSweepEditing
             )
             let rendered = await AnalysisDerivedViewService.shared.image(for: key, source: source)
-            guard !Task.isCancelled, let rendered else { return }
+            guard !Task.isCancelled else { return }
+            guard let rendered else { inspectionRenderFailedIdentity = identity; return }
+            inspectionViewCGImage = rendered
             zoomedImage = NSImage(
                 cgImage: rendered,
                 size: NSSize(width: rendered.width, height: rendered.height)
@@ -4184,8 +4240,8 @@ private struct AnalysisSourceThumbnail: View {
     }
 
     // Keep the bounded preview for initial display and scopes, but use the loupe's
-    // original-resolution decode for the zoomed canvas. Zoom must request it even
-    // without a hover sample (for example when using a trackpad pinch).
+    // original-resolution decode for the zoomed canvas and selected-view loupe.
+    // Zoom must request it even without a hover sample (for example with a trackpad pinch).
     private var loupeLoadIdentity: SourcePreviewIdentity? {
         guard inspectionSample != nil || zoomScale > 1, let url else { return nil }
         return SourcePreviewIdentity(
@@ -4200,7 +4256,7 @@ private struct AnalysisSourceThumbnail: View {
     }
 
     private var zoomedPreviewIdentity: PreviewIdentity? {
-        guard zoomScale > 1,
+        guard zoomScale > 1 || (isLoupeEnabled && inspectionSample != nil),
               let source = loupeSourceIdentity,
               source == loupeLoadIdentity,
               loupeSourceCGImage != nil else { return nil }
@@ -4208,14 +4264,23 @@ private struct AnalysisSourceThumbnail: View {
             url: source.url,
             representation: source.representation,
             pixelViewMode: pixelViewMode,
-            levelSweepCenter: levelSweepCenter,
+            pixelChannel: pixelChannel,
+            levelSweepCenter: pixelViewMode == .levelSweep ? levelSweepCenter : 128,
+            isLevelSweepEditing: pixelViewMode == .levelSweep && isLevelSweepEditing,
             sourceOrientation: source.sourceOrientation,
             renderToken: source.renderToken
         )
     }
 
+    private var loupeViewImage: CGImage? {
+        guard loupeSourceIdentity == loupeLoadIdentity else { return nil }
+        if pixelViewMode == .normal && pixelChannel == .rgb { return loupeSourceCGImage }
+        guard let identity = zoomedPreviewIdentity, loadedZoomedPreviewIdentity == identity else { return nil }
+        return inspectionViewCGImage
+    }
+
     private var displayedZoomedImage: NSImage? {
-        guard let identity = zoomedPreviewIdentity,
+        guard zoomScale > 1, let identity = zoomedPreviewIdentity,
               loadedZoomedPreviewIdentity == identity else { return nil }
         return zoomedImage
     }
@@ -4230,7 +4295,12 @@ private struct AnalysisSourceThumbnail: View {
         guard let mode = comparisonPixelMode, let source = comparisonRenderSource,
               let identity = loadedSourceIdentity else { return nil }
         return AnalysisDerivedViewCacheKey(sourceIdentifier: identity.derivedViewCacheIdentifier,
-                                           mode: mode, source: source, levelSweepCenter: levelSweepCenter)
+                                           mode: mode, source: source, levelSweepCenter: levelSweepCenter, channel: comparisonPixelChannel,
+                                           isInteracting: isLevelSweepEditing)
+    }
+
+    private func pixelViewLabel(_ mode: AnalysisPixelViewMode, channel: AnalysisPixelChannel) -> String {
+        mode == .alpha ? mode.displayName : "\(channel.displayName) · \(mode.displayName)"
     }
 
     @ViewBuilder
@@ -4240,17 +4310,17 @@ private struct AnalysisSourceThumbnail: View {
             switch comparisonLayout {
             case .sideBySide:
                 HStack(spacing: 8) {
-                    analysisImagePane(primaryImage, label: pixelViewMode.displayName)
+                    analysisImagePane(primaryImage, label: pixelViewLabel(pixelViewMode, channel: pixelChannel))
                     comparisonImagePane(mode)
                 }
             case .stacked:
                 VStack(spacing: 8) {
-                    analysisImagePane(primaryImage, label: pixelViewMode.displayName)
+                    analysisImagePane(primaryImage, label: pixelViewLabel(pixelViewMode, channel: pixelChannel))
                     comparisonImagePane(mode)
                 }
             case .wipe:
                 ZStack {
-                    analysisImagePane(primaryImage, label: pixelViewMode.displayName, showsLabel: false)
+                    analysisImagePane(primaryImage, label: pixelViewLabel(pixelViewMode, channel: pixelChannel), showsLabel: false)
                     comparisonImagePane(mode, showsLabel: false)
                         .mask(ComparisonWipeMask(position: wipePosition, angleDegrees: wipeAngle))
                     GeometryReader { geometry in
@@ -4271,9 +4341,9 @@ private struct AnalysisSourceThumbnail: View {
                     }
                     VStack {
                         HStack {
-                            Text(mode.displayName)
+                            Text(pixelViewLabel(mode, channel: comparisonPixelChannel))
                             Spacer()
-                            Text(pixelViewMode.displayName)
+                            Text(pixelViewLabel(pixelViewMode, channel: pixelChannel))
                         }
                         .font(.caption).padding(6).background(.ultraThinMaterial)
                         Spacer()
@@ -4282,14 +4352,20 @@ private struct AnalysisSourceThumbnail: View {
                 }
             }
         } else {
-            analysisImagePane(primaryImage, label: pixelViewMode.displayName, showsLabel: false)
+            analysisImagePane(primaryImage, label: pixelViewLabel(pixelViewMode, channel: pixelChannel), showsLabel: false)
         }
     }
 
     @ViewBuilder
     private func comparisonImagePane(_ mode: AnalysisPixelViewMode, showsLabel: Bool = true) -> some View {
-        if loadedComparisonKey == comparisonRenderKey, let comparisonImage {
-            analysisImagePane(comparisonImage, label: mode.displayName, showsLabel: showsLabel)
+        if failedComparisonKey != nil, failedComparisonKey == comparisonRenderKey {
+            ContentUnavailableView("Analysis Preview Unavailable", systemImage: "photo.badge.exclamationmark")
+        } else if let loaded = loadedComparisonKey, let requested = comparisonRenderKey,
+           loaded.sourceIdentifier == requested.sourceIdentifier,
+           loaded.mode == requested.mode, loaded.channel == requested.channel,
+           loaded.pixelWidth == requested.pixelWidth, loaded.pixelHeight == requested.pixelHeight,
+           let comparisonImage {
+            analysisImagePane(comparisonImage, label: pixelViewLabel(mode, channel: comparisonPixelChannel), showsLabel: showsLabel)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -4840,7 +4916,9 @@ private struct PreviewIdentity: Hashable {
     let url: URL?
     let representation: AnalysisSourceRepresentation
     let pixelViewMode: AnalysisPixelViewMode
+    let pixelChannel: AnalysisPixelChannel
     let levelSweepCenter: Int
+    let isLevelSweepEditing: Bool
     let sourceOrientation: Int
     let renderToken: String?
 }
@@ -4864,6 +4942,8 @@ private struct SourcePreviewIdentity: Hashable {
 private struct AnalysisTruePixelLoupe: View {
     let sourceImage: CGImage?
     let isUnavailable: Bool
+    let viewLabel: String
+    let isBoundedPreview: Bool
     let normalizedDisplayPoint: CGPoint
     let sourcePixel: SourcePixelCoordinate
     let representation: AnalysisSourceRepresentation
@@ -4888,7 +4968,7 @@ private struct AnalysisTruePixelLoupe: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
-                Label("True-pixel detail", systemImage: "magnifyingglass")
+                Label(isBoundedPreview ? "Pixel view detail" : "True-pixel detail", systemImage: "magnifyingglass")
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 8)
                 Text("x \(sourcePixel.x), y \(sourcePixel.y)")
@@ -4897,10 +4977,13 @@ private struct AnalysisTruePixelLoupe: View {
             }
 
             HStack(alignment: .top, spacing: 8) {
-                loupePane(title: "100%", magnification: 1)
-                loupePane(title: "400%", magnification: 4)
+                loupePane(title: isBoundedPreview ? "100% preview" : "100%", magnification: 1)
+                loupePane(title: isBoundedPreview ? "400% preview" : "400%", magnification: 4)
             }
 
+            Text(viewLabel)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -4917,7 +5000,7 @@ private struct AnalysisTruePixelLoupe: View {
         .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "True-pixel detail for source pixel x \(sourcePixel.x), y \(sourcePixel.y)"
+            "\(viewLabel) detail for source pixel x \(sourcePixel.x), y \(sourcePixel.y)"
         )
         .accessibilityValue(caption)
     }
@@ -4990,9 +5073,9 @@ private struct AnalysisTruePixelLoupe: View {
     private var caption: String {
         guard let crop else {
             if isUnavailable {
-                return "Full-resolution pixels could not be loaded"
+                return "Selected pixel view could not be loaded"
             }
-            return "Loading full-resolution \(representation.displayName.lowercased()) pixels…"
+            return "Loading \(viewLabel.lowercased()) pixels…"
         }
         return "\(Int(crop.pixelRect.width)) × \(Int(crop.pixelRect.height)) px · nearest-neighbor magnification"
     }
@@ -5073,41 +5156,46 @@ private struct PixelInspectionReadout: View {
     let sample: ImageInspectionSample?
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "scope")
-                .accessibilityHidden(true)
-            if let sample {
-                Text("Source pixel x: \(sample.sourcePixel.x), y: \(sample.sourcePixel.y)")
-                .monospacedDigit()
-                .textSelection(.enabled)
-                if let rgba = sample.rgba16 {
-                    Divider()
-                        .frame(height: 14)
-                    Text(
-                        "R: \(rgba.red)  |  G: \(rgba.green)  |  "
-                            + "B: \(rgba.blue)  |  A: \(rgba.alpha)"
-                    )
-                    .monospacedDigit()
-                    .textSelection(.enabled)
+        Color.clear
+            .frame(height: 18)
+            .overlay(alignment: .leading) {
+                HStack(spacing: 8) {
+                    Image(systemName: "scope")
+                        .accessibilityHidden(true)
+                    if let sample {
+                        Text("Source pixel x: \(sample.sourcePixel.x), y: \(sample.sourcePixel.y)")
+                        .monospacedDigit()
+                        .textSelection(.enabled)
+                        if let rgba = sample.rgba16 {
+                            Divider()
+                                .frame(height: 14)
+                            Text(
+                                "R: \(rgba.red)  |  G: \(rgba.green)  |  "
+                                    + "B: \(rgba.blue)  |  A: \(rgba.alpha)"
+                            )
+                            .monospacedDigit()
+                            .textSelection(.enabled)
+                        }
+                        Spacer()
+                        Text(
+                            String(
+                                format: "Display %.2f%%, %.2f%%",
+                                sample.normalizedDisplayPoint.x * 100,
+                                sample.normalizedDisplayPoint.y * 100
+                            )
+                        )
+                        .monospacedDigit()
+                        .foregroundStyle(.tertiary)
+                    } else {
+                        Text("Hover over the image to inspect its source-pixel position")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
                 }
-                Spacer()
-                Text(
-                    String(
-                        format: "Display %.2f%%, %.2f%%",
-                        sample.normalizedDisplayPoint.x * 100,
-                        sample.normalizedDisplayPoint.y * 100
-                    )
-                )
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
-            } else {
-                Text("Hover over the image to inspect its source-pixel position")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                .font(.caption)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-        }
-        .font(.caption)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
     }

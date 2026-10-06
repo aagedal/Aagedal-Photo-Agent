@@ -66,9 +66,9 @@ nonisolated enum AnalysisPixelViewMode: String, CaseIterable, Sendable {
         case .edges:
             "Core Image CIEdges · intensity 3.0 · display-referred sRGB"
         case .noiseResidual:
-            "2,048 px max · sRGB luminance − 3×3 median · absolute difference ×8"
+            "2,048 px max · Metal-backed Core Image · sRGB luminance − 3×3 median · absolute difference ×8"
         case .levelSweep:
-            "2,048 px max · Metal-backed Core Image · sRGB luminance · adjustable 32/255-wide contrast window"
+            "1,024 px while dragging, 2,048 px settled · Metal-backed Core Image · sRGB luminance · adjustable 32/255-wide contrast window"
         case .cloneDetection:
             "1,024 px max · 8×8 blocks on a 4 px grid · tolerant luminance-cell matches · ≥3 consistent translations · cyan highlights"
         case .compressionResidual:
@@ -108,4 +108,35 @@ nonisolated struct AnalysisCompressionResidualConfiguration: Hashable, Sendable 
     let jpegQuality: Double
     let differenceGain: CGFloat
     let alphaMatte: CGFloat
+}
+
+/// Channel selection is independent of the spatial analysis operation.
+nonisolated enum AnalysisPixelChannel: String, CaseIterable, Sendable {
+    case rgb, red, green, blue, luminance
+
+    var displayName: String {
+        switch self {
+        case .rgb: "RGB"
+        case .red: "Red"
+        case .green: "Green"
+        case .blue: "Blue"
+        case .luminance: "Luminance"
+        }
+    }
+
+    var viewMode: AnalysisPixelViewMode {
+        switch self {
+        case .rgb: .normal
+        case .red: .red
+        case .green: .green
+        case .blue: .blue
+        case .luminance: .luminance
+        }
+    }
+}
+
+extension AnalysisPixelViewMode {
+    nonisolated static var analysisModes: [Self] {
+        [.normal, .alpha, .edges, .compressionResidual, .noiseResidual, .levelSweep, .cloneDetection]
+    }
 }

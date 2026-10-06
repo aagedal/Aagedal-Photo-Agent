@@ -42,6 +42,53 @@ struct AnalysisPixelViewRendererTests {
         #expect(lowKey != highKey)
     }
 
+    @Test("interactive sweep is bounded and settles at higher resolution")
+    func interactiveSweepResolution() throws {
+        let source = try makePatternImage(width: 2200, height: 1100, checkerboard: false)
+        let interactive = try #require(AnalysisPixelViewRenderer.renderForensicView(
+            source, mode: .levelSweep, maximumPixelSize: 1024
+        ))
+        let settled = try #require(AnalysisPixelViewRenderer.renderForensicView(source, mode: .levelSweep))
+        #expect(interactive.width == 1024 && interactive.height == 512)
+        #expect(settled.width == 2048 && settled.height == 1024)
+        let key = AnalysisDerivedViewCacheKey(sourceIdentifier: "sweep", mode: .levelSweep,
+                                              source: source, isInteracting: true)
+        let settledKey = AnalysisDerivedViewCacheKey(sourceIdentifier: "sweep", mode: .levelSweep,
+                                                     source: source)
+        #expect(key != settledKey)
+    }
+
+    @Test("analysis channels have separate cache entries and affect level sweep")
+    func independentChannels() async throws {
+        let source = try makeSourceImage(red: 0.8, green: 0.1, blue: 0.1)
+        let service = AnalysisDerivedViewService()
+        let redKey = AnalysisDerivedViewCacheKey(sourceIdentifier: "channels", mode: .levelSweep,
+                                                 source: source, channel: .red)
+        let blueKey = AnalysisDerivedViewCacheKey(sourceIdentifier: "channels", mode: .levelSweep,
+                                                  source: source, channel: .blue)
+        #expect(redKey != blueKey)
+        let red = try #require(await service.image(for: redKey, source: source))
+        let blue = try #require(await service.image(for: blueKey, source: source))
+        #expect(try meanRGB(red) > meanRGB(blue) + 100)
+        let alphaRed = AnalysisDerivedViewCacheKey(sourceIdentifier: "alpha", mode: .alpha,
+                                                   source: source, channel: .red)
+        let alphaBlue = AnalysisDerivedViewCacheKey(sourceIdentifier: "alpha", mode: .alpha,
+                                                    source: source, channel: .blue)
+        #expect(alphaRed == alphaBlue)
+    }
+
+    @Test("interactive sweep previews do not displace settled cache entries")
+    func interactiveSweepCache() async throws {
+        let source = try makeSourceImage(red: 0.5, green: 0.5, blue: 0.5)
+        let service = AnalysisDerivedViewService()
+        let key = AnalysisDerivedViewCacheKey(sourceIdentifier: "drag", mode: .levelSweep,
+                                              source: source, isInteracting: true)
+        let preview = await service.image(for: key, source: source)
+        #expect(preview != nil)
+        let cached = await service.cachedImage(for: key)
+        #expect(cached == nil)
+    }
+
     @Test("clone detection excludes uniform regions")
     func cloneDetectionFlatRegion() throws {
         let source = try makePatternImage(width: 32, height: 24, checkerboard: false)
