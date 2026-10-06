@@ -9,6 +9,8 @@ import Foundation
 nonisolated struct AnalysisDerivedViewCacheKey: Hashable, Sendable {
     let sourceIdentifier: String
     let mode: AnalysisPixelViewMode
+    let channel: AnalysisPixelChannel
+    let isInteracting: Bool
     let levelSweepCenter: Int
     let pixelWidth: Int
     let pixelHeight: Int
@@ -17,10 +19,14 @@ nonisolated struct AnalysisDerivedViewCacheKey: Hashable, Sendable {
         sourceIdentifier: String,
         mode: AnalysisPixelViewMode,
         source: CGImage,
-        levelSweepCenter: Int = 128
+        levelSweepCenter: Int = 128,
+        channel: AnalysisPixelChannel = .rgb,
+        isInteracting: Bool = false
     ) {
         self.sourceIdentifier = sourceIdentifier
         self.mode = mode
+        self.channel = mode == .alpha ? .rgb : channel
+        self.isInteracting = mode == .levelSweep && isInteracting
         self.levelSweepCenter = mode == .levelSweep ? min(255, max(0, levelSweepCenter)) : 128
         pixelWidth = source.width
         pixelHeight = source.height
@@ -169,6 +175,14 @@ nonisolated private final class AnalysisDerivedRenderRegistry: @unchecked Sendab
     }
 }
 
+/// Serialize GPU submissions so cancelled slider updates waiting behind a render are skipped.
+private actor AnalysisDerivedRenderLane {
+    func render(_ operation: @Sendable () -> CGImage?) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        return operation()
+    }
+}
+
 /// Renders and caches spatially aligned Pixel Analysis views.
 ///
 /// SwiftUI cancels its preview task whenever the source or mode changes. That cancellation is
@@ -182,6 +196,7 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
     private let cache: AnalysisDerivedViewCache
     private let renderer: Renderer
     private let renderRegistry = AnalysisDerivedRenderRegistry()
+    private let renderLane = AnalysisDerivedRenderLane()
     private let memoryCoordinator: ImageMemoryCoordinator?
     private let memoryRegistration: ImageMemoryCoordinator.Registration?
 
@@ -220,7 +235,7 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
         source: CGImage
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        guard key.mode != .normal else { return source }
+        guard key.mode != .normal || key.channel != .rgb else { return source }
         if let memoryCoordinator {
             let adaptiveLimit = memoryCoordinator.adaptiveLimit(
                 for: .scope,
@@ -233,14 +248,35 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
             return Task.isCancelled ? nil : cached
         }
 
+        let selectedSource: CGImage
+        if key.channel != .rgb, key.mode != .normal {
+            let channelKey = AnalysisDerivedViewCacheKey(
+                sourceIdentifier: key.sourceIdentifier, mode: .normal, source: source, channel: key.channel
+            )
+            guard let selected = await image(for: channelKey, source: source) else { return nil }
+            selectedSource = selected
+        } else {
+            selectedSource = source
+        }
         let mode = key.mode
         let renderer = renderer
-        let renderTask = Task.detached(priority: .utility) { () -> CGImage? in
-            guard !Task.isCancelled else { return nil }
-            let rendered = mode == .levelSweep
-                ? AnalysisPixelViewRenderer.renderForensicView(source, mode: mode, level: key.levelSweepCenter)
-                : renderer(source, mode)
-            return Task.isCancelled ? nil : rendered
+        let renderLane = renderLane
+        let renderTask = Task.detached(priority: .userInitiated) { () -> CGImage? in
+            await renderLane.render {
+                guard !Task.isCancelled else { return nil }
+                let input: CGImage
+                if key.channel != .rgb, mode == .normal {
+                    guard let selected = renderer(source, key.channel.viewMode) else { return nil }
+                    input = selected
+                } else {
+                    input = selectedSource
+                }
+                let rendered = mode == .levelSweep
+                    ? AnalysisPixelViewRenderer.renderForensicView(input, mode: mode, level: key.levelSweepCenter,
+                                                                   maximumPixelSize: key.isInteracting ? 1024 : 2048)
+                    : renderer(input, mode)
+                return Task.isCancelled ? nil : rendered
+            }
         }
         let renderID = renderRegistry.insert(renderTask)
         defer { renderRegistry.remove(renderID) }
@@ -251,7 +287,7 @@ nonisolated final class AnalysisDerivedViewService: Sendable {
         }
 
         guard !Task.isCancelled, let rendered else { return nil }
-        await cache.insert(rendered, for: key)
+        if !key.isInteracting { await cache.insert(rendered, for: key) }
         return rendered
     }
 

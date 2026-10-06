@@ -306,9 +306,9 @@ nonisolated enum AnalysisPixelViewRenderer {
         return CIContext(options: options)
     }()
 
-    private static func renderLevelSweep(_ source: CGImage, level: Int) -> CGImage? {
+    private static func renderLevelSweep(_ source: CGImage, level: Int, maximumPixelSize: Int) -> CGImage? {
         guard !Task.isCancelled, let outputColorSpace else { return nil }
-        let scale = min(1, 2048 / CGFloat(max(source.width, source.height)))
+        let scale = min(1, CGFloat(maximumPixelSize) / CGFloat(max(source.width, source.height)))
         let scaled = CIImage(cgImage: source).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let matte = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: scaled.extent)
         let input = scaled.composited(over: matte)
@@ -325,12 +325,36 @@ nonisolated enum AnalysisPixelViewRenderer {
         return Task.isCancelled ? nil : result
     }
 
+    private static func renderNoiseResidual(_ source: CGImage) -> CGImage? {
+        guard !Task.isCancelled, let outputColorSpace else { return nil }
+        let scale = min(1, 2048 / CGFloat(max(source.width, source.height)))
+        let scaled = CIImage(cgImage: source).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let extent = scaled.extent.integral
+        let matte = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: extent)
+        let weights = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+        let luminance = scaled.composited(over: matte).applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": weights, "inputGVector": weights, "inputBVector": weights
+        ])
+        let median = luminance.clampedToExtent().applyingFilter("CIMedianFilter").cropped(to: extent)
+        let residual = luminance.applyingFilter("CIDifferenceBlendMode", parameters: [
+            kCIInputBackgroundImageKey: median
+        ]).applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 8, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: 0, y: 8, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: 8, w: 0)
+        ])
+        let result = forensicContext.createCGImage(residual, from: extent,
+                                                   format: .RGBA8, colorSpace: outputColorSpace)
+        return Task.isCancelled ? nil : result
+    }
+
     /// Bounded SDR inspection aids. The raster preserves the source aspect ratio and
     /// normalized coordinates; it is never used as source-bound measurement evidence.
     static func renderForensicView(
-        _ source: CGImage, mode: AnalysisPixelViewMode, level: Int = 128
+        _ source: CGImage, mode: AnalysisPixelViewMode, level: Int = 128, maximumPixelSize: Int = 2048
     ) -> CGImage? {
-        if mode == .levelSweep { return renderLevelSweep(source, level: level) }
+        if mode == .levelSweep { return renderLevelSweep(source, level: level, maximumPixelSize: maximumPixelSize) }
+        if mode == .noiseResidual { return renderNoiseResidual(source) }
         let maximum = mode == .cloneDetection ? 1024 : 2048
         let scale = min(1, Double(maximum) / Double(max(source.width, source.height)))
         let width = max(1, Int((Double(source.width) * scale).rounded()))
@@ -424,27 +448,6 @@ nonisolated enum AnalysisPixelViewRenderer {
                             }}
                         }
                     }
-                }
-            }
-        } else {
-            for y in 0..<height {
-                guard !Task.isCancelled else { return nil }
-                for x in 0..<width {
-                    let index = y * width + x
-                    let value: Int
-                    do {
-                        var neighbors: [Int] = []
-                        for dy in -1...1 {
-                            for dx in -1...1 {
-                                neighbors.append(luminance[min(height - 1, max(0, y + dy)) * width
-                                    + min(width - 1, max(0, x + dx))])
-                            }
-                        }
-                        neighbors.sort()
-                        value = min(255, abs(luminance[index] - neighbors[4]) * 8)
-                    }
-                    for channel in 0..<3 { bytes[index * 4 + channel] = UInt8(value) }
-                    bytes[index * 4 + 3] = 255
                 }
             }
         }
