@@ -375,8 +375,10 @@ struct SettingsView: View {
             }
 
             Section("Browser") {
-                Toggle("Show all files", isOn: $settingsViewModel.showAllFiles)
-                Text("Show non-image files in the thumbnail grid with their system icon.")
+                Picker("Show", selection: $settingsViewModel.fileVisibility) {
+                    ForEach(BrowserFileVisibility.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+                }
+                Text("Media includes photos and videos. Other files appear with their system icon.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -206,7 +206,7 @@ actor FileSystemService {
         try await scanFolderWithStatus(at: url, includeAllFiles: includeAllFiles).files
     }
 
-    func scanFolderWithStatus(at url: URL, includeAllFiles: Bool = false) async throws -> FolderScanResult {
+    func scanFolderWithStatus(at url: URL, includeAllFiles: Bool = false, includeVideos: Bool = false) async throws -> FolderScanResult {
         try Task.checkCancellation()
         let interval = signposter.beginInterval("FolderScan", id: signposter.makeSignpostID())
 
@@ -241,14 +241,15 @@ actor FileSystemService {
                 // Camera voice memos are companions, never browser photos. Keep this boundary even
                 // when the user asks to show otherwise-unsupported files.
                 if item.pathExtension.lowercased() == "wav" { continue }
+                guard (try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 if locallyAvailableForEnumeration(item) {
                     let isSupported = includeAllFiles
                         ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
-                        : SupportedImageFormats.isSupported(url: item)
+                        : (SupportedImageFormats.isSupported(url: item) || (includeVideos && BrowserFileVisibility.isVideo(item)))
                     guard isSupported else { continue }
                     files.append(ImageFile(url: item))
                 } else {
-                    guard includeAllFiles || SupportedImageFormats.isSupported(url: item) else { continue }
+                    guard includeAllFiles || SupportedImageFormats.isSupported(url: item) || (includeVideos && BrowserFileVisibility.isVideo(item)) else { continue }
                     deferredICloudItemCount += 1
                     files.append(ImageFile(url: item, isICloudDownloadPending: true))
                 }

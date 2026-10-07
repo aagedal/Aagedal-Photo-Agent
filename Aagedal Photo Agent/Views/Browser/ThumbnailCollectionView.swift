@@ -8,6 +8,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     /// Fired on mouseDown so the split-view container can mark this pane active.
     var onFocus: (() -> Void)?
+    var onExtractVideoStills: ((URL) -> Void)?
     var onImproveDescriptions: (() -> Void)?
 
     private var isDragging = false
@@ -370,6 +371,17 @@ final class ThumbnailCollectionView: NSCollectionView {
         revealItem.target = self
         menu.addItem(revealItem)
 
+        if let indexPath = indexPathForItem(at: location), indexPath.item < viewModel.visibleImages.count {
+            let file = viewModel.visibleImages[indexPath.item]
+            if BrowserFileVisibility.isVideo(file.url) {
+                let extractItem = NSMenuItem(title: "Extract still(s) from video…", action: #selector(contextExtractVideoStills(_:)), keyEquivalent: "")
+                extractItem.target = self
+                extractItem.representedObject = file.url
+                extractItem.isEnabled = onExtractVideoStills != nil && !file.isICloudDownloadPending
+                menu.addItem(extractItem)
+            }
+        }
+
         // Open in External Editor
         if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
            !editorPath.isEmpty {
@@ -544,6 +556,12 @@ final class ThumbnailCollectionView: NSCollectionView {
     }
 
     // MARK: - Context Menu Actions
+
+    @objc private func contextExtractVideoStills(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        onFocus?()
+        onExtractVideoStills?(url)
+    }
 
     @objc private func contextImproveDescriptions(_ sender: NSMenuItem) {
         onFocus?()

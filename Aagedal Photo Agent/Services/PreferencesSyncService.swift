@@ -30,6 +30,7 @@ final class PreferencesSyncService {
         UserDefaultsKeys.rawDecodeProfile,
         UserDefaultsKeys.rawDecoderVersionPreference,
         UserDefaultsKeys.showAllFiles,
+        UserDefaultsKeys.browserFileVisibility,
         UserDefaultsKeys.showOriginalThumbnails,
         UserDefaultsKeys.defaultEditDestination,
         UserDefaultsKeys.hiddenDevelopSliders,

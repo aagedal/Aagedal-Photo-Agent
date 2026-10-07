@@ -160,6 +160,22 @@ nonisolated enum FFmpegService {
         }
     }
 
+    /// Decode directly to 16-bit RGB, avoiding an 8-bit preview intermediate.
+    static func extractVideoStillJXL(input: String, output: String, seconds: Double) async throws {
+        guard seconds.isFinite, seconds >= 0 else { throw FFmpegError.invalidLocalInvocation }
+        try await run(arguments: videoStillJXLArguments(input: input, output: output, seconds: seconds))
+        guard FileManager.default.fileExists(atPath: output) else { throw FFmpegError.outputMissing }
+    }
+
+    static func videoStillJXLArguments(input: String, output: String, seconds: Double) -> [String] {
+        // FFmpeg accepts microsecond seeks. Round down so fractional frame timestamps
+        // never round just beyond the selected frame and accidentally select the next one.
+        let seek = floor(seconds * 1_000_000) / 1_000_000
+        return ["-hide_banner", "-y", "-ss", String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), seek),
+                "-i", input, "-map", "0:v:0", "-frames:v", "1", "-an", "-sn",
+                "-pix_fmt", "rgb48le", "-c:v", "libjxl", "-distance", "0", "-effort", "7", output]
+    }
+
     /// Encode an image to JPEG XL using ffmpeg.
     /// - Parameters:
     ///   - input: Path to the input image (TIFF 16-bit recommended for HDR)

@@ -505,9 +505,9 @@ final class SettingsViewModel {
         didSet { UserDefaults.standard.set(rawDecoderVersionPreference.rawValue, forKey: UserDefaultsKeys.rawDecoderVersionPreference) }
     }
 
-    var showAllFiles: Bool {
+    var fileVisibility: BrowserFileVisibility {
         didSet {
-            UserDefaults.standard.set(showAllFiles, forKey: UserDefaultsKeys.showAllFiles)
+            UserDefaults.standard.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
         }
     }
@@ -1122,7 +1122,7 @@ final class SettingsViewModel {
         self.rawDecodeProfile = RAWDecodeProfile(storedRawValue: decodeProfileRaw ?? "") ?? .camera
         let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
         self.rawDecoderVersionPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
-        self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
+        self.fileVisibility = BrowserFileVisibility.saved()
 
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.hiddenDevelopSliders = DevelopSlider.decodeHidden(

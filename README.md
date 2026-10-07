@@ -40,6 +40,8 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 - Filter by star rating, color label, person shown, or missing required metadata fields
 - Full-text search across filenames and IPTC metadata fields
 - Folder favorites, recent folders, and drag-and-drop folder organization in the sidebar
+- Browser visibility modes: Photos, All media files (photos and videos), or All files
+- Extract one or several stills from a video from a video’s right-click menu: play, scrub (Option-drag for precision), step frames, press M to add markers without pausing playback, and save full-resolution JPEG, TIFF, or lossless 16-bit JPEG XL files to a chosen folder. This initial version supports videos playable by macOS, converts HDR to SDR for JPEG/TIFF while JPEG XL preserves source precision and HDR, and records the source filename and frame timecode in each still (embedded source timecode when present, otherwise relative timecode starting at `00:00:00:00`). Videos currently use system icons in the grid.
 
 ### Ingest & Import
 
