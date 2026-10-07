@@ -95,7 +95,8 @@ nonisolated enum UserDefaultsKeys {
     static let rawRenderAsHDR = "rawRenderAsHDR"
     static let rawDecodeProfile = "rawDecodeProfile"
     static let rawDecoderVersionPreference = "rawDecoderVersionPreference"
-    static let showAllFiles = "showAllFiles"
+    static let showAllFiles = "showAllFiles" // Legacy preference, retained for migration.
+    static let browserFileVisibility = "browserFileVisibility"
     static let thumbnailSortOrder = "thumbnailSortOrder"
     static let thumbnailSortReversed = "thumbnailSortReversed"
     static let thumbnailScale = "thumbnailScale"

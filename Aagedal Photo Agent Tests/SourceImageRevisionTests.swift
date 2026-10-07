@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import SwiftMediaMetadata
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -230,6 +232,24 @@ struct FileSystemOfflineAvailabilityTests {
 
 @Suite("Serialized file system service")
 struct SerializedFileSystemServiceTests {
+    @Test("media visibility includes videos without admitting unrelated files")
+    func mediaVisibility() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for name in ["photo.jpg", "clip.MOV", "clip.mp4", "notes.txt", "memo.wav"] {
+            try Data().write(to: directory.appendingPathComponent(name))
+        }
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("folder.mov"), withIntermediateDirectories: false)
+        let service = FileSystemService()
+        let photos = try await service.scanFolderWithStatus(at: directory)
+        let media = try await service.scanFolderWithStatus(at: directory, includeVideos: true)
+        let all = try await service.scanFolderWithStatus(at: directory, includeAllFiles: true)
+        #expect(Set(photos.files.map(\.filename)) == ["photo.jpg"])
+        #expect(Set(media.files.map(\.filename)) == ["photo.jpg", "clip.MOV", "clip.mp4"])
+        #expect(Set(all.files.map(\.filename)) == ["photo.jpg", "clip.MOV", "clip.mp4", "notes.txt"])
+    }
+
     @Test("folder mutations return immutable committed results")
     func folderMutationResults() async throws {
         let fixture = try OfflineFileFixture()
@@ -1246,5 +1266,92 @@ private struct OfflineFileFixture {
 
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
+    }
+}
+
+@Suite("Video timecode")
+struct VideoTimecodeTests {
+    @Test("JPEG XL preserves 16-bit decoded samples and embeds the source timecode")
+    func highBitDepthJXL() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = fixture("high-bit-depth.mov")
+        let output = directory.appendingPathComponent("still.jxl")
+        let caption = "Still from high-bit-depth.mov at timecode 01:00:00:03 (source)"
+        try await VideoJXLStillExporter.export(source: source, seconds: 3.0 / 25,
+                                             destination: output, description: caption)
+        let file = try JXLParser.parse(Data(contentsOf: output))
+        let xml = try #require(file.findBox("xml ")?.data)
+        #expect(try XMPReader.readFromXML(xml).description == caption)
+        let executable = URL(fileURLWithPath: try #require(FFmpegService.ffmpegPath))
+        let expected = directory.appendingPathComponent("source.rgb")
+        let actual = directory.appendingPathComponent("still.rgb")
+        for (input, target, seek) in [(source, expected, ["-ss", "0.120000"]), (output, actual, [])] {
+            let args = ["-hide_banner", "-y"] + seek + ["-i", input.path, "-map", "0:v:0", "-frames:v", "1", "-pix_fmt", "rgb48le", "-f", "rawvideo", target.path]
+            _ = try await Process.run(executableURL: executable, arguments: FFmpegService.localImageInvocation(arguments: args))
+        }
+        let pixels = try Data(contentsOf: actual)
+        #expect(pixels.count == 64 * 48 * 6)
+        #expect(pixels == (try Data(contentsOf: expected)))
+        // A genuine high-bit-depth source must contain values beyond replicated 8-bit samples.
+        #expect(stride(from: 0, to: pixels.count, by: 2).contains { pixels[$0] != pixels[$0 + 1] })
+        let original = try Data(contentsOf: output)
+        await #expect(throws: (any Error).self) {
+            try await VideoJXLStillExporter.export(source: source, seconds: 0, destination: output, description: "overwrite")
+        }
+        #expect(try Data(contentsOf: output) == original)
+    }
+
+    private func fixture(_ name: String) -> URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/Video").appendingPathComponent(name)
+    }
+
+    @Test("source timecode agrees with the precisely extracted frame")
+    func sourceFrame() async throws {
+        let url = fixture("source-timecode.mov")
+        let timecode = try await VideoTimecode.load(url: url)
+        #expect(timecode.hasSourceTimecode)
+        #expect(timecode.label(at: .zero) == "01:00:00:00")
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        let result = try await generator.image(at: CMTime(value: 3, timescale: 25))
+        #expect(result.image.width == 64)
+        #expect(result.image.height == 48)
+        #expect(timecode.label(at: result.actualTime) == "01:00:00:03")
+    }
+
+    @Test("clips without a timecode track start at zero using fractional cadence")
+    func relativeFrame() async throws {
+        let timecode = try await VideoTimecode.load(url: fixture("relative-timecode.mp4"))
+        #expect(!timecode.hasSourceTimecode)
+        #expect(timecode.label(at: .zero) == "00:00:00:00")
+        #expect(timecode.label(at: CMTime(value: 3003, timescale: 30000)) == "00:00:00:03")
+    }
+
+    @Test("embedded drop-frame flags are retained")
+    func embeddedDropFrame() async throws {
+        let timecode = try await VideoTimecode.load(url: fixture("drop-frame-timecode.mov"))
+        #expect(timecode.hasSourceTimecode)
+        #expect(timecode.label(at: .zero) == "01:00:00;00")
+        #expect(timecode.label(at: CMTime(value: 3003, timescale: 30000)) == "01:00:00;03")
+    }
+
+    @Test("non-drop timecode retains frame numbers and wraps at midnight")
+    func nonDrop() {
+        #expect(VideoTimecode.format(frame: 90003, nominalRate: 25, dropFrame: false) == "01:00:00:03")
+        #expect(VideoTimecode.format(frame: 25 * 86400, nominalRate: 25, dropFrame: false) == "00:00:00:00")
+    }
+
+    @Test("drop-frame skips labels at minute boundaries except each tenth minute")
+    func dropFrame() {
+        #expect(VideoTimecode.format(frame: 1799, nominalRate: 30, dropFrame: true) == "00:00:59;29")
+        #expect(VideoTimecode.format(frame: 1800, nominalRate: 30, dropFrame: true) == "00:01:00;02")
+        #expect(VideoTimecode.format(frame: 17982, nominalRate: 30, dropFrame: true) == "00:10:00;00")
+        #expect(VideoTimecode.format(frame: 107892, nominalRate: 30, dropFrame: true) == "01:00:00;00")
+        #expect(VideoTimecode.format(frame: 3600, nominalRate: 60, dropFrame: true) == "00:01:00;04")
     }
 }

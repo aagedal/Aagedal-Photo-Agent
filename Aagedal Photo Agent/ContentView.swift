@@ -4355,7 +4355,7 @@ struct ContentViewModifiers: ViewModifier {
                 browserViewModel.refreshPendingStatus()
             }
             .onReceive(NotificationCenter.default.publisher(for: .showAllFilesChanged)) { _ in
-                browserViewModel.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
+                browserViewModel.fileVisibility = BrowserFileVisibility.saved()
             }
             .onChange(of: browserViewModel.currentFolderURL) {
                 technicalMetadataCache.removeAll()

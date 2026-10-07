@@ -168,9 +168,9 @@ final class BrowserViewModel {
         }
     }
 
-    var showAllFiles: Bool = false {
+    var fileVisibility: BrowserFileVisibility = .photos {
         didSet {
-            UserDefaults.standard.set(showAllFiles, forKey: UserDefaultsKeys.showAllFiles)
+            UserDefaults.standard.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             if let url = currentFolderURL { loadFolder(url: url) }
         }
     }
@@ -344,7 +344,7 @@ final class BrowserViewModel {
             thumbnailScale = storedScale
         }
         self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
-        self.showAllFiles = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showAllFiles)
+        self.fileVisibility = BrowserFileVisibility.saved()
     }
 
     deinit {
@@ -820,7 +820,7 @@ final class BrowserViewModel {
                 await RecentFoldersStore.shared.track(url)
                 try Task.checkCancellation()
                 // Phase 1: Scan folder and show grid immediately
-                let scanResult = try await fileSystemService.scanFolderWithStatus(at: url, includeAllFiles: showAllFiles)
+                let scanResult = try await fileSystemService.scanFolderWithStatus(at: url, includeAllFiles: fileVisibility == .all, includeVideos: fileVisibility == .media)
                 var files = scanResult.files
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 self.iCloudDownloadNotice = scanResult.hasDeferredICloudItems
@@ -980,7 +980,7 @@ final class BrowserViewModel {
             guard self.canPublishRefresh(requestID, in: folderURL) else { return }
             let scanResult: FileSystemService.FolderScanResult
             do {
-                scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: showAllFiles)
+                scanResult = try await fileSystemService.scanFolderWithStatus(at: folderURL, includeAllFiles: fileVisibility == .all, includeVideos: fileVisibility == .media)
             } catch {
                 return
             }

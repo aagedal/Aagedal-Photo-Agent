@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BrowserView: View {
     @Bindable var viewModel: BrowserViewModel
+    @State private var extractionVideo: ExtractionVideo?
     @State private var descriptionBatchURLs: [URL] = []
     @State private var showingDescriptionBatch = false
     @FocusState private var searchFieldFocused: Bool
@@ -32,6 +33,11 @@ struct BrowserView: View {
             .sheet(isPresented: $showingDescriptionBatch) {
                 BatchDescriptionAssistantView(urls: descriptionBatchURLs, browser: viewModel)
             }
+            .sheet(item: $extractionVideo) { video in
+                VideoStillExtractionView(url: video.url) {
+                    if let folder = viewModel.currentFolderURL { viewModel.loadFolder(url: folder) }
+                }
+            }
             .toolbar {
                 if providesToolbar {
                     ToolbarItemGroup(placement: .automatic) {
@@ -47,12 +53,7 @@ struct BrowserView: View {
                             .padding(8)
 
                         filterMenu
-                        Button {
-                            presentDescriptionBatch()
-                        } label: { Image(systemName: "wand.and.stars") }
-                        .help("Improve selected descriptions with a local model")
-                        .accessibilityLabel("Batch improve descriptions")
-                        .disabled(viewModel.selectedImages.filter { $0.isImageFile }.isEmpty)
+
                     }
 
                     ToolbarItemGroup(placement: .automatic) {
@@ -128,7 +129,8 @@ struct BrowserView: View {
                 CollectionViewGridRepresentable(
                     viewModel: viewModel,
                     onFocus: onFocus,
-                    onImproveDescriptions: presentDescriptionBatch
+                    onImproveDescriptions: presentDescriptionBatch,
+                    onExtractVideoStills: { url in extractionVideo = ExtractionVideo(url: url) }
                 )
 
                 // Bottom-left overlays
@@ -272,6 +274,10 @@ struct BrowserView: View {
 
     private var filterMenu: some View {
         Menu {
+            Picker("Show", selection: $viewModel.fileVisibility) {
+                ForEach(BrowserFileVisibility.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+            }
+            Divider()
             Picker("Person Shown", selection: $viewModel.personShownFilter) {
                 ForEach(BrowserViewModel.PersonShownFilter.allCases, id: \.self) { filter in
                     Text(filter.displayName).tag(filter)

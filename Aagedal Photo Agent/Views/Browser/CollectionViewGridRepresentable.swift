@@ -5,6 +5,7 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
     let viewModel: BrowserViewModel
     var onFocus: (() -> Void)? = nil
     var onImproveDescriptions: (() -> Void)? = nil
+    var onExtractVideoStills: ((URL) -> Void)? = nil
     @Environment(AppCommandRouter.self) private var commandRouter
 
     func makeNSViewController(context: Context) -> CollectionViewGridController {
@@ -14,6 +15,7 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
         )
         controller.onFocus = onFocus
         controller.onImproveDescriptions = onImproveDescriptions
+        controller.onExtractVideoStills = onExtractVideoStills
         return controller
     }
 
@@ -21,5 +23,6 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
         // ViewModel reference is stable — observation handles all updates
         nsViewController.onFocus = onFocus
         nsViewController.onImproveDescriptions = onImproveDescriptions
+        nsViewController.onExtractVideoStills = onExtractVideoStills
     }
 }
