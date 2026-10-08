@@ -61,16 +61,18 @@ actor WhisperModelDownloadService {
 
     private let directory: URL
     private let fetch: Fetch?
+    private let maximumModelByteCount: Int64
     // Internal checkpoint allows deterministic filesystem-race regression coverage.
     private let verificationCheckpoint: @Sendable () throws -> Void
     private var downloading = false
 
-    init(directory: URL? = nil, fetch: Fetch? = nil,
+    init(directory: URL? = nil, fetch: Fetch? = nil, maximumModelByteCount: Int64 = 4_000_000_000,
          verificationCheckpoint: @escaping @Sendable () throws -> Void = {}) {
         self.verificationCheckpoint = verificationCheckpoint
         self.directory = (directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Aagedal Photo Agent/WhisperModels", isDirectory: true)).standardizedFileURL
         self.fetch = fetch
+        self.maximumModelByteCount = maximumModelByteCount
     }
 
     /// Presence hints for the picker, never readiness or hash verification. Full
@@ -240,7 +242,7 @@ actor WhisperModelDownloadService {
 
     private func targetURL(_ model: WhisperDownloadableModel) throws -> URL {
         guard !model.id.isEmpty, model.id.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }),
-              model.byteCount > 0, model.byteCount <= 4_000_000_000,
+              model.byteCount > 0, model.byteCount <= maximumModelByteCount,
               model.sha256.count == 64, model.sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
               model.url.scheme == "https" else { throw DownloadError.invalidModel }
         let name = model.fileName ?? "ggml-\(model.id).bin"

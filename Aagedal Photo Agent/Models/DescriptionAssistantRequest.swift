@@ -121,7 +121,7 @@ nonisolated enum DescriptionAssistantError: LocalizedError, Equatable {
         switch self {
         case .emptyDescription: "Enter a description before improving it."
         case .inputTooLong: "This description or face list is too long. Shorten it and try again."
-        case .modelNotInstalled: "Download Borealis Q4 or choose a local model in the assistant's Model Setup."
+        case .modelNotInstalled: "Download Gemma 4 12B or choose a local model in the assistant's Model Setup."
         case .busy: "The description model is already working. Wait for it to finish and try again."
         case .emptyOutput: "The model returned an empty description. Try again."
         case .outputLimit: "The model reached the output limit. Shorten the description and try again."

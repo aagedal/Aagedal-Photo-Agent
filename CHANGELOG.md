@@ -2,6 +2,14 @@
 
 All notable user-visible changes are documented here. Signed, notarized DMGs are self-hosted and delivered as in-app updates via Sparkle.
 
+## Unreleased
+
+- Recommend Gemma 4 12B for local description assistance, with Gemma 4 E4B,
+  Qwen3.5 9B, Ministral 3 14B Instruct, and Gemma 4 26B A4B alternatives.
+- Show each model's download size and recommended Mac RAM, including a warning
+  for Macs below the recommendation. Remove Borealis/Gemma 3 from the download catalog.
+- Use each GGUF model's embedded chat template with thinking disabled for caption editing.
+
 ## 3.0.0-beta.2 — 2026-10-04
 
 This second public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md).

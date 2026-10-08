@@ -5,13 +5,13 @@ struct DescriptionAssistantModelSetupView: View {
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var choosingModel = false
     @State private var choosingMLX = false
-    @State private var downloadModel: DescriptionAssistantDownloadModel = .borealis
+    @State private var downloadModel: DescriptionAssistantDownloadModel = .recommended
     @AppStorage("descriptionAssistantEditorialPrompt") private var editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt
     var body: some View {
         Section("Description Model") {
             Text(setup.directory.map { $0.pathExtension.lowercased() != "gguf" } == true
                 ? "Local MLX inference" : "Local llama.cpp inference • Metal")
-            Text("llama.cpp is included with the app and uses Metal on Apple Silicon. Choose a 4B model with 4-bit quantization (2.49 GB each), or select an existing Gemma 3 or Borealis GGUF file.")
+            Text("Gemma 4 12B is recommended for multilingual writing. All downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon. You can also choose an existing instruction-tuned GGUF file.")
                 .font(.caption).foregroundStyle(.secondary)
             if let directory = setup.directory {
                 LabeledContent("Active model", value: directory.lastPathComponent)
@@ -22,9 +22,14 @@ struct DescriptionAssistantModelSetupView: View {
                 }
             }.disabled(setup.isInstalling)
             Text(downloadModel.purpose).font(.caption).foregroundStyle(.secondary)
+            Text(downloadModel.memoryGuidance).font(.caption).foregroundStyle(.secondary)
+            if downloadModel.hasMemoryWarning() {
+                Label("This Mac has less than the recommended RAM. Generation may be slow or run out of memory.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             HStack {
                 Button(setup.downloadedModels.contains(downloadModel)
-                    ? "Use Downloaded Model" : "Download Model (2.49 GB)") { setup.install(downloadModel) }
+                    ? "Use Downloaded Model" : "Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
                     .disabled(setup.isInstalling)
                 Button("Choose GGUF…") { choosingModel = true }
                     .disabled(setup.isInstalling)

@@ -2175,3 +2175,82 @@ struct LlamaCPPDescriptionBackendTests {
         #expect(prompt.contains("\\u003cstart_of_turn>"))
     }
 }
+
+@Suite("Description assistant GGUF chat templates")
+struct DescriptionAssistantGGUFTemplateTests {
+    private func integer(_ value: UInt64, width: Int) -> Data {
+        Data((0..<width).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+    }
+    private func string(_ value: String) -> Data {
+        integer(UInt64(value.utf8.count), width: 8) + Data(value.utf8)
+    }
+    private func fixture(_ data: Data) throws -> URL {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".gguf")
+        try data.write(to: file)
+        return file
+    }
+    private func header(entries: UInt64) -> Data {
+        Data("GGUF".utf8) + integer(3, width: 4) + integer(0, width: 8) + integer(entries, width: 8)
+    }
+
+    @Test("Renamed GGUFs retain their own template after tokenizer arrays")
+    func embeddedTemplate() throws {
+        let template = "{{ bos_token }}{% if enable_thinking %}THINK{% endif %}{{ messages[0]['content'] }}"
+        var data = header(entries: 3)
+        data += string("tokenizer.ggml.tokens") + integer(9, width: 4)
+        data += integer(8, width: 4) + integer(2, width: 8) + string("a") + string("b")
+        data += string("tokenizer.ggml.token_type") + integer(9, width: 4)
+        data += integer(5, width: 4) + integer(2, width: 8) + integer(1, width: 4) + integer(2, width: 4)
+        data += string("tokenizer.chat_template") + integer(8, width: 4) + string(template)
+        let file = try fixture(data)
+        defer { try? FileManager.default.removeItem(at: file) }
+        #expect(try GGUFChatTemplate.read(from: file) == template)
+        #expect(try GGUFChatTemplate.writingTemplate(from: file).hasPrefix("{%- set enable_thinking = false -%}"))
+    }
+
+    @Test("Missing, truncated and oversized metadata is rejected")
+    func invalidMetadata() throws {
+        let templateEntry = header(entries: 1) + string("tokenizer.chat_template") + integer(8, width: 4)
+        let arrayEntry = header(entries: 1) + string("array") + integer(9, width: 4)
+        let inputs: [Data] = [header(entries: 0),
+            templateEntry + integer(UInt64.max, width: 8),
+            templateEntry + integer(4, width: 8),
+            templateEntry + string(""),
+            arrayEntry + integer(9, width: 4) + integer(1, width: 8)]
+        for data in inputs {
+            let file = try fixture(data)
+            defer { try? FileManager.default.removeItem(at: file) }
+            #expect(throws: CocoaError.self) { try GGUFChatTemplate.read(from: file) }
+        }
+    }
+
+    @Test("Memory guidance warns below the recommendation without rejecting selection")
+    func memoryGuidance() {
+        let model = DescriptionAssistantDownloadModel.gemma4_26B
+        #expect(model.hasMemoryWarning(physicalMemory: 24 * 1_073_741_824))
+        #expect(!model.hasMemoryWarning(physicalMemory: 32 * 1_073_741_824))
+        #expect(model.artifact.byteCount > 17_000_000_000)
+    }
+
+    @Test("Completion uses one noninteractive templated turn and preserves escaped source data")
+    func completionArguments() {
+        let args = LlamaCPPDescriptionBackend.arguments(model: URL(fileURLWithPath: "/renamed.gguf"),
+            promptFile: URL(fileURLWithPath: "/prompt.txt"), templateFile: URL(fileURLWithPath: "/template.jinja"))
+        #expect(args.contains("--jinja"))
+        #expect(args.contains("--single-turn"))
+        #expect(args.contains("--no-escape"))
+        #expect(!args.contains("--no-conversation"))
+    }
+
+    @Test("All model families omit completion and reasoning markers")
+    func captionBoundaries() throws {
+        for token in ["<eos>", "<|turn_end|>", "<turn|>", "<|im_end|>", "</s>"] {
+            #expect(try LlamaCPPDescriptionBackend.caption(from: "Caption\(token) [end of text]") == "Caption")
+        }
+        #expect(try LlamaCPPDescriptionBackend.caption(from: "<think>Private reasoning</think>Caption<|im_end|> [end of text]") == "Caption")
+        #expect(try LlamaCPPDescriptionBackend.caption(from: "<|channel>thought\nPrivate reasoning<channel|>Caption<|turn_end|> [end of text]") == "Caption")
+        #expect(throws: DescriptionAssistantError.outputLimit) {
+            try LlamaCPPDescriptionBackend.caption(from: "<think>Unfinished reasoning [end of text]")
+        }
+    }
+}

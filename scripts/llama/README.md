@@ -3,10 +3,20 @@
 The app includes the Apple Silicon completion helper and its required dynamic libraries
 from the official MIT-licensed llama.cpp release **b11377**. Metal kernels are embedded
 in the Metal library. No runtime installation or server configuration is needed by users.
-Settings offers Borealis 4B Q4_K_M for Norwegian and Gemma 3 4B Instruct Q4_K_M
-for general multilingual use. Only the chosen model is downloaded, when explicitly
-requested. Both use the Gemma 3 chat format. Downloads are stored separately and
+Settings recommends Gemma 4 12B Q4_K_M for multilingual writing. It also offers
+Gemma 4 E4B, Qwen3.5 9B, Ministral 3 14B Instruct, and Gemma 4 26B A4B.
+The 26B option downloads approximately 17 GB of weights and recommends at least
+32 GB total Mac RAM. The catalog displays actual download sizes and memory guidance;
+recommendations include headroom for macOS and the app and are not measured minimums.
+Borealis and Gemma 3 are no longer offered for download. Existing selected files
+remain usable when they contain a compatible chat template.
+Only the chosen model is downloaded, when explicitly requested. Downloads use pinned
+Q4_K_M files, revisions, sizes and SHA-256 checksums. They are stored separately and
 can be selected again with checksum verification and no additional network transfer.
+Each GGUF supplies its own embedded Jinja chat template. Bounded metadata reading
+extracts that template, explicitly disables thinking, and launches a single
+noninteractive conversation turn. Caption output requires the runtime's actual
+end-of-generation marker; reasoning blocks and model-specific end tokens are removed.
 
 `Vendor/llama.cpp/runtime.json` records the pinned upstream archive URL, SHA-256 and
 individual artifact hashes. The upstream license is bundled beside the executable.
@@ -33,4 +43,4 @@ and face-context APIs support a later sequential batch worker; persistent model 
 can be added to that backend when batch performance is measured.
 
 The optional MLX path remains available for existing converted model folders. The
-GGUF installers never download or locally converts full-precision weights.
+GGUF installers never download or locally convert full-precision weights.

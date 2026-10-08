@@ -119,7 +119,7 @@ struct WhisperModelDownloadServiceTests {
             try bytes.write(to: destination)
         })
         var artifact = model()
-        artifact.fileName = "borealis-4b-Q4_K_M.gguf"
+        artifact.fileName = "gemma-4-12b-it-Q4_K_M.gguf"
         let result = try await service.download(artifact)
         #expect(result.lastPathComponent == artifact.fileName)
         #expect(try Data(contentsOf: result) == bytes)
@@ -133,9 +133,10 @@ struct WhisperModelDownloadServiceTests {
     @Test("Description models use distinct verified files and switch without redownloading")
     func descriptionModelCatalog() async throws {
         let catalog = DescriptionAssistantDownloadModel.allCases
-        #expect(catalog.count == 2)
-        #expect(Set(catalog.map { $0.artifact.id }).count == 2)
-        #expect(Set(catalog.map { $0.artifact.fileName }).count == 2)
+        #expect(catalog.count == 5)
+        #expect(DescriptionAssistantDownloadModel.recommended == .gemma4_12B)
+        #expect(Set(catalog.map { $0.artifact.id }).count == catalog.count)
+        #expect(Set(catalog.map { $0.artifact.fileName }).count == catalog.count)
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let bytes = bytes
@@ -145,9 +146,12 @@ struct WhisperModelDownloadServiceTests {
         let offline = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
             throw URLError(.notConnectedToInternet)
         })
+        let descriptionDownloads = WhisperModelDownloadService(directory: root,
+            maximumModelByteCount: DescriptionAssistantDownloadModel.maximumDownloadByteCount)
         for option in catalog {
             let pinned = option.artifact
-            #expect(pinned.byteCount > 2_000_000_000 && pinned.byteCount < 3_000_000_000)
+            #expect(pinned.byteCount > 4_000_000_000 && pinned.byteCount < 18_000_000_000)
+            #expect(try await descriptionDownloads.installedURL(for: pinned) == nil)
             #expect(pinned.sha256.count == 64 && pinned.sha256.allSatisfy { $0.isHexDigit })
             #expect(pinned.url.pathComponents.dropLast().last?.count == 40)
             #expect(pinned.url.lastPathComponent == pinned.fileName)
@@ -159,7 +163,28 @@ struct WhisperModelDownloadServiceTests {
             #expect(downloaded.lastPathComponent == pinned.fileName)
             #expect(try await offline.download(fixture) == downloaded)
         }
-        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 2)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == catalog.count)
+    }
+
+    @Test("Description download size allowance does not widen the Whisper default")
+    func descriptionDownloadSizeLimit() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let whisper = WhisperModelDownloadService(directory: root)
+        let largeModel = DescriptionAssistantDownloadModel.gemma4_26B.artifact
+        do {
+            _ = try await whisper.installedURL(for: largeModel)
+            Issue.record("Whisper must retain its 4 GB limit")
+        } catch { #expect(error as? WhisperModelDownloadService.DownloadError == .invalidModel) }
+        let description = WhisperModelDownloadService(directory: root,
+            maximumModelByteCount: DescriptionAssistantDownloadModel.maximumDownloadByteCount)
+        let oversized = WhisperDownloadableModel(id: largeModel.id, title: largeModel.title,
+            byteCount: DescriptionAssistantDownloadModel.maximumDownloadByteCount + 1,
+            sha256: largeModel.sha256, url: largeModel.url, fileName: largeModel.fileName)
+        do {
+            _ = try await description.installedURL(for: oversized)
+            Issue.record("Description downloads must retain a bounded size limit")
+        } catch { #expect(error as? WhisperModelDownloadService.DownloadError == .invalidModel) }
     }
 
     @Test("Corrupt and truncated downloads never publish and partial files are removed", arguments: [false, true])
