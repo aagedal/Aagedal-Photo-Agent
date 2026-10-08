@@ -1991,6 +1991,7 @@ closed by these slices. See [cycle 94](release/cycle-94-rooted-publication-filen
 - [ ] Harden curated model delivery to Photo Agent's component standard: versioned signed descriptor,
   exact byte count and SHA-256, bounded download, regular-file/path containment checks, atomic install,
   verified receipt, cancellation cleanup, update/rollback/removal, and explicit user initiation.
+  The [2026-10-08 setup progress continuation](release/whisper-setup-progress-continuation-2026-10-08.md) adds explicit preparation/cancellation status and generation-bound refresh admission; cancellation during preparation revokes late receipts while preserving installed-model recovery.
   The [2026-10-08 corrupt-model recovery continuation](release/whisper-corrupt-model-recovery-2026-10-08.md) adds explicit removal of size/hash-invalid local weights and retains recovery after offline replacement failure. Downloaded/downloadable picker groups and successful/cancelled replacement coverage now distinguish presence from verification. Actual pinned Base-model CPU inference passes under network denial, and native transcript/readiness persist across relaunch. Corrupt weights never satisfy installed/readiness checks; the broader signed-distribution/lifecycle criterion remains open.
 - [x] Support explicitly imported custom compatible models through a retained security-scoped
   bookmark and clear unverifiable/custom provenance; never represent a custom model as a curated or

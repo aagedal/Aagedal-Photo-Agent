@@ -280,6 +280,75 @@ struct ManagedWhisperSetupModelTests {
         #expect(await calls.admissions == 0)
     }
 
+    @Test("Obsolete or cancelled inventory refresh cannot start selected-model admission", arguments: [false, true])
+    func interruptedInventoryRefresh(cancel: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let gate = Gate()
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in await calls.admitted(); return nil },
+            download: { _, _ in throw URLError(.unsupportedURL) }, remove: { _ in },
+            admit: { _, _ in throw URLError(.unsupportedURL) },
+            localModelIDs: { await gate.pause(); return ["base"] })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        let refresh = Task { await setup.refresh() }
+        try await waitUntil { await gate.started }
+        if cancel { refresh.cancel() } else { setup.selectModel("tiny") }
+        await gate.resume()
+        await refresh.value
+        #expect(await calls.admissions == 0)
+        #expect(!setup.isReady && !setup.isRefreshing && setup.errorMessage == nil)
+    }
+
+    @Test("Cancellation during setup waits for admission and revokes its late receipt")
+    func cancelDuringAdmission() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let admission = FFmpegWhisperArtifactAdmissionService()
+        let receipt = try await admission.admitCustom(
+            executableURL: root.appendingPathComponent("ffmpeg"), modelURL: root.appendingPathComponent("model"))
+        let gate = Gate()
+        let progressGate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in receipt.model.url },
+            download: { _, progress in
+                progress(0.6)
+                await progressGate.pause()
+                progress(0.2)
+                progress(.nan)
+                progress(.infinity)
+                await progressGate.pause()
+                return receipt.model.url
+            }, remove: { _ in }, admit: { _, _ in await gate.pause(); return receipt })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: operations)
+        setup.downloadSelectedModel()
+        try await waitUntil { await progressGate.started && setup.progress == 0.6 }
+        #expect(setup.downloadPhase == .downloading)
+        await progressGate.resume()
+        try await waitUntil { await progressGate.pauses == 2 }
+        // Allow the MainActor progress callbacks to publish while transfer is active.
+        await Task.yield()
+        #expect(setup.progress == 0.6)
+        await progressGate.resume()
+        try await waitUntil { await gate.started }
+        // Late transfer callbacks cannot change progress after preparation begins.
+        #expect(setup.progress == 0.6)
+        #expect(setup.downloadPhase == .preparing && setup.isInstalled && !setup.isReady)
+        setup.cancelDownload()
+        #expect(setup.downloadPhase == .cancelling && setup.isDownloading)
+        setup.cancelDownload()
+        await gate.resume()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.downloadPhase == nil && setup.errorMessage == nil)
+        #expect(setup.isInstalled && !setup.isReady && setup.canRemoveModel)
+        await #expect(throws: FFmpegWhisperArtifactAdmissionService.AdmissionError.revoked) {
+            try await admission.authorizer(for: receipt)(receipt.configuration())
+        }
+    }
+
     @Test("Switching models revokes a receipt returned by an obsolete admission")
     func staleAdmission() async throws {
         let (preferences, suite) = defaults()
