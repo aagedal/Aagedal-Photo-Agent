@@ -4,6 +4,9 @@ import Observation
 /// Download and admission state shared by Settings and Caption. No network work starts implicitly.
 @MainActor @Observable
 final class ManagedWhisperSetupModel {
+    enum DownloadPhase {
+        case downloading, preparing, cancelling
+    }
     nonisolated struct Operations: Sendable {
         var installed: @Sendable (WhisperDownloadableModel) async throws -> URL?
         var download: @Sendable (WhisperDownloadableModel, @escaping WhisperModelDownloadService.Progress) async throws -> URL
@@ -30,6 +33,7 @@ final class ManagedWhisperSetupModel {
     private(set) var isReady = false
     private(set) var isRefreshing = false
     private(set) var isDownloading = false
+    private(set) var downloadPhase: DownloadPhase?
     private(set) var progress = 0.0
     private(set) var errorMessage: String?
     @ObservationIgnored private let defaults: UserDefaults
@@ -80,11 +84,12 @@ final class ManagedWhisperSetupModel {
     }
 
     func refresh() async {
+        let request = generation
         await refreshCatalog()
         // A retained provider may be using this receipt. Its authorizer revalidates
         // exact bytes at execution; reopening Settings must not revoke it.
-        guard !isReady, !isDownloading, !isRefreshing, !isRemoving else { return }
-        let request = generation
+        guard request == generation, !Task.isCancelled,
+              !isReady, !isDownloading, !isRefreshing, !isRemoving else { return }
         let selected = selectedModel
         isRefreshing = true
         isInstalled = false
@@ -138,13 +143,22 @@ final class ManagedWhisperSetupModel {
         let request = generation
         let selected = selectedModel
         isDownloading = true
+        downloadPhase = .downloading
         downloadTask = Task { [weak self, operations, admission] in
+            defer {
+                if let self, self.generation == request {
+                    self.isDownloading = false
+                    self.downloadPhase = nil
+                    self.downloadTask = nil
+                }
+            }
             do {
                 let url = try await operations.download(selected) { [weak self] fraction in
                     Task { @MainActor in
                         guard let self, self.generation == request, self.isDownloading,
                               self.downloadTask?.isCancelled == false else { return }
-                        self.progress = min(max(fraction, 0), 1)
+                        guard self.downloadPhase == .downloading, fraction.isFinite else { return }
+                        self.progress = max(self.progress, min(max(fraction, 0), 1))
                     }
                 }
                 try Task.checkCancellation()
@@ -153,27 +167,27 @@ final class ManagedWhisperSetupModel {
                 self.hasCorruptModel = false
                 self.catalogGeneration = UUID()
                 self.localModelIDs.insert(selected.id)
+                self.downloadPhase = .preparing
                 let admitted = try await operations.admit(url, selected)
                 guard self.generation == request, !Task.isCancelled else {
                     await admission.revoke(admitted)
-                    if self.generation == request { self.isDownloading = false; self.downloadTask = nil }
                     return
                 }
                 self.receipt = admitted
                 self.isReady = true
                 self.progress = 1
-                self.isDownloading = false
-                self.downloadTask = nil
             } catch {
                 guard let self, self.generation == request else { return }
-                self.isDownloading = false
-                self.downloadTask = nil
                 if !Task.isCancelled, !(error is CancellationError) { self.errorMessage = error.localizedDescription }
             }
         }
     }
 
-    func cancelDownload() { downloadTask?.cancel() }
+    func cancelDownload() {
+        guard isDownloading, downloadTask != nil else { return }
+        downloadPhase = .cancelling
+        downloadTask?.cancel()
+    }
 
     func removeSelectedModel() async {
         guard !isDownloading, !isRefreshing, !isRemoving else { return }
@@ -241,6 +255,7 @@ final class ManagedWhisperSetupModel {
         revokeReceipt()
         isRefreshing = false
         isDownloading = false
+        downloadPhase = nil
         isInstalled = false
         hasCorruptModel = false
         progress = 0

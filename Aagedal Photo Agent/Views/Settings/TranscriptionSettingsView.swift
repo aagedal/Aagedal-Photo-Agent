@@ -93,13 +93,25 @@ struct TranscriptionSettingsView: View {
             Text("Smaller models are faster. For Norwegian, choose an NbAiLab model and select Norwegian below.")
                 .font(.caption).foregroundStyle(.secondary)
             if managedWhisper.isDownloading {
-                ProgressView(value: managedWhisper.progress) {
-                    Text("Downloading \(managedWhisper.selectedModel.title)…")
-                } currentValueLabel: {
-                    Text(managedWhisper.progress, format: .percent.precision(.fractionLength(0)))
+                if managedWhisper.downloadPhase == .downloading {
+                    ProgressView(value: managedWhisper.progress) {
+                        Text("Downloading \(managedWhisper.selectedModel.title)…")
+                    } currentValueLabel: {
+                        Text(managedWhisper.progress, format: .percent.precision(.fractionLength(0)))
+                    }
+                    .accessibilityIdentifier("settings.transcription.whisper.downloadProgress")
+                } else {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(managedWhisper.downloadPhase == .cancelling
+                             ? "Cancelling model setup…" : "Verifying transcription files…")
+                            .accessibilityIdentifier("settings.transcription.whisper.downloadStatus")
+                    }
                 }
-                .accessibilityIdentifier("settings.transcription.whisper.downloadProgress")
-                Button("Cancel Download") { managedWhisper.cancelDownload() }
+                Button(managedWhisper.downloadPhase == .downloading ? "Cancel Download" : "Cancel Setup") {
+                    managedWhisper.cancelDownload()
+                }
+                    .disabled(managedWhisper.downloadPhase == .cancelling)
                     .accessibilityIdentifier("settings.transcription.whisper.cancelDownload")
             } else if managedWhisper.isRefreshing {
                 HStack {

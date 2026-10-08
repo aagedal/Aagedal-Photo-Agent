@@ -87,7 +87,10 @@ Norwegian Tiny, Small, Medium (about 1.5 GB), and Large (about 3.1 GB) from NbAi
 Choose a Norwegian model and select **Norwegian** for Norwegian voice memos.
 Downloads come from pinned whisper.cpp or NbAiLab model repositories over HTTPS; the app checks the exact
 byte count and SHA-256 before installing in local Application Support. Progress and cancellation
-are available. Installed models can be removed from Settings and used offline after preparation.
+are available. After installation, Settings shows **Verifying transcription files…** while preparing
+the local engine and model. Cancelling shows **Cancelling model setup…** until that work finishes;
+a model already installed remains available for removal or **Retry Setup**, without enabling transcription.
+Installed models can be removed from Settings and used offline after preparation.
 No executable selection is needed for this provider. Inference starts only after an explicit single-photo or batch action.
 Language defaults to **Detect Automatically**. Choose a named language in Settings or Caption, request translation into English,
 and request GPU acceleration. GPU use is requested rather than verified. Each draft records the
