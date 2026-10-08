@@ -14,7 +14,8 @@ nonisolated enum LlamaCPPDescriptionBackend {
 
     static func install(model: DescriptionAssistantDownloadModel, progress: @Sendable @escaping (Double) -> Void) async throws -> URL {
         _ = try executable()
-        return try await WhisperModelDownloadService(directory: DescriptionAssistantDownloadModel.storageDirectory)
+        return try await WhisperModelDownloadService(directory: DescriptionAssistantDownloadModel.storageDirectory,
+            maximumModelByteCount: DescriptionAssistantDownloadModel.maximumDownloadByteCount)
             .download(model.artifact, progress: progress)
     }
 
@@ -27,18 +28,23 @@ nonisolated enum LlamaCPPDescriptionBackend {
                                                attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
         let file = folder.appendingPathComponent("prompt.txt")
-        // Gemma 3/Borealis single-turn chat template. llama.cpp adds the BOS token.
-        let formatted = "<start_of_turn>user\n\(prompt.trimmingCharacters(in: .whitespacesAndNewlines))<end_of_turn>\n<start_of_turn>model\n"
-        try formatted.write(to: file, atomically: true, encoding: .utf8)
+        let template = folder.appendingPathComponent("chat-template.jinja")
+        try GGUFChatTemplate.writingTemplate(from: model).write(to: template, atomically: true, encoding: .utf8)
+        try prompt.write(to: file, atomically: true, encoding: .utf8)
         try Task.checkCancellation()
-        let output = try await Process.run(executableURL: executable, arguments: [
-            "--model", model.path, "--file", file.path, "--ctx-size", "8192",
-            "--n-predict", "768", "--temp", "0.1", "--gpu-layers", "99",
-            "--no-conversation", "--no-display-prompt", "--no-context-shift",
-            "--simple-io", "--color", "off", "--special"
-        ], currentDirectoryURL: executable.deletingLastPathComponent())
+        let output = try await Process.run(executableURL: executable,
+            arguments: arguments(model: model, promptFile: file, templateFile: template),
+            currentDirectoryURL: executable.deletingLastPathComponent())
         try Task.checkCancellation()
         return try caption(from: output.stdout)
+    }
+
+    static func arguments(model: URL, promptFile: URL, templateFile: URL) -> [String] {
+        ["--model", model.path, "--file", promptFile.path, "--ctx-size", "8192",
+         "--n-predict", "768", "--temp", "0.1", "--gpu-layers", "99",
+         "--jinja", "--chat-template-file", templateFile.path, "--conversation", "--single-turn",
+         "--no-escape", "--no-display-prompt", "--no-context-shift",
+         "--simple-io", "--color", "off", "--special"]
     }
 
     static func caption(from output: String) throws -> String {
@@ -48,8 +54,18 @@ nonisolated enum LlamaCPPDescriptionBackend {
         let marker = " [end of text]"
         guard text.hasSuffix(marker) else { throw DescriptionAssistantError.outputLimit }
         text.removeLast(marker.count)
-        for token in ["<end_of_turn>", "<eos>"] where text.hasSuffix(token) {
+        for token in ["<end_of_turn>", "<eos>", "<|turn_end|>", "<turn|>", "<|im_end|>", "</s>"] where text.hasSuffix(token) {
             text.removeLast(token.count)
+        }
+        // Never expose reasoning as an editable caption, even if a model emits it
+        // despite the non-thinking template. Incomplete thought blocks are rejected.
+        for (start, end) in [("<think>", "</think>"), ("<|channel>thought", "<channel|>")] {
+            while let opening = text.range(of: start) {
+                guard let closing = text.range(of: end, range: opening.upperBound..<text.endIndex) else {
+                    throw DescriptionAssistantError.outputLimit
+                }
+                text.removeSubrange(opening.lowerBound..<closing.upperBound)
+            }
         }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw DescriptionAssistantError.emptyOutput }

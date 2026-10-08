@@ -34,7 +34,7 @@ actor DescriptionAssistantService {
         self.textGenerator = textGenerator
     }
 
-    func install(model: DescriptionAssistantDownloadModel = .borealis, progress: @Sendable @escaping (Double) -> Void) async throws -> URL {
+    func install(model: DescriptionAssistantDownloadModel = .recommended, progress: @Sendable @escaping (Double) -> Void) async throws -> URL {
         guard !busy else { throw DescriptionAssistantError.busy }
         busy = true
         defer { busy = false }
@@ -139,7 +139,7 @@ final class DescriptionAssistantModelSetup {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             guard try handle.read(upToCount: 4) == Data("GGUF".utf8) else {
-                throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "Choose a valid Gemma 3 or Borealis GGUF model file."])
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "Choose a valid instruction-tuned GGUF model file."])
             }
         } else {
             guard FileManager.default.fileExists(atPath: url.appendingPathComponent("config.json").path),
@@ -162,7 +162,7 @@ final class DescriptionAssistantModelSetup {
         })
     }
 
-    func install(_ model: DescriptionAssistantDownloadModel = .borealis) {
+    func install(_ model: DescriptionAssistantDownloadModel = .recommended) {
         guard !isInstalling else { return }
         isInstalling = true
         progress = 0

@@ -193,7 +193,7 @@
         "arm64"
       ],
       "runtimeCapabilities": [
-        "Local Gemma 3 text completion with Metal acceleration; no listening server"
+        "Local GGUF text completion for Gemma 4, Qwen3.5 and Ministral 3 with Metal acceleration; no listening server"
       ],
       "additionalLicensePaths": []
     }

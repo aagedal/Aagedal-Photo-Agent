@@ -1,41 +1,82 @@
 import Foundation
 
-/// Curated Gemma 3 instruction models share the completion backend and chat format.
-/// Every download has an immutable revision, exact size, checksum and distinct filename.
+/// Text-only GGUF downloads pinned to an immutable revision, size and SHA-256.
 nonisolated enum DescriptionAssistantDownloadModel: String, CaseIterable, Identifiable, Sendable {
-    case borealis, gemma3
+    case gemma4_12B = "gemma-4-12b-it-q4-k-m"
+    case gemma4_E4B = "gemma-4-e4b-it-q4-k-m"
+    case qwen35_9B = "qwen-3-5-9b-q4-k-m"
+    case ministral3_14B = "ministral-3-14b-instruct-q4-k-m"
+    case gemma4_26B = "gemma-4-26b-a4b-it-q4-k-m"
+    static let recommended: Self = .gemma4_12B
+    static let maximumDownloadByteCount: Int64 = 20_000_000_000
     var id: String { rawValue }
+
     var title: String {
         switch self {
-        case .borealis: "Borealis 4B Q4_K_M"
-        case .gemma3: "Gemma 3 4B Instruct Q4_K_M"
+        case .gemma4_12B: "Gemma 4 12B — Recommended"
+        case .gemma4_E4B: "Gemma 4 E4B — Lightweight"
+        case .qwen35_9B: "Qwen3.5 9B"
+        case .ministral3_14B: "Ministral 3 14B Instruct"
+        case .gemma4_26B: "Gemma 4 26B A4B — High quality"
         }
     }
     var purpose: String {
         switch self {
-        case .borealis: "Optimized for Norwegian Bokmål and Nynorsk."
-        case .gemma3: "General-purpose multilingual model, including English."
+        case .gemma4_12B: "Recommended balance of multilingual writing quality and memory use."
+        case .gemma4_E4B: "Lighter Gemma 4 option for Macs with less memory. Writing quality may be lower than 12B."
+        case .qwen35_9B: "A smaller multilingual alternative for grammar and wording assistance."
+        case .ministral3_14B: "Multilingual instruction model for direct writing assistance."
+        case .gemma4_26B: "Higher-quality option with substantially higher RAM use. Only 4B parameters are active per token, but all 26B weights need memory."
         }
     }
-    var sourceURL: URL {
+
+    /// Guidance for total Mac memory, including macOS, the app and inference overhead.
+    /// These are recommendations, not measured minimums or admission limits.
+    var recommendedMemoryGB: Int {
         switch self {
-        case .borealis: URL(string: "https://huggingface.co/NbAiLab/borealis-4b-gguf")!
-        case .gemma3: URL(string: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF")!
+        case .gemma4_E4B, .qwen35_9B: 16
+        case .gemma4_12B, .ministral3_14B: 24
+        case .gemma4_26B: 32
         }
     }
+    var memoryGuidance: String {
+        "Recommended Mac RAM: \(recommendedMemoryGB) GB or more. Download size is not total memory use."
+    }
+    func hasMemoryWarning(physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) -> Bool {
+        physicalMemory < UInt64(recommendedMemoryGB) * 1_073_741_824
+    }
+    var downloadSize: String {
+        ByteCountFormatter.string(fromByteCount: artifact.byteCount, countStyle: .decimal)
+    }
+
+    private var pin: (repo: String, revision: String, file: String, bytes: Int64, sha256: String) {
+        switch self {
+        case .gemma4_12B:
+            ("unsloth/gemma-4-12B-it-GGUF", "fc034cfff751157913579611efad8462ac1be606",
+             "gemma-4-12b-it-Q4_K_M.gguf", 7_121_861_440,
+             "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42")
+        case .gemma4_E4B:
+            ("unsloth/gemma-4-E4B-it-GGUF", "bfc15c382204943c3a8fff0c750b94ae2364d7a3",
+             "gemma-4-E4B-it-Q4_K_M.gguf", 4_977_171_584,
+             "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87")
+        case .qwen35_9B:
+            ("unsloth/Qwen3.5-9B-GGUF", "3885219b6810b007914f3a7950a8d1b469d598a5",
+             "Qwen3.5-9B-Q4_K_M.gguf", 5_680_522_464,
+             "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8")
+        case .ministral3_14B:
+            ("mistralai/Ministral-3-14B-Instruct-2512-GGUF", "74fac473c43357d7fb2671713608183cc72496d0",
+             "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf", 8_239_593_024,
+             "824e0f3373e69b84f2cae46fdcb9bd1ebc6ab3bfc7acc125d818b7b8178cc613")
+        case .gemma4_26B:
+            ("bartowski/google_gemma-4-26B-A4B-it-GGUF", "10f3b41bcf8d3047f4e136e7197ffc2dd1654c9d",
+             "google_gemma-4-26B-A4B-it-Q4_K_M.gguf", 17_035_039_872,
+             "a07f72221e8e3f77455ab0d7f7652d01a9f63c262b954aa6932a53275a0e895a")
+        }
+    }
+    var sourceURL: URL { URL(string: "https://huggingface.co/\(pin.repo)")! }
     var artifact: WhisperDownloadableModel {
-        switch self {
-        case .borealis:
-            WhisperDownloadableModel(id: "borealis-4b-q4-k-m", title: title, byteCount: 2_489_894_560,
-                sha256: "4486e86d94194c631e8c18b530b796b1287fdf959f9a0ac1fb17441beadb8c51",
-                url: sourceURL.appendingPathComponent("resolve/c5611e7f4aa5abe4dbd2bf2337fac71b40f953f7/borealis-4b-Q4_K_M.gguf"),
-                fileName: "borealis-4b-Q4_K_M.gguf")
-        case .gemma3:
-            WhisperDownloadableModel(id: "gemma-3-4b-it-q4-k-m", title: title, byteCount: 2_489_757_856,
-                sha256: "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
-                url: sourceURL.appendingPathComponent("resolve/d0976223747697cb51e056d85c532013931fe52e/gemma-3-4b-it-Q4_K_M.gguf"),
-                fileName: "gemma-3-4b-it-Q4_K_M.gguf")
-        }
+        WhisperDownloadableModel(id: rawValue, title: title, byteCount: pin.bytes, sha256: pin.sha256,
+            url: sourceURL.appendingPathComponent("resolve/\(pin.revision)/\(pin.file)"), fileName: pin.file)
     }
     static var storageDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
