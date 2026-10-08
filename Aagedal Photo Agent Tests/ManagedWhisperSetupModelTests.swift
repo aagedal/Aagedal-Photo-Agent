@@ -374,7 +374,7 @@ struct ManagedWhisperSetupModelTests {
         }
     }
 
-    @Test("Cancellation suppresses noncooperative download completion and permits retry")
+    @Test("Cancellation retains published weights without admission and permits retry")
     func cancelledDownload() async throws {
         let (preferences, suite) = defaults()
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -397,7 +397,8 @@ struct ManagedWhisperSetupModelTests {
         setup.cancelDownload()
         await gate.resume()
         try await waitUntil { !setup.isDownloading }
-        #expect(!setup.isReady && !setup.isInstalled)
+        #expect(!setup.isReady && setup.isInstalled && setup.canRemoveModel)
+        #expect(setup.localModelIDs.contains(setup.selectedModelID))
         #expect(setup.errorMessage == nil)
         #expect(await calls.admissions == 0)
         setup.downloadSelectedModel()
@@ -406,6 +407,55 @@ struct ManagedWhisperSetupModelTests {
         await gate.resume()
         try await waitUntil { !setup.isDownloading }
         #expect(setup.errorMessage == nil)
+    }
+
+    @Test("Cancellation after atomic installation retains verified local recovery", arguments: [false, true])
+    func cancelledPublishedDownload(replacingCorrupt: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("published model".utf8)
+        let artifact = WhisperDownloadableModel(id: "fixture", title: "Fixture", byteCount: Int64(bytes.count),
+            sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            url: URL(string: "https://example.com/model.bin")!)
+        let downloads = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            try bytes.write(to: destination)
+        })
+        let gate = Gate()
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in try await downloads.installedURL(for: artifact) },
+            download: { _, progress in
+                let url = try await downloads.download(artifact, progress: progress)
+                // The service has published exact verified bytes, but Settings has
+                // not yet received the successful return.
+                await gate.pause()
+                return url
+            },
+            remove: { _ in try await downloads.remove(artifact) },
+            admit: { _, _ in await calls.admitted(); throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        if replacingCorrupt {
+            try Data([0]).write(to: target)
+            await setup.refresh()
+            #expect(setup.needsModelReplacement && !setup.isInstalled)
+        }
+        setup.downloadSelectedModel()
+        try await waitUntil { await gate.started }
+        #expect(try Data(contentsOf: target) == bytes)
+        setup.cancelDownload()
+        await gate.resume()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.isInstalled && setup.canRemoveModel && !setup.needsModelReplacement)
+        #expect(setup.localModelIDs.contains("base"))
+        await setup.removeSelectedModel()
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(!setup.canRemoveModel && setup.localModelIDs.isEmpty)
+        #expect(!setup.isReady && setup.errorMessage == nil)
+        #expect(await calls.admissions == 0)
+        #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
     }
 
     @Test("An installed model is not ready when bundled artifact admission fails")

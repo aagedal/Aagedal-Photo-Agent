@@ -161,12 +161,15 @@ final class ManagedWhisperSetupModel {
                         self.progress = max(self.progress, min(max(fraction, 0), 1))
                     }
                 }
-                try Task.checkCancellation()
                 guard let self, self.generation == request else { return }
+                // A successful transfer has already verified and published the file.
+                // Cancellation can race that publication; retain local recovery
+                // controls before refusing further artifact admission.
                 self.isInstalled = true
                 self.hasCorruptModel = false
                 self.catalogGeneration = UUID()
                 self.localModelIDs.insert(selected.id)
+                try Task.checkCancellation()
                 self.downloadPhase = .preparing
                 let admitted = try await operations.admit(url, selected)
                 guard self.generation == request, !Task.isCancelled else {
