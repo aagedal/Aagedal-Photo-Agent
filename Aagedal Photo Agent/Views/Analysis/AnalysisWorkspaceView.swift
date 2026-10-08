@@ -23,7 +23,7 @@ struct AnalysisWorkspaceView: View {
         string: "https://www.meta.ai/identification/"
     )!
     private static let googleSynthIDCheckURL = URL(
-        string: "https://gemini.google.com/"
+        string: "https://synthid.com/"
     )!
     private static let imageWhispererURL = URL(
         string: "https://imagewhisperer.org/"
@@ -1233,8 +1233,8 @@ struct AnalysisWorkspaceView: View {
                                      description: "Inspect signed C2PA provenance and editing history when available.")
                 verificationToolLink("Check Meta Content Seal", url: Self.metaContentSealCheckURL,
                                      description: "Open Meta’s official identification page.")
-                verificationToolLink("Check SynthID in Gemini", url: Self.googleSynthIDCheckURL,
-                                     description: "Upload an image in Gemini and ask whether it contains SynthID.")
+                verificationToolLink("SynthID Detector", url: Self.googleSynthIDCheckURL,
+                                     description: "Open Google’s dedicated SynthID checking site.")
 
                 Divider()
                 verificationToolsHeading("Manipulation analysis")

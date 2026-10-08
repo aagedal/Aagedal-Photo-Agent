@@ -520,8 +520,9 @@ workflows, but resuming them through Deadline Workspace is unavailable in 3.0.
 
 ## External authenticity checks
 
-Image Analysis contains links to Meta's Content Seal identification page and Google Gemini for SynthID
-checking. Opening a link does not send the current image. If you choose to upload an image on the external
+Image Analysis contains links to Meta's Content Seal identification page, Google's dedicated
+[SynthID Detector](https://synthid.com/) for SynthID checking. Opening a link does not
+send the current image. If you choose to upload an image on the external
 site, that action is governed by the external provider's terms and privacy practices and is outside Photo
 Agent's report reproducibility boundary.
 

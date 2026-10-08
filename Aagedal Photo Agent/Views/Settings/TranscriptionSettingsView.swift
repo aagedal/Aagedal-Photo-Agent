@@ -64,13 +64,32 @@ struct TranscriptionSettingsView: View {
                 get: { managedWhisper.selectedModelID },
                 set: { managedWhisper.selectModel($0) }
             )) {
-                ForEach(WhisperDownloadableModel.catalog) { model in
-                    Text("\(model.title) (\(ByteCountFormatter.string(fromByteCount: model.byteCount, countStyle: .file)))")
-                        .tag(model.id)
+                if !managedWhisper.downloadedModels.isEmpty {
+                    Section("Downloaded Models") {
+                        ForEach(managedWhisper.downloadedModels) { model in
+                            modelOption(model)
+                        }
+                    }
+                }
+                if !managedWhisper.downloadableModels.isEmpty {
+                    Section("Available to Download") {
+                        ForEach(managedWhisper.downloadableModels) { model in
+                            modelOption(model)
+                        }
+                    }
                 }
             }
             .disabled(managedWhisper.isDownloading || managedWhisper.isRefreshing)
             .accessibilityIdentifier("settings.transcription.whisper.model")
+            Text("\(managedWhisper.downloadedModels.count) downloaded · \(managedWhisper.downloadableModels.count) available to download")
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.transcription.whisper.inventory")
+            Label(managedWhisper.localModelIDs.contains(managedWhisper.selectedModelID)
+                  ? "Downloaded on this Mac" : "Available to Download",
+                  systemImage: managedWhisper.localModelIDs.contains(managedWhisper.selectedModelID) ? "internaldrive" : "arrow.down.circle")
+                .accessibilityIdentifier("settings.transcription.whisper.modelAvailability")
+            Text("Downloaded models are verified when selected. To get another model, choose it under Available to Download, then click Download Model.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Smaller models are faster. For Norwegian, choose an NbAiLab model and select Norwegian below.")
                 .font(.caption).foregroundStyle(.secondary)
             if managedWhisper.isDownloading {
@@ -88,11 +107,16 @@ struct TranscriptionSettingsView: View {
                     Text("Checking transcription files…")
                 }
             } else {
+                if managedWhisper.needsModelReplacement {
+                    Text("This model failed verification. Download a replacement or remove it to free disk space.")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.transcription.whisper.recoveryHelp")
+                }
                 if managedWhisper.isReady {
                     Label("Ready to transcribe in Caption", systemImage: "checkmark.circle")
                         .accessibilityIdentifier("settings.transcription.whisper.ready")
                 } else {
-                    Button(managedWhisper.isInstalled ? "Retry Setup" : "Download Model") {
+                    Button(managedWhisper.isInstalled ? "Retry Setup" : managedWhisper.needsModelReplacement ? "Download Replacement" : "Download Model") {
                         if managedWhisper.isInstalled {
                             Task { await managedWhisper.refresh() }
                         } else {
@@ -101,7 +125,7 @@ struct TranscriptionSettingsView: View {
                     }
                     .accessibilityIdentifier("settings.transcription.whisper.download")
                 }
-                if managedWhisper.isInstalled {
+                if managedWhisper.canRemoveModel {
                     Button("Remove Downloaded Model") { Task { await managedWhisper.removeSelectedModel() } }
                         .accessibilityIdentifier("settings.transcription.whisper.removeModel")
                 }
@@ -110,7 +134,16 @@ struct TranscriptionSettingsView: View {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
                     .accessibilityIdentifier("settings.transcription.whisper.error")
             }
+            if let error = managedWhisper.catalogErrorMessage {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                    .accessibilityIdentifier("settings.transcription.whisper.inventoryError")
+            }
         }
+    }
+
+    private func modelOption(_ model: WhisperDownloadableModel) -> some View {
+        Text("\(model.title) (\(ByteCountFormatter.string(fromByteCount: model.byteCount, countStyle: .file)))")
+            .tag(model.id)
     }
 
     private var whisperOptions: some View {

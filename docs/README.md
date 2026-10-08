@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-08
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -28,7 +28,7 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
-**Latest hardening continuation:** [Cycle 125: operation terminal recovery, Whisper preflight and signed helper packaging](release/cycle-125-operation-terminal-whisper-preflight-2026-10-03.md) closes inconsistent batch outcomes conservatively, refuses unclaimed model artifacts before transfer, and corrects the development-signed description runtime layout. Broad release gates remain open.
+**Latest hardening continuation:** [Whisper corrupt-model recovery](release/whisper-corrupt-model-recovery-2026-10-08.md) separates removable corrupt weights from verified installed models, preserves recovery controls after an offline replacement attempt, separates downloaded and downloadable models, and adds real Base-model CPU offline/transcription/relaunch evidence. Broader provider, model-distribution and release gates remain open. [Cycle 125](release/cycle-125-operation-terminal-whisper-preflight-2026-10-03.md) records the preceding operation, signed-model preflight and helper-packaging hardening.
 
 **Latest implementation continuation:** [Cycle 124: existing Sony folder linking and automatic Import qualification](release/cycle-124-existing-sony-folder-linking-2026-10-02.md) adds explicit initial voice-memo linking for folders opened directly. Production matching checks all three pairs from the provided Sony A1 sample; verified copy and receipt persistence qualify automatic Import linking on disposable copies. Existing native provider/model/distribution and broader release gates remain open. [Cycle 123](release/cycle-123-native-helper-transcription-start-2026-10-02.md) records authenticated one-use helper start. The [release handoff](release/release-completion-handoff-2026-10-02.md) distinguishes remaining engineering, resource setup and later acceptance.
 
