@@ -73,6 +73,39 @@ actor WhisperModelDownloadService {
         self.fetch = fetch
     }
 
+    /// Presence hints for the picker, never readiness or hash verification. Full
+    /// admission remains mandatory when a model is selected. No network or hashing.
+    func localModelIDs(models: [WhisperDownloadableModel] = WhisperDownloadableModel.catalog) throws -> Set<String> {
+        try Task.checkCancellation()
+        try validateAncestors(allowMissing: true)
+        guard let admittedDirectory = try identity(at: directory) else { return [] }
+        try validateStorage(create: false)
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              FileIdentity(info).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
+        var found = Set<String>()
+        for model in models {
+            try Task.checkCancellation()
+            let target = try targetURL(model)
+            if fstatat(descriptor, target.lastPathComponent, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else { throw DownloadError.unsafeStorage }
+                continue
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1,
+                  info.st_uid == getuid(), info.st_mode & 0o022 == 0 else { continue }
+            found.insert(model.id)
+        }
+        try validateStorage(create: false)
+        guard try identity(at: directory)?.sameFile(as: admittedDirectory) == true else {
+            throw DownloadError.storageChanged
+        }
+        try Task.checkCancellation()
+        return found
+    }
+
     func installedURL(for model: WhisperDownloadableModel) throws -> URL? {
         let target = try targetURL(model)
         try Task.checkCancellation()
@@ -103,7 +136,7 @@ actor WhisperModelDownloadService {
         }
         try validateStorage(create: false)
         try Task.checkCancellation()
-        return target
+        return try physicalModelURL(target, directoryDescriptor: descriptor)
     }
 
     func download(_ model: WhisperDownloadableModel, progress: @escaping Progress = { _ in }) async throws -> URL {
@@ -162,7 +195,20 @@ actor WhisperModelDownloadService {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         progress(1)
-        return target
+        return try physicalModelURL(target, directoryDescriptor: directoryDescriptor)
+    }
+
+    /// Foundation can shorten a validated /private/var cache path to the /var
+    /// system alias. Admission walks every component without following links, so
+    /// return the physical path from the retained directory descriptor instead.
+    private func physicalModelURL(_ target: URL, directoryDescriptor: Int32) throws -> URL {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let status = buffer.withUnsafeMutableBufferPointer { pointer in
+            fcntl(directoryDescriptor, F_GETPATH, pointer.baseAddress!)
+        }
+        guard status == 0 else { throw DownloadError.storageChanged }
+        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+            .appendingPathComponent(target.lastPathComponent)
     }
 
     func remove(_ model: WhisperDownloadableModel) throws {

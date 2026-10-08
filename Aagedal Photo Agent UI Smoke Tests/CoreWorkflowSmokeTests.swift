@@ -2317,11 +2317,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             let download = app.buttons["settings.transcription.whisper.download"]
             XCTAssertTrue(download.waitForExistence(timeout: 10))
             XCTAssertTrue(download.isEnabled)
+            XCTAssertTrue(visibleText(app.staticTexts["settings.transcription.whisper.inventory"]).contains("0 downloaded"))
             XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.selectExecutable"].exists)
             XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.selectModel"].exists)
             XCTAssertFalse(app.buttons["caption.voiceMemo.whisper.enable"].exists)
             XCTAssertFalse(app.checkBoxes["caption.voiceMemo.whisper.executionConsent"].exists)
-            XCTAssertTrue(app.textFields["caption.voiceMemo.whisper.language"].exists)
+            XCTAssertTrue(app.popUpButtons["caption.voiceMemo.whisper.language"].exists)
             XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
             XCTAssertFalse(app.buttons["settings.transcription.whisper.cancelDownload"].exists)
             XCTAssertFalse(app.buttons["settings.transcription.whisper.removeModel"].exists)
@@ -2336,8 +2337,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertTrue(draft.waitForExistence(timeout: 10))
             assertCaptionHasNoTranscriptionSetup()
         }
-        XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
-        XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].isEnabled)
+        assertTranscriptTextVisible("Approved UI smoke review", in: draft)
+        XCTAssertFalse(app.descendants(matching: .any)["caption.voiceMemo.approveTranscript"].exists)
         for (index, file) in protectedFiles.enumerated() {
             XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
         }
@@ -2363,6 +2364,12 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             let error = app.staticTexts["The downloaded model has an unexpected size. Please try again."]
             XCTAssertTrue(error.waitForExistence(timeout: 10))
             XCTAssertTrue(app.buttons["settings.transcription.whisper.download"].isEnabled)
+            XCTAssertEqual(app.buttons["settings.transcription.whisper.download"].label, "Download Replacement")
+            XCTAssertTrue(app.staticTexts["settings.transcription.whisper.recoveryHelp"].exists)
+            let remove = app.buttons["settings.transcription.whisper.removeModel"]
+            XCTAssertTrue(remove.waitForExistence(timeout: 5))
+            XCTAssertTrue(remove.isEnabled)
+            XCTAssertTrue(visibleText(app.staticTexts["settings.transcription.whisper.inventory"]).contains("1 downloaded"))
             XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.ready"].exists)
             XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
             XCTAssertEqual(try Data(contentsOf: model), corruptBytes)
@@ -2370,10 +2377,117 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             app.typeKey("w", modifierFlags: .command)
             XCTAssertTrue(draft.waitForExistence(timeout: 10))
             XCTAssertFalse(app.buttons["caption.voiceMemo.transcribe"].isEnabled)
-            XCTAssertTrue((draft.value as? String)?.contains("Approved UI smoke review") == true)
+            assertTranscriptTextVisible("Approved UI smoke review", in: draft)
             for (index, file) in protectedFiles.enumerated() {
                 XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
             }
+            app.terminate()
+        }
+
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+        app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+        let remove = app.buttons["settings.transcription.whisper.removeModel"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        remove.click()
+        expectation(for: NSPredicate { _, _ in !FileManager.default.fileExists(atPath: model.path) }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["settings.transcription.whisper.download"].waitForExistence(timeout: 5))
+        XCTAssertFalse(remove.exists)
+        XCTAssertEqual(app.buttons["settings.transcription.whisper.download"].label, "Download Model")
+        XCTAssertFalse(app.staticTexts["settings.transcription.whisper.recoveryHelp"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.error"].exists)
+        app.typeKey("w", modifierFlags: .command)
+        app.terminate()
+
+        launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+        XCTAssertTrue(app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"].waitForExistence(timeout: 15))
+        app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+        XCTAssertTrue(app.buttons["settings.transcription.whisper.download"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["settings.transcription.whisper.removeModel"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.ready"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.error"].exists)
+        for (index, file) in protectedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+        }
+    }
+
+    @MainActor
+    func testPinnedWhisperTranscribesAndPersistsAcrossRelaunch() throws {
+        let environment = ProcessInfo.processInfo.environment
+        func supplied(_ key: String) -> String? { environment[key] ?? environment["TEST_RUNNER_" + key] }
+        guard let modelPath = supplied("APA_NATIVE_WHISPER_MODEL"),
+              let audioPath = supplied("APA_NATIVE_WHISPER_AUDIO") else {
+            throw XCTSkip("Supply APA_NATIVE_WHISPER_MODEL and APA_NATIVE_WHISPER_AUDIO for pinned Base-model qualification")
+        }
+        let modelBytes = try Data(contentsOf: URL(fileURLWithPath: modelPath))
+        let modelHash = sha256(modelBytes)
+        // The app independently enforces its catalog pins and sealed runtime before readiness.
+        let modelRoot = fixtureRoot.appendingPathComponent("WhisperModels", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let modelURL = modelRoot.appendingPathComponent("ggml-base.bin")
+        try modelBytes.write(to: modelURL)
+        let fixture = try makeApprovedVoiceMemoFolder()
+        let audio = try Data(contentsOf: URL(fileURLWithPath: audioPath))
+        try audio.write(to: fixture.memoURL)
+        try writeJSON([
+            "schemaVersion": 2, "profileIdentifier": "ui-smoke",
+            "imageFilename": fixture.imageURL.lastPathComponent,
+            "memoFilename": fixture.memoURL.lastPathComponent,
+            "imageIdentity": ["byteCount": try Data(contentsOf: fixture.imageURL).count,
+                              "sha256": sha256(try Data(contentsOf: fixture.imageURL))],
+            "memoIdentity": ["byteCount": audio.count, "sha256": sha256(audio)],
+            "provenance": "capturedAssociation",
+        ], to: fixture.relationshipURL)
+        try FileManager.default.removeItem(at: fixture.sidecarURL)
+        let protected = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL]
+        let originals = try protected.map { try Data(contentsOf: $0) }
+        var retainedSidecar: Data?
+        var retainedText: String?
+        for run in 0..<2 {
+            launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+            let draft = app.descendants(matching: .any)["caption.voiceMemo.transcriptDraft"]
+            XCTAssertTrue(draft.waitForExistence(timeout: 15))
+            app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+            XCTAssertTrue(app.descendants(matching: .any)["settings.transcription.whisper.ready"].waitForExistence(timeout: 30))
+            XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
+            XCTAssertFalse(app.buttons["settings.transcription.whisper.download"].exists)
+            XCTAssertTrue(visibleText(app.staticTexts["settings.transcription.whisper.inventory"]).contains("1 downloaded"))
+            app.typeKey("w", modifierFlags: .command)
+            if run == 0 {
+                let transcribe = app.buttons["caption.voiceMemo.transcribe"]
+                expectation(for: NSPredicate { _, _ in transcribe.exists && transcribe.isEnabled }, evaluatedWith: app)
+                waitForExpectations(timeout: 15)
+                transcribe.click()
+                let saved = NSPredicate { _, _ in
+                    guard let bytes = try? Data(contentsOf: fixture.sidecarURL),
+                          let graph = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                          let transcript = graph["voiceMemoTranscript"] as? [String: Any],
+                          let text = transcript["reviewedText"] as? String else { return false }
+                    return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                expectation(for: saved, evaluatedWith: app)
+                waitForExpectations(timeout: 120)
+                retainedSidecar = try Data(contentsOf: fixture.sidecarURL)
+                let graph = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(retainedSidecar)) as? [String: Any])
+                let transcript = try XCTUnwrap(graph["voiceMemoTranscript"] as? [String: Any])
+                retainedText = try XCTUnwrap(transcript["reviewedText"] as? String)
+                XCTAssertTrue(try XCTUnwrap(retainedText).localizedCaseInsensitiveContains("photo"))
+                XCTAssertEqual(transcript["provider"] as? String, "FFmpeg Whisper")
+                let provenance = try XCTUnwrap(transcript["whisperProvenance"] as? [String: Any])
+                XCTAssertEqual(provenance["modelIdentifier"] as? String, "base")
+                XCTAssertEqual(provenance["modelSHA256"] as? String, modelHash)
+                XCTAssertEqual(provenance["useGPU"] as? Bool, false)
+                XCTAssertTrue((provenance["buildIdentifier"] as? String)?.hasPrefix("bundled-sha256:") == true)
+            } else {
+                XCTAssertEqual(try Data(contentsOf: fixture.sidecarURL), retainedSidecar)
+            }
+            assertTranscriptTextVisible(try XCTUnwrap(retainedText), in: draft)
+            for (index, file) in protected.enumerated() {
+                XCTAssertEqual(try Data(contentsOf: file), originals[index], file.lastPathComponent)
+            }
+            XCTAssertEqual(sha256(try Data(contentsOf: modelURL)), modelHash)
             app.terminate()
         }
     }
@@ -2534,10 +2648,22 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    private func assertTranscriptTextVisible(_ text: String, in draft: XCUIElement) {
+        // Caption's transcript is selectable display text inside a ScrollView.
+        // The container's AX value need not carry its descendant text.
+        let visible = NSPredicate { [self] _, _ in
+            visibleText(draft).contains(text) || draft.descendants(matching: .any)
+                .allElementsBoundByIndex.contains { visibleText($0).contains(text) }
+        }
+        expectation(for: visible, evaluatedWith: draft)
+        waitForExpectations(timeout: 10)
+    }
+
+    @MainActor
     private func assertCaptionHasNoTranscriptionSetup() {
         for identifier in [
             "caption.voiceMemo.whisper.selectExecutable", "caption.voiceMemo.whisper.selectModel",
-            "caption.voiceMemo.whisper.language", "caption.voiceMemo.whisper.translateToEnglish",
+            "caption.voiceMemo.whisper.translateToEnglish",
             "caption.voiceMemo.whisper.useGPU", "caption.voiceMemo.whisper.executionConsent",
             "caption.voiceMemo.whisper.enable", "caption.voiceMemo.whisper.clear"
         ] {

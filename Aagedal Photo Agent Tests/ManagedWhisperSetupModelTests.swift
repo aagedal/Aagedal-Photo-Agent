@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -55,6 +56,177 @@ struct ManagedWhisperSetupModelTests {
         }
         Issue.record("Timed out waiting for setup state")
         throw URLError(.timedOut)
+    }
+
+    @Test("Relaunch exposes removal for corrupt regular weights without admitting them", arguments: [false, true])
+    func corruptInstallationRecovery(checksumMismatch: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let expected = Data("model fixture".utf8)
+        let artifact = WhisperDownloadableModel(id: "fixture", title: "Fixture", byteCount: Int64(expected.count),
+            sha256: SHA256.hash(data: expected).map { String(format: "%02x", $0) }.joined(),
+            url: URL(string: "https://example.com/model.bin")!)
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        let corrupt = checksumMismatch ? Data(repeating: 0, count: expected.count) : Data([0])
+        try corrupt.write(to: target)
+        let downloads = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
+            throw URLError(.notConnectedToInternet)
+        })
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in try await downloads.installedURL(for: artifact) },
+            download: { _, progress in try await downloads.download(artifact, progress: progress) },
+            remove: { _ in try await downloads.remove(artifact) },
+            admit: { _, _ in await calls.admitted(); throw URLError(.unsupportedURL) })
+        // A fresh setup instance discovers only local filesystem state, as on relaunch.
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        #expect(setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect(setup.errorMessage != nil)
+        #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+        #expect(await calls.admissions == 0)
+        setup.downloadSelectedModel()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect(try Data(contentsOf: target) == corrupt)
+        await setup.removeSelectedModel()
+        #expect(!setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect(setup.errorMessage == nil)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(try Data(contentsOf: root.appendingPathComponent("model")) == expected)
+        await setup.refresh()
+        #expect(!setup.canRemoveModel && setup.errorMessage == nil)
+    }
+
+    @Test("Replacement verifies new weights before readiness; cancellation preserves corrupt weights", arguments: [false, true])
+    func replaceCorruptWeights(cancel: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let expected = Data("model fixture".utf8)
+        let artifact = WhisperDownloadableModel(id: "fixture", title: "Fixture", byteCount: Int64(expected.count),
+            sha256: SHA256.hash(data: expected).map { String(format: "%02x", $0) }.joined(),
+            url: URL(string: "https://example.com/model.bin")!)
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        let corrupt = Data([0])
+        try corrupt.write(to: target)
+        let gate = Gate()
+        let calls = Calls()
+        let downloads = WhisperModelDownloadService(directory: root, fetch: { _, destination, _ in
+            await calls.downloaded()
+            try expected.prefix(4).write(to: destination)
+            await gate.pause()
+            try Task.checkCancellation()
+            try expected.write(to: destination)
+        })
+        let admission = FFmpegWhisperArtifactAdmissionService()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in try await downloads.installedURL(for: artifact) },
+            download: { _, progress in try await downloads.download(artifact, progress: progress) },
+            remove: { _ in try await downloads.remove(artifact) },
+            admit: { url, _ in
+                await calls.admitted()
+                return try await admission.admitCustom(executableURL: root.appendingPathComponent("ffmpeg"), modelURL: url)
+            })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: operations)
+        await setup.refresh()
+        #expect(setup.needsModelReplacement && setup.canRemoveModel && !setup.isReady)
+        setup.downloadSelectedModel()
+        try await waitUntil { await gate.started }
+        #expect(try Data(contentsOf: target) == corrupt)
+        #expect(!setup.isInstalled && !setup.isReady && setup.needsModelReplacement)
+        #expect(await calls.admissions == 0)
+        if cancel { setup.cancelDownload() }
+        await gate.resume()
+        try await waitUntil { !setup.isDownloading }
+        #expect(setup.errorMessage == nil)
+        #expect(setup.needsModelReplacement == cancel)
+        #expect(setup.isInstalled == !cancel && setup.isReady == !cancel)
+        #expect(try Data(contentsOf: target) == (cancel ? corrupt : expected))
+        #expect(await calls.admissions == (cancel ? 0 : 1))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == ["ffmpeg", "ggml-fixture.bin", "model"])
+        #expect(try Data(contentsOf: root.appendingPathComponent("model")) == expected)
+        let relaunched = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: operations)
+        await relaunched.refresh()
+        #expect(relaunched.needsModelReplacement == cancel && relaunched.isReady == !cancel)
+        #expect(await calls.downloads == 1)
+    }
+
+    @Test("Unsafe storage failures do not advertise corrupt-model removal")
+    func unsafeStorageRecovery() async {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in throw WhisperModelDownloadService.DownloadError.unsafeStorage },
+            download: { _, _ in throw URLError(.unsupportedURL) }, remove: { _ in },
+            admit: { _, _ in throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        #expect(!setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect(setup.errorMessage != nil)
+    }
+
+    @Test("Failed corrupt-model removal retains recovery, while model changes clear it")
+    func failedCorruptRemoval() async {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in throw WhisperModelDownloadService.DownloadError.checksumMismatch },
+            download: { _, _ in throw URLError(.unsupportedURL) },
+            remove: { _ in throw CocoaError(.fileWriteNoPermission) },
+            admit: { _, _ in throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        await setup.removeSelectedModel()
+        #expect(setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect(setup.errorMessage == CocoaError(.fileWriteNoPermission).localizedDescription)
+        setup.selectModel("tiny")
+        #expect(!setup.canRemoveModel && setup.errorMessage == nil)
+    }
+
+    @Test("Inventory separates local models from downloads without granting readiness")
+    func inventoryGroups() async {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in nil }, download: { _, _ in await calls.downloaded(); throw URLError(.unsupportedURL) },
+            remove: { _ in }, admit: { _, _ in await calls.admitted(); throw URLError(.unsupportedURL) },
+            localModelIDs: { ["base", "tiny", "unknown"] })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refreshCatalog()
+        #expect(setup.downloadedModels.map(\.id) == ["tiny", "base"])
+        #expect(Set(setup.downloadableModels.map(\.id)) == Set(WhisperDownloadableModel.catalog.map(\.id)).subtracting(["tiny", "base"]))
+        #expect(!setup.isInstalled && !setup.isReady && !setup.canRemoveModel)
+        #expect(await calls.downloads == 0)
+        #expect(await calls.admissions == 0)
+        await setup.removeSelectedModel()
+        #expect(setup.localModelIDs == ["tiny"])
+    }
+
+    @Test("A late inventory refresh cannot overwrite a newer snapshot")
+    func staleInventory() async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let attempts = AdmissionAttempts()
+        let gate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in nil }, download: { _, _ in throw URLError(.unsupportedURL) },
+            remove: { _ in }, admit: { _, _ in throw URLError(.unsupportedURL) },
+            localModelIDs: {
+                if await attempts.next() == 1 { await gate.pause(); return ["base"] }
+                return ["tiny"]
+            })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        let old = Task { await setup.refreshCatalog() }
+        try await waitUntil { await gate.started }
+        await setup.refreshCatalog()
+        await gate.resume()
+        await old.value
+        #expect(setup.localModelIDs == ["tiny"] && setup.catalogErrorMessage == nil)
     }
 
     @Test("Initialization, model selection and refresh never download implicitly")
@@ -315,14 +487,18 @@ struct ManagedWhisperSetupModelTests {
         #expect(setup.errorMessage == nil)
     }
 
-    @Test("Removal serializes destructive actions and discards stale failure reconciliation")
-    func removalExclusionAndStaleRecovery() async throws {
+    @Test("Removal serializes destructive actions and discards stale failure reconciliation", arguments: [false, true])
+    func removalExclusionAndStaleRecovery(corrupt: Bool) async throws {
         let (preferences, suite) = defaults()
         defer { preferences.removePersistentDomain(forName: suite) }
         let calls = Calls()
         let gate = Gate()
         let operations = ManagedWhisperSetupModel.Operations(
-            installed: { _ in await gate.pause(); return URL(fileURLWithPath: "/tmp/unused-model") },
+            installed: { _ in
+                await gate.pause()
+                if corrupt { throw WhisperModelDownloadService.DownloadError.checksumMismatch }
+                return URL(fileURLWithPath: "/tmp/unused-model")
+            },
             download: { _, _ in await calls.downloaded(); throw URLError(.unsupportedURL) },
             remove: { _ in await calls.removed(); throw CocoaError(.fileWriteNoPermission) },
             admit: { _, _ in throw URLError(.unsupportedURL) })
@@ -337,6 +513,7 @@ struct ManagedWhisperSetupModelTests {
         await gate.resume()
         await removal.value
         #expect(!setup.isInstalled && !setup.isReady && !setup.isRefreshing)
+        #expect(!setup.canRemoveModel)
         #expect(setup.errorMessage == nil)
     }
 

@@ -1358,6 +1358,12 @@ struct ImportViewModelTests {
 
     @Test("Capture-date scan uses an import title entered while the scan is running")
     func captureDateScanUsesLatestImportTitle() async throws {
+        let defaults = UserDefaults.standard
+        let originalFilter = defaults.object(forKey: UserDefaultsKeys.importFileTypeFilter)
+        defer {
+            if let originalFilter { defaults.set(originalFilter, forKey: UserDefaultsKeys.importFileTypeFilter) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.importFileTypeFilter) }
+        }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ImportDateTitleTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1369,8 +1375,11 @@ struct ImportViewModelTests {
             readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine()
         )
+        // This title test must admit its JPEG regardless of persisted Import settings.
+        viewModel.configuration.fileTypeFilter = .both
         viewModel.sourceFiles = [image]
         viewModel.configuration.importTitle = ""
+        #expect(viewModel.filteredSourceFiles == [image])
 
         viewModel.scanCaptureDates()
         viewModel.configuration.importTitle = "Title entered during scan"
@@ -1381,7 +1390,8 @@ struct ImportViewModelTests {
 
         #expect(!viewModel.isScanningDates)
         #expect(viewModel.dateGroups.count == 1)
-        #expect(viewModel.dateGroups[0].folderName.hasSuffix(" \u{2013} Title entered during scan"))
+        let group = try #require(viewModel.dateGroups.first)
+        #expect(group.folderName.hasSuffix(" \u{2013} Title entered during scan"))
     }
 
     @Test("Month date grouping previews use the month folder")

@@ -11,13 +11,57 @@ struct WhisperModelDownloadServiceTests {
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        return root
+        let canonical = try #require(realpath(root.path, nil))
+        defer { free(canonical) }
+        return URL(fileURLWithPath: String(cString: canonical), isDirectory: true)
     }
 
     private func model() -> WhisperDownloadableModel {
         WhisperDownloadableModel(id: "fixture", title: "Fixture", byteCount: Int64(bytes.count),
             sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
             url: URL(string: "https://example.com/immutable-model.bin")!)
+    }
+
+    @Test("Local inventory includes corrupt regular weights without hashing or downloading")
+    func localInventory() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try Data([0]).write(to: target)
+        try bytes.write(to: root.appendingPathComponent("unrelated.bin"))
+        let service = WhisperModelDownloadService(directory: root, fetch: { _, _, _ in
+            Issue.record("Inventory must never download")
+        }, verificationCheckpoint: { Issue.record("Inventory must never hash weights") })
+        #expect(try await service.localModelIDs(models: [model()]) == ["fixture"])
+        try await service.remove(model())
+        #expect(try await service.localModelIDs(models: [model()]).isEmpty)
+        #expect(try Data(contentsOf: root.appendingPathComponent("unrelated.bin")) == bytes)
+    }
+
+    @Test("Local inventory does not advertise linked weights", arguments: [false, true])
+    func linkedInventory(hardlink: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("external.bin")
+        let target = root.appendingPathComponent("ggml-fixture.bin")
+        try bytes.write(to: external)
+        if hardlink { try FileManager.default.linkItem(at: external, to: target) }
+        else { try FileManager.default.createSymbolicLink(at: target, withDestinationURL: external) }
+        #expect(try await WhisperModelDownloadService(directory: root).localModelIDs(models: [model()]).isEmpty)
+        #expect(try Data(contentsOf: external) == bytes)
+    }
+
+    @Test("Absent inventory stays read-only and linked cache roots refuse")
+    func absentOrLinkedInventory() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent("cache")
+        #expect(try await WhisperModelDownloadService(directory: cache).localModelIDs().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+        try FileManager.default.createSymbolicLink(at: cache, withDestinationURL: root)
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            try await WhisperModelDownloadService(directory: cache).localModelIDs()
+        }
     }
 
     @Test("Catalog pins multilingual weights to immutable revisions and exact identities")
@@ -51,6 +95,9 @@ struct WhisperModelDownloadServiceTests {
         })
         #expect(try await service.installedURL(for: model()) == nil)
         let result = try await service.download(model())
+        let canonical = try #require(realpath(result.path, nil))
+        defer { free(canonical) }
+        #expect(result.path == String(cString: canonical))
         #expect(try Data(contentsOf: result) == bytes)
         let attributes = try FileManager.default.attributesOfItem(atPath: result.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
