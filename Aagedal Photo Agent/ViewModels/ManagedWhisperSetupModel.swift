@@ -92,14 +92,17 @@ final class ManagedWhisperSetupModel {
               !isReady, !isDownloading, !isRefreshing, !isRemoving else { return }
         let selected = selectedModel
         isRefreshing = true
-        isInstalled = false
-        hasCorruptModel = false
         errorMessage = nil
+        // Inspection can be cancelled while hashing large weights. Keep the last
+        // known recovery state until inspection establishes a new local state.
+        var inspected = false
         defer { if request == generation { isRefreshing = false } }
         do {
             let url = try await operations.installed(selected)
             guard request == generation, !Task.isCancelled else { return }
+            inspected = true
             isInstalled = url != nil
+            hasCorruptModel = false
             guard let url else { revokeReceipt(); return }
             let admitted = try await operations.admit(url, selected)
             guard request == generation, !Task.isCancelled else {
@@ -112,6 +115,8 @@ final class ManagedWhisperSetupModel {
         } catch {
             guard request == generation, !Task.isCancelled else { return }
             revokeReceipt()
+            guard !(error is CancellationError) else { return }
+            if !inspected { isInstalled = false }
             hasCorruptModel = Self.isCorruptModelError(error)
             errorMessage = error.localizedDescription
         }
