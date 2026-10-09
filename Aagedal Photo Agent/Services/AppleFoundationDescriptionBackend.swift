@@ -17,6 +17,9 @@ nonisolated enum AppleFoundationDescriptionBackend {
     }
 
     static var availability: Availability {
+        // SDK 27's response usage and unified errors ship with Swift 6.4.
+        // Runtime availability checks alone cannot hide them from older SDKs.
+        #if compiler(>=6.4)
         guard #available(macOS 27.0, *) else {
             return .unavailable("Apple Foundation Models requires macOS 27 or later in Photo Agent. Choose a local model on this Mac.")
         }
@@ -31,6 +34,9 @@ nonisolated enum AppleFoundationDescriptionBackend {
         case .unavailable:
             return .unavailable("Apple’s on-device model is unavailable. Check Apple Intelligence in System Settings or choose a local model.")
         }
+        #else
+        return .unavailable("Apple Foundation Models requires a Photo Agent build made with Xcode 27 or later. Choose a local model in this build.")
+        #endif
     }
 
     static func validate(availability: Availability, languageSupported: Bool,
@@ -48,6 +54,7 @@ nonisolated enum AppleFoundationDescriptionBackend {
 
     static func generate(prompt: String, language: DescriptionAssistantLanguage) async throws -> String {
         try Task.checkCancellation()
+        #if compiler(>=6.4)
         guard #available(macOS 27.0, *) else {
             throw DescriptionAssistantError.appleModelUnavailable(availability.message)
         }
@@ -73,5 +80,8 @@ nonisolated enum AppleFoundationDescriptionBackend {
             default: throw DescriptionAssistantError.appleGenerationFailed
             }
         }
+        #else
+        throw DescriptionAssistantError.appleModelUnavailable(availability.message)
+        #endif
     }
 }

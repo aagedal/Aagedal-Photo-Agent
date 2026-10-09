@@ -112,6 +112,27 @@ qualification open. Final repository validation and whitespace checks pass.
 
 ## API references and remaining gates
 
+### PR #18 SDK compatibility follow-up
+
+[PR #18](https://github.com/aagedal/Aagedal-Photo-Agent/pull/18) initially failed its
+clean build under Xcode 26.6 / SDK 26.5: response `usage` and `LanguageModelError`
+are absent from that SDK. Runtime OS checks cannot hide missing symbols from the
+compiler. The backend now compiles its SDK 27 availability/generation implementation
+only with Swift 6.4 or newer, the standard Xcode 27 toolchain. Older builds explain
+that an Xcode 27 build is required, advertise no supported Apple languages, and
+refuse Apple generation; local GGUF/MLX remains available. This compiler-version
+guard supports standard Xcode toolchains, not a custom newer Swift compiler paired
+with an older SDK.
+
+Independent read-only review finds no new concrete issues. Repository validation
+passes again (`babysit-repository.log`), and the guarded production backend still
+completes the same real English/Bokmål requests and refuses unsupported Nynorsk
+(`apple-inference-probe-guarded.log`).
+The final-source Xcode 27 integrated rerun passes **3,886 tests**, two opt-in Sony
+skips and zero failures across 386 suites in **121.417 seconds**
+(`babysit-sdk-guard.xcresult`, `babysit-sdk-guard.log`). The same four existing QoS
+warnings remain. Native Settings UI source is unchanged from its passing test.
+
 Implementation was checked against the installed SDK27 Swift interface and Apple’s
 [SystemLanguageModel documentation](https://developer.apple.com/documentation/foundationmodels/systemlanguagemodel).
 [Apple’s language guidance](https://developer.apple.com/documentation/foundationmodels/supporting-languages-and-locales-with-foundation-models)
