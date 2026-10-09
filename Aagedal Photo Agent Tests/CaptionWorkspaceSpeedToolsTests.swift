@@ -2024,10 +2024,10 @@ struct DescriptionAssistantServiceTests {
     @Test("Cancellation discards output and keeps model admission held until inference stops")
     func cancelWhileGenerating() async throws {
         let gate = Gate()
-        let service = DescriptionAssistantService { _, _ in
+        let service = DescriptionAssistantService(textGenerator: { _, _ in
             await gate.wait()
             return "An output from a non-cooperative backend"
-        }
+        })
         let item = request
         let directory = URL(fileURLWithPath: "/model")
         let first = Task { try await service.generate(item, modelDirectory: directory) }
@@ -2050,7 +2050,7 @@ struct DescriptionAssistantServiceTests {
 
     @Test("Inference failure releases admission for the next independent photo")
     func recoverAfterFailure() async throws {
-        let service = DescriptionAssistantService { _, _ in " \n " }
+        let service = DescriptionAssistantService(textGenerator: { _, _ in " \n " })
         for _ in 0..<2 {
             do {
                 _ = try await service.generate(request, modelDirectory: URL(fileURLWithPath: "/model"))
@@ -2252,5 +2252,128 @@ struct DescriptionAssistantGGUFTemplateTests {
         #expect(throws: DescriptionAssistantError.outputLimit) {
             try LlamaCPPDescriptionBackend.caption(from: "<think>Unfinished reasoning [end of text]")
         }
+    }
+}
+
+@Suite("Apple description provider")
+struct AppleDescriptionProviderTests {
+    @Test("Unavailable Apple model and unsupported languages refuse generation")
+    func availabilityAndLanguageAdmission() throws {
+        for language in DescriptionAssistantLanguage.allCases {
+            #expect(throws: DescriptionAssistantError.appleModelUnavailable("Not ready")) {
+                try AppleFoundationDescriptionBackend.validate(availability: .unavailable("Not ready"),
+                    languageSupported: true, language: language)
+            }
+            #expect(throws: DescriptionAssistantError.appleUnsupportedLanguage(language.rawValue)) {
+                try AppleFoundationDescriptionBackend.validate(availability: .available,
+                    languageSupported: false, language: language)
+            }
+            try AppleFoundationDescriptionBackend.validate(availability: .available,
+                languageSupported: true, language: language)
+        }
+    }
+
+    @Test("Apple proposals use captured requests and append named people deterministically")
+    func capturedAppleProposal() async throws {
+        let item = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"), editorLoadID: UUID(),
+            originalDescription: "Two people attends the match.", action: .grammar, language: .english,
+            people: [CaptionConfirmedPerson(id: UUID(), name: "Alice", normalizedFaceRect:
+                CGRect(x: 0.1, y: 0.3, width: 0.1, height: 0.2))])
+        let service = DescriptionAssistantService(appleGenerator: { prompt, language in
+            #expect(prompt.contains("Two people attends the match."))
+            #expect(language == .english)
+            return " Two people attend the match. \n"
+        }, textGenerator: { _, _ in Issue.record("Apple request reached local inference"); return "wrong" })
+        let proposal = try await service.generate(item, backend: .appleFoundationModels)
+        #expect(proposal.text == "Two people attend the match.\n\nFrom left: Alice.")
+        #expect(proposal.model == "Apple Foundation Models (on-device)")
+        #expect(proposal.request.id == item.id)
+        #expect(proposal.request.canApply(imageURL: item.imageURL, editorLoadID: item.editorLoadID,
+                                         description: item.originalDescription))
+        #expect(!proposal.request.canApply(imageURL: item.imageURL, editorLoadID: UUID(),
+                                          description: item.originalDescription))
+    }
+
+    private actor Gate {
+        var entered = false
+        private var waiter: CheckedContinuation<Void, Never>?
+        func wait() async { entered = true; await withCheckedContinuation { waiter = $0 } }
+        func release() { waiter?.resume(); waiter = nil }
+    }
+
+    @Test("Apple cancellation retains shared admission and refuses late output")
+    func cancelledAppleGeneration() async throws {
+        let gate = Gate()
+        let service = DescriptionAssistantService(appleGenerator: { _, _ in
+            await gate.wait(); return "Late output"
+        }, textGenerator: { _, _ in "Local output" })
+        let item = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"), editorLoadID: UUID(),
+            originalDescription: "Caption.", action: .grammar, language: .english)
+        let first = Task { try await service.generate(item, backend: .appleFoundationModels) }
+        while !(await gate.entered) { await Task.yield() }
+        first.cancel()
+        await #expect(throws: DescriptionAssistantError.busy) {
+            try await service.generate(item, modelDirectory: URL(fileURLWithPath: "/local-model"))
+        }
+        await gate.release()
+        do { _ = try await first.value; Issue.record("Cancelled Apple output became a proposal") }
+        catch { #expect(error is CancellationError) }
+        let next = try await service.generate(item, modelDirectory: URL(fileURLWithPath: "/local-model"))
+        #expect(next.text == "Local output")
+    }
+
+    @Test("Apple failures do not fall back to a downloaded model")
+    func failedAppleGeneration() async throws {
+        let service = DescriptionAssistantService(appleGenerator: { _, _ in throw DescriptionAssistantError.appleRefusal },
+            textGenerator: { _, _ in Issue.record("Implicit provider fallback"); return "wrong" })
+        let item = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"), editorLoadID: UUID(),
+            originalDescription: "Caption.", action: .grammar, language: .english)
+        for _ in 0..<2 {
+            await #expect(throws: DescriptionAssistantError.appleRefusal) {
+                try await service.generate(item, backend: .appleFoundationModels)
+            }
+        }
+    }
+
+    @Test("Bookmark renewal preserves Apple selection while explicit local selection switches it")
+    @MainActor func bookmarkRenewal() throws {
+        let suite = "AppleDescriptionBookmarkTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gguf")
+        try Data("GGUF fixture".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let setup = DescriptionAssistantModelSetup(defaults: defaults)
+        try setup.select(file)
+        setup.provider = .appleFoundationModels
+        try setup.select(file, activateProvider: false)
+        let restored = DescriptionAssistantModelSetup(defaults: defaults)
+        #expect(restored.provider == .appleFoundationModels)
+        #expect(restored.directory?.lastPathComponent == file.lastPathComponent)
+        setup.provider = .localModel
+        guard case .localModel(let retained) = setup.backend else { Issue.record("Renewed local model was lost"); return }
+        #expect(retained.lastPathComponent == file.lastPathComponent)
+        setup.provider = .appleFoundationModels
+        try setup.select(file)
+        #expect(setup.provider == .localModel)
+        #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .localModel)
+    }
+
+    @Test("Provider choice persists independently of the selected local model")
+    @MainActor func providerPersistence() {
+        let suite = "AppleDescriptionProviderTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let setup = DescriptionAssistantModelSetup(defaults: defaults)
+        #expect(setup.provider == .localModel && setup.backend == nil)
+        setup.directory = URL(fileURLWithPath: "/existing.gguf")
+        setup.provider = .appleFoundationModels
+        #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .appleFoundationModels)
+        #expect(setup.directory?.lastPathComponent == "existing.gguf")
+        setup.provider = .localModel
+        guard case .localModel(let directory) = setup.backend else { Issue.record("Local model choice was lost"); return }
+        #expect(directory == setup.directory)
+        defaults.set("obsolete-provider", forKey: DescriptionAssistantModelSetup.providerKey)
+        #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .localModel)
     }
 }

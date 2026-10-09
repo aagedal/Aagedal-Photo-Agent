@@ -187,6 +187,68 @@ struct ManagedWhisperSetupModelTests {
         #expect(!setup.canRemoveModel && setup.errorMessage == nil)
     }
 
+    @Test("Cancelled setup inspection preserves existing local recovery controls", arguments: [false, true], [false, true])
+    func cancelledRecoveryInspection(corrupt: Bool, throwsCancellation: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let attempts = AdmissionAttempts()
+        let calls = Calls()
+        let gate = Gate()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in
+                if await attempts.next() > 1 {
+                    await gate.pause()
+                    if throwsCancellation { throw CancellationError() }
+                }
+                if corrupt { throw WhisperModelDownloadService.DownloadError.checksumMismatch }
+                return URL(fileURLWithPath: "/tmp/unused-model")
+            },
+            download: { _, _ in await calls.downloaded(); throw URLError(.unsupportedURL) },
+            remove: { _ in await calls.removed() },
+            admit: { _, _ in await calls.admitted(); throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        #expect(setup.canRemoveModel && setup.isInstalled == !corrupt && setup.needsModelReplacement == corrupt)
+        let refresh = Task { await setup.refresh() }
+        try await waitUntil { await gate.started }
+        #expect(setup.canRemoveModel && setup.needsModelReplacement == corrupt)
+        if !throwsCancellation { refresh.cancel() }
+        await gate.resume()
+        await refresh.value
+        #expect(!setup.isRefreshing && !setup.isReady)
+        #expect(setup.canRemoveModel && setup.isInstalled == !corrupt && setup.needsModelReplacement == corrupt)
+        #expect(setup.errorMessage == nil)
+        #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+        #expect(await calls.admissions == (corrupt ? 0 : 1))
+        #expect(await calls.downloads == 0)
+        await setup.removeSelectedModel()
+        #expect(await calls.removals == 1)
+        #expect(!setup.canRemoveModel && !setup.isReady)
+    }
+
+    @Test("Completed inspection clears obsolete corrupt-model recovery", arguments: [false, true])
+    func reconciledRecoveryInspection(unsafe: Bool) async {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let attempts = AdmissionAttempts()
+        let calls = Calls()
+        let operations = ManagedWhisperSetupModel.Operations(
+            installed: { _ in
+                if await attempts.next() == 1 { throw WhisperModelDownloadService.DownloadError.checksumMismatch }
+                if unsafe { throw WhisperModelDownloadService.DownloadError.unsafeStorage }
+                return nil
+            },
+            download: { _, _ in throw URLError(.unsupportedURL) }, remove: { _ in },
+            admit: { _, _ in await calls.admitted(); throw URLError(.unsupportedURL) })
+        let setup = ManagedWhisperSetupModel(defaults: preferences, operations: operations)
+        await setup.refresh()
+        #expect(setup.needsModelReplacement && setup.canRemoveModel)
+        await setup.refresh()
+        #expect(!setup.needsModelReplacement && !setup.canRemoveModel && !setup.isInstalled && !setup.isReady)
+        #expect((setup.errorMessage != nil) == unsafe)
+        #expect(await calls.admissions == 0)
+    }
+
     @Test("Inventory separates local models from downloads without granting readiness")
     func inventoryGroups() async {
         let (preferences, suite) = defaults()

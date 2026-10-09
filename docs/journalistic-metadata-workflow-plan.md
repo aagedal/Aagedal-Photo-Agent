@@ -101,6 +101,14 @@ than reimplementing their rules.
 - Every specialist stock, artwork, licensing, and accessibility field in IPTC Extension. The model
   must be extensible to them, but the first UI should target editorial use.
 
+**Later user-requested description-assistance exception:** The 3.0 Description Assistant
+corrects grammar or improves wording in existing captions using explicitly selected local
+GGUF/MLX models and a review-before-apply workflow. The [2026-10-09 Apple provider
+continuation](release/apple-description-provider-2026-10-09.md) adds the user-requested
+on-device alternative on macOS 27, with readiness/language checks and retained provider
+selection. This narrow exception does not add free-form image captioning or general-purpose
+LLM/MCP inference; those historical 3.1 deferrals remain separate.
+
 ## Shared architecture
 
 ### Metadata field registry
@@ -1991,6 +1999,7 @@ closed by these slices. See [cycle 94](release/cycle-94-rooted-publication-filen
 - [ ] Harden curated model delivery to Photo Agent's component standard: versioned signed descriptor,
   exact byte count and SHA-256, bounded download, regular-file/path containment checks, atomic install,
   verified receipt, cancellation cleanup, update/rollback/removal, and explicit user initiation.
+  The [2026-10-08 inspection cancellation continuation](release/whisper-inspection-cancellation-2026-10-08.md) preserves known local recovery state when setup inspection is cancelled, while completed absent/unsafe inspections clear obsolete controls. Provider authority still requires completed admission.
   The [2026-10-08 publication cancellation continuation](release/whisper-published-model-cancellation-2026-10-08.md) retains installed-model recovery after cancellation races atomic installation, without granting provider readiness.
   The [2026-10-08 setup progress continuation](release/whisper-setup-progress-continuation-2026-10-08.md) adds explicit preparation/cancellation status and generation-bound refresh admission; cancellation during preparation revokes late receipts while preserving installed-model recovery.
   The [2026-10-08 corrupt-model recovery continuation](release/whisper-corrupt-model-recovery-2026-10-08.md) adds explicit removal of size/hash-invalid local weights and retains recovery after offline replacement failure. Downloaded/downloadable picker groups and successful/cancelled replacement coverage now distinguish presence from verification. Actual pinned Base-model CPU inference passes under network denial, and native transcript/readiness persist across relaunch. Corrupt weights never satisfy installed/readiness checks; the broader signed-distribution/lifecycle criterion remains open.

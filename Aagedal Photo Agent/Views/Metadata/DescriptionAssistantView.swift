@@ -9,42 +9,58 @@ struct DescriptionAssistantModelSetupView: View {
     @AppStorage("descriptionAssistantEditorialPrompt") private var editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt
     var body: some View {
         Section("Description Model") {
-            Text(setup.directory.map { $0.pathExtension.lowercased() != "gguf" } == true
-                ? "Local MLX inference" : "Local llama.cpp inference • Metal")
-            Text("Gemma 4 12B is recommended for multilingual writing. All downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon. You can also choose an existing instruction-tuned GGUF file.")
-                .font(.caption).foregroundStyle(.secondary)
-            if let directory = setup.directory {
-                LabeledContent("Active model", value: directory.lastPathComponent)
-            }
-            Picker("Download or switch to", selection: $downloadModel) {
-                ForEach(DescriptionAssistantDownloadModel.allCases) { model in
-                    Text(model.title).tag(model)
-                }
+            Picker("Provider", selection: $setup.provider) {
+                ForEach(DescriptionAssistantProvider.allCases) { Text($0.title).tag($0) }
             }.disabled(setup.isInstalling)
-            Text(downloadModel.purpose).font(.caption).foregroundStyle(.secondary)
-            Text(downloadModel.memoryGuidance).font(.caption).foregroundStyle(.secondary)
-            if downloadModel.hasMemoryWarning() {
-                Label("This Mac has less than the recommended RAM. Generation may be slow or run out of memory.", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                .accessibilityIdentifier("descriptionAssistant.provider")
+            if setup.provider == .appleFoundationModels {
+                Text("Uses Apple’s on-device text model on macOS 27 or later. Requires an eligible Mac, Apple Intelligence enabled, and Apple’s model ready. Availability and language support depend on this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(setup.appleAvailability.message).font(.caption)
+                    .accessibilityIdentifier("descriptionAssistant.apple.availability")
+                if setup.appleAvailability.isAvailable {
+                    Text("Supported caption languages: " + DescriptionAssistantLanguage.allCases.filter { setup.appleSupportedLanguages.contains($0) }.map(\.rawValue).joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Check Availability") { setup.refreshAppleAvailability() }
+                    .accessibilityIdentifier("descriptionAssistant.apple.refresh")
+            } else {
+                Text(setup.directory.map { $0.pathExtension.lowercased() != "gguf" } == true
+                    ? "Local MLX inference" : "Local llama.cpp inference • Metal")
+                Text("Gemma 4 12B is recommended for multilingual writing. All downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon. You can also choose an existing instruction-tuned GGUF file.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let directory = setup.directory {
+                    LabeledContent("Active model", value: directory.lastPathComponent)
+                }
+                Picker("Download or switch to", selection: $downloadModel) {
+                    ForEach(DescriptionAssistantDownloadModel.allCases) { model in
+                        Text(model.title).tag(model)
+                    }
+                }.disabled(setup.isInstalling)
+                Text(downloadModel.purpose).font(.caption).foregroundStyle(.secondary)
+                Text(downloadModel.memoryGuidance).font(.caption).foregroundStyle(.secondary)
+                if downloadModel.hasMemoryWarning() {
+                    Label("This Mac has less than the recommended RAM. Generation may be slow or run out of memory.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    Button(setup.downloadedModels.contains(downloadModel)
+                        ? "Use Downloaded Model" : "Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
+                        .disabled(setup.isInstalling)
+                    Button("Choose GGUF…") { choosingModel = true }
+                        .disabled(setup.isInstalling)
+                }
+                if setup.isInstalling {
+                    ProgressView(value: setup.progress)
+                    Button("Cancel Download") { setup.cancelInstall() }
+                }
+                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                Link("Model and license", destination: downloadModel.sourceURL)
+                DisclosureGroup("Advanced: MLX model") {
+                    Button("Choose MLX Folder…") { choosingMLX = true }.disabled(setup.isInstalling)
+                    Text("Use an existing converted MLX folder. GGUF is the default download.").font(.caption)
+                }
             }
-            HStack {
-                Button(setup.downloadedModels.contains(downloadModel)
-                    ? "Use Downloaded Model" : "Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
-                    .disabled(setup.isInstalling)
-                Button("Choose GGUF…") { choosingModel = true }
-                    .disabled(setup.isInstalling)
-            }
-            if setup.isInstalling {
-                ProgressView(value: setup.progress)
-                Button("Cancel Download") { setup.cancelInstall() }
-            }
-            if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
-            Link("Model and license", destination: downloadModel.sourceURL)
-            DisclosureGroup("Advanced: MLX model") {
-                Button("Choose MLX Folder…") { choosingMLX = true }.disabled(setup.isInstalling)
-                Text("Use an existing converted MLX folder. GGUF is the default download.").font(.caption)
-            }
-
         }
         Section("Description Prompt") {
             TextEditor(text: $editorialPrompt).frame(minHeight: 140)
@@ -54,6 +70,7 @@ struct DescriptionAssistantModelSetupView: View {
         }
         .onAppear {
             setup.refreshDownloadedModels()
+            setup.refreshAppleAvailability()
             if let current = setup.directory,
                let model = DescriptionAssistantDownloadModel.allCases.first(where: { $0.artifact.fileName == current.lastPathComponent }) {
                 downloadModel = model
@@ -96,7 +113,7 @@ struct DescriptionAssistantView: View {
                 Spacer()
                 Button("Model Setup") { showSetup.toggle() }
             }
-            if showSetup || setup.directory == nil {
+            if showSetup || setup.backend == nil {
                 Form { DescriptionAssistantModelSetupView() }
                     .formStyle(.grouped).frame(height: 390)
             }
@@ -106,7 +123,7 @@ struct DescriptionAssistantView: View {
                 }
                 Picker("Language", selection: $language) {
                     ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
-                }
+                }.accessibilityIdentifier("descriptionAssistant.language")
             }.disabled(generationTask != nil)
             Toggle("Append named people from left to right", isOn: $includePeople)
                 .disabled(loadingPeople || people.isEmpty || generationTask != nil)
@@ -125,6 +142,7 @@ struct DescriptionAssistantView: View {
                 TextEditor(text: $reviewedText).frame(minHeight: 130)
                     .accessibilityLabel("Suggested description")
             }
+            if let issue = setup.generationIssue(for: language) { Text(issue).font(.caption).foregroundStyle(.secondary) }
             if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("Close") { generationTask?.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
@@ -134,7 +152,8 @@ struct DescriptionAssistantView: View {
                     Button("Cancel Generation") { generationTask?.cancel() }
                 } else {
                     Button(proposal == nil ? "Generate Suggestion" : "Generate Again") { generate() }
-                        .disabled(setup.directory == nil || loadingPeople || setup.isInstalling)
+                        .disabled(setup.generationIssue(for: language) != nil || loadingPeople || setup.isInstalling)
+                        .accessibilityIdentifier("descriptionAssistant.generate")
                 }
                 Button("Apply to Description") {
                     guard let proposal else { return }
@@ -145,7 +164,11 @@ struct DescriptionAssistantView: View {
             }
         }
         .padding(24).frame(width: 720)
-        .task { await loadPeople() }
+        .task {
+            setup.refreshAppleAvailability()
+            if setup.backend == nil { showSetup = true }
+            await loadPeople()
+        }
         .onDisappear { generationTask?.cancel() }
     }
 
@@ -158,7 +181,7 @@ struct DescriptionAssistantView: View {
     }
 
     private func generate() {
-        guard let directory = setup.directory, generationTask == nil else { return }
+        guard let backend = setup.backend, setup.generationIssue(for: language) == nil, generationTask == nil else { return }
         errorMessage = nil
         proposal = nil
         reviewedText = ""
@@ -168,7 +191,7 @@ struct DescriptionAssistantView: View {
         generationTask = Task {
             defer { generationTask = nil }
             do {
-                let result = try await DescriptionAssistantService.shared.generate(request, modelDirectory: directory)
+                let result = try await DescriptionAssistantService.shared.generate(request, backend: backend)
                 try Task.checkCancellation()
                 proposal = result
                 reviewedText = result.text
@@ -203,10 +226,11 @@ struct BatchDescriptionAssistantView: View {
                 }
                 Picker("Language", selection: $language) {
                     ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
-                }
+                }.accessibilityIdentifier("descriptionAssistant.language")
             }.disabled(task != nil)
-            if setup.directory == nil {
-                Text("Download or select a description model in Settings first.")
+            Text("Provider: " + setup.provider.title).font(.caption)
+            if let issue = setup.generationIssue(for: language) {
+                Text(issue).font(.caption).foregroundStyle(.secondary)
             }
             if task != nil { ProgressView(value: Double(completed), total: Double(urls.count)) }
             ScrollView {
@@ -231,15 +255,16 @@ struct BatchDescriptionAssistantView: View {
                     Button("Cancel Generation") { task?.cancel() }
                 } else {
                     Button("Generate Suggestions") { generate() }
-                        .disabled(setup.directory == nil || setup.isInstalling || !proposals.isEmpty)
+                        .disabled(setup.generationIssue(for: language) != nil || setup.isInstalling || !proposals.isEmpty)
                 }
             }
         }.padding(24).frame(width: 740, height: 620)
+            .onAppear { setup.refreshAppleAvailability() }
             .onDisappear { task?.cancel() }
     }
 
     private func generate() {
-        guard let directory = setup.directory, task == nil else { return }
+        guard let backend = setup.backend, setup.generationIssue(for: language) == nil, task == nil else { return }
         let prompt = UserDefaults.standard.string(forKey: "descriptionAssistantEditorialPrompt")
             ?? DescriptionAssistantRequest.defaultEditorialPrompt
         completed = 0
@@ -258,7 +283,7 @@ struct BatchDescriptionAssistantView: View {
                     let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: editor.id,
                         originalDescription: browser.metadataReviewText(for: .description, imageURL: url),
                         action: action, language: language, editorialPrompt: prompt)
-                    let proposal = try await DescriptionAssistantService.shared.generate(request, modelDirectory: directory)
+                    let proposal = try await DescriptionAssistantService.shared.generate(request, backend: backend)
                     try Task.checkCancellation()
                     proposals.append(proposal)
                 } catch is CancellationError { break }
