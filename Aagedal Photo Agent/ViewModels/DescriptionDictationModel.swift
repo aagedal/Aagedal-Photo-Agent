@@ -4,7 +4,7 @@ import Foundation
 import Observation
 
 /// Microphone audio is temporary and never becomes a photo sidecar. The transcript is a
-/// reviewable draft; the caller decides whether it is description text or reporting notes.
+/// reviewable draft applied by the standalone description transcription dialog.
 @MainActor @Observable
 final class DescriptionDictationModel {
     private(set) var isRecording = false

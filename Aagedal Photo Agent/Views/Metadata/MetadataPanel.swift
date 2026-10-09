@@ -128,6 +128,7 @@ struct MetadataPanel: View {
     var onAutocompletePresentationChanged: ((Bool) -> Void)?
     var onTabTraversalRequested: ((MetadataFieldID, Bool) -> Void)?
 
+    @State private var isShowingDescriptionVariables = false
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
     @State private var fieldSelections: [String: NSRange] = [:]
@@ -140,6 +141,7 @@ struct MetadataPanel: View {
     @State private var commitDebounceTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
     @State private var descriptionAssistantSource: DescriptionAssistantRequest?
+    @State private var descriptionTranscriptionSource: DescriptionTranscriptionSource?
     @State private var showingStructuredKeywords = false
     @State private var showingStructuredPersonShown = false
     @State private var editingQuickList: QuickListType?
@@ -1008,12 +1010,13 @@ struct MetadataPanel: View {
         applyInsertion(variable, to: variableInsertTarget)
     }
 
-    private func openVariableReference(for target: VariableInsertTarget) {
+    private func openVariableReference(for target: VariableInsertTarget, compact: Bool = false) {
         variableInsertTarget = target
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
             fieldSelections[target.focusKey] = editor.selectedRange()
         }
-        isShowingVariableReference = true
+        if compact { isShowingDescriptionVariables = true }
+        else { isShowingVariableReference = true }
     }
 
     private func openVariableReferenceFromShortcut() {
@@ -1259,19 +1262,6 @@ struct MetadataPanel: View {
         .environment(\.metadataEditorBuffers, editorBuffers)
         .environment(\.metadataEditorBufferLoadID, viewModel.editorBufferLoadID)
         .environment(\.metadataEditorCurrentLoadID, MetadataEditorCurrentLoadIDReader(viewModel: viewModel))
-        .sheet(item: $descriptionAssistantSource) { source in
-            DescriptionAssistantView(source: source) { proposal, text in
-                guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
-                      proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
-                        editorLoadID: viewModel.editorBufferLoadID,
-                        description: viewModel.editingMetadata.description ?? "",
-                        metadata: DescriptionAssistantMetadata(viewModel.editingMetadata)) else { return false }
-                viewModel.editingMetadata.description = text
-                viewModel.markChanged()
-                commitEdits()
-                return true
-            }
-        }
         .sheet(isPresented: $isShowingVariableReference) {
             VariableReferenceView(
                 isPresented: $isShowingVariableReference,
@@ -1359,7 +1349,7 @@ struct MetadataPanel: View {
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in
-            guard !isShowingVariableReference,
+            guard !isShowingVariableReference, !isShowingDescriptionVariables,
                   let key = focusedField,
                   let editor = notification.object as? NSTextView else {
                 return
@@ -1371,7 +1361,7 @@ struct MetadataPanel: View {
             let metadataField = newValue.flatMap(MetadataFieldID.init(rawValue:))
             if newValue != nil { lastCaptionEditorFocusKey = newValue }
             onFocusedFieldChanged?(metadataField)
-            guard !isShowingVariableReference,
+            guard !isShowingVariableReference, !isShowingDescriptionVariables,
                   let key = newValue,
                   let editor = NSApp.keyWindow?.firstResponder as? NSTextView else {
                 return
@@ -1697,8 +1687,50 @@ struct MetadataPanel: View {
                     .disabled(viewModel.isBatchEdit || viewModel.isLoading || viewModel.selectedURLs.count != 1)
                     .help("Write or improve description with AI")
                     .accessibilityLabel("Description assistant")
+                    .popover(item: $descriptionAssistantSource, arrowEdge: .trailing) { source in
+                        DescriptionAssistantView(source: source, compact: true) { proposal, text in
+                            guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
+                                  proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
+                                    editorLoadID: viewModel.editorBufferLoadID,
+                                    description: viewModel.editingMetadata.description ?? "",
+                                    metadata: DescriptionAssistantMetadata(viewModel.editingMetadata)) else { return false }
+                            viewModel.editingMetadata.description = text
+                            viewModel.markChanged()
+                            commitEdits()
+                            return true
+                        }
+                    }
+
                     Button {
-                        openVariableReference(for: .description)
+                        guard flushBufferedFields(), let imageURL = viewModel.selectedURLs.first else { return }
+                        descriptionTranscriptionSource = DescriptionTranscriptionSource(
+                            imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
+                            originalDescription: viewModel.editingMetadata.description ?? "")
+                    } label: {
+                        Image(systemName: "mic")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isBatchEdit || viewModel.isLoading || viewModel.selectedURLs.count != 1)
+                    .help("Record and transcribe a description")
+                    .accessibilityLabel("Transcribe description")
+                    .accessibilityIdentifier("metadata.description.transcribe")
+                    .popover(item: $descriptionTranscriptionSource, arrowEdge: .trailing) { source in
+                        DescriptionTranscriptionView(source: source, compact: true) { text in
+                            guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
+                                  viewModel.selectedURLs.count == 1,
+                                  viewModel.selectedURLs.first?.standardizedFileURL == source.imageURL.standardizedFileURL,
+                                  viewModel.editorBufferLoadID == source.editorLoadID,
+                                  (viewModel.editingMetadata.description ?? "") == source.originalDescription else { return false }
+                            viewModel.editingMetadata.description = text
+                            viewModel.markChanged()
+                            commitEdits()
+                            return true
+                        }
+                    }
+
+                    Button {
+                        openVariableReference(for: .description, compact: true)
                     } label: {
                         Image(systemName: "curlybraces")
                             .font(.caption)
@@ -1707,6 +1739,9 @@ struct MetadataPanel: View {
                     .buttonStyle(.plain)
                     .help("Variable Reference")
                     .accessibilityLabel("Variable reference for description")
+                    .popover(isPresented: $isShowingDescriptionVariables, arrowEdge: .trailing) {
+                        VariableReferenceView(isPresented: $isShowingDescriptionVariables, onInsert: insertVariable)
+                    }
                 }
                 if let conflict = viewModel.descriptionConflict {
                     DescriptionConflictBanner(conflict: conflict) { keepXMP in
