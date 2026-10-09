@@ -131,6 +131,25 @@ Drafts already saved remain available in Caption, even if the
 batch fails or is cancelled. An uncertain save stops the remaining photos and requires inspection
 before retrying. The current empty transcript panel reloads a saved batch draft without replacing an existing transcript.
 
+## Improve descriptions with a local model
+
+Open the wand beside **Description**, or use batch description improvement for a fixed
+selection. Choose **Settings → Description Assistant → Provider**:
+
+- **Local GGUF / MLX model** downloads or selects local weights; Gemma 4 12B is the
+  recommended download. Existing local model choices remain saved when switching providers.
+- **Apple Foundation Models** uses Apple’s on-device model on macOS 27 or later, without
+  a Photo Agent model download. It requires an eligible Mac, Apple Intelligence enabled,
+  and Apple’s model ready. Use **Check Availability** after changing Apple Intelligence
+  settings. Supported caption languages are shown for this Mac; choose a local model for
+  a language Apple’s model does not support.
+
+Both providers correct grammar or improve wording using the existing description and
+editorial prompt. They do not inspect the image. Review and edit each suggestion before
+**Apply to Description** or **Queue Reviewed Description**. A changed original description
+or editor load refuses stale application. Cancellation discards unfinished output; a batch
+retains completed suggestions for review. Provider failures do not switch models automatically.
+
 ## Connect a local automation client
 
 Open **Settings → Automation**. Local automation is off by default. Add only the folders a client should

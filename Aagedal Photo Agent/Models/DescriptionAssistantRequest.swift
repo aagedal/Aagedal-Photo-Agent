@@ -12,6 +12,31 @@ nonisolated enum DescriptionAssistantLanguage: String, CaseIterable, Identifiabl
     case nynorsk = "Nynorsk"
     case english = "English"
     var id: String { rawValue }
+    var localeIdentifier: String {
+        switch self {
+        case .bokmal: "nb"
+        case .nynorsk: "nn"
+        case .english: "en"
+        }
+    }
+}
+
+nonisolated enum DescriptionAssistantProvider: String, CaseIterable, Identifiable, Sendable {
+    case localModel
+    case appleFoundationModels
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .localModel: "Local GGUF / MLX model"
+        case .appleFoundationModels: "Apple Foundation Models"
+        }
+    }
+}
+
+/// Captured once per generation or batch, even if Settings changes while it runs.
+nonisolated enum DescriptionAssistantBackend: Sendable {
+    case localModel(URL)
+    case appleFoundationModels
 }
 
 /// One immutable work item. A future batch queue can produce and review these independently
@@ -117,6 +142,7 @@ nonisolated struct DescriptionAssistantProposal: Identifiable, Sendable {
 
 nonisolated enum DescriptionAssistantError: LocalizedError, Equatable {
     case emptyDescription, inputTooLong, modelNotInstalled, busy, emptyOutput, outputLimit
+    case appleModelUnavailable(String), appleUnsupportedLanguage(String), appleRefusal, appleGenerationFailed
     var errorDescription: String? {
         switch self {
         case .emptyDescription: "Enter a description before improving it."
@@ -125,6 +151,10 @@ nonisolated enum DescriptionAssistantError: LocalizedError, Equatable {
         case .busy: "The description model is already working. Wait for it to finish and try again."
         case .emptyOutput: "The model returned an empty description. Try again."
         case .outputLimit: "The model reached the output limit. Shorten the description and try again."
+        case .appleModelUnavailable(let reason): reason
+        case .appleUnsupportedLanguage(let language): "Apple’s on-device model does not support \(language) on this Mac. Choose a local GGUF / MLX model for this language."
+        case .appleRefusal: "Apple’s on-device model declined this caption. You can edit it manually or choose a local description model."
+        case .appleGenerationFailed: "Apple’s on-device model could not generate a suggestion. Check its availability or choose a local description model."
         }
     }
 }

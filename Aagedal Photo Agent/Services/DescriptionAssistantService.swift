@@ -12,6 +12,7 @@ actor DescriptionAssistantService {
     private var container: ModelContainer?
     private var loadedDirectory: URL?
     private var busy = false
+    private let appleGenerator: @Sendable (String, DescriptionAssistantLanguage) async throws -> String
     private let textGenerator: (@Sendable (String, URL) async throws -> String)?
     private let vlmFactory = VLMModelFactory(
         typeRegistry: ModelTypeRegistry(creators: ["gemma3": { sourceData in
@@ -30,7 +31,10 @@ actor DescriptionAssistantService {
             }
         ]), modelRegistry: LLMRegistry.shared)
 
-    init(textGenerator: (@Sendable (String, URL) async throws -> String)? = nil) {
+    init(appleGenerator: @escaping @Sendable (String, DescriptionAssistantLanguage) async throws -> String = {
+        try await AppleFoundationDescriptionBackend.generate(prompt: $0, language: $1)
+    }, textGenerator: (@Sendable (String, URL) async throws -> String)? = nil) {
+        self.appleGenerator = appleGenerator
         self.textGenerator = textGenerator
     }
 
@@ -49,23 +53,37 @@ actor DescriptionAssistantService {
     }
 
     func generate(_ request: DescriptionAssistantRequest, modelDirectory: URL) async throws -> DescriptionAssistantProposal {
+        try await generate(request, backend: .localModel(modelDirectory))
+    }
+
+    func generate(_ request: DescriptionAssistantRequest, backend: DescriptionAssistantBackend) async throws -> DescriptionAssistantProposal {
         let prompt = try request.prompt()
         guard !busy else { throw DescriptionAssistantError.busy }
         busy = true
         defer { busy = false }
         try Task.checkCancellation()
         let text: String
-        if let textGenerator {
-            text = try await textGenerator(prompt, modelDirectory)
-        } else {
-            text = try await generateText(prompt: prompt, modelDirectory: modelDirectory)
+        let modelName: String
+        switch backend {
+        case .localModel(let modelDirectory):
+            modelName = modelDirectory.lastPathComponent
+            if let textGenerator {
+                text = try await textGenerator(prompt, modelDirectory)
+            } else {
+                text = try await generateText(prompt: prompt, modelDirectory: modelDirectory)
+            }
+        case .appleFoundationModels:
+            container = nil
+            loadedDirectory = nil
+            modelName = "Apple Foundation Models (on-device)"
+            text = try await appleGenerator(prompt, request.language)
         }
         try Task.checkCancellation()
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw DescriptionAssistantError.emptyOutput }
         let reviewedText = request.personListing.map { cleaned + "\n\n" + $0 } ?? cleaned
         return DescriptionAssistantProposal(request: request, text: reviewedText,
-                                            model: modelDirectory.lastPathComponent)
+                                            model: modelName)
     }
 
     private func generateText(prompt: String, modelDirectory: URL) async throws -> String {
@@ -114,6 +132,28 @@ actor DescriptionAssistantService {
 final class DescriptionAssistantModelSetup {
     static let shared = DescriptionAssistantModelSetup()
     private static let bookmarkKey = "descriptionAssistantModelBookmark"
+    static let providerKey = "descriptionAssistantProvider"
+    @ObservationIgnored private let defaults: UserDefaults
+    var provider: DescriptionAssistantProvider {
+        didSet { defaults.set(provider.rawValue, forKey: Self.providerKey) }
+    }
+    private(set) var appleAvailability = AppleFoundationDescriptionBackend.availability
+    private(set) var appleSupportedLanguages = Set(DescriptionAssistantLanguage.allCases.filter { AppleFoundationDescriptionBackend.supports($0) })
+    var backend: DescriptionAssistantBackend? {
+        switch provider {
+        case .localModel: directory.map { .localModel($0) }
+        case .appleFoundationModels: appleAvailability.isAvailable ? .appleFoundationModels : nil
+        }
+    }
+    func generationIssue(for language: DescriptionAssistantLanguage) -> String? {
+        switch provider {
+        case .localModel: return directory == nil ? DescriptionAssistantError.modelNotInstalled.localizedDescription : nil
+        case .appleFoundationModels:
+            if !appleAvailability.isAvailable { return appleAvailability.message }
+            return appleSupportedLanguages.contains(language) ? nil
+                : DescriptionAssistantError.appleUnsupportedLanguage(language.rawValue).localizedDescription
+        }
+    }
     var directory: URL?
     var downloadedModels: Set<DescriptionAssistantDownloadModel> = []
     var isInstalling = false
@@ -121,18 +161,21 @@ final class DescriptionAssistantModelSetup {
     var message: String?
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    private init() {
+    init(defaults: UserDefaults? = nil) {
+        let defaults = defaults ?? FFmpegWhisperSetupModel.sessionDefaults
+        self.defaults = defaults
+        provider = defaults.string(forKey: Self.providerKey).flatMap(DescriptionAssistantProvider.init(rawValue:)) ?? .localModel
         refreshDownloadedModels()
-        guard let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
+        guard let data = defaults.data(forKey: Self.bookmarkKey) else { return }
         var stale = false
         do {
             directory = try URL(resolvingBookmarkData: data, options: .withSecurityScope,
                                 bookmarkDataIsStale: &stale)
-            if stale, let directory { try select(directory) }
+            if stale, let directory { try select(directory, activateProvider: false) }
         } catch { message = error.localizedDescription }
     }
 
-    func select(_ url: URL) throws {
+    func select(_ url: URL, activateProvider: Bool = true) throws {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         if url.pathExtension.lowercased() == "gguf" {
@@ -151,8 +194,9 @@ final class DescriptionAssistantModelSetup {
         }
         let bookmark = try url.bookmarkData(options: .withSecurityScope,
                                            includingResourceValuesForKeys: nil, relativeTo: nil)
-        UserDefaults.standard.set(bookmark, forKey: Self.bookmarkKey)
+        defaults.set(bookmark, forKey: Self.bookmarkKey)
         directory = url
+        if activateProvider { provider = .localModel }
         message = "Model selected. It will be loaded when you generate a description."
     }
 
@@ -160,6 +204,11 @@ final class DescriptionAssistantModelSetup {
         downloadedModels = Set(DescriptionAssistantDownloadModel.allCases.filter {
             FileManager.default.fileExists(atPath: $0.installedFile.path)
         })
+    }
+
+    func refreshAppleAvailability() {
+        appleAvailability = AppleFoundationDescriptionBackend.availability
+        appleSupportedLanguages = Set(DescriptionAssistantLanguage.allCases.filter { AppleFoundationDescriptionBackend.supports($0) })
     }
 
     func install(_ model: DescriptionAssistantDownloadModel = .recommended) {

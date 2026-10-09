@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Add Apple Foundation Models as an optional on-device Description Assistant provider on macOS 27, with readiness/language checks and the same individual/batch review workflow.
+
 - Preserve Whisper model removal and replacement controls when a setup retry is cancelled during local inspection.
 
 - Recommend Gemma 4 12B for local description assistance, with Gemma 4 E4B,

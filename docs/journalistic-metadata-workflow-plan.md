@@ -101,6 +101,14 @@ than reimplementing their rules.
 - Every specialist stock, artwork, licensing, and accessibility field in IPTC Extension. The model
   must be extensible to them, but the first UI should target editorial use.
 
+**Later user-requested description-assistance exception:** The 3.0 Description Assistant
+corrects grammar or improves wording in existing captions using explicitly selected local
+GGUF/MLX models and a review-before-apply workflow. The [2026-10-09 Apple provider
+continuation](release/apple-description-provider-2026-10-09.md) adds the user-requested
+on-device alternative on macOS 27, with readiness/language checks and retained provider
+selection. This narrow exception does not add free-form image captioning or general-purpose
+LLM/MCP inference; those historical 3.1 deferrals remain separate.
+
 ## Shared architecture
 
 ### Metadata field registry

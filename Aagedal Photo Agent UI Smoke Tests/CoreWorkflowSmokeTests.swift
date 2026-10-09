@@ -2295,6 +2295,43 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testDescriptionAssistantAppleProviderAvailabilityAndPersistence() throws {
+        let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
+        let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]
+        let originalBytes = try protectedFiles.map { try Data(contentsOf: $0) }
+        for attempt in 0..<2 {
+            launch(workflow: "caption", folder: fixture.folder, transcriptionProvider: "whisper")
+            XCTAssertTrue(app.buttons["caption.voiceMemo.transcriptionSettings"].waitForExistence(timeout: 15))
+            app.buttons["caption.voiceMemo.transcriptionSettings"].click()
+            let section = app.staticTexts["Description Assistant"].firstMatch
+            XCTAssertTrue(section.waitForExistence(timeout: 10))
+            section.click()
+            let provider = app.popUpButtons["descriptionAssistant.provider"]
+            XCTAssertTrue(provider.waitForExistence(timeout: 10))
+            if attempt == 0 {
+                provider.click()
+                app.menuItems["Apple Foundation Models"].firstMatch.click()
+            }
+            XCTAssertTrue((provider.value as? String ?? "").contains("Apple Foundation Models"))
+            let status = app.staticTexts["descriptionAssistant.apple.availability"]
+            XCTAssertTrue(status.waitForExistence(timeout: 10))
+            XCTAssertFalse(visibleText(status).isEmpty)
+            XCTAssertTrue(app.buttons["descriptionAssistant.apple.refresh"].exists)
+            XCTAssertFalse(app.buttons["Choose GGUF…"].exists)
+            app.buttons["descriptionAssistant.apple.refresh"].click()
+            if attempt == 1 {
+                provider.click()
+                app.menuItems["Local GGUF / MLX model"].firstMatch.click()
+                XCTAssertTrue(app.buttons["Choose GGUF…"].waitForExistence(timeout: 10))
+            }
+            app.terminate()
+            for (index, file) in protectedFiles.enumerated() {
+                XCTAssertEqual(try Data(contentsOf: file), originalBytes[index], file.lastPathComponent)
+            }
+        }
+    }
+
+    @MainActor
     func testManagedWhisperUsesSettingsAndWaitsForExplicitModelDownload() throws {
         let fixture = try makeApprovedVoiceMemoFolder(whisper: true)
         let protectedFiles = [fixture.imageURL, fixture.memoURL, fixture.relationshipURL, fixture.sidecarURL]

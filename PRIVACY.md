@@ -43,6 +43,21 @@ network service are listed below.
   working-folder images, matching XMP sidecars, and folder-local Photo Agent case/metadata/version
   documents; its integrity manifest does not encrypt that content.
 
+## Local description assistance
+
+Description suggestions use existing caption text, the configured editorial prompt and,
+when explicitly included, named face context. They do not inspect image pixels. The chosen
+provider is saved locally; generated text becomes a suggestion for explicit review and
+application, rather than an automatic metadata write.
+
+Local GGUF/MLX models process requests on the Mac. GGUF downloads are explicit and
+pinned by size/hash. On macOS 27 or later, the optional Apple Foundation Models provider
+uses only `SystemLanguageModel`, Apple’s on-device model. It does not use a Private Cloud
+Compute model or send captions to a hosted model service. Apple Intelligence manages its
+own model setup in System Settings; Photo Agent checks readiness and language support and
+does not initiate that setup. Each caption uses a fresh session. Switching providers keeps
+the saved local-model bookmark so it can be selected again.
+
 ## Optional iCloud sync
 
 iCloud Sync is opt-in. Its master switch or individual category switches can sync metadata templates,
