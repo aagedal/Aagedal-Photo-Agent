@@ -26,6 +26,7 @@ struct FaceBarView: View {
     /// new scan finishes, since that can make fresh matches available again.
     @State private var didRefine = false
     @State private var isHoveringDone = false
+    @State private var isHoveringCollapsedBar = false
 
     /// Height of the face bar
     private let barHeight: CGFloat = 100
@@ -92,17 +93,19 @@ struct FaceBarView: View {
             HStack(spacing: 5) {
                 Image(systemName: "chevron.down")
                 Text("Faces")
-                Spacer(minLength: 0)
             }
             .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(isHoveringCollapsedBar ? Color.accentColor : Color.secondary)
             .padding(.horizontal, 10)
             .frame(height: 22)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(Color.primary.opacity(isHoveringCollapsedBar ? 0.07 : 0))
         .background(.bar)
+        .onHover { isHoveringCollapsedBar = $0 }
+        .onDisappear { isHoveringCollapsedBar = false }
         .help("Show face group bar")
         .accessibilityLabel("Show face group bar")
         .accessibilityIdentifier("face.showBrowseBar")
