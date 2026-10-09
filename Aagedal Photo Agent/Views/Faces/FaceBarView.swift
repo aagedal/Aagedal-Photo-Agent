@@ -14,6 +14,7 @@ struct FaceBarView: View {
     var onToggleExpanded: (() -> Void)?
     var onOpenPeopleDatabase: (() -> Void)?
 
+    @AppStorage(UserDefaultsKeys.browserFaceBarCollapsed) private var isCollapsed = false
     @State private var selectedGroup: FaceGroup?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
     @State private var isApplyingAllNames = false
@@ -58,6 +59,57 @@ struct FaceBarView: View {
     }
 
     var body: some View {
+        Group {
+            if isCollapsed && !isExpanded {
+                collapsedBar
+            } else {
+                expandedBar
+            }
+        }
+        // Keep operation notices active even when the browse bar is hidden.
+        .onChange(of: viewModel.errorMessage) { _, message in
+            guard let message, !message.isEmpty else { return }
+            OperationIssueDetailsPresenter.present(title: "Face Operation Needs Attention", message: message)
+        }
+        .onChange(of: viewModel.namedGroups.count) { _, _ in didRefine = false }
+        .onChange(of: viewModel.isScanning) { _, scanning in
+            if scanning { didRefine = false }
+        }
+    }
+
+    private func setCollapsed(_ collapsed: Bool) {
+        selectedGroup = nil
+        multiSelectedGroupIDs.removeAll()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isCollapsed = collapsed
+        }
+    }
+
+    private var collapsedBar: some View {
+        Button {
+            setCollapsed(false)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.down")
+                Text("Faces")
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 22)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(.bar)
+        .help("Show face group bar")
+        .accessibilityLabel("Show face group bar")
+        .accessibilityIdentifier("face.showBrowseBar")
+    }
+
+    @ViewBuilder
+    private var expandedBar: some View {
         let namedGroups = viewModel.namedGroups
         let unnamedGroups = viewModel.unnamedGroups
         let canApplyAllNames = viewModel.scanComplete && !namedGroups.isEmpty && !isApplyingAllNames
@@ -210,23 +262,30 @@ struct FaceBarView: View {
             }
 
             Spacer()
+
+            if !isExpanded {
+                Button {
+                    setCollapsed(true)
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 14))
+                        Text("Hide")
+                            .font(.system(size: 9))
+                    }
+                    .frame(width: 36, height: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Hide face group bar")
+                .accessibilityLabel("Hide face group bar")
+                .accessibilityIdentifier("face.hideBrowseBar")
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(height: barHeight)
         .background(.bar)
-        // This bar is shared by Browser and expanded Face management. The window-owned details
-        // sheet survives a group popover closing and exposes every per-photo outcome for copying.
-        .onChange(of: viewModel.errorMessage) { _, message in
-            guard let message, !message.isEmpty else { return }
-            OperationIssueDetailsPresenter.present(title: "Face Operation Needs Attention", message: message)
-        }
-        // Naming a group can unlock fresh refinements; offer Refine again.
-        .onChange(of: namedGroups.count) { _, _ in didRefine = false }
-        // A new scan reshuffles groups — start fresh.
-        .onChange(of: viewModel.isScanning) { _, scanning in
-            if scanning { didRefine = false }
-        }
     }
 
     // MARK: - Face Group Thumbnail with Actions

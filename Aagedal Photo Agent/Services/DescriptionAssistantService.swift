@@ -87,7 +87,7 @@ actor DescriptionAssistantService {
     }
 
     private func generateText(prompt: String, modelDirectory: URL) async throws -> String {
-        if modelDirectory.pathExtension.lowercased() == "gguf" {
+        if DescriptionModelDiscovery.isGGUF(modelDirectory) {
             container = nil
             loadedDirectory = nil
             return try await LlamaCPPDescriptionBackend.generate(prompt: prompt, model: modelDirectory)
@@ -156,6 +156,15 @@ final class DescriptionAssistantModelSetup {
     }
     var directory: URL?
     var downloadedModels: Set<DescriptionAssistantDownloadModel> = []
+    private(set) var discoveredModels: [DiscoveredDescriptionModel] = []
+    private(set) var isDiscovering = false
+    @ObservationIgnored private var discoveryTask: Task<Void, Never>?
+    var selectedModelName: String? {
+        guard let directory else { return nil }
+        return discoveredModels.first(where: {
+            $0.url.resolvingSymlinksInPath() == directory.resolvingSymlinksInPath()
+        })?.name ?? directory.lastPathComponent
+    }
     var isInstalling = false
     var progress: Double = 0
     var message: String?
@@ -178,7 +187,7 @@ final class DescriptionAssistantModelSetup {
     func select(_ url: URL, activateProvider: Bool = true) throws {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        if url.pathExtension.lowercased() == "gguf" {
+        if DescriptionModelDiscovery.isGGUF(url) {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             guard try handle.read(upToCount: 4) == Data("GGUF".utf8) else {
@@ -206,6 +215,19 @@ final class DescriptionAssistantModelSetup {
         })
     }
 
+    func refreshDiscoveredModels() {
+        guard !isDiscovering else { return }
+        isDiscovering = true
+        discoveryTask = Task {
+            let models = await Task.detached(priority: .utility) {
+                DescriptionModelDiscovery.discover()
+            }.value
+            discoveredModels = models
+            isDiscovering = false
+            discoveryTask = nil
+        }
+    }
+
     func refreshAppleAvailability() {
         appleAvailability = AppleFoundationDescriptionBackend.availability
         appleSupportedLanguages = Set(DescriptionAssistantLanguage.allCases.filter { AppleFoundationDescriptionBackend.supports($0) })
@@ -215,10 +237,25 @@ final class DescriptionAssistantModelSetup {
         guard !isInstalling else { return }
         isInstalling = true
         progress = 0
-        message = nil
+        message = "Checking shared caches for an existing copy…"
         task = Task {
             defer { isInstalling = false; task = nil; refreshDownloadedModels() }
             do {
+                let lookup = Task.detached(priority: .utility) {
+                    let artifact = model.artifact
+                    return try DescriptionModelDiscovery.existingArtifact(byteCount: artifact.byteCount,
+                        sha256: artifact.sha256, models: DescriptionModelDiscovery.discover())
+                }
+                let existing = try await withTaskCancellationHandler {
+                    try await lookup.value
+                } onCancel: { lookup.cancel() }
+                try Task.checkCancellation()
+                if let existing {
+                    try select(existing)
+                    message = "Using the existing \(model.title) model in place. No download needed."
+                    return
+                }
+                message = nil
                 let url = try await DescriptionAssistantService.shared.install(model: model) { value in
                     Task { @MainActor in self.progress = value }
                 }
