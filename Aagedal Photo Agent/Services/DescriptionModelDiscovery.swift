@@ -68,6 +68,8 @@ nonisolated enum DescriptionModelDiscovery {
     }
 
     static func isGGUF(_ url: URL) -> Bool {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         return (try? handle.read(upToCount: 4)) == Data("GGUF".utf8)
