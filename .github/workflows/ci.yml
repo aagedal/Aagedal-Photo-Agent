@@ -15,8 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Local builds/tests validate PR code before pushing. Keep the remote PR check
+  # quick; main and manual runs retain the complete clean-build/test coverage.
+  repository-validation:
+    name: Repository validation
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run repository validation gates
+        env:
+          CI_DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        run: scripts/ci/validate_repository.sh
+
   build-and-test:
     name: Clean build and unfiltered tests
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    needs: repository-validation
     runs-on: macos-26
     timeout-minutes: 45
 
@@ -31,11 +51,6 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
-
-      - name: Run repository validation gates
-        env:
-          CI_DIFF_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
-        run: scripts/ci/validate_repository.sh
 
       # Main now requires the ignored AuraFace package in every app build.
       # Reproduce its reviewed bytes from the immutable source instead of skipping

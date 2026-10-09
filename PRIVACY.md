@@ -1,7 +1,7 @@
 # Aagedal Photo Agent privacy
 
 **Status:** 3.0 release-candidate draft; external legal/privacy review pending  
-**Last reviewed:** 2026-09-21 (implementation update; external review remains pending)
+**Last reviewed:** 2026-10-09 (implementation update; external review remains pending)
 
 Aagedal Photo Agent is a native macOS application. Photo browsing, metadata editing, Develop rendering,
 analysis, face detection, face matching when its model is packaged, and solar-position calculations run on
@@ -46,17 +46,26 @@ network service are listed below.
 ## Local description assistance
 
 Description suggestions use existing caption text, the configured editorial prompt and,
-when explicitly included, named face context. They do not inspect image pixels. The chosen
+when explicitly included, named face context. “Write from image” additionally supplies an upright
+image of at most two megapixels, selected editorial metadata and optional reporting notes to a
+local vision-capable MLX model or Apple’s on-device model on macOS 27 or later. Grammar and wording modes process text only. The chosen
 provider is saved locally; generated text becomes a suggestion for explicit review and
 application, rather than an automatic metadata write.
 
 Local GGUF/MLX models process requests on the Mac. GGUF downloads are explicit and
-pinned by size/hash. On macOS 27 or later, the optional Apple Foundation Models provider
+pinned by size/hash. On macOS 27 or later, Apple Foundation Models is the default when no
+provider preference has been saved. This provider
 uses only `SystemLanguageModel`, Apple’s on-device model. It does not use a Private Cloud
 Compute model or send captions to a hosted model service. Apple Intelligence manages its
 own model setup in System Settings; Photo Agent checks readiness and language support and
 does not initiate that setup. Each caption uses a fresh session. Switching providers keeps
 the saved local-model bookmark so it can be selected again.
+
+Microphone dictation starts only when the user chooses Start Recording and grants macOS
+microphone access. Recordings use a private temporary folder and are removed after transcription
+or cancellation; they are not attached as photo sidecars. Transcription uses the configured Apple
+Speech or Whisper provider, and its text remains a reviewable draft until explicitly applied as a
+description or used as reporting notes. Temporary files may remain after an abnormal app exit.
 
 ## Optional iCloud sync
 
