@@ -14,7 +14,7 @@ struct DescriptionAssistantModelSetupView: View {
             }.disabled(setup.isInstalling)
                 .accessibilityIdentifier("descriptionAssistant.provider")
             if setup.provider == .appleFoundationModels {
-                Text("Uses Apple’s on-device text model on macOS 27 or later. Requires an eligible Mac, Apple Intelligence enabled, and Apple’s model ready. Availability and language support depend on this Mac.")
+                Text("Uses Apple’s on-device model for text editing and image-based drafts on macOS 27 or later. Requires an eligible Mac, Apple Intelligence enabled, and Apple’s model ready. Availability and language support depend on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text(setup.appleAvailability.message).font(.caption)
                     .accessibilityIdentifier("descriptionAssistant.apple.availability")
@@ -75,14 +75,14 @@ struct DescriptionAssistantModelSetupView: View {
                 Link("Model and license", destination: downloadModel.sourceURL)
                 DisclosureGroup("Advanced: MLX model") {
                     Button("Choose MLX Folder…") { choosingMLX = true }.disabled(setup.isInstalling)
-                    Text("Use an existing converted MLX folder. GGUF is the default download.").font(.caption)
+                    Text("Use an existing converted MLX folder. Write from image requires a vision-capable model; the GGUF downloads support text editing.").font(.caption)
                 }
             }
         }
         Section("Description Prompt") {
             TextEditor(text: $editorialPrompt).frame(minHeight: 140)
                 .accessibilityLabel("Editorial description prompt")
-            Text("Used for individual and batch improvements. The model edits existing descriptions using supplied facts; it does not inspect the image.").font(.caption).foregroundStyle(.secondary)
+            Text("Used for individual and batch suggestions. Write from image uses Apple Foundation Models or a vision-capable MLX model, an upright image of up to two megapixels, and editorial metadata. Other modes edit text only.").font(.caption).foregroundStyle(.secondary)
             Button("Restore Journalistic Default") { editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt }
         }
         .onAppear {
@@ -114,6 +114,12 @@ struct DescriptionAssistantView: View {
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var action: DescriptionAssistantAction = .grammar
     @State private var language: DescriptionAssistantLanguage = .bokmal
+    @State private var draftDescription: String
+    @State private var dictation = DescriptionDictationModel()
+    @State private var dictationText = ""
+    @State private var showDictation = false
+    @State private var whisperSetup = FFmpegWhisperSetupModel.shared
+    @State private var reportingNotes = ""
     @State private var includePeople = false
     @State private var people: [CaptionConfirmedPerson] = []
     @State private var loadingPeople = true
@@ -124,70 +130,165 @@ struct DescriptionAssistantView: View {
     @State private var generationTask: Task<Void, Never>?
     @State private var showSetup = false
 
+    init(source: DescriptionAssistantRequest, apply: @escaping (DescriptionAssistantProposal, String) -> Bool) {
+        self.source = source
+        self.apply = apply
+        _draftDescription = State(initialValue: source.originalDescription)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Improve Description").font(.title2)
-                Spacer()
-                Button("Model Setup") { showSetup.toggle() }
-            }
-            if showSetup || setup.backend == nil {
-                Form { DescriptionAssistantModelSetupView() }
-                    .formStyle(.grouped).frame(height: 390)
-            }
-            HStack {
-                Picker("Action", selection: $action) {
-                    ForEach(DescriptionAssistantAction.allCases) { Text($0.rawValue).tag($0) }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Description Assistant").font(.title2)
+                    Spacer()
+                    Button("Model Setup") { showSetup.toggle() }
                 }
-                Picker("Language", selection: $language) {
-                    ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
-                }.accessibilityIdentifier("descriptionAssistant.language")
-            }.disabled(generationTask != nil)
-            Toggle("Append named people from left to right", isOn: $includePeople)
-                .disabled(loadingPeople || people.isEmpty || generationTask != nil)
-            if loadingPeople { ProgressView("Loading face context…") }
-            else if !people.isEmpty {
-                Text(people.map(\.name).joined(separator: " → "))
-                    .font(.caption).textSelection(.enabled)
-                Text("Order uses the upright original photo. Unnamed and excluded faces are omitted; review identities before applying.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else { Text(faceNotice ?? "No named faces are available for this photo.") .font(.caption).foregroundStyle(.secondary) }
-            Text("Original").font(.headline)
-            ScrollView { Text(source.originalDescription).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                .frame(maxHeight: 110)
-            if proposal != nil {
-                Text("Suggested description — review and edit").font(.headline)
-                TextEditor(text: $reviewedText).frame(minHeight: 130)
-                    .accessibilityLabel("Suggested description")
-            }
-            if let issue = setup.generationIssue(for: language) { Text(issue).font(.caption).foregroundStyle(.secondary) }
-            if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
-            HStack {
-                Button("Close") { generationTask?.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                if generationTask != nil {
-                    ProgressView().controlSize(.small)
-                    Button("Cancel Generation") { generationTask?.cancel() }
-                } else {
-                    Button(proposal == nil ? "Generate Suggestion" : "Generate Again") { generate() }
-                        .disabled(setup.generationIssue(for: language) != nil || loadingPeople || setup.isInstalling)
-                        .accessibilityIdentifier("descriptionAssistant.generate")
+                if showSetup || setup.backend == nil {
+                    Form { DescriptionAssistantModelSetupView() }
+                        .formStyle(.grouped).frame(height: 390)
                 }
-                Button("Apply to Description") {
-                    guard let proposal else { return }
-                    if apply(proposal, reviewedText) { dismiss() }
-                    else { errorMessage = "The selected photo or description changed. Close this window and generate a new suggestion." }
+                HStack {
+                    Picker("Action", selection: $action) {
+                        ForEach(DescriptionAssistantAction.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Language", selection: $language) {
+                        ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
+                    }.accessibilityIdentifier("descriptionAssistant.language")
+                }.disabled(generationTask != nil)
+                if action == .writeFromImage {
+                    Text("Uses an upright image of up to two megapixels, headline, dates, event, places, people, organisations and keywords from the captured metadata. Review these facts before applying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Editorial metadata supplied") {
+                        Text(source.metadata.summary).font(.caption).textSelection(.enabled)
+                    }
+                    Text("Reporting notes — optional").font(.headline)
+                    TextEditor(text: $reportingNotes).frame(height: 80)
+                        .accessibilityLabel("Reporting notes")
+                        .disabled(generationTask != nil)
                 }
-                .disabled(proposal == nil || generationTask != nil || reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Toggle("Append named people from left to right", isOn: $includePeople)
+                    .disabled(loadingPeople || people.isEmpty || generationTask != nil)
+                if loadingPeople { ProgressView("Loading face context…") }
+                else if !people.isEmpty {
+                    Text(people.map(\.name).joined(separator: " → "))
+                        .font(.caption).textSelection(.enabled)
+                    Text("Order uses the upright original photo. Unnamed and excluded faces are omitted; review identities before applying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else { Text(faceNotice ?? "No named faces are available for this photo.") .font(.caption).foregroundStyle(.secondary) }
+                Text("Source description").font(.headline)
+                TextEditor(text: $draftDescription).frame(height: 80)
+                    .accessibilityLabel("Source description")
+                    .disabled(generationTask != nil)
+                DisclosureGroup("Speak a description or reporting notes", isExpanded: $showDictation) {
+                    dictationPanel
+                }
+                if proposal != nil {
+                    Text("Suggested description — review and edit").font(.headline)
+                    TextEditor(text: $reviewedText).frame(minHeight: 130)
+                        .accessibilityLabel("Suggested description")
+                }
+                if let issue = setup.generationIssue(for: language, action: action) { Text(issue).font(.caption).foregroundStyle(.secondary) }
+                if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
+                HStack {
+                    Button("Close") { generationTask?.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    if generationTask != nil {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel Generation") { generationTask?.cancel() }
+                    } else {
+                        Button(proposal == nil ? "Generate Suggestion" : "Generate Again") { generate() }
+                            .disabled(setup.generationIssue(for: language, action: action) != nil || loadingPeople || setup.isInstalling
+                                || dictation.isWorking || dictation.isRecording)
+                            .accessibilityIdentifier("descriptionAssistant.generate")
+                    }
+                    Button("Apply to Description") {
+                        guard let proposal else { return }
+                        if apply(proposal, reviewedText) { dismiss() }
+                        else { errorMessage = "The selected photo or metadata changed. Close this window and generate a new suggestion." }
+                    }
+                    .disabled(proposal == nil || generationTask != nil || dictation.isWorking || dictation.isRecording || reviewedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
-        }
-        .padding(24).frame(width: 720)
+            .padding(24)
+        }.frame(width: 720, height: 820)
         .task {
             setup.refreshAppleAvailability()
             if setup.backend == nil { showSetup = true }
+            if source.originalDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { action = .writeFromImage }
             await loadPeople()
         }
-        .onDisappear { generationTask?.cancel() }
+        .onChange(of: dictation.transcript) { _, text in dictationText = text }
+        .onDisappear { generationTask?.cancel(); dictation.cancel() }
+    }
+
+    private var isDictationWhisperReady: Bool {
+        whisperSetup.choice == .whisper ? ManagedWhisperSetupModel.shared.isReady
+            : whisperSetup.isReady && whisperSetup.executionConsent
+    }
+
+    private var dictationPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Provider: " + whisperSetup.choice.title + ". Record, stop, then review the transcript. Configure the provider in Transcription Settings.")
+                .font(.caption).foregroundStyle(.secondary)
+            if whisperSetup.choice == .appleSpeech {
+                Picker("Speech language", selection: $dictation.localeIdentifier) {
+                    ForEach(dictation.availability?.supportedLocales ?? [], id: \.identifier) { locale in
+                        Text(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier).tag(locale.identifier)
+                    }
+                }.disabled(dictation.isRecording || dictation.isWorking)
+                    .task { await dictation.refresh() }
+                    .onChange(of: dictation.localeIdentifier) { _, _ in Task { await dictation.refresh() } }
+                if let availability = dictation.availability, availability.status != .installed {
+                    Text(availability.status == .needsDownload ? "Download this speech language before recording." : "This speech language is not ready. Check Transcription Settings.").font(.caption)
+                    if availability.status == .needsDownload {
+                        Button("Download Speech Language") { dictation.downloadLanguage() }
+                            .disabled(dictation.isWorking)
+                    }
+                }
+            }
+            if whisperSetup.choice != .appleSpeech, !isDictationWhisperReady {
+                Text("Set up the selected Whisper provider in Transcription Settings before recording.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                if dictation.isRecording {
+                    Label("Recording", systemImage: "mic.fill").foregroundStyle(.red)
+                    Button("Stop and Transcribe") { dictation.stopAndTranscribe() }
+                } else {
+                    Button("Start Recording", systemImage: "mic") { dictation.start() }
+                        .disabled(dictation.isWorking || generationTask != nil
+                            || (whisperSetup.choice == .appleSpeech && dictation.availability?.status != .installed)
+                            || (whisperSetup.choice != .appleSpeech && !isDictationWhisperReady))
+                }
+                if dictation.isWorking { ProgressView().controlSize(.small) }
+                if dictation.isRecording || dictation.isWorking {
+                    Button("Cancel") { dictation.cancel() }
+                }
+            }
+            if let message = dictation.errorMessage { Text(message).font(.caption).foregroundStyle(.red) }
+            if !dictationText.isEmpty {
+                TextEditor(text: $dictationText).frame(height: 80).accessibilityLabel("Dictation transcript")
+                HStack {
+                    Button("Use as Description") {
+                        draftDescription = dictationText
+                        action = .grammar
+                        errorMessage = nil
+                        let request = DescriptionAssistantRequest(imageURL: source.imageURL,
+                            editorLoadID: source.editorLoadID, originalDescription: source.originalDescription,
+                            action: .grammar, language: language)
+                        proposal = DescriptionAssistantProposal(request: request, text: dictationText, model: "Dictation")
+                        reviewedText = dictationText
+                    }
+                    Button("Use as Reporting Notes") {
+                        reportingNotes = dictationText
+                        action = .writeFromImage
+                        proposal = nil
+                        reviewedText = ""
+                    }
+                }.disabled(generationTask != nil || dictation.isWorking || dictation.isRecording)
+            }
+        }
     }
 
     private func loadPeople() async {
@@ -199,13 +300,13 @@ struct DescriptionAssistantView: View {
     }
 
     private func generate() {
-        guard let backend = setup.backend, setup.generationIssue(for: language) == nil, generationTask == nil else { return }
+        guard let backend = setup.backend, setup.generationIssue(for: language, action: action) == nil, generationTask == nil else { return }
         errorMessage = nil
         proposal = nil
         reviewedText = ""
         let request = DescriptionAssistantRequest(imageURL: source.imageURL, editorLoadID: source.editorLoadID,
             originalDescription: source.originalDescription, action: action, language: language,
-            people: includePeople ? people : [])
+            sourceDescription: draftDescription, people: includePeople ? people : [], metadata: source.metadata, reportingNotes: reportingNotes)
         generationTask = Task {
             defer { generationTask = nil }
             do {
@@ -235,8 +336,8 @@ struct BatchDescriptionAssistantView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Improve \(urls.count) Descriptions").font(.title2)
-            Text("Suggestions use each photo’s current description and your prompt in Settings. Review each result before queuing it for saving.")
+            Text("Description Assistant — \(urls.count) Photos").font(.title2)
+            Text("Suggestions use each photo’s current description and your prompt in Settings. Write from image also uses its image and editorial metadata. Review each result before queuing it for saving.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Picker("Action", selection: $action) {
@@ -247,7 +348,7 @@ struct BatchDescriptionAssistantView: View {
                 }.accessibilityIdentifier("descriptionAssistant.language")
             }.disabled(task != nil)
             Text("Provider: " + setup.provider.title).font(.caption)
-            if let issue = setup.generationIssue(for: language) {
+            if let issue = setup.generationIssue(for: language, action: action) {
                 Text(issue).font(.caption).foregroundStyle(.secondary)
             }
             if task != nil { ProgressView(value: Double(completed), total: Double(urls.count)) }
@@ -273,7 +374,7 @@ struct BatchDescriptionAssistantView: View {
                     Button("Cancel Generation") { task?.cancel() }
                 } else {
                     Button("Generate Suggestions") { generate() }
-                        .disabled(setup.generationIssue(for: language) != nil || setup.isInstalling || !proposals.isEmpty)
+                        .disabled(setup.generationIssue(for: language, action: action) != nil || setup.isInstalling || !proposals.isEmpty)
                 }
             }
         }.padding(24).frame(width: 740, height: 620)
@@ -282,7 +383,7 @@ struct BatchDescriptionAssistantView: View {
     }
 
     private func generate() {
-        guard let backend = setup.backend, setup.generationIssue(for: language) == nil, task == nil else { return }
+        guard let backend = setup.backend, setup.generationIssue(for: language, action: action) == nil, task == nil else { return }
         let prompt = UserDefaults.standard.string(forKey: "descriptionAssistantEditorialPrompt")
             ?? DescriptionAssistantRequest.defaultEditorialPrompt
         completed = 0
@@ -298,9 +399,11 @@ struct BatchDescriptionAssistantView: View {
                         completed += 1
                         continue
                     }
+                    var metadata = editor.draft
+                    for (field, text) in editor.textBuffers { field.setTextValue(text, in: &metadata) }
                     let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: editor.id,
                         originalDescription: browser.metadataReviewText(for: .description, imageURL: url),
-                        action: action, language: language, editorialPrompt: prompt)
+                        action: action, language: language, metadata: DescriptionAssistantMetadata(metadata), editorialPrompt: prompt)
                     let proposal = try await DescriptionAssistantService.shared.generate(request, backend: backend)
                     try Task.checkCancellation()
                     proposals.append(proposal)
@@ -314,10 +417,15 @@ struct BatchDescriptionAssistantView: View {
     private func apply(_ proposal: DescriptionAssistantProposal) {
         let url = proposal.request.imageURL
         let text = reviewed[proposal.id] ?? proposal.text
+        let currentMetadata = browser.metadataReviewEditor(for: url).map { editor in
+            var draft = editor.draft
+            for (field, value) in editor.textBuffers { field.setTextValue(value, in: &draft) }
+            return DescriptionAssistantMetadata(draft)
+        }
         guard let editor = browser.metadataReviewEditor(for: url),
               !browser.isMetadataReviewFrozen(for: url),
               proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
-                description: browser.metadataReviewText(for: .description, imageURL: url)),
+                description: browser.metadataReviewText(for: .description, imageURL: url), metadata: currentMetadata),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             messages.append("\(url.lastPathComponent): Metadata changed or is unavailable. Generate a fresh suggestion.")
             return

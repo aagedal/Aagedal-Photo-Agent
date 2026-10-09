@@ -1264,7 +1264,8 @@ struct MetadataPanel: View {
                 guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
                       proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
                         editorLoadID: viewModel.editorBufferLoadID,
-                        description: viewModel.editingMetadata.description ?? "") else { return false }
+                        description: viewModel.editingMetadata.description ?? "",
+                        metadata: DescriptionAssistantMetadata(viewModel.editingMetadata)) else { return false }
                 viewModel.editingMetadata.description = text
                 viewModel.markChanged()
                 commitEdits()
@@ -1686,16 +1687,16 @@ struct MetadataPanel: View {
                         descriptionAssistantSource = DescriptionAssistantRequest(
                             imageURL: imageURL, editorLoadID: viewModel.editorBufferLoadID,
                             originalDescription: viewModel.editingMetadata.description ?? "",
-                            action: .grammar, language: .bokmal)
+                            action: .grammar, language: .bokmal,
+                            metadata: DescriptionAssistantMetadata(viewModel.editingMetadata))
                     } label: {
                         Image(systemName: "wand.and.stars")
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .disabled(viewModel.isBatchEdit || viewModel.isLoading || viewModel.selectedURLs.count != 1
-                        || (viewModel.editingMetadata.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Improve description with a local model")
-                    .accessibilityLabel("Improve description")
+                    .disabled(viewModel.isBatchEdit || viewModel.isLoading || viewModel.selectedURLs.count != 1)
+                    .help("Write or improve description with AI")
+                    .accessibilityLabel("Description assistant")
                     Button {
                         openVariableReference(for: .description)
                     } label: {

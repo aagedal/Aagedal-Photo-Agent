@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ImageIO
 import Metal
 import Foundation
 import Testing
@@ -2365,7 +2366,8 @@ struct AppleDescriptionProviderTests {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let setup = DescriptionAssistantModelSetup(defaults: defaults)
-        #expect(setup.provider == .localModel && setup.backend == nil)
+        if #available(macOS 27.0, *) { #expect(setup.provider == .appleFoundationModels) }
+        else { #expect(setup.provider == .localModel) }
         setup.directory = URL(fileURLWithPath: "/existing.gguf")
         setup.provider = .appleFoundationModels
         #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .appleFoundationModels)
@@ -2374,6 +2376,239 @@ struct AppleDescriptionProviderTests {
         guard case .localModel(let directory) = setup.backend else { Issue.record("Local model choice was lost"); return }
         #expect(directory == setup.directory)
         defaults.set("obsolete-provider", forKey: DescriptionAssistantModelSetup.providerKey)
-        #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .localModel)
+        #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == DescriptionAssistantModelSetup.defaultProvider)
+    }
+}
+
+
+@Suite("Image-based description drafts")
+struct ImageDescriptionAssistantTests {
+    @Test("An empty caption can be written using editor facts and reporting notes")
+    func imagePrompt() throws {
+        var metadata = IPTCMetadata()
+        metadata.title = "Press conference"
+        metadata.city = "Oslo"
+        metadata.event = "Budget presentation"
+        metadata.instructions = "Private workflow instructions"
+        let request = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"),
+            editorLoadID: nil, originalDescription: "", action: .writeFromImage, language: .english,
+            metadata: DescriptionAssistantMetadata(metadata), reportingNotes: "The speaker announces the budget.")
+        let prompt = try request.prompt()
+        #expect(prompt.contains("attached image"))
+        #expect(prompt.contains("Do not identify people from appearance"))
+        #expect(prompt.contains("Oslo"))
+        #expect(prompt.contains("Budget presentation"))
+        #expect(prompt.contains("The speaker announces the budget."))
+        #expect(!prompt.contains("Private workflow instructions"))
+    }
+
+    @Test("Dictation edits the input without weakening stale-description protection")
+    func dictatedSource() throws {
+        let url = URL(fileURLWithPath: "/photo.jpg")
+        let id = UUID()
+        let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: id,
+            originalDescription: "", action: .grammar, language: .english,
+            sourceDescription: "A spoken description.")
+        #expect(try request.prompt().contains("A spoken description."))
+        #expect(request.canApply(imageURL: url, editorLoadID: id, description: ""))
+        #expect(!request.canApply(imageURL: url, editorLoadID: id, description: "Another edit"))
+    }
+
+    @Test("Text backends cannot silently produce an image draft without seeing the photo")
+    func rejectsTextBackends() async throws {
+        let service = DescriptionAssistantService(appleGenerator: { _, _ in
+            Issue.record("Apple text generation must not run for an image draft")
+            return "Unexpected caption"
+        }, textGenerator: { _, _ in
+            Issue.record("GGUF text generation must not run for an image draft")
+            return "Unexpected caption"
+        })
+        let request = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"),
+            editorLoadID: nil, originalDescription: "", action: .writeFromImage, language: .english)
+        await #expect(throws: DescriptionAssistantError.visionModelRequired) {
+            try await service.generate(request, modelDirectory: URL(fileURLWithPath: "/model.gguf"))
+        }
+    }
+
+    private func makeOrientedPhoto() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).jpg")
+        let context = try #require(CGContext(data: nil, width: 3000, height: 2000,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw DescriptionAssistantError.imageUnavailable }
+        return url
+    }
+
+    @Test("Image input honors orientation, preserves aspect ratio and stays below two megapixels")
+    func uprightThumbnail() throws {
+        let url = try makeOrientedPhoto()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let thumbnail = try DescriptionAssistantImageInput.load(url)
+        #expect(thumbnail.height > thumbnail.width)
+        #expect(thumbnail.width * thumbnail.height <= 2_000_000)
+        #expect(abs(Double(thumbnail.height) / Double(thumbnail.width) - 1.5) < 0.01)
+        #expect(DescriptionAssistantImageInput.thumbnailDimension(width: 300, height: 200) == 300)
+    }
+
+    @Test("Apple image drafts receive upright bounded pixels, metadata and reporting notes")
+    func appleImageDraft() async throws {
+        let url = try makeOrientedPhoto()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var metadata = DescriptionAssistantMetadata()
+        metadata.city = "Oslo"
+        let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: UUID(),
+            originalDescription: "", action: .writeFromImage, language: .english,
+            metadata: metadata, reportingNotes: "A budget presentation.")
+        let service = DescriptionAssistantService(appleGenerator: { _, _ in
+            Issue.record("An image draft must not use the text-only generation path")
+            return "Unexpected caption"
+        }, appleImageGenerator: { prompt, language, image in
+            #expect(language == .english)
+            #expect(prompt.contains("Oslo"))
+            #expect(prompt.contains("A budget presentation."))
+            #expect(image.height > image.width)
+            #expect(image.width * image.height <= 2_000_000)
+            return "  A speaker presents the budget in Oslo.  "
+        })
+        let proposal = try await service.generate(request, backend: .appleFoundationModels)
+        #expect(proposal.text == "A speaker presents the budget in Oslo.")
+        #expect(proposal.model == "Apple Foundation Models (on-device)")
+        #expect(proposal.request.id == request.id)
+    }
+
+    @Test("Unreadable Apple image input fails before inference and releases admission")
+    func appleInvalidImage() async throws {
+        let service = DescriptionAssistantService(appleGenerator: { _, _ in "Edited caption" },
+            appleImageGenerator: { _, _, _ in
+                Issue.record("Inference must not run without a readable image")
+                return "Unexpected caption"
+            })
+        let request = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/missing-photo.jpg"),
+            editorLoadID: nil, originalDescription: "", action: .writeFromImage, language: .english)
+        await #expect(throws: DescriptionAssistantError.imageUnavailable) {
+            try await service.generate(request, backend: .appleFoundationModels)
+        }
+        let textRequest = DescriptionAssistantRequest(imageURL: request.imageURL,
+            editorLoadID: nil, originalDescription: "Caption", action: .grammar, language: .english)
+        let proposal = try await service.generate(textRequest, backend: .appleFoundationModels)
+        #expect(proposal.text == "Edited caption")
+    }
+
+    @Test("Apple image mode uses the same readiness and language checks as text modes")
+    @MainActor func appleImageReadiness() {
+        let suite = "AppleImageReadinessTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let setup = DescriptionAssistantModelSetup(defaults: defaults)
+        setup.provider = .appleFoundationModels
+        for language in DescriptionAssistantLanguage.allCases {
+            let textIssue = setup.generationIssue(for: language, action: .grammar)
+            let imageIssue = setup.generationIssue(for: language, action: .writeFromImage)
+            if textIssue != nil || setup.appleSupportsImages { #expect(imageIssue == textIssue) }
+            else { #expect(imageIssue == AppleFoundationDescriptionBackend.imageUnavailableMessage) }
+        }
+        setup.provider = .localModel
+        #expect(setup.generationIssue(for: .english, action: .writeFromImage)
+            == DescriptionAssistantError.visionModelRequired.localizedDescription)
+    }
+
+    @Test("Missing Apple vision capability blocks image input while retaining text editing")
+    func appleVisionCapability() throws {
+        try AppleFoundationDescriptionBackend.validateImageSupport(imageSupplied: true, supported: true)
+        try AppleFoundationDescriptionBackend.validateImageSupport(imageSupplied: false, supported: false)
+        #expect(throws: DescriptionAssistantError.appleModelUnavailable(AppleFoundationDescriptionBackend.imageUnavailableMessage)) {
+            try AppleFoundationDescriptionBackend.validateImageSupport(imageSupplied: true, supported: false)
+        }
+    }
+
+    @Test("Changed reporting facts invalidate an image draft even when the caption is unchanged")
+    func staleEditorialMetadata() {
+        let url = URL(fileURLWithPath: "/photo.jpg")
+        var metadata = DescriptionAssistantMetadata()
+        metadata.city = "Oslo"
+        let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: nil,
+            originalDescription: "", action: .writeFromImage, language: .english, metadata: metadata)
+        #expect(request.canApply(imageURL: url, editorLoadID: nil, description: "", metadata: metadata))
+        metadata.city = "Bergen"
+        #expect(!request.canApply(imageURL: url, editorLoadID: nil, description: "", metadata: metadata))
+        #expect(!request.canApply(imageURL: url, editorLoadID: nil, description: ""))
+    }
+
+    @Test("Excessive reporting notes are rejected before model work")
+    func noteBounds() {
+        let request = DescriptionAssistantRequest(imageURL: URL(fileURLWithPath: "/photo.jpg"),
+            editorLoadID: nil, originalDescription: "", action: .writeFromImage, language: .english,
+            reportingNotes: String(repeating: "a", count: 8001))
+        #expect(throws: DescriptionAssistantError.inputTooLong) { try request.prompt() }
+    }
+}
+
+
+@Suite("Description dictation language selection")
+struct DescriptionDictationLanguageTests {
+    private actor AvailabilityGate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var entered = false
+        private var calls = 0
+        func isFirstCall() -> Bool { calls += 1; return calls == 1 }
+        func wait() async {
+            entered = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func hasEntered() -> Bool { entered }
+        func release() { waiter?.resume(); waiter = nil }
+    }
+
+    @Test("A late speech readiness result cannot revert a newer language selection")
+    @MainActor func staleLanguageResult() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            if locale.identifier == "en_US" { await gate.wait() }
+            return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+        })
+        model.localeIdentifier = "en_US"
+        let oldRefresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        model.localeIdentifier = "nb_NO"
+        await model.refresh()
+        await gate.release()
+        await oldRefresh.value
+        #expect(model.localeIdentifier == "nb_NO")
+        #expect(model.availability?.selectedLocale?.identifier == "nb_NO")
+    }
+
+    @Test("A newer readiness result wins even when both requests use the same language")
+    @MainActor func staleReadinessResult() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            let first = await gate.isFirstCall()
+            if first { await gate.wait() }
+            return .init(selectedLocale: locale, supportedLocales: [locale],
+                status: first ? .needsDownload : .installed)
+        })
+        let oldRefresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        await model.refresh()
+        await gate.release()
+        await oldRefresh.value
+        #expect(model.availability?.status == .installed)
+    }
+
+    @Test("Cancelled readiness checks do not publish their results")
+    @MainActor func cancelledRefresh() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            await gate.wait()
+            return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+        })
+        let refresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        refresh.cancel()
+        await gate.release()
+        await refresh.value
+        #expect(model.availability == nil)
     }
 }
