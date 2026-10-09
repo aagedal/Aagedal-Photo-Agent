@@ -4,6 +4,8 @@ import MLXLLM
 import MLXVLM
 import MLXLMCommon
 import Observation
+import CoreImage
+import ImageIO
 
 /// A single model owner shared by interactive requests and a future sequential batch worker.
 /// Busy admission spans every await, so actor reentrancy cannot overlap GPU inference/loading.
@@ -13,6 +15,7 @@ actor DescriptionAssistantService {
     private var loadedDirectory: URL?
     private var busy = false
     private let appleGenerator: @Sendable (String, DescriptionAssistantLanguage) async throws -> String
+    private let appleImageGenerator: @Sendable (String, DescriptionAssistantLanguage, CGImage) async throws -> String
     private let textGenerator: (@Sendable (String, URL) async throws -> String)?
     private let vlmFactory = VLMModelFactory(
         typeRegistry: ModelTypeRegistry(creators: ["gemma3": { sourceData in
@@ -33,8 +36,11 @@ actor DescriptionAssistantService {
 
     init(appleGenerator: @escaping @Sendable (String, DescriptionAssistantLanguage) async throws -> String = {
         try await AppleFoundationDescriptionBackend.generate(prompt: $0, language: $1)
+    }, appleImageGenerator: @escaping @Sendable (String, DescriptionAssistantLanguage, CGImage) async throws -> String = {
+        try await AppleFoundationDescriptionBackend.generate(prompt: $0, language: $1, image: $2)
     }, textGenerator: (@Sendable (String, URL) async throws -> String)? = nil) {
         self.appleGenerator = appleGenerator
+        self.appleImageGenerator = appleImageGenerator
         self.textGenerator = textGenerator
     }
 
@@ -58,6 +64,10 @@ actor DescriptionAssistantService {
 
     func generate(_ request: DescriptionAssistantRequest, backend: DescriptionAssistantBackend) async throws -> DescriptionAssistantProposal {
         let prompt = try request.prompt()
+        if request.action == .writeFromImage, case .localModel(let directory) = backend,
+           !Self.supportsImages(directory) {
+            throw DescriptionAssistantError.visionModelRequired
+        }
         guard !busy else { throw DescriptionAssistantError.busy }
         busy = true
         defer { busy = false }
@@ -67,16 +77,23 @@ actor DescriptionAssistantService {
         switch backend {
         case .localModel(let modelDirectory):
             modelName = modelDirectory.lastPathComponent
-            if let textGenerator {
+            if let textGenerator, request.action != .writeFromImage {
                 text = try await textGenerator(prompt, modelDirectory)
             } else {
-                text = try await generateText(prompt: prompt, modelDirectory: modelDirectory)
+                text = try await generateText(prompt: prompt, modelDirectory: modelDirectory,
+                    imageURL: request.action == .writeFromImage ? request.imageURL : nil)
             }
         case .appleFoundationModels:
             container = nil
             loadedDirectory = nil
             modelName = "Apple Foundation Models (on-device)"
-            text = try await appleGenerator(prompt, request.language)
+            if request.action == .writeFromImage {
+                let image = try DescriptionAssistantImageInput.load(request.imageURL)
+                try Task.checkCancellation()
+                text = try await appleImageGenerator(prompt, request.language, image)
+            } else {
+                text = try await appleGenerator(prompt, request.language)
+            }
         }
         try Task.checkCancellation()
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,7 +103,18 @@ actor DescriptionAssistantService {
                                             model: modelName)
     }
 
-    private func generateText(prompt: String, modelDirectory: URL) async throws -> String {
+    nonisolated static func supportsImages(_ directory: URL) -> Bool {
+        guard directory.pathExtension.lowercased() != "gguf" else { return false }
+        let accessing = directory.startAccessingSecurityScopedResource()
+        defer { if accessing { directory.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("config.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return json["vision_config"] is [String: Any]
+    }
+
+    private func generateText(prompt: String, modelDirectory: URL, imageURL: URL? = nil) async throws -> String {
+        let image = try imageURL.map { try DescriptionAssistantImageInput.load($0) }
+        try Task.checkCancellation()
         if modelDirectory.pathExtension.lowercased() == "gguf" {
             container = nil
             loadedDirectory = nil
@@ -109,9 +137,11 @@ actor DescriptionAssistantService {
             loadedDirectory = modelDirectory
         }
         guard let container else { throw DescriptionAssistantError.modelNotInstalled }
+        try Task.checkCancellation()
         // Return a String across actor boundaries, never MLX arrays or ModelContext.
         return try await container.perform { context in
-            let input = try await context.processor.prepare(input: UserInput(prompt: prompt))
+            let input = try await context.processor.prepare(input: UserInput(prompt: prompt,
+                images: image.map { [.ciImage(CIImage(cgImage: $0))] } ?? []))
             guard input.text.tokens.size <= 3_072 else { throw DescriptionAssistantError.inputTooLong }
             // The synchronous visitor keeps model ownership until GPU iteration actually
             // stops, including cancellation. An AsyncStream consumer can terminate earlier
@@ -138,6 +168,7 @@ final class DescriptionAssistantModelSetup {
         didSet { defaults.set(provider.rawValue, forKey: Self.providerKey) }
     }
     private(set) var appleAvailability = AppleFoundationDescriptionBackend.availability
+    private(set) var appleSupportsImages = AppleFoundationDescriptionBackend.supportsImages
     private(set) var appleSupportedLanguages = Set(DescriptionAssistantLanguage.allCases.filter { AppleFoundationDescriptionBackend.supports($0) })
     var backend: DescriptionAssistantBackend? {
         switch provider {
@@ -145,13 +176,23 @@ final class DescriptionAssistantModelSetup {
         case .appleFoundationModels: appleAvailability.isAvailable ? .appleFoundationModels : nil
         }
     }
-    func generationIssue(for language: DescriptionAssistantLanguage) -> String? {
+    func generationIssue(for language: DescriptionAssistantLanguage, action: DescriptionAssistantAction = .grammar) -> String? {
+        if action == .writeFromImage, provider == .localModel {
+            guard let directory, DescriptionAssistantService.supportsImages(directory) else {
+                return DescriptionAssistantError.visionModelRequired.localizedDescription
+            }
+        }
         switch provider {
         case .localModel: return directory == nil ? DescriptionAssistantError.modelNotInstalled.localizedDescription : nil
         case .appleFoundationModels:
             if !appleAvailability.isAvailable { return appleAvailability.message }
-            return appleSupportedLanguages.contains(language) ? nil
-                : DescriptionAssistantError.appleUnsupportedLanguage(language.rawValue).localizedDescription
+            if !appleSupportedLanguages.contains(language) {
+                return DescriptionAssistantError.appleUnsupportedLanguage(language.rawValue).localizedDescription
+            }
+            if action == .writeFromImage, !appleSupportsImages {
+                return AppleFoundationDescriptionBackend.imageUnavailableMessage
+            }
+            return nil
         }
     }
     var directory: URL?
@@ -164,7 +205,7 @@ final class DescriptionAssistantModelSetup {
     init(defaults: UserDefaults? = nil) {
         let defaults = defaults ?? FFmpegWhisperSetupModel.sessionDefaults
         self.defaults = defaults
-        provider = defaults.string(forKey: Self.providerKey).flatMap(DescriptionAssistantProvider.init(rawValue:)) ?? .localModel
+        provider = defaults.string(forKey: Self.providerKey).flatMap(DescriptionAssistantProvider.init(rawValue:)) ?? Self.defaultProvider
         refreshDownloadedModels()
         guard let data = defaults.data(forKey: Self.bookmarkKey) else { return }
         var stale = false
@@ -173,6 +214,11 @@ final class DescriptionAssistantModelSetup {
                                 bookmarkDataIsStale: &stale)
             if stale, let directory { try select(directory, activateProvider: false) }
         } catch { message = error.localizedDescription }
+    }
+
+    static var defaultProvider: DescriptionAssistantProvider {
+        if #available(macOS 27.0, *) { return .appleFoundationModels }
+        return .localModel
     }
 
     func select(_ url: URL, activateProvider: Bool = true) throws {
@@ -208,6 +254,7 @@ final class DescriptionAssistantModelSetup {
 
     func refreshAppleAvailability() {
         appleAvailability = AppleFoundationDescriptionBackend.availability
+        appleSupportsImages = AppleFoundationDescriptionBackend.supportsImages
         appleSupportedLanguages = Set(DescriptionAssistantLanguage.allCases.filter { AppleFoundationDescriptionBackend.supports($0) })
     }
 
@@ -231,4 +278,41 @@ final class DescriptionAssistantModelSetup {
     }
 
     func cancelInstall() { task?.cancel() }
+}
+
+/// Decode an upright, aspect-preserving thumbnail without loading full-resolution pixels.
+nonisolated enum DescriptionAssistantImageInput {
+    static let maximumPixels = 2_000_000
+
+    static func thumbnailDimension(width: Int, height: Int) -> Int {
+        guard width > 0, height > 0 else { return 1 }
+        let scale = min(1, sqrt(Double(maximumPixels) / (Double(width) * Double(height))))
+        let longSide = Double(max(width, height))
+        let shortSide = Double(min(width, height))
+        var dimension = max(1, min(maximumPixels, Int((longSide * scale).rounded(.down))))
+        // ImageIO may round the short side up. Reserve room for that extra pixel.
+        while Double(dimension) * ceil(shortSide * Double(dimension) / longSide) > Double(maximumPixels) {
+            dimension -= 1
+        }
+        return dimension
+    }
+
+    static func load(_ url: URL) throws -> CGImage {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0,
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: thumbnailDimension(width: width, height: height),
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary), image.width * image.height <= maximumPixels else {
+            throw DescriptionAssistantError.imageUnavailable
+        }
+        return image
+    }
 }
