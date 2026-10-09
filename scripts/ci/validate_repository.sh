@@ -76,3 +76,13 @@ if [ -n "${CI_DIFF_BASE:-}" ]; then
   git diff --check "${CI_DIFF_BASE}...HEAD"
 fi
 printf 'git diff --check passed\n'
+
+say "Checking shared local model discovery"
+discovery_test_dir="$(mktemp -d)"
+trap 'rm -rf "$discovery_test_dir"' EXIT
+xcrun swiftc -parse-as-library \
+  'Aagedal Photo Agent/Services/GGUFChatTemplate.swift' \
+  'Aagedal Photo Agent/Services/DescriptionModelDiscovery.swift' \
+  scripts/ci/test_description_model_discovery.swift \
+  -o "$discovery_test_dir/test-model-discovery"
+"$discovery_test_dir/test-model-discovery"

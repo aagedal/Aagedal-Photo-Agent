@@ -25,13 +25,30 @@ struct DescriptionAssistantModelSetupView: View {
                 Button("Check Availability") { setup.refreshAppleAvailability() }
                     .accessibilityIdentifier("descriptionAssistant.apple.refresh")
             } else {
-                Text(setup.directory.map { $0.pathExtension.lowercased() != "gguf" } == true
+                Text(setup.directory.map { !DescriptionModelDiscovery.isGGUF($0) } == true
                     ? "Local MLX inference" : "Local llama.cpp inference • Metal")
                 Text("Gemma 4 12B is recommended for multilingual writing. All downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon. You can also choose an existing instruction-tuned GGUF file.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let directory = setup.directory {
-                    LabeledContent("Active model", value: directory.lastPathComponent)
+                    LabeledContent("Active model", value: setup.selectedModelName ?? directory.lastPathComponent)
                 }
+                HStack {
+                    Menu("Models already on this Mac") {
+                        ForEach(setup.discoveredModels) { model in
+                            Button(model.title) {
+                                do { try setup.select(model.url) }
+                                catch { setup.message = error.localizedDescription }
+                            }
+                        }
+                    }
+                    .disabled(setup.discoveredModels.isEmpty || setup.isInstalling)
+                    .accessibilityIdentifier("descriptionAssistant.existingModels")
+                    Button("Refresh") { setup.refreshDiscoveredModels() }
+                        .disabled(setup.isDiscovering)
+                    if setup.isDiscovering { ProgressView().controlSize(.small) }
+                }
+                Text("Finds MLX folders and instruction GGUF models in Hugging Face, llama.cpp and Ollama caches. Uses the original files without copying them. Runtime support depends on the model architecture. For other locations, use Choose GGUF or Choose MLX Folder.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Download or switch to", selection: $downloadModel) {
                     ForEach(DescriptionAssistantDownloadModel.allCases) { model in
                         Text(model.title).tag(model)
@@ -70,6 +87,7 @@ struct DescriptionAssistantModelSetupView: View {
         }
         .onAppear {
             setup.refreshDownloadedModels()
+            setup.refreshDiscoveredModels()
             setup.refreshAppleAvailability()
             if let current = setup.directory,
                let model = DescriptionAssistantDownloadModel.allCases.first(where: { $0.artifact.fileName == current.lastPathComponent }) {

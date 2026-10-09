@@ -20,6 +20,7 @@ nonisolated enum UserDefaultsKeys {
     static let metadataWriteModeRaw = "metadataWriteModeRaw"
 
     // MARK: - Face Recognition
+    static let browserFaceBarCollapsed = "browserFaceBarCollapsed"
     static let faceCleanupPolicy = "faceCleanupPolicy"
     static let faceMinConfidence = "faceMinConfidence"
     static let faceMinFaceSize = "faceMinFaceSize"
