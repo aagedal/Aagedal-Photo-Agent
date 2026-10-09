@@ -388,6 +388,24 @@ MVVM with a services layer, built primarily on Apple frameworks plus a small set
 
 When iCloud Sync is enabled, the Templates, KnownPeople, Teams, and Lists folders move to the app's iCloud Drive container (`iCloud.aagedal.Aagedal-Photo-Agent/Documents/`) instead of Application Support.
 
+## Local testing and CI
+
+Before pushing a PR, run the relevant local tests and repository validation:
+
+```bash
+xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
+  -scheme "Aagedal Photo Agent Tests" -destination "platform=macOS" test
+scripts/ci/validate_repository.sh
+```
+
+Use Xcode’s test selection or `-only-testing` for focused checks appropriate to the change.
+PR CI runs the fast **Repository validation** job, including generated-document drift,
+release metadata, bundled-component provenance, privacy checks, JSON/plist validation,
+conflict markers and whitespace. It relies on local builds and tests before pushing.
+Pushes to `main` and manual **macOS CI** runs also reproduce the reviewed model, perform
+a clean build and run the entire test suite. Releases still require a passing full push
+run tied to the exact source revision; a successful lightweight PR run does not qualify.
+
 ## Releasing
 
 The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Releases are signed with an EdDSA key and advertised through the canonical `appcast.xml` on GitHub. Codeberg keeps a synchronized legacy copy for older installed builds whose feed URL still points there.

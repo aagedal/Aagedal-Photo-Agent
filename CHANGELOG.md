@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Keep PR CI focused on repository validation; retain clean builds and the full test suite for main and manual runs, with local testing before pushing PRs.
+
 - Add “Write from image” description drafts using Apple Foundation Models on macOS 27 or local vision-capable MLX models, upright images capped at two megapixels, editorial metadata and reporting notes, for individual photos and batches.
 - Add microphone dictation for descriptions and reporting notes using the configured Apple Speech or Whisper transcription provider, with transcript review and temporary audio cleanup.
 - Default to Apple Foundation Models on macOS 27 or later when no provider choice is saved; preserve explicit choices.
