@@ -54,6 +54,9 @@ struct DiscoveryChecks {
         let mismatch = try DescriptionModelDiscovery.existingArtifact(byteCount: Int64(gguf.count), sha256: String(repeating: "0", count: 64), models: models)
         precondition(match != nil)
         precondition(mismatch == nil)
+        let hfMatch = try DescriptionModelDiscovery.existingArtifact(byteCount: Int64(gguf.count), sha256: hash,
+            models: models.filter { $0.source == "Hugging Face" })
+        precondition(hfMatch != nil, "Checksum reuse must follow Hugging Face snapshot symlinks")
         let configured = DescriptionModelDiscovery.locations(home: root, environment: ["HF_HOME": root.appendingPathComponent("custom-hf").path, "LLAMA_CACHE": root.appendingPathComponent("custom-llama").path, "OLLAMA_MODELS": root.appendingPathComponent("custom-ollama").path])
         precondition(configured[0].url.path == root.appendingPathComponent("custom-hf/hub").path)
         precondition(configured[2].url.path == root.appendingPathComponent("custom-llama").path)

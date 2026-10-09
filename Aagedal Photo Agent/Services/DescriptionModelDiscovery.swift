@@ -24,7 +24,7 @@ nonisolated enum DescriptionModelDiscovery {
                                  models: [DiscoveredDescriptionModel]) throws -> URL? {
         for model in models where model.format == "GGUF" {
             try Task.checkCancellation()
-            guard let size = try? model.url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            guard let size = try? model.url.resolvingSymlinksInPath().resourceValues(forKeys: [.fileSizeKey]).fileSize,
                   Int64(size) == byteCount,
                   let handle = try? FileHandle(forReadingFrom: model.url) else { continue }
             defer { try? handle.close() }
@@ -74,9 +74,10 @@ nonisolated enum DescriptionModelDiscovery {
     }
 
     private static func json(_ url: URL) -> [String: Any]? {
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size <= 8 * 1_024 * 1_024,
-              let data = try? Data(contentsOf: url) else { return nil }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let limit = 8 * 1_024 * 1_024
+        guard let data = try? handle.read(upToCount: limit + 1), data.count <= limit else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
