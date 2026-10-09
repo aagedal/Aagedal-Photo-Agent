@@ -2545,3 +2545,70 @@ struct ImageDescriptionAssistantTests {
         #expect(throws: DescriptionAssistantError.inputTooLong) { try request.prompt() }
     }
 }
+
+
+@Suite("Description dictation language selection")
+struct DescriptionDictationLanguageTests {
+    private actor AvailabilityGate {
+        private var waiter: CheckedContinuation<Void, Never>?
+        private var entered = false
+        private var calls = 0
+        func isFirstCall() -> Bool { calls += 1; return calls == 1 }
+        func wait() async {
+            entered = true
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func hasEntered() -> Bool { entered }
+        func release() { waiter?.resume(); waiter = nil }
+    }
+
+    @Test("A late speech readiness result cannot revert a newer language selection")
+    @MainActor func staleLanguageResult() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            if locale.identifier == "en_US" { await gate.wait() }
+            return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+        })
+        model.localeIdentifier = "en_US"
+        let oldRefresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        model.localeIdentifier = "nb_NO"
+        await model.refresh()
+        await gate.release()
+        await oldRefresh.value
+        #expect(model.localeIdentifier == "nb_NO")
+        #expect(model.availability?.selectedLocale?.identifier == "nb_NO")
+    }
+
+    @Test("A newer readiness result wins even when both requests use the same language")
+    @MainActor func staleReadinessResult() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            let first = await gate.isFirstCall()
+            if first { await gate.wait() }
+            return .init(selectedLocale: locale, supportedLocales: [locale],
+                status: first ? .needsDownload : .installed)
+        })
+        let oldRefresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        await model.refresh()
+        await gate.release()
+        await oldRefresh.value
+        #expect(model.availability?.status == .installed)
+    }
+
+    @Test("Cancelled readiness checks do not publish their results")
+    @MainActor func cancelledRefresh() async {
+        let gate = AvailabilityGate()
+        let model = DescriptionDictationModel(checkAvailability: { locale in
+            await gate.wait()
+            return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+        })
+        let refresh = Task { await model.refresh() }
+        while !(await gate.hasEntered()) { await Task.yield() }
+        refresh.cancel()
+        await gate.release()
+        await refresh.value
+        #expect(model.availability == nil)
+    }
+}

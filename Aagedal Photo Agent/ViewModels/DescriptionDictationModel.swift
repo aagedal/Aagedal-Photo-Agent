@@ -17,14 +17,29 @@ final class DescriptionDictationModel {
     @ObservationIgnored private var folder: URL?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let speech = VoiceMemoTranscriptionService()
+    @ObservationIgnored private var availabilityRequest = UUID()
+    @ObservationIgnored private let checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)?
+
+    init(checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)? = nil) {
+        self.checkAvailability = checkAvailability
+    }
 
     func refresh() async {
-        availability = await speech.availability(preferredLocale: Locale(identifier: localeIdentifier))
-        if let locale = availability?.selectedLocale { localeIdentifier = locale.identifier }
+        let request = UUID()
+        availabilityRequest = request
+        let requestedLocale = localeIdentifier
+        let locale = Locale(identifier: requestedLocale)
+        let result: VoiceMemoTranscriptionAvailability
+        if let checkAvailability { result = await checkAvailability(locale) }
+        else { result = await speech.availability(preferredLocale: locale) }
+        guard !Task.isCancelled, availabilityRequest == request, localeIdentifier == requestedLocale else { return }
+        availability = result
+        if let locale = result.selectedLocale { localeIdentifier = locale.identifier }
     }
 
     func downloadLanguage() {
         guard !isWorking, !isRecording else { return }
+        availabilityRequest = UUID()
         isWorking = true
         errorMessage = nil
         task = Task {
@@ -111,6 +126,7 @@ final class DescriptionDictationModel {
     }
 
     func cancel() {
+        availabilityRequest = UUID()
         task?.cancel()
         recorder?.stop()
         recorder = nil
