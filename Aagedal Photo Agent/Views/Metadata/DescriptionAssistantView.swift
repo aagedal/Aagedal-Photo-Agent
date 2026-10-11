@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct DescriptionAssistantModelSetupView: View {
     @State private var setup = DescriptionAssistantModelSetup.shared
-    @AppStorage("descriptionAssistantEditorialPrompt") private var editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt
+    @State private var presets = DescriptionAssistantPresets.load()
     var body: some View {
         Section("Description Model") {
             Picker("Provider", selection: $setup.provider) {
@@ -53,14 +53,43 @@ struct DescriptionAssistantModelSetupView: View {
                 if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
             }
         }
-        Section("Description Prompt") {
-            TextEditor(text: $editorialPrompt).frame(minHeight: 140)
-                .accessibilityLabel("Archival description prompt")
-            Text("Used for individual and batch suggestions. The default writes for archival use and aims for two to three sentences with supported context. Write from image uses Apple Foundation Models or a vision-capable MLX model, an upright image of up to two megapixels, and editorial metadata. Other modes edit text only.").font(.caption).foregroundStyle(.secondary)
-            Button("Restore Archival Default") { editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt }
+        Section("Description Presets") {
+            Picker("Preset", selection: $presets.selectedID) {
+                ForEach(DescriptionAssistantBuiltInPreset.allCases) { preset in
+                    Text(preset.title).tag(preset.id)
+                }
+                ForEach(presets.custom) { preset in
+                    Text(preset.name).tag(preset.id)
+                }
+            }
+            .accessibilityIdentifier("descriptionAssistant.preset")
+            if let index = presets.selectedCustomIndex {
+                TextField("Preset name", text: $presets.custom[index].name)
+                    .accessibilityIdentifier("descriptionAssistant.preset.name")
+                TextEditor(text: $presets.custom[index].prompt).frame(minHeight: 140)
+                    .accessibilityLabel("Custom description prompt")
+            } else {
+                Text(presets.selectedPrompt).textSelection(.enabled)
+                    .font(.callout)
+            }
+            HStack {
+                Button("New Custom Preset") {
+                    presets.add(name: "Custom preset", prompt: DescriptionAssistantRequest.defaultEditorialPrompt)
+                }
+                Button("Duplicate Preset") {
+                    presets.add(name: presets.selectedTitle + " copy", prompt: presets.selectedPrompt)
+                }
+                if presets.selectedCustomIndex != nil {
+                    Button("Delete Preset", role: .destructive) { presets.deleteSelectedCustom() }
+                }
+            }
+            Text("The selected preset is used for individual and batch suggestions. Custom presets save automatically. Language is selected separately. Agency-inspired presets are style guidance. All presets retain factual safeguards. Duplicate a built-in preset to edit it.")
+                .font(.caption).foregroundStyle(.secondary)
         }
+        .onChange(of: presets) { _, library in library.save() }
         .onAppear {
-            editorialPrompt = DescriptionAssistantRequest.resolvedEditorialPrompt(editorialPrompt)
+            presets = DescriptionAssistantPresets.load()
+            presets.save()
             setup.refreshDownloadedModels()
             setup.refreshDiscoveredModels()
             setup.refreshAppleAvailability()
@@ -298,7 +327,7 @@ struct BatchDescriptionAssistantView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Description Assistant — \(urls.count) Photos").font(.title2)
-            Text("Suggestions use each photo’s current description and your prompt in Settings. Write from image also uses its image and editorial metadata. Review each result before queuing it for saving.")
+            Text("Suggestions use each photo’s current description and the selected preset in Settings. Write from image also uses its image and editorial metadata. Review each result before queuing it for saving.")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("Language", selection: $language) {
                 ForEach(DescriptionAssistantLanguage.allCases) { Text($0.rawValue).tag($0) }
@@ -349,8 +378,7 @@ struct BatchDescriptionAssistantView: View {
         guard let backend = setup.backend, setup.generationIssue(for: language, action: action) == nil,
               task == nil, !setup.isInstalling, proposals.isEmpty else { return }
         self.action = action
-        let prompt = UserDefaults.standard.string(forKey: "descriptionAssistantEditorialPrompt")
-            ?? DescriptionAssistantRequest.defaultEditorialPrompt
+        let prompt = DescriptionAssistantPresets.load().selectedPrompt
         completed = 0
         messages = []
         task = Task {

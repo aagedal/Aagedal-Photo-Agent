@@ -1954,6 +1954,64 @@ struct DescriptionAssistantRequestTests {
         #expect(DescriptionAssistantRequest.defaultEditorialPrompt.contains("when, where, what and who"))
     }
 
+    @Test("Preset migration preserves a custom prompt and upgrades former defaults")
+    func presetMigration() throws {
+        let suite = "DescriptionPresetTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(DescriptionAssistantRequest.legacyEditorialPrompt,
+                     forKey: "descriptionAssistantEditorialPrompt")
+        #expect(DescriptionAssistantPresets.load(defaults: defaults).custom.isEmpty)
+        defaults.set("Keep my custom wording.", forKey: "descriptionAssistantEditorialPrompt")
+        let migrated = DescriptionAssistantPresets.load(defaults: defaults)
+        #expect(migrated.custom.count == 1)
+        #expect(migrated.selectedPrompt == "Keep my custom wording.")
+        migrated.save(defaults: defaults)
+        defaults.set("An obsolete preference.", forKey: "descriptionAssistantEditorialPrompt")
+        #expect(DescriptionAssistantPresets.load(defaults: defaults) == migrated)
+    }
+
+    @Test("Multiple custom presets retain independent edits and selection across reloads")
+    func customPresetPersistence() throws {
+        let suite = "DescriptionPresetTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = DescriptionAssistantPresets()
+        library.selectedID = DescriptionAssistantBuiltInPreset.ap.id
+        let original = library.selectedPrompt
+        library.add(name: "My style", prompt: original)
+        let firstID = library.selectedID
+        library.add(name: "My style", prompt: "Use one short sentence.")
+        #expect(library.custom.map(\.name) == ["My style", "My style 2"])
+        library.custom[0].name = "Renamed style"
+        library.custom[0].prompt = "Keep this separate."
+        library.save(defaults: defaults)
+        var loaded = DescriptionAssistantPresets.load(defaults: defaults)
+        #expect(loaded == library)
+        #expect(loaded.selectedPrompt == "Use one short sentence.")
+        loaded.deleteSelectedCustom()
+        #expect(loaded.selectedID == DescriptionAssistantBuiltInPreset.archival.id)
+        #expect(loaded.custom.count == 1)
+        loaded.selectedID = firstID
+        #expect(loaded.selectedPrompt == "Keep this separate.")
+        #expect(DescriptionAssistantBuiltInPreset.ap.prompt == original)
+        loaded.selectedID = "missing"
+        loaded.save(defaults: defaults)
+        #expect(DescriptionAssistantPresets.load(defaults: defaults).selectedID == DescriptionAssistantBuiltInPreset.archival.id)
+    }
+
+    @Test("Caption formats follow the selected preset without a fixed archival length")
+    func presetPromptFormat() throws {
+        let item = DescriptionAssistantRequest(imageURL: image, editorLoadID: loadID,
+            originalDescription: "", action: .writeFromImage, language: .english,
+            editorialPrompt: DescriptionAssistantBuiltInPreset.short.prompt)
+        let prompt = try item.prompt()
+        #expect(prompt.contains("one concise factual sentence"))
+        #expect(!prompt.contains("two to three"))
+        #expect(prompt.contains("Do not invent"))
+        #expect(prompt.contains("never invent photographer or agency"))
+    }
+
     @Test("A proposal cannot overwrite a changed caption, another photo or another load")
     func staleProposal() {
         let item = request()
