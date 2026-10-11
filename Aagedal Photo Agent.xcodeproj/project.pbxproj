@@ -34,6 +34,7 @@
 		A02608270000000000000002 /* RAWArchiveTransactionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A02608270000000000000001 /* RAWArchiveTransactionServiceTests.swift */; };
 		A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */; };
 		A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */; };
+		A770F5000000000000000002 /* DescriptionAssistantBatchApplyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F5000000000000000001 /* DescriptionAssistantBatchApplyTests.swift */; };
 		A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */; };
 		A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */; };
 		A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */; };
@@ -318,6 +319,7 @@
 		A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppStartupSignpostStateMachineTests.swift; sourceTree = "<group>"; };
 		A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApprovedListServiceTests.swift; sourceTree = "<group>"; };
 		A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ApplicationTerminationFlushCoordinatorTests.swift; sourceTree = "<group>"; };
+		A770F5000000000000000001 /* DescriptionAssistantBatchApplyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DescriptionAssistantBatchApplyTests.swift; sourceTree = "<group>"; };
 		A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionWorkspaceSpeedToolsTests.swift; sourceTree = "<group>"; };
 		A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccessibilityKeyboardAuditTests.swift; sourceTree = "<group>"; };
 		A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageAnalysisProjectArchiveTests.swift; sourceTree = "<group>"; };
@@ -767,6 +769,7 @@
 				25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */,
 				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
 				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
+				A770F5000000000000000001 /* DescriptionAssistantBatchApplyTests.swift */,
 				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
 				A770F4000000000000000001 /* ImageAnalysisProjectArchiveTests.swift */,
 				EDDA71000000000000000001 /* EditorialDateCreatedTests.swift */,
@@ -1245,6 +1248,7 @@
 				FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */,
 				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
 				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
+				A770F5000000000000000002 /* DescriptionAssistantBatchApplyTests.swift in Sources */,
 				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,
 				A770F4000000000000000002 /* ImageAnalysisProjectArchiveTests.swift in Sources */,
 				EDDA71000000000000000002 /* EditorialDateCreatedTests.swift in Sources */,

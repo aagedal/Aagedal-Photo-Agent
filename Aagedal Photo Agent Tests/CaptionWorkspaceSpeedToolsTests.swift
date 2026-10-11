@@ -2611,4 +2611,67 @@ struct DescriptionDictationLanguageTests {
         await refresh.value
         #expect(model.availability == nil)
     }
+
+    @Test("Cancelled language installation cannot publish late readiness or errors")
+    @MainActor func cancelledDownload() async {
+        for fails in [false, true] {
+            let gate = AvailabilityGate()
+            let model = DescriptionDictationModel(
+                checkAvailability: { locale in
+                    .init(selectedLocale: locale, supportedLocales: [locale], status: .needsDownload)
+                }, installLanguage: { locale in
+                    await gate.wait()
+                    if fails { throw VoiceMemoTranscriptionError.unavailable }
+                    return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+                })
+            await model.refresh()
+            let before = model.availability
+            model.downloadLanguage()
+            while !(await gate.hasEntered()) { await Task.yield() }
+            model.cancel()
+            // Work retains ownership until installation has actually returned.
+            #expect(model.isWorking)
+            await gate.release()
+            while model.isWorking { await Task.yield() }
+            #expect(model.availability == before)
+            #expect(model.errorMessage == nil)
+        }
+    }
+
+    @Test("A late language installation cannot replace newer readiness")
+    @MainActor func staleDownload() async {
+        for replaceLanguage in [false, true] {
+            let gate = AvailabilityGate()
+            let model = DescriptionDictationModel(
+                checkAvailability: { locale in
+                    .init(selectedLocale: locale, supportedLocales: [locale], status: .needsDownload)
+                }, installLanguage: { locale in
+                    await gate.wait()
+                    return .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+                })
+            model.localeIdentifier = "en_US"
+            await model.refresh()
+            model.downloadLanguage()
+            while !(await gate.hasEntered()) { await Task.yield() }
+            if replaceLanguage { model.localeIdentifier = "nb_NO" }
+            await model.refresh()
+            await gate.release()
+            while model.isWorking { await Task.yield() }
+            #expect(model.availability?.selectedLocale?.identifier == (replaceLanguage ? "nb_NO" : "en_US"))
+            #expect(model.availability?.status == .needsDownload)
+        }
+    }
+
+    @Test("Current language installation publishes readiness and releases work ownership")
+    @MainActor func completedDownload() async {
+        let model = DescriptionDictationModel(installLanguage: { locale in
+            .init(selectedLocale: locale, supportedLocales: [locale], status: .installed)
+        })
+        model.localeIdentifier = "nb_NO"
+        model.downloadLanguage()
+        while model.isWorking { await Task.yield() }
+        #expect(model.availability?.selectedLocale?.identifier == "nb_NO")
+        #expect(model.availability?.status == .installed)
+        #expect(model.errorMessage == nil)
+    }
 }

@@ -19,9 +19,12 @@ final class DescriptionDictationModel {
     @ObservationIgnored private let speech = VoiceMemoTranscriptionService()
     @ObservationIgnored private var availabilityRequest = UUID()
     @ObservationIgnored private let checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)?
+    @ObservationIgnored private let installLanguage: (@Sendable (Locale) async throws -> VoiceMemoTranscriptionAvailability)?
 
-    init(checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)? = nil) {
+    init(checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)? = nil,
+         installLanguage: (@Sendable (Locale) async throws -> VoiceMemoTranscriptionAvailability)? = nil) {
         self.checkAvailability = checkAvailability
+        self.installLanguage = installLanguage
     }
 
     func refresh() async {
@@ -39,14 +42,28 @@ final class DescriptionDictationModel {
 
     func downloadLanguage() {
         guard !isWorking, !isRecording else { return }
-        availabilityRequest = UUID()
+        let request = UUID()
+        availabilityRequest = request
+        let requestedLocale = localeIdentifier
         isWorking = true
         errorMessage = nil
         task = Task {
             defer { isWorking = false; task = nil }
-            do { availability = try await speech.downloadLanguage(Locale(identifier: localeIdentifier)) }
+            do {
+                let locale = Locale(identifier: requestedLocale)
+                let result: VoiceMemoTranscriptionAvailability
+                if let installLanguage { result = try await installLanguage(locale) }
+                else { result = try await speech.downloadLanguage(locale) }
+                guard !Task.isCancelled, availabilityRequest == request,
+                      localeIdentifier == requestedLocale else { return }
+                availability = result
+            }
             catch is CancellationError { }
-            catch { errorMessage = error.localizedDescription }
+            catch {
+                guard !Task.isCancelled, availabilityRequest == request,
+                      localeIdentifier == requestedLocale else { return }
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

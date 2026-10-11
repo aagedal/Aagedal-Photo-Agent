@@ -4,6 +4,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Add retained operation discovery to local MCP automation for reconnect and recovery inspection.
+- Keep batch Description Assistant suggestions retryable when queuing fails, preserving unsaved edits.
+- Prevent cancelled or superseded dictation language downloads from changing displayed readiness.
+
 - Request Whisper GPU acceleration by default when no preference is saved; retain explicit CPU choices.
 
 - Add revision-bound Develop-template control and crop-policy inspection to the local MCP helper.
