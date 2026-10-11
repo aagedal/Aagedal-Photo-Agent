@@ -1982,6 +1982,13 @@ disposition. Signed Whisper state now has verified-byte install/update/rollback,
 catalog and Settings integration remain open. No complete executor/publication/lifecycle criterion is
 closed by these slices. See [cycle 94](release/cycle-94-rooted-publication-filename-model-installation-2026-09-22.md).
 
+**2026-10-11 bounded continuation:** The bundled helper can inspect production-decoded Develop
+controls and crop policy using exact UUID/revision authority. Signed model removal now retires
+current/rollback/high-water copies with durable generation invalidation while retaining the replay
+floor. These prerequisites leave Develop photo-set admission/application, production signed
+catalog/Settings integration and whole Phase 5A acceptance open. See the
+[dated evidence](release/develop-inspection-signed-model-removal-2026-10-11.md).
+
 ### FFmpeg Whisper provider
 
 - [ ] Replace the photo-only FFmpeg artifact with the exact reproducible Aagedal Media Converter
