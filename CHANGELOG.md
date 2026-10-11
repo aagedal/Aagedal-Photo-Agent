@@ -4,31 +4,27 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
-- Save removal-only incremental face scans so removed photos no longer retain stale faces, groups or jersey numbers.
+## 3.0.0-beta.3 — 2026-10-11
 
-- Add retained operation discovery to local MCP automation for reconnect and recovery inspection.
-- Keep batch Description Assistant suggestions retryable when queuing fails, preserving unsaved edits.
-- Prevent cancelled or superseded dictation language downloads from changing displayed readiness.
+This third public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
 
-- Request Whisper GPU acceleration by default when no preference is saved; retain explicit CPU choices.
+### Highlights
 
-- Add revision-bound Develop-template control and crop-policy inspection to the local MCP helper.
+- Add image-based description drafts, microphone dictation, description styles and saved custom presets, with individual and batch review.
+- Add Apple Foundation Models as an on-device Description Assistant provider on macOS 27; preserve explicit provider choices.
+- Expand local description models with download sizes, RAM guidance, shared model discovery and embedded GGUF chat templates; separate model downloads from assistant settings.
+- Add video still extraction with timecode markers and 16-bit JPEG XL output.
+- Expand Pixel Analysis rendering, channels, loupe, comparison and verification tools, and improve C2PA badges.
+- Support multiple structured keyword lists and live multilingual IPTC Media Topics updates.
+- Add a collapsible face bar; remove stale faces, groups and jersey numbers after removal-only incremental scans.
+- Improve import voice-memo badges, transcript retries, Activity progress and batch description retry behavior.
+- Improve Whisper setup, cancellation, signed model recovery and cache cleanup; request GPU acceleration by default while preserving explicit CPU choices.
+- Add retained-operation discovery and revision-bound Develop-template inspection and previews to local MCP automation, sharing production write capture and decoder state.
+- Improve archival descriptions and metadata field editing. Deadline Workspace UI is deferred to 3.1.
+
+### Development
 
 - Keep PR CI focused on repository validation; retain clean builds and the full test suite for main and manual runs, with local testing before pushing PRs.
-
-- Add “Write from image” description drafts using Apple Foundation Models on macOS 27 or local vision-capable MLX models, upright images capped at two megapixels, editorial metadata and reporting notes, for individual photos and batches.
-- Add microphone dictation for descriptions and reporting notes using the configured Apple Speech or Whisper transcription provider, with transcript review and temporary audio cleanup.
-- Default to Apple Foundation Models on macOS 27 or later when no provider choice is saved; preserve explicit choices.
-
-- Add Apple Foundation Models as an optional on-device Description Assistant provider on macOS 27, with readiness/language checks and the same individual/batch review workflow.
-
-- Preserve Whisper model removal and replacement controls when a setup retry is cancelled during local inspection.
-
-- Recommend Gemma 4 12B for local description assistance, with Gemma 4 E4B,
-  Qwen3.5 9B, Ministral 3 14B Instruct, and Gemma 4 26B A4B alternatives.
-- Show each model's download size and recommended Mac RAM, including a warning
-  for Macs below the recommendation. Remove Borealis/Gemma 3 from the download catalog.
-- Use each GGUF model's embedded chat template with thinking disabled for caption editing.
 
 ## 3.0.0-beta.2 — 2026-10-04
 
