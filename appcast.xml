@@ -11,6 +11,37 @@
         <!-- New release items are inserted here by scripts/release.sh. -->
 
         <item>
+            <title>Version 3.0.0-beta.3</title>
+            <sparkle:channel>beta</sparkle:channel>
+            <pubDate>Mon, 12 Oct 2026 00:06:28 +0200</pubDate>
+            <sparkle:version>742</sparkle:version>
+            <sparkle:shortVersionString>3.0.0-beta.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Add image-based description drafts, microphone dictation, description styles and saved custom presets, with individual and batch review.</li>
+                    <li>Add Apple Foundation Models as an on-device Description Assistant provider on macOS 27; preserve explicit provider choices.</li>
+                    <li>Expand local description models with download sizes, RAM guidance, shared model discovery and embedded GGUF chat templates; separate model downloads from assistant settings.</li>
+                    <li>Add video still extraction with timecode markers and 16-bit JPEG XL output.</li>
+                    <li>Expand Pixel Analysis rendering, channels, loupe, comparison and verification tools, and improve C2PA badges.</li>
+                    <li>Support multiple structured keyword lists and live multilingual IPTC Media Topics updates.</li>
+                    <li>Add a collapsible face bar; remove stale faces, groups and jersey numbers after removal-only incremental scans.</li>
+                    <li>Improve import voice-memo badges, transcript retries, Activity progress and batch description retry behavior.</li>
+                    <li>Improve Whisper setup, cancellation, signed model recovery and cache cleanup; request GPU acceleration by default while preserving explicit CPU choices.</li>
+                    <li>Add retained-operation discovery and revision-bound Develop-template inspection and previews to local MCP automation, sharing production write capture and decoder state.</li>
+                    <li>Improve archival descriptions and metadata field editing. Deadline Workspace UI is deferred to 3.1.</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/aagedal/Aagedal-Photo-Agent/releases/download/3.0.0-beta.3/Aagedal-Photo-Agent-3.0.0-beta.3.dmg"
+                sparkle:version="742"
+                sparkle:shortVersionString="3.0.0-beta.3"
+                sparkle:edSignature="O4hhue/sMZ130PF/ZY0gKtLaFo+K2vhUi6ydXI0FCJqD8RDnvBDgvirseOmVKvIPX0zRflrRVyzob3q4it4HCQ=="
+                length="205878479"
+                type="application/octet-stream" />
+        </item>
+
+        <item>
             <title>Version 3.0.0-beta.2</title>
             <sparkle:channel>beta</sparkle:channel>
             <pubDate>Mon, 05 Oct 2026 08:26:37 +0200</pubDate>
