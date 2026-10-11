@@ -1940,6 +1940,14 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
 - [ ] Implement `start_face_scan` for one authorized folder, with incremental/full-scan intent,
   face-model readiness, rename-quiescence checks, and an operation identifier. It must not silently
   download a face model or replace an active scan.
+
+**2026-10-12 production face-scan foundation:** The native scanner now returns shared typed
+admission/completion values and checks the complete immediate supported-image inventory under
+its folder reservation before reset or pruning. Partial detection, cancellation and failed
+persistence cannot claim success; pending cloud placeholders preserve existing results.
+Authenticated rooted MCP folder admission and durable operation execution remain open; see
+the [dated verification](release/face-folder-scan-admission-2026-10-12.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.
