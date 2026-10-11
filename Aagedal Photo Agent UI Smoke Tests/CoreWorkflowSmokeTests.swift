@@ -95,6 +95,35 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCompleteFolderFaceScanPersistsAcrossRelaunch() throws {
+        let photos = try makePhotoFolder(count: 2)
+        let people = fixtureRoot.appendingPathComponent("FaceScanPeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: people, withIntermediateDirectories: true)
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people, faceBarExpanded: true)
+        let scan = app.buttons["scanFaces"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: scan)
+        waitForExpectations(timeout: 15)
+        scan.click()
+
+        let document = photos.appendingPathComponent(".face_data/face_data.json")
+        let complete = NSPredicate { _, _ in
+            guard let bytes = try? Data(contentsOf: document),
+                  let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return false }
+            return value["scanComplete"] as? Bool == true
+                && (value["scannedFiles"] as? [String: Any])?.count == 2
+        }
+        expectation(for: complete, evaluatedWith: nil)
+        waitForExpectations(timeout: 45)
+        XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 10))
+        let saved = try Data(contentsOf: document)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people, faceBarExpanded: true)
+        XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 15))
+        XCTAssertEqual(try Data(contentsOf: document), saved)
+    }
+
+    @MainActor
     func testExplicitJerseyScanCancellation() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)
@@ -3255,6 +3284,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         profileStore: URL? = nil,
         knownPeopleRoot: URL? = nil,
         templateRoot: URL? = nil,
+        faceBarExpanded: Bool = false,
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
         patchReviewFolder: URL? = nil,
@@ -3292,6 +3322,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             // from the user's iCloud-routed Known People store.
             app.launchArguments += ["-knownPeople.iCloudEnabled", "NO"]
         }
+        if faceBarExpanded { app.launchArguments += ["-browserFaceBarCollapsed", "NO"] }
         if let localeIdentifier {
             app.launchArguments += ["-AppleLocale", localeIdentifier]
         }

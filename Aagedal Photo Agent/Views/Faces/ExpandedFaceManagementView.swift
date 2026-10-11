@@ -306,7 +306,7 @@ struct ExpandedFaceManagementView: View {
             Menu {
                 Button("Rescan Faces (Force Full)") {
                     guard let folderURL else { return }
-                    viewModel.scanFolder(imageURLs: images.map(\.url), folderURL: folderURL, forceFullScan: true)
+                    viewModel.scanFolder(imageURLs: images.map(\.url).filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: true)
                 }
                 Button("Scan Faces + Jerseys") {
                     guard let folderURL else { return }

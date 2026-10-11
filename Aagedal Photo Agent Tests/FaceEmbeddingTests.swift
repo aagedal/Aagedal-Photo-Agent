@@ -3073,3 +3073,66 @@ struct ExplicitJerseyScanIntentTests {
     }
 
 }
+
+@Suite("Face folder scan shared contract")
+struct FaceFolderScanContractTests {
+    @Test("Cancelled classification preserves prior unsigned faces and jersey numbers")
+    @MainActor
+    func cancelledClassificationPreservesUnsignedResults() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceUnsignedCancel-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("unsigned.jpg")
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
+            featurePrintData: Data([1]), detectedAt: .distantPast)
+        let group = FaceGroup(id: UUID(), name: "Preserve", representativeFaceID: face.id, faceIDs: [face.id])
+        let number = NumberDetection(imageURL: photo, number: 7, numberConfidence: 1, boundingBox: .zero)
+        let original = FolderFaceData(folderURL: folder, faces: [face], groups: [group],
+            lastScanDate: .distantPast, scanComplete: false, scannedFiles: [:],
+            embeddingVersion: FaceRecognitionDefaults.embeddingVersion, numberDetections: [number])
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        try Data([1]).write(to: photo)
+        let gate = FaceFolderLoadGate()
+        defer { gate.release() }
+        let signatures = FaceScanFileSignatureService { _ in
+            gate.block()
+            return FileSignature(modificationDate: .distantPast, fileSize: 1)
+        }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            fileSignatureService: signatures)
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder)
+        #expect(await gate.waitUntilStarted())
+        viewModel.cancelScan()
+        gate.release()
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        #expect(completion.outcome == .cancelled)
+        #expect(!completion.succeeded)
+        let durable = try #require(storage.loadFaceData(for: folder))
+        #expect(durable.faces.map(\.id) == [face.id])
+        #expect(durable.groups.map(\.id) == [group.id])
+        #expect(durable.groups.first?.faceIDs == [face.id])
+        #expect(durable.numberDetections?.map(\.id) == [number.id])
+        #expect(durable.scannedFiles.isEmpty)
+        #expect(!durable.scanComplete)
+    }
+
+    @Test("Jersey requests always carry full-reset intent")
+    func jerseyRequestRequiresFullReset() {
+        let request = FaceFolderScanRequest(imageURLs: [], folderURL: URL(fileURLWithPath: "/faces"),
+            includeJerseyNumbers: true)
+        #expect(request.forceFullScan)
+        #expect(request.includeJerseyNumbers)
+    }
+
+    @Test("Worker completion cannot claim success without durable and signature evidence")
+    func completionRequiresDurableEvidence() {
+        let folder = URL(fileURLWithPath: "/faces")
+        #expect(FaceScanCompletion(folderURL: folder, outcome: .completed).succeeded)
+        #expect(!FaceScanCompletion(folderURL: folder, outcome: .completed, persistenceError: "save failed").succeeded)
+        #expect(!FaceScanCompletion(folderURL: folder, outcome: .completed, failureCount: 1).succeeded)
+        #expect(!FaceScanCompletion(folderURL: folder, outcome: .unchanged, unsignedFileCount: 1).succeeded)
+        #expect(!FaceScanCompletion(folderURL: folder, outcome: .cancelled).succeeded)
+        #expect(!FaceScanCompletion(folderURL: folder, outcome: .refused(.scanAlreadyRunning)).succeeded)
+    }
+}

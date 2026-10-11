@@ -293,6 +293,57 @@ actor FaceScanFileSignatureService {
         self.readSignature = readSignature
     }
 
+    /// Run under the caller's folder reservation before reading/resetting saved face data.
+    /// The lease coordinates app/helper writers; it does not freeze external filesystem edits.
+    func validateCompleteInventory(_ request: FaceFolderScanRequest) -> FaceFolderScanRefusal? {
+        let folder = request.folderURL.resolvingSymlinksInPath().standardizedFileURL
+        guard request.folderURL.isFileURL else { return .invalidInventory("the folder must be local") }
+        var requestedPaths: Set<String> = []
+        for image in request.imageURLs {
+            let canonical = image.standardizedFileURL.resolvingSymlinksInPath()
+            guard image.isFileURL, canonical.deletingLastPathComponent() == folder,
+                  SupportedImageFormats.isSupported(url: image), !image.lastPathComponent.hasPrefix(".") else {
+                return .invalidInventory("an item is not a supported immediate folder image")
+            }
+            guard requestedPaths.insert(canonical.path).inserted else {
+                return .invalidInventory("duplicate image URLs")
+            }
+        }
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(at: request.folderURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey,
+                    .ubiquitousItemDownloadingStatusKey], options: [])
+            var inventoryPaths: Set<String> = []
+            for image in contents {
+                let name = image.lastPathComponent
+                if name.hasPrefix("."), name.hasSuffix(".icloud") {
+                    let logicalName = String(name.dropFirst().dropLast(".icloud".count))
+                    if SupportedImageFormats.isSupported(url: request.folderURL.appendingPathComponent(logicalName)) {
+                        return .invalidInventory("an image is not downloaded locally")
+                    }
+                }
+                guard !name.hasPrefix("."), SupportedImageFormats.isSupported(url: image) else { continue }
+                let values = try image.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey,
+                    .ubiquitousItemDownloadingStatusKey])
+                guard values.isSymbolicLink != true else {
+                    return .invalidInventory("symbolic-link images require a separate scan scope")
+                }
+                guard values.isRegularFile == true else { continue }
+                if let status = values.ubiquitousItemDownloadingStatus,
+                   status != .current && status != .downloaded {
+                    return .invalidInventory("an image is not downloaded locally")
+                }
+                inventoryPaths.insert(image.standardizedFileURL.resolvingSymlinksInPath().path)
+            }
+            guard requestedPaths == inventoryPaths else {
+                return .invalidInventory("the image list differs from the folder contents; refresh and retry")
+            }
+            return nil
+        } catch {
+            return .invalidInventory(error.localizedDescription)
+        }
+    }
+
     func classify(
         imageURLs: [URL],
         existingSignatures: [String: FileSignature]

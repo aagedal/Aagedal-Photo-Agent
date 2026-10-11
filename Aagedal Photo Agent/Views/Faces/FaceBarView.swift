@@ -419,7 +419,7 @@ struct FaceBarView: View {
         Button {
             guard let folderURL else { return }
             let forceFullScan = NSEvent.modifierFlags.contains(.option)
-            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
+            viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: forceFullScan)
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: "camera.viewfinder")
@@ -431,6 +431,7 @@ struct FaceBarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("scanFaces")
         .disabled(viewModel.isScanning)
         .help(viewModel.isScanning
               ? "Another folder is being face-scanned. Follow or cancel it in Activity."
@@ -507,7 +508,7 @@ struct FaceBarView: View {
         Button {
             guard let folderURL else { return }
             let forceFullScan = NSEvent.modifierFlags.contains(.option)
-            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: forceFullScan)
+            viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: forceFullScan)
         } label: {
             ZStack {
                 if refinementCount > 0 {
@@ -534,6 +535,7 @@ struct FaceBarView: View {
         }
         .buttonStyle(.plain)
         .onHover { isHoveringDone = $0 }
+        .accessibilityIdentifier("face.scanComplete")
         .help("Scan faces in new images without jersey OCR. Option+click to force a full face rescan.")
         .contextMenu { rescanMenuItems }
     }
@@ -542,7 +544,7 @@ struct FaceBarView: View {
     private var rescanMenuItems: some View {
         Button("Rescan Faces (Force Full)") {
             guard let folderURL else { return }
-            viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, forceFullScan: true)
+            viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: true)
         }
         Button("Delete Face Data", role: .destructive) {
             guard let folderURL else { return }

@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-11
+**Last reviewed:** 2026-10-12
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -27,6 +27,12 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Known People companion interchange](release/known-people-companion-interchange-design.md) —
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
+**Face-scan admission continuation (2026-10-12):**
+[Complete-folder admission and typed outcomes](release/face-folder-scan-admission-2026-10-12.md)
+protects saved results from subset inventories, pending-cloud inputs and cancelled
+classification. Detection and persistence failures remain incomplete. Durable MCP
+face-scan execution and broader release gates remain open.
 
 **Develop decoder / transfer cleanup continuation (2026-10-11):**
 [Retained-source admission and authenticated cache maintenance](release/develop-decoder-transfer-cache-2026-10-11.md)
