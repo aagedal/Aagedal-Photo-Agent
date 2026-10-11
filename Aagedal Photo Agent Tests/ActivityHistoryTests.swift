@@ -88,6 +88,104 @@ struct ActivityHistoryTests {
         #expect(cancelled.summary == "Face scan cancelled — 7 of 25 photos")
     }
 
+    @Test("Typed folder scan refuses an incomplete inventory before full reset", arguments: ["subset", "duplicate", "outside", "symlink", "placeholder"], [false, true])
+    func typedFaceScanInventoryRefusalPreservesData(kind: String, forceFullScan: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceScope-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("first.jpg")
+        let second = folder.appendingPathComponent("second.jpg")
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [],
+            lastScanDate: .distantPast, scanComplete: true)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        try Data([1]).write(to: first)
+        try Data([2]).write(to: second)
+        let document = folder.appendingPathComponent(".face_data/face_data.json")
+        let originalBytes = try Data(contentsOf: document)
+        var inputs: [URL]
+        switch kind {
+        case "duplicate": inputs = [first, second, first]
+        case "outside": inputs = [first, second, folder.deletingLastPathComponent().appendingPathComponent("outside.jpg")]
+        case "placeholder":
+            try Data([3]).write(to: folder.appendingPathComponent(".remote.jpg.icloud"))
+            inputs = [first, second]
+        case "symlink":
+            let link = folder.appendingPathComponent("linked.jpg")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+            inputs = [first, second]
+        default: inputs = [first]
+        }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available)
+        let admission = viewModel.scanFolder(imageURLs: inputs, folderURL: folder, forceFullScan: forceFullScan)
+        guard case .scheduled(let request) = admission else { Issue.record("Expected scheduled scope validation"); return }
+        #expect(request.forceFullScan == forceFullScan)
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        guard case .refused(.invalidInventory) = completion.outcome else {
+            Issue.record("Expected inventory refusal, got \(completion.outcome)"); return
+        }
+        #expect(!completion.succeeded)
+        #expect(try Data(contentsOf: document) == originalBytes)
+        #expect(!viewModel.isScanning)
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        lease.release()
+    }
+
+    @Test("Detection failures have a typed partial outcome and remain resumable")
+    func typedPartialFaceScanOutcome() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceOutcome-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("invalid.jpg")
+        try Data("invalid image".utf8).write(to: photo)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available)
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder)
+        #expect(viewModel.scanFolder(imageURLs: [photo], folderURL: folder) == .refused(.scanAlreadyRunning))
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        #expect(completion.outcome == .partial)
+        #expect(completion.processedCount == 1)
+        #expect(completion.failureCount == 1)
+        #expect(completion.unsignedFileCount == 1)
+        #expect(completion.persistenceError == nil)
+        #expect(!completion.succeeded)
+        #expect(FaceDataStorageService().loadFaceData(for: folder)?.scanComplete == false)
+    }
+
+    @Test("An incomplete signed snapshot is durably completed instead of only changing presentation", arguments: [false, true])
+    func typedFaceScanCompletesSignedSnapshot(failSave: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceSignedPartial-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("signed.jpg")
+        let signature = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        let original = FolderFaceData(folderURL: folder, faces: [], groups: [], lastScanDate: .distantPast,
+            scanComplete: false, scannedFiles: [photo.path: signature],
+            embeddingVersion: FaceRecognitionDefaults.embeddingVersion)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        try Data([1]).write(to: photo)
+        let document = folder.appendingPathComponent(".face_data/face_data.json")
+        let originalBytes = try Data(contentsOf: document)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: FaceDataFolderLoadService(saveFaceData: { data in
+                if failSave { throw CocoaError(.fileWriteNoPermission) }
+                try FaceDataStorageService().saveFaceData(data)
+            }),
+            fileSignatureService: FaceScanFileSignatureService { _ in signature })
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        viewModel.scanFolder(imageURLs: [photo], folderURL: folder)
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        #expect(completion.outcome == .completed)
+        #expect(completion.processedCount == 0)
+        #expect(completion.succeeded == !failSave)
+        #expect((completion.persistenceError != nil) == failSave)
+        #expect(viewModel.scanComplete == !failSave)
+        #expect(storage.loadFaceData(for: folder)?.scanComplete == !failSave)
+        if failSave { #expect(try Data(contentsOf: document) == originalBytes) }
+    }
+
     @Test("A background face scan does not replace the newly displayed folder")
     func backgroundScanPreservesDisplayedFolder() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -145,7 +243,9 @@ struct ActivityHistoryTests {
             : MCPProcessReservation.acquirePhoto(photo)
         defer { lease.release() }
         viewModel.scanFolder(imageURLs: [photo], folderURL: folder, forceFullScan: true)
-        await viewModel.waitForCurrentScan()
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        #expect(completion.outcome == .refused(.reservationFailed(MCPProcessReservationError.busy.localizedDescription)))
+        #expect(!completion.succeeded)
 
         #expect(!viewModel.isScanning)
         #expect(!viewModel.isCancellingScan)
@@ -228,7 +328,7 @@ struct ActivityHistoryTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let photo = folder.appendingPathComponent("invalid.jpg")
-        try Data("not an image".utf8).write(to: photo)
+        if outcome != "unchanged" { try Data("not an image".utf8).write(to: photo) }
         let persistenceObserved = MCPServerCoreTests.DataBox()
         let service = FaceDataFolderLoadService(loadFaceData: { _ in
             #expect(throws: MCPProcessReservationError.busy) {
@@ -251,15 +351,30 @@ struct ActivityHistoryTests {
             faceModelAvailability: .available, folderLoadService: service)
         viewModel.scanFolder(imageURLs: outcome == "unchanged" ? [] : [photo], folderURL: folder)
         if outcome == "cancelled" { viewModel.cancelScan() }
-        await viewModel.waitForCurrentScan()
+        let completion = try #require(await viewModel.waitForCurrentScan())
+        if outcome == "unchanged" {
+            #expect(completion.outcome == .unchanged)
+            #expect(completion.succeeded)
+        } else if outcome == "cancelled" {
+            #expect(completion.outcome == .cancelled)
+            #expect(!completion.succeeded)
+        } else {
+            #expect(completion.outcome == .partial)
+            #expect(completion.failureCount == 1)
+            #expect(!completion.succeeded)
+        }
+        #expect((completion.persistenceError != nil) == (outcome == "failed"))
 
         #expect(!viewModel.isScanning)
         if outcome == "unchanged" {
             #expect(persistenceObserved.read() == nil)
         } else {
-            #expect(persistenceObserved.read() == Data([outcome == "cancelled" ? 0 : 1]))
+            #expect(persistenceObserved.read() == Data([0]))
         }
-        if outcome == "failed" { #expect(viewModel.errorMessage?.contains("Failed to save") == true) }
+        if outcome == "failed" {
+            #expect(viewModel.errorMessage?.contains("Failed to save") == true)
+            #expect(!viewModel.scanComplete)
+        }
         let next = try MCPProcessReservation.acquireFolder(folder)
         next.release()
     }
@@ -288,6 +403,7 @@ struct ActivityHistoryTests {
             embeddingVersion: FaceRecognitionDefaults.embeddingVersion, numberDetections: numbers)
         let storage = FaceDataStorageService()
         try storage.saveFaceData(original)
+        if keepSurvivor { try Data([1]).write(to: survivor) }
         let document = folder.appendingPathComponent(".face_data/face_data.json")
         let originalBytes = try Data(contentsOf: document)
         let saved = MCPServerCoreTests.DataBox()

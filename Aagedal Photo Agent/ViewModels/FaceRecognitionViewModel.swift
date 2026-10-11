@@ -49,11 +49,6 @@ nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
     let failureCount: Int
 }
 
-nonisolated private struct FaceScanCompletion: Sendable {
-    let folderURL: URL
-    let persistenceError: String?
-}
-
 enum FaceScanQuiescenceError: LocalizedError, Equatable {
     case persistenceFailed(String)
     case replacementScanStarted
@@ -945,19 +940,20 @@ final class FaceRecognitionViewModel {
     ///   - forceFullScan: If true, deletes existing data and rescans all images
     ///   - includeJerseyNumbers: Explicitly runs jersey OCR alongside a full face rescan.
     ///     The caller must confirm that existing face groups/names will be reset.
-    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false) {
-        guard !isScanning else { return }
-        // Jersey detection cannot reuse a face-only completion signature. This explicit
-        // combined action is a full reset; callers present the reset confirmation.
-        let forceFullScan = forceFullScan || includeJerseyNumbers
+    @discardableResult
+    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false) -> FaceFolderScanAdmission {
+        let request = FaceFolderScanRequest(imageURLs: imageURLs, folderURL: folderURL,
+            forceFullScan: forceFullScan, includeJerseyNumbers: includeJerseyNumbers)
+        guard !isScanning else { return .refused(.scanAlreadyRunning) }
         guard faceModelAvailability.isAvailable else {
             errorMessage = faceModelAvailability.detail
-            return
+            return .refused(.modelUnavailable(faceModelAvailability))
         }
-        guard renameQuiescenceFolderURL != folderURL.standardizedFileURL else {
-            errorMessage = "Face scanning is paused while files in this folder are being renamed."
-            return
+        guard renameQuiescenceFolderURL != request.folderURL else {
+            errorMessage = FaceFolderScanRefusal.renameInProgress.message
+            return .refused(.renameInProgress)
         }
+        let forceFullScan = request.forceFullScan
 
         // The scan owns its own initial disk snapshot. Prevent an older navigation load from
         // publishing over incremental results once detection has started.
@@ -1005,10 +1001,26 @@ final class FaceRecognitionViewModel {
                 self.activeScanTask = nil
                 return FaceScanCompletion(
                     folderURL: folderURL.standardizedFileURL,
-                    persistenceError: nil
+                    outcome: .refused(.reservationFailed(error.localizedDescription))
                 )
             }
             defer { reservation.release() }
+
+            // Validate the caller's whole scope before reset/pruning can discard saved results.
+            let inventoryRefusal = await Task.detached(priority: .utility) {
+                await fileSignatureService.validateCompleteInventory(request)
+            }.value
+            if let inventoryRefusal {
+                self.errorMessage = inventoryRefusal.message
+                self.isScanning = false
+                self.isCancellingScan = false
+                self.scanningFolderURL = nil
+                self.scanProgress = ""
+                self.scanProcessedCount = 0
+                self.scanTotalCount = 0
+                self.activeScanTask = nil
+                return FaceScanCompletion(folderURL: request.folderURL, outcome: .refused(inventoryRefusal))
+            }
 
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
@@ -1034,6 +1046,7 @@ final class FaceRecognitionViewModel {
                     self.activeScanTask = nil
                     return FaceScanCompletion(
                         folderURL: folderURL.standardizedFileURL,
+                        outcome: .refused(.resetFailed(self.errorMessage ?? "Face scan reset failed.")),
                         persistenceError: deletion.failureMessage
                     )
                 }
@@ -1093,7 +1106,7 @@ final class FaceRecognitionViewModel {
 
             // Start with existing faces (excluding those from removed/modified files)
             let initialFaces: [DetectedFace] = existingData?.faces.filter { face in
-                unchangedFiles.contains(face.imageURL.path)
+                classificationWasCancelled || unchangedFiles.contains(face.imageURL.path)
             } ?? []
 
             var initialGroups: [FaceGroup] = existingData?.groups ?? []
@@ -1102,7 +1115,7 @@ final class FaceRecognitionViewModel {
             // Keep standalone jersey numbers only for unchanged files: re-scanned
             // files regenerate their own, and removed files drop out.
             let initialNumbers: [NumberDetection] = existingData?.numberDetections?.filter { number in
-                unchangedFiles.contains(number.imageURL.path)
+                classificationWasCancelled || unchangedFiles.contains(number.imageURL.path)
             } ?? []
             // Remove faces from deleted/modified files
             let removedFaceIDs = Set(existingData?.faces.filter { face in
@@ -1136,7 +1149,7 @@ final class FaceRecognitionViewModel {
                 self.scanProgress = "0/\(toScan.count)"
             }
 
-            if toScan.isEmpty && toRemove.isEmpty && !classificationWasCancelled {
+            if toScan.isEmpty && toRemove.isEmpty && !classificationWasCancelled && existingData?.scanComplete != false {
                 // Only a truly unchanged inventory can skip persistence. A removal-only
                 // scan must save the pruned faces, groups, numbers and signatures below.
                 reservation.release()
@@ -1162,7 +1175,8 @@ final class FaceRecognitionViewModel {
                 }
                 return FaceScanCompletion(
                     folderURL: folderURL.standardizedFileURL,
-                    persistenceError: nil
+                    outcome: .unchanged,
+                    unsignedFileCount: imageURLs.filter { existingData?.scannedFiles[$0.path] == nil }.count
                 )
             }
 
@@ -1367,13 +1381,15 @@ final class FaceRecognitionViewModel {
             self.activeScanWorkerTask = nil
 
             let isCancelled = Task.isCancelled
+            let unsignedFileCount = imageURLs.filter { result.scannedFiles[$0.path] == nil }.count
+            let scanSucceeded = !isCancelled && result.failureCount == 0 && unsignedFileCount == 0
 
             let folderData = FolderFaceData(
                 folderURL: folderURL,
                 faces: result.faces,
                 groups: result.groups,
                 lastScanDate: Date(),
-                scanComplete: !isCancelled,
+                scanComplete: scanSucceeded,
                 scannedFiles: result.scannedFiles,
                 embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                 numberDetections: result.numbers
@@ -1413,7 +1429,7 @@ final class FaceRecognitionViewModel {
                 let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
                 if isDisplayedFolder {
                     self.faceData = folderData
-                    self.scanComplete = !isCancelled
+                    self.scanComplete = scanSucceeded && finalPersistenceError == nil
                     if !refreshedThumbnailData.isEmpty || folderData.faces.isEmpty {
                         self.installThumbnails(refreshedThumbnailData)
                     }
@@ -1448,7 +1464,7 @@ final class FaceRecognitionViewModel {
                 ))
             }
 
-            if !isCancelled,
+            if !isCancelled, finalPersistenceError == nil,
                self.displayedFolderURL == folderURL.standardizedFileURL {
                 // Known People matching is always automatic now. `applyKnownPeopleMatches`
                 // no-ops when the database is empty, so this is safe to always call.
@@ -1460,17 +1476,23 @@ final class FaceRecognitionViewModel {
 
             return FaceScanCompletion(
                 folderURL: folderURL.standardizedFileURL,
+                outcome: isCancelled ? .cancelled : (scanSucceeded ? .completed : .partial),
+                processedCount: result.processedCount,
+                failureCount: result.failureCount,
+                unsignedFileCount: unsignedFileCount,
                 persistenceError: finalPersistenceError
             )
         }
+        return .scheduled(request)
     }
 
     /// Suspends until the scan that was active when this method was called finishes.
     /// Useful to coordinate navigation and deterministic tests without guessing a
     /// wall-clock duration for Vision work under system load.
-    func waitForCurrentScan() async {
+    @discardableResult
+    func waitForCurrentScan() async -> FaceScanCompletion? {
         let task = activeScanTask
-        _ = await task?.value
+        return await task?.value
     }
 
     /// Cancels only the scan currently writing the requested folder and waits for that exact

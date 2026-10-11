@@ -11,5 +11,5 @@ func confirmFaceAndJerseyScan(viewModel: FaceRecognitionViewModel, imageURLs: [U
     alert.addButton(withTitle: "Cancel")
     alert.addButton(withTitle: "Rescan Faces + Jerseys")
     guard alert.runModal() == .alertSecondButtonReturn else { return }
-    viewModel.scanFolder(imageURLs: imageURLs, folderURL: folderURL, includeJerseyNumbers: true)
+    viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, includeJerseyNumbers: true)
 }

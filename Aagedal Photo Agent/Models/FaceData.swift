@@ -1,6 +1,74 @@
 import Foundation
 import CoreGraphics
 
+/// Shared contract for the complete, immediate image inventory used by folder face scanning.
+/// Admission schedules work; only its completion describes filesystem and detection outcomes.
+nonisolated struct FaceFolderScanRequest: Sendable, Equatable {
+    let imageURLs: [URL]
+    let folderURL: URL
+    let forceFullScan: Bool
+    let includeJerseyNumbers: Bool
+
+    init(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false) {
+        self.imageURLs = imageURLs
+        self.folderURL = folderURL.standardizedFileURL
+        self.forceFullScan = forceFullScan || includeJerseyNumbers
+        self.includeJerseyNumbers = includeJerseyNumbers
+    }
+}
+
+nonisolated enum FaceFolderScanRefusal: Sendable, Equatable {
+    case scanAlreadyRunning
+    case modelUnavailable(FaceRecognitionModelAvailability)
+    case renameInProgress
+    case invalidInventory(String)
+    case reservationFailed(String)
+    case resetFailed(String)
+
+    var message: String {
+        switch self {
+        case .scanAlreadyRunning: "A face scan is already running."
+        case .modelUnavailable(let availability): availability.detail
+        case .renameInProgress: "Face scanning is paused while files in this folder are being renamed."
+        case .invalidInventory(let detail): "Face scanning requires the complete folder image inventory: \(detail)"
+        case .reservationFailed(let detail): detail
+        case .resetFailed(let detail): detail
+        }
+    }
+}
+
+nonisolated enum FaceFolderScanAdmission: Sendable, Equatable {
+    case scheduled(FaceFolderScanRequest)
+    case refused(FaceFolderScanRefusal)
+}
+
+/// Detection outcome and durable save evidence are separate: even a completed worker can fail
+/// persistence. Counts refer to incremental work, while unsignedFileCount covers the full request.
+nonisolated struct FaceScanCompletion: Sendable, Equatable {
+    enum Outcome: Sendable, Equatable {
+        case completed
+        case unchanged
+        case partial
+        case cancelled
+        case refused(FaceFolderScanRefusal)
+    }
+
+    let folderURL: URL
+    let outcome: Outcome
+    var processedCount: Int = 0
+    var failureCount: Int = 0
+    var unsignedFileCount: Int = 0
+    var persistenceError: String? = nil
+
+    var succeeded: Bool {
+        guard persistenceError == nil, failureCount == 0, unsignedFileCount == 0 else { return false }
+        switch outcome {
+        case .completed, .unchanged: return true
+        case .partial, .cancelled, .refused: return false
+        }
+    }
+}
+
 /// A detected face from an image scan.
 ///
 /// **Embedding Architecture:**
