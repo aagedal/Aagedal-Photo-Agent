@@ -148,8 +148,20 @@ def probe(executable):
         refused = connection.receive(7)["result"]
         require(refused["isError"] is True and refused["structuredContent"]["code"] == "invalid_arguments",
                 "Provider discovery accepted unexpected arguments")
-        require({"get_operation_status", "cancel_operation"}.issubset(names),
+        require({"list_operations", "get_operation_status", "cancel_operation"}.issubset(names),
                 "Missing operation coordination tools")
+        discovery_tool = next(tool for tool in tools if tool["name"] == "list_operations")
+        require(discovery_tool["inputSchema"]["properties"] == {} and
+                discovery_tool["inputSchema"]["additionalProperties"] is False and
+                discovery_tool["annotations"]["readOnlyHint"] is True,
+                "Operation discovery must remain strict and read-only")
+        connection.send(request(802, "tools/call", {
+            "name": "list_operations", "arguments": {"path": "/private/tmp/photo.jpg"},
+        }))
+        discovery_refused = connection.receive(802)["result"]
+        require(discovery_refused["isError"] is True and
+                discovery_refused["structuredContent"]["code"] == "invalid_arguments",
+                "Operation discovery accepted unexpected arguments")
         # Invalid calls never create operation records, even with automation enabled.
         for identifier, tool in [(8, "get_operation_status"), (9, "cancel_operation")]:
             connection.send(request(identifier, "tools/call", {

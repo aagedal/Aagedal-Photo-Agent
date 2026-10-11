@@ -1966,6 +1966,14 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
   transcription, and IPTC commits. Status must distinguish queued/running/completed/cancelled,
   verified success, definite failure, partial/uncertain mutation, retained recovery, and stale plan.
 
+**Operation discovery continuation (2026-10-11):** `list_operations` now discovers at most
+256 retained local operation handles after reconnect with compact privacy-preserving summaries,
+fresh authorization checks and explicit unknown executor liveness. Batch Description Assistant
+capture failures preserve unsaved edits and permit retrying the same reviewed proposal;
+cancelled/superseded dictation language installations cannot replace readiness. Production
+face/Develop-template executors and whole Phase 5A gates remain open. See the
+[dated record](release/operation-discovery-description-queue-2026-10-11.md).
+
 **Cycle 95 continuation (2026-09-22):** Native reviewed XMP publication now invokes the rooted
 transaction, records durable verified completion and permits a subsequent newly approved publication.
 Interrupted or uncertain recovery remains blocking; restore and safe pre-write disposition remain open.

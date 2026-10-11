@@ -291,6 +291,79 @@ struct MCPServerCoreTests {
         }
     }
 
+    @Test("Operation discovery is strict, read-only and survives helper reconnect without exposing owners")
+    func operationDiscovery() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-operation-discovery-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let authorization = store()
+        let tools = MCPFoundationTools(authorizationStore: authorization, operationRegistry: registry)
+        #expect(tools.callTool(name: "list_operations", arguments: [:]).objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
+        try authorization.setEnabled(true)
+        for arguments: [String: MCPJSONValue] in [["operationID": .string(UUID().uuidString)], ["path": .string(root.path)], ["execute": .bool(true)]] {
+            #expect(tools.callTool(name: "list_operations", arguments: arguments).objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        #expect(tools.callTool(name: "list_operations", arguments: [:]).objectValue?["structuredContent"]?.objectValue?["operations"] == .array([]))
+        let owner = UUID()
+        let date = Date(timeIntervalSince1970: 1_000)
+        let older = try registry.enqueue(kind: .iptcDraft, ownerID: owner, now: date)
+        let firstID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let secondID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let first = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, operationID: firstID, now: date.addingTimeInterval(1))
+        _ = try registry.configureBatch(first.id, ownerID: owner, itemCount: 64, now: date.addingTimeInterval(2))
+        _ = try registry.enqueue(kind: .faceScan, ownerID: owner, operationID: secondID, now: date.addingTimeInterval(1))
+        _ = try registry.requestCancellation(older.id, now: date.addingTimeInterval(3))
+        let before = try registry.records()
+        let result = tools.callTool(name: "list_operations", arguments: [:])
+        let value = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        guard case .array(let operations) = value["operations"] else { Issue.record("Missing operation summaries"); return }
+        #expect(operations.map { $0.objectValue?["operationID"] } == [.string(firstID.uuidString.lowercased()), .string(secondID.uuidString.lowercased()), .string(older.id.uuidString.lowercased())])
+        #expect(value["count"] == .integer(3))
+        #expect(value["maximumRecords"] == .integer(256))
+        #expect(value["discoveryOnly"] == .bool(true))
+        #expect(value["executorLiveness"] == .string("unknown"))
+        #expect(operations[0].objectValue?["batchProgress"] == .object(["itemCount": .integer(64), "completedCount": .integer(0)]))
+        #expect(operations[2].objectValue?["cancellationRequested"] == .bool(true))
+        #expect(try registry.records() == before)
+        let encoded = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+        #expect(!encoded.contains(owner.uuidString.lowercased()))
+        #expect(!encoded.contains(owner.uuidString))
+        #expect(!encoded.contains(root.path))
+        #expect(!encoded.contains("receiptSHA256"))
+        let restarted = MCPFoundationTools(authorizationStore: authorization,
+            operationRegistry: AutomationOperationRegistry(storageDirectory: root))
+        #expect(restarted.callTool(name: "list_operations", arguments: [:]) == result)
+        let definition = try #require(tools.toolDefinitions(configuration: try authorization.load()).first { $0.objectValue?["name"] == .string("list_operations") }?.objectValue)
+        #expect(definition["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(definition["inputSchema"]?.objectValue?["properties"] == .object([:]))
+        #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+        try authorization.setEnabled(false)
+        #expect(restarted.callTool(name: "list_operations", arguments: [:]).objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
+    }
+
+    @Test("Operation discovery fits full retained capacity and refuses corrupt history without leaking bytes")
+    func operationDiscoveryCapacityAndCorruption() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/apa-operation-list-capacity-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        for _ in 0..<256 { _ = try registry.enqueue(kind: .voiceTranscription, ownerID: owner) }
+        let authorization = store()
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization, operationRegistry: registry)
+        let result = tools.callTool(name: "list_operations", arguments: [:])
+        #expect(result.objectValue?["isError"] == .bool(false))
+        let value = try #require(result.objectValue?["structuredContent"])
+        #expect(value.objectValue?["count"] == .integer(256))
+        #expect(try JSONEncoder().encode(value).count <= MCPServerConstants.maximumToolResultBytes)
+        try Data("sensitive filename and transcript".utf8).write(to: root.appendingPathComponent("operations.json"))
+        let refused = tools.callTool(name: "list_operations", arguments: [:])
+        #expect(refused.objectValue?["structuredContent"]?.objectValue?["code"] == .string("operation_storage_invalid"))
+        let text = String(decoding: try JSONEncoder().encode(refused), as: UTF8.self)
+        #expect(!text.contains("sensitive"))
+        #expect(!text.contains(root.path))
+    }
+
     @Test("Operation tools require fresh enablement and exact opaque identifiers")
     func operationAuthorizationAndArguments() throws {
         let root = URL(fileURLWithPath: "/private/tmp/apa-operations-\(UUID().uuidString)")
@@ -850,7 +923,7 @@ struct MCPServerCoreTests {
         #expect(tools.map { $0["name"] as? String } == [
             "start_voice_transcription",
             "open_voice_transcription_review",
-            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "inspect_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "inspect_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {

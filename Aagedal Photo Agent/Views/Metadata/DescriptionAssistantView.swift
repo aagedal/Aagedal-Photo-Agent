@@ -361,22 +361,11 @@ struct BatchDescriptionAssistantView: View {
     private func apply(_ proposal: DescriptionAssistantProposal) {
         let url = proposal.request.imageURL
         let text = reviewed[proposal.id] ?? proposal.text
-        let currentMetadata = browser.metadataReviewEditor(for: url).map { editor in
-            var draft = editor.draft
-            for (field, value) in editor.textBuffers { field.setTextValue(value, in: &draft) }
-            return DescriptionAssistantMetadata(draft)
-        }
-        guard let editor = browser.metadataReviewEditor(for: url),
-              !browser.isMetadataReviewFrozen(for: url),
-              proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
-                description: browser.metadataReviewText(for: .description, imageURL: url), metadata: currentMetadata),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            messages.append("\(url.lastPathComponent): Metadata changed or is unavailable. Generate a fresh suggestion.")
-            return
-        }
-        browser.updateMetadataReviewText(text, field: .description, for: url, editorID: editor.id)
         do {
-            try browser.captureMetadataReviewDrafts(for: url)
+            guard try browser.queueReviewedDescription(proposal, text: text) else {
+                messages.append("\(url.lastPathComponent): Metadata changed or is unavailable. Generate a fresh suggestion.")
+                return
+            }
             proposals.removeAll { $0.id == proposal.id }
             messages.append("\(url.lastPathComponent): Description queued for saving.")
         } catch { messages.append("\(url.lastPathComponent): \(error.localizedDescription)") }

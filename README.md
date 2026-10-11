@@ -155,6 +155,9 @@ the support table and validation records.
   plan to a pending local draft after the photo is deselected in all editors, preserving the photo
   and XMP. Template application, face scans and physical photo mutation tools remain
   under implementation for 3.0; transcription start uses the separate native grant below.
+  `list_operations` discovers up to 256 retained local operation handles after reconnect, with compact
+  summaries and unknown executor liveness. History includes native and helper-linked operations;
+  it is shared by the local automation authority, rather than scoped to a client or folder.
   `get_operation_status` and `cancel_operation` expose durable coordination records and cooperative
   cancellation requests. The native pending-draft executor is connected with distinct `iptc_draft`
   outcomes. Available transcription batch status includes ordered per-photo outcomes without paths

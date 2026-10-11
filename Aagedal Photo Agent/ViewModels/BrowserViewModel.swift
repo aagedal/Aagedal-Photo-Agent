@@ -3283,6 +3283,27 @@ final class BrowserViewModel {
         metadataReviewEditors[key] = editor
     }
 
+    /// Stage a reviewed suggestion locally until capture and queue admission both succeed.
+    /// This synchronous operation cannot replace newer edits while persistence is pending.
+    func queueReviewedDescription(_ proposal: DescriptionAssistantProposal, text: String) throws -> Bool {
+        let url = proposal.request.imageURL
+        guard var editor = metadataReviewEditor(for: url), !isMetadataReviewFrozen(for: url),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        var metadata = editor.draft
+        for (field, value) in editor.textBuffers { field.setTextValue(value, in: &metadata) }
+        guard proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
+            description: metadataReviewText(for: .description, imageURL: url),
+            metadata: DescriptionAssistantMetadata(metadata)) else { return false }
+        guard Self.metadataReviewCompositionIsCommitted else {
+            throw CaptionWorkspaceFlushError.persistenceFailed("Finish the active text composition before saving or reviewing queued edits.")
+        }
+        editor.draft = metadata
+        editor.draft.description = text
+        editor.textBuffers[.description] = text
+        try captureMetadataReviewDraft(for: url, stagedEditor: editor)
+        return true
+    }
+
     func commitMetadataReviewEditor(for url: URL, editorID: UUID) {
         guard metadataReviewEditor(for: url)?.id == editorID, !isMetadataReviewFrozen(for: url) else { return }
         do { try captureMetadataReviewDrafts(for: url) }
@@ -3333,9 +3354,9 @@ final class BrowserViewModel {
         catch { metadataReviewEditors[Self.metadataReviewKey(url)]?.error = error.localizedDescription }
     }
 
-    private func captureMetadataReviewDraft(for url: URL) throws {
+    private func captureMetadataReviewDraft(for url: URL, stagedEditor: MetadataReviewEditorState? = nil) throws {
         let key = Self.metadataReviewKey(url)
-        guard var editor = metadataReviewEditors[key],
+        guard var editor = stagedEditor ?? metadataReviewEditors[key],
               let captured = try MetadataReviewDraftCapture.capture(previous: editor.previous, edited: editor.draft,
                 baselineSidecar: editor.sidecar, imageURL: editor.imageURL, folderURL: editor.folderURL,
                 creationEvidence: editor.creationEvidence) else { return }

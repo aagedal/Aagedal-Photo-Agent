@@ -241,6 +241,13 @@ requests cancelled before admission. Cleanup rotates the current epoch and prese
 admitted, linked and uncertain evidence. Retained handles keep their original epochs; removed
 intent cannot be retried with its old epoch. A changed confirmation epoch refuses cleanup.
 
+After reconnecting, call `list_operations` with no arguments to recover retained operation handles.
+With automation enabled, it returns at most 256 compact summaries, newest-created first. This is
+shared local history including native and helper-linked operations, rather than a client or folder
+filter. Paths, transcript text, recovery receipts and per-photo progress are omitted; inspect an
+explicit handle for details. Discovery performs no recovery or cleanup and does not prove that a
+recorded executor is alive or that interrupted work can be replayed.
+
 `get_operation_status` and `cancel_operation` accept one `operationID` UUID with automation enabled.
 They inspect durable coordination records and request cooperative cancellation. A request does not
 mean the executor has stopped: inspect `state`, `outcome`, and `cancellationRequested` separately.
