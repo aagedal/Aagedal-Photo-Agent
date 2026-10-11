@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Request Whisper GPU acceleration by default when no preference is saved; retain explicit CPU choices.
+
 - Add revision-bound Develop-template control and crop-policy inspection to the local MCP helper.
 
 - Keep PR CI focused on repository validation; retain clean builds and the full test suite for main and manual runs, with local testing before pushing PRs.

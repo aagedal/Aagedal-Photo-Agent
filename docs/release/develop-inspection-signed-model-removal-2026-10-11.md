@@ -113,3 +113,14 @@ qualification uses the UI Smoke Tests scheme and the two pinned Whisper tests, s
 `TEST_RUNNER_APA_NATIVE_WHISPER_MODEL` and `TEST_RUNNER_APA_NATIVE_WHISPER_AUDIO` with
 existing local Base-model and PCM speech paths. Source hashes and exact result summaries
 remain in the evidence directory. Final signing/distribution and broader release gates remain open.
+
+## GPU default follow-up
+
+After `abb21a8`, the user requested GPU acceleration by default. Whisper Settings now
+requests GPU when no preference exists, while preserving saved true/false preferences.
+The shared Settings value applies to bundled and custom Whisper. Initialization does not
+persist an implicit default or grant provider execution consent. Focused setup tests pass
+(`build/continuation-3/gpu-default.xcresult` / `gpu-default.log`), including absent preference,
+saved GPU/CPU choices and CPU selection surviving reconstruction. `git diff --check` passes.
+Earlier full/native results above identify the pre-default-change source; this narrow
+preference change was validated with the affected setup suite.

@@ -90,7 +90,7 @@ final class FFmpegWhisperSetupModel {
         let savedLanguage = defaults.string(forKey: Self.languageKey) ?? "auto"
         language = Self.isValidLanguage(savedLanguage) ? savedLanguage : "auto"
         translate = defaults.bool(forKey: Self.translateKey)
-        useGPU = defaults.bool(forKey: Self.useGPUKey)
+        useGPU = defaults.object(forKey: Self.useGPUKey) == nil ? true : defaults.bool(forKey: Self.useGPUKey)
         choice = defaults.string(forKey: Self.preferenceKey)
             .flatMap(VoiceMemoTranscriptionProviderChoice.init(rawValue:)) ?? .appleSpeech
     }
