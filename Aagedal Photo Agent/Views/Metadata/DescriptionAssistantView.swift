@@ -3,9 +3,6 @@ import UniformTypeIdentifiers
 
 struct DescriptionAssistantModelSetupView: View {
     @State private var setup = DescriptionAssistantModelSetup.shared
-    @State private var choosingModel = false
-    @State private var choosingMLX = false
-    @State private var downloadModel: DescriptionAssistantDownloadModel = .recommended
     @AppStorage("descriptionAssistantEditorialPrompt") private var editorialPrompt = DescriptionAssistantRequest.defaultEditorialPrompt
     var body: some View {
         Section("Description Model") {
@@ -25,58 +22,35 @@ struct DescriptionAssistantModelSetupView: View {
                 Button("Check Availability") { setup.refreshAppleAvailability() }
                     .accessibilityIdentifier("descriptionAssistant.apple.refresh")
             } else {
-                Text(setup.directory.map { !DescriptionModelDiscovery.isGGUF($0) } == true
-                    ? "Local MLX inference" : "Local llama.cpp inference • Metal")
-                Text("Gemma 4 12B is recommended for multilingual writing. All downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon. You can also choose an existing instruction-tuned GGUF file.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let directory = setup.directory {
-                    LabeledContent("Active model", value: setup.selectedModelName ?? directory.lastPathComponent)
-                }
-                HStack {
-                    Menu("Models already on this Mac") {
-                        ForEach(setup.discoveredModels) { model in
-                            Button(model.title) {
-                                do { try setup.select(model.url) }
-                                catch { setup.message = error.localizedDescription }
-                            }
-                        }
+                Picker("Installed model", selection: Binding(
+                    get: {
+                        guard let path = setup.directory?.path,
+                              setup.availableModels.contains(where: { $0.url.path == path }) else { return "" }
+                        return path
+                    },
+                    set: { path in
+                        guard let model = setup.availableModels.first(where: { $0.url.path == path }) else { return }
+                        do { try setup.select(model.url) }
+                        catch { setup.message = error.localizedDescription }
                     }
-                    .disabled(setup.discoveredModels.isEmpty || setup.isInstalling)
-                    .accessibilityIdentifier("descriptionAssistant.existingModels")
-                    Button("Refresh") { setup.refreshDiscoveredModels() }
-                        .disabled(setup.isDiscovering)
+                )) {
+                    Text("Select a model").tag("")
+                    ForEach(setup.availableModels) { model in
+                        Text(model.title).tag(model.url.path)
+                    }
+                }
+                .disabled(setup.availableModels.isEmpty || setup.isInstalling)
+                .accessibilityIdentifier("descriptionAssistant.existingModels")
+                HStack {
+                    Button("Refresh Models") {
+                        setup.refreshDownloadedModels()
+                        setup.refreshDiscoveredModels()
+                    }.disabled(setup.isDiscovering)
                     if setup.isDiscovering { ProgressView().controlSize(.small) }
                 }
-                Text("Finds MLX folders and instruction GGUF models in Hugging Face, llama.cpp and Ollama caches. Uses the original files without copying them. Runtime support depends on the model architecture. For other locations, use Choose GGUF or Choose MLX Folder.")
+                Text("Choose a model already on this Mac. Download models or add an existing GGUF file or MLX folder in Settings → Description Models.")
                     .font(.caption).foregroundStyle(.secondary)
-                Picker("Download or switch to", selection: $downloadModel) {
-                    ForEach(DescriptionAssistantDownloadModel.allCases) { model in
-                        Text(model.title).tag(model)
-                    }
-                }.disabled(setup.isInstalling)
-                Text(downloadModel.purpose).font(.caption).foregroundStyle(.secondary)
-                Text(downloadModel.memoryGuidance).font(.caption).foregroundStyle(.secondary)
-                if downloadModel.hasMemoryWarning() {
-                    Label("This Mac has less than the recommended RAM. Generation may be slow or run out of memory.", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                HStack {
-                    Button(setup.downloadedModels.contains(downloadModel)
-                        ? "Use Downloaded Model" : "Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
-                        .disabled(setup.isInstalling)
-                    Button("Choose GGUF…") { choosingModel = true }
-                        .disabled(setup.isInstalling)
-                }
-                if setup.isInstalling {
-                    ProgressView(value: setup.progress)
-                    Button("Cancel Download") { setup.cancelInstall() }
-                }
                 if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
-                Link("Model and license", destination: downloadModel.sourceURL)
-                DisclosureGroup("Advanced: MLX model") {
-                    Button("Choose MLX Folder…") { choosingMLX = true }.disabled(setup.isInstalling)
-                    Text("Use an existing converted MLX folder. Write from image requires a vision-capable model; the GGUF downloads support text editing.").font(.caption)
-                }
             }
         }
         Section("Description Prompt") {
@@ -90,11 +64,59 @@ struct DescriptionAssistantModelSetupView: View {
             setup.refreshDownloadedModels()
             setup.refreshDiscoveredModels()
             setup.refreshAppleAvailability()
-            if let current = setup.directory,
-               let model = DescriptionAssistantDownloadModel.allCases.first(where: { $0.artifact.fileName == current.lastPathComponent }) {
-                downloadModel = model
+        }
+    }
+}
+
+struct DescriptionAssistantModelDownloadsView: View {
+    @State private var setup = DescriptionAssistantModelSetup.shared
+    @State private var downloadModel: DescriptionAssistantDownloadModel = .recommended
+    @State private var choosingModel = false
+    @State private var choosingMLX = false
+
+    var body: some View {
+        Form {
+            Section("Download Description Models") {
+                Text("Optional local models for text editing. After downloading, select a model in Settings → Description Assistant.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Picker("Model", selection: $downloadModel) {
+                    ForEach(DescriptionAssistantDownloadModel.allCases) { model in
+                        Text(model.title).tag(model)
+                    }
+                }.disabled(setup.isInstalling)
+                Text(downloadModel.purpose).font(.caption).foregroundStyle(.secondary)
+                Text(downloadModel.memoryGuidance).font(.caption).foregroundStyle(.secondary)
+                if downloadModel.hasMemoryWarning() {
+                    Label("This Mac has less than the recommended RAM. Generation may be slow or run out of memory.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if setup.downloadedModels.contains(downloadModel) {
+                    Label("Downloaded", systemImage: "checkmark.circle")
+                } else {
+                    Button("Download Model (\(downloadModel.downloadSize))") { setup.install(downloadModel) }
+                        .disabled(setup.isInstalling)
+                        .accessibilityIdentifier("descriptionAssistant.download")
+                }
+                if setup.isInstalling {
+                    ProgressView(value: setup.progress)
+                    Button("Cancel Download") { setup.cancelInstall() }
+                }
+                if let message = setup.message { Text(message).font(.caption).textSelection(.enabled) }
+                Link("Model and license", destination: downloadModel.sourceURL)
+                Text("Downloads use 4-bit quantization and run locally with the included llama.cpp runtime and Metal on Apple Silicon.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Models Already on This Mac") {
+                Text("Description Assistant also finds instruction GGUF models and converted MLX folders in shared model caches. For other locations, choose an existing file or folder here.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Choose GGUF…") { choosingModel = true }.disabled(setup.isInstalling)
+                Button("Choose MLX Folder…") { choosingMLX = true }.disabled(setup.isInstalling)
+                Text("Choosing a file or folder makes it the active local model. Write from image requires a vision-capable MLX model; GGUF downloads support text editing.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
+        .onAppear { setup.refreshDownloadedModels() }
         .fileImporter(isPresented: $choosingModel, allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data]) { result in
             do { try setup.select(result.get()) }
             catch { setup.message = error.localizedDescription }
@@ -103,7 +125,6 @@ struct DescriptionAssistantModelSetupView: View {
             do { try setup.select(result.get()) }
             catch { setup.message = error.localizedDescription }
         }
-
     }
 }
 

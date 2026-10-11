@@ -2360,14 +2360,31 @@ struct AppleDescriptionProviderTests {
         #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .localModel)
     }
 
+    @Test("Installed model selection retains a custom bookmark and excludes missing files")
+    @MainActor func availableLocalModels() throws {
+        let suite = "DescriptionAvailableModelsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).gguf")
+        try Data("GGUF fixture".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let setup = DescriptionAssistantModelSetup(defaults: defaults)
+        setup.downloadedModels = []
+        try setup.select(file)
+        #expect(setup.availableModels.map(\.url) == [file])
+        let restored = DescriptionAssistantModelSetup(defaults: defaults)
+        #expect(restored.availableModels.contains { $0.url.lastPathComponent == file.lastPathComponent })
+        try FileManager.default.removeItem(at: file)
+        #expect(setup.availableModels.isEmpty)
+    }
+
     @Test("Provider choice persists independently of the selected local model")
     @MainActor func providerPersistence() {
         let suite = "AppleDescriptionProviderTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let setup = DescriptionAssistantModelSetup(defaults: defaults)
-        if #available(macOS 27.0, *) { #expect(setup.provider == .appleFoundationModels) }
-        else { #expect(setup.provider == .localModel) }
+        #expect(setup.provider == .appleFoundationModels)
         setup.directory = URL(fileURLWithPath: "/existing.gguf")
         setup.provider = .appleFoundationModels
         #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .appleFoundationModels)
