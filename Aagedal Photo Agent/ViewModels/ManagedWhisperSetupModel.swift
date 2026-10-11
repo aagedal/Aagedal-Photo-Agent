@@ -19,7 +19,7 @@ final class ManagedWhisperSetupModel {
     static let modelPreferenceKey = "voiceMemo.whisper.downloadableModel"
     private(set) var selectedModelID: String
     var selectedModel: WhisperDownloadableModel {
-        WhisperDownloadableModel.catalog.first { $0.id == selectedModelID } ?? WhisperDownloadableModel.catalog[1]
+        models.first { $0.id == selectedModelID } ?? models[0]
     }
     private(set) var isInstalled = false
     // Failed size/hash verification proves regular local weights exist, but grants
@@ -28,14 +28,15 @@ final class ManagedWhisperSetupModel {
     var needsModelReplacement: Bool { hasCorruptModel }
     private(set) var localModelIDs = Set<String>()
     private(set) var catalogErrorMessage: String?
-    var downloadedModels: [WhisperDownloadableModel] { WhisperDownloadableModel.catalog.filter { localModelIDs.contains($0.id) } }
-    var downloadableModels: [WhisperDownloadableModel] { WhisperDownloadableModel.catalog.filter { !localModelIDs.contains($0.id) } }
+    var downloadedModels: [WhisperDownloadableModel] { models.filter { localModelIDs.contains($0.id) } }
+    var downloadableModels: [WhisperDownloadableModel] { models.filter { !localModelIDs.contains($0.id) } }
     private(set) var isReady = false
     private(set) var isRefreshing = false
     private(set) var isDownloading = false
     private(set) var downloadPhase: DownloadPhase?
     private(set) var progress = 0.0
     private(set) var errorMessage: String?
+    @ObservationIgnored private let models: [WhisperDownloadableModel]
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let operations: Operations
     @ObservationIgnored private let admission: FFmpegWhisperArtifactAdmissionService
@@ -48,11 +49,13 @@ final class ManagedWhisperSetupModel {
 
     init(defaults: UserDefaults? = nil, downloads: WhisperModelDownloadService? = nil,
          admission: FFmpegWhisperArtifactAdmissionService = FFmpegWhisperArtifactAdmissionService(),
-         operations: Operations? = nil) {
+         operations: Operations? = nil,
+         signedDistribution: WhisperSignedSettingsDistribution? = nil) {
         let defaults = defaults ?? FFmpegWhisperSetupModel.sessionDefaults
         self.defaults = defaults
+        models = signedDistribution?.models ?? WhisperDownloadableModel.catalog
         let downloads = downloads ?? WhisperModelDownloadService(directory: Self.uiTestModelDirectory())
-        self.operations = operations ?? Operations(
+        self.operations = operations ?? signedDistribution?.operations(admission: admission) ?? Operations(
             installed: { try await downloads.installedURL(for: $0) },
             download: { try await downloads.download($0, progress: $1) },
             remove: { try await downloads.remove($0) },
@@ -60,8 +63,8 @@ final class ManagedWhisperSetupModel {
             localModelIDs: { try await downloads.localModelIDs() })
         self.admission = admission
         let saved = defaults.string(forKey: Self.modelPreferenceKey)
-        selectedModelID = WhisperDownloadableModel.catalog.first { $0.id == saved }?.id
-            ?? WhisperDownloadableModel.catalog[1].id
+        selectedModelID = models.first { $0.id == saved }?.id
+            ?? models.first { $0.id == "base" }?.id ?? models[0].id
     }
 
     /// UI tests must never discover or overwrite the user's downloaded weights.
@@ -77,7 +80,7 @@ final class ManagedWhisperSetupModel {
     }
 
     func selectModel(_ id: String) {
-        guard id != selectedModelID, WhisperDownloadableModel.catalog.contains(where: { $0.id == id }) else { return }
+        guard id != selectedModelID, models.contains(where: { $0.id == id }) else { return }
         invalidate()
         selectedModelID = id
         defaults.set(id, forKey: Self.modelPreferenceKey)
@@ -127,7 +130,7 @@ final class ManagedWhisperSetupModel {
         do {
             let found = try await operations.localModelIDs()
             guard request == catalogGeneration, !Task.isCancelled else { return }
-            localModelIDs = found.intersection(Set(WhisperDownloadableModel.catalog.map(\.id)))
+            localModelIDs = found.intersection(Set(models.map(\.id)))
             catalogErrorMessage = nil
         } catch {
             guard request == catalogGeneration, !Task.isCancelled else { return }
@@ -252,6 +255,7 @@ final class ManagedWhisperSetupModel {
     }
 
     private static func isCorruptModelError(_ error: Error) -> Bool {
+        if let error = error as? WhisperModelDistributionStateStore.StoreError { return error == .invalidModelBytes }
         guard let error = error as? WhisperModelDownloadService.DownloadError else { return false }
         return error == .sizeMismatch || error == .checksumMismatch
     }

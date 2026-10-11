@@ -726,4 +726,137 @@ struct ManagedWhisperSetupModelTests {
         }
     }
 
+    @Test("Signed Settings catalog installs, cancels after publication, removes and restores without lowering release authority", arguments: [false, true])
+    func signedSettingsLifecycle(cancelAfterPublication: Bool) async throws {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try Data(contentsOf: root.appendingPathComponent("model"))
+        let executable = root.appendingPathComponent("ffmpeg")
+        let executableBytes = try Data(contentsOf: executable)
+        let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let executableHash = SHA256.hash(data: executableBytes).map { String(format: "%02x", $0) }.joined()
+        let key = Curve25519.Signing.PrivateKey()
+        let trust = try WhisperModelDistributionTrust(publicKey: key.publicKey.rawRepresentation)
+        let descriptor = WhisperModelDistributionDescriptor(schemaVersion: 1, componentID: "whisper-ggml-model",
+            modelID: "signed-fixture", title: "Signed fixture", releaseSequence: 7, modelVersion: "v7",
+            byteCount: Int64(bytes.count), sha256: hash, downloadURL: URL(string: "https://example.com/model.bin")!)
+        let data = try descriptor.canonicalData()
+        let directory = root.appendingPathComponent("signed")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let store = try WhisperModelDistributionStateStore(directory: directory, modelID: descriptor.modelID, trust: trust)
+        let calls = Calls()
+        let downloads = WhisperModelDownloadService(directory: root.appendingPathComponent("cache"), fetch: { _, destination, _ in
+            await calls.downloaded()
+            try bytes.write(to: destination)
+        })
+        let lifecycle = WhisperSignedModelLifecycle(trust: trust, downloads: downloads, store: store)
+        let distribution = try WhisperSignedSettingsDistribution(trust: trust,
+            entries: [.init(descriptorData: data, signature: key.signature(for: data), lifecycle: lifecycle)])
+        let admission = FFmpegWhisperArtifactAdmissionService()
+        let operations = distribution.operations(admission: admission, admit: { url, model in
+            await calls.admitted()
+            return try await admission.admitBundled(executableURL: executable, modelURL: url,
+                expectedExecutableSHA256: executableHash, expectedModelSHA256: model.sha256,
+                expectedModelByteCount: model.byteCount, modelIdentifier: model.id)
+        })
+        var setupOperations = operations
+        if cancelAfterPublication {
+            setupOperations.download = { model, progress in
+                let publishedURL = try await operations.download(model, progress)
+                // The actual signed transfer and ledger commit completed. Cancellation
+                // reaches Settings before it can admit those published model bytes.
+                withUnsafeCurrentTask { $0?.cancel() }
+                return publishedURL
+            }
+        }
+        preferences.set("base", forKey: ManagedWhisperSetupModel.modelPreferenceKey)
+        let setup = ManagedWhisperSetupModel(defaults: preferences, admission: admission, operations: setupOperations,
+            signedDistribution: distribution)
+        #expect(setup.selectedModelID == descriptor.modelID)
+        #expect(setup.downloadableModels == distribution.models)
+        setup.selectModel("base")
+        #expect(setup.selectedModelID == descriptor.modelID)
+        await setup.refresh()
+        #expect(!setup.isInstalled && !setup.isReady)
+        #expect(await calls.downloads == 0)
+        setup.downloadSelectedModel()
+        try await waitUntil { !setup.isDownloading }
+        if cancelAfterPublication {
+            #expect(setup.isInstalled && setup.canRemoveModel && !setup.isReady)
+            #expect(setup.errorMessage == nil)
+            #expect(setup.provider(language: "auto", useGPU: false, translate: false) == nil)
+            #expect(await calls.admissions == 0)
+            await setup.refresh()
+        }
+        #expect(setup.isReady && setup.isInstalled)
+        #expect(setup.downloadedModels == distribution.models)
+        #expect(await calls.downloads == 1)
+        let installed = try #require(try await store.load())
+        #expect(installed.release.highestAcceptedSequence == 7)
+        await setup.removeSelectedModel()
+        #expect(!setup.isReady && !setup.isInstalled)
+        let removed = try #require(try await store.load())
+        #expect(removed.generation != installed.generation)
+        #expect(removed.release.highestAcceptedSequence == 7)
+        setup.downloadSelectedModel()
+        try await waitUntil { !setup.isDownloading }
+        if cancelAfterPublication {
+            #expect(setup.isInstalled && setup.canRemoveModel && !setup.isReady)
+            #expect(setup.errorMessage == nil)
+            #expect(await calls.admissions == 1)
+            await setup.refresh()
+        }
+        #expect(setup.isReady && setup.isInstalled)
+        #expect(try await store.load()?.generation == removed.generation)
+        #expect(try await store.load()?.release.highestAcceptedSequence == 7)
+        #expect(await calls.admissions == 2)
+    }
+
+    @Test("Signed Settings refuses invalid signatures, duplicate models, unknown selections and stale generations before transfer")
+    func signedSettingsStaleInspection() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let key = Curve25519.Signing.PrivateKey()
+        let trust = try WhisperModelDistributionTrust(publicKey: key.publicKey.rawRepresentation)
+        let bytes = Data("model fixture".utf8)
+        let descriptor = WhisperModelDistributionDescriptor(schemaVersion: 1, componentID: "whisper-ggml-model",
+            modelID: "signed-fixture", title: "Signed fixture", releaseSequence: 1, modelVersion: "v1",
+            byteCount: Int64(bytes.count), sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            downloadURL: URL(string: "https://example.com/model.bin")!)
+        let data = try descriptor.canonicalData()
+        let receipt = try trust.verify(data, signature: key.signature(for: data))
+        let store = try WhisperModelDistributionStateStore(directory: root, modelID: descriptor.modelID, trust: trust)
+        let calls = Calls()
+        let downloads = WhisperModelDownloadService(directory: root.appendingPathComponent("cache"), fetch: { _, _, _ in
+            await calls.downloaded(); throw URLError(.notConnectedToInternet)
+        })
+        let lifecycle = WhisperSignedModelLifecycle(trust: trust, downloads: downloads, store: store)
+        let entry = WhisperSignedSettingsDistribution.Entry(descriptorData: data, signature: try key.signature(for: data), lifecycle: lifecycle)
+        #expect(throws: WhisperSignedSettingsDistribution.DistributionError.invalidCatalog) {
+            try WhisperSignedSettingsDistribution(trust: trust, entries: [entry, entry])
+        }
+        #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try WhisperSignedSettingsDistribution(trust: trust, entries: [.init(descriptorData: data,
+                signature: Data(repeating: 0, count: 64), lifecycle: lifecycle)])
+        }
+        let distribution = try WhisperSignedSettingsDistribution(trust: trust, entries: [entry])
+        let operations = distribution.operations(admission: FFmpegWhisperArtifactAdmissionService())
+        let model = try #require(distribution.models.first)
+        await #expect(throws: WhisperSignedSettingsDistribution.DistributionError.inspectionRequired) {
+            try await operations.download(model, { _ in })
+        }
+        #expect(try await operations.installed(model) == nil)
+        _ = try await store.accept(receipt, expectedGeneration: nil)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await operations.download(model, { _ in })
+        }
+        await #expect(throws: WhisperSignedSettingsDistribution.DistributionError.unknownModel) {
+            try await operations.installed(WhisperDownloadableModel.catalog[0])
+        }
+        #expect(await calls.downloads == 0)
+    }
+
 }
