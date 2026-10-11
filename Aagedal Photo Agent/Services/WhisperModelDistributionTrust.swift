@@ -290,6 +290,24 @@ actor WhisperSignedModelLifecycle {
                                                         expectedGeneration: expectedGeneration)
     }
 
+    /// Explicitly removes model-scoped interrupted transfer partials. The cache
+    /// service excludes active cooperating transfers; the store holds generation
+    /// authority throughout deletion. Completed downloads and retained models survive.
+    func cleanUpInterruptedTransfers(expectedGeneration: UUID) async throws -> Int {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        let receipt = try trust.verify(snapshot.release.current.descriptorData,
+                                       signature: snapshot.release.current.signature)
+        let store = store
+        let modelID = receipt.descriptor.modelID
+        return try await downloads.cleanUpInterruptedTransfers(modelID: modelID) { operation in
+            try await store.cleanUpInterruptedTransfers(expectedGeneration: expectedGeneration,
+                                                        modelID: modelID, operation: operation)
+        }
+    }
+
     /// Explicit repair uses retained signed authority, never a server's latest release
     /// or the compiled catalog. It preserves the ledger and does not select rollback.
     func restoreCurrentModel(expectedGeneration: UUID,

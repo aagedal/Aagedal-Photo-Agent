@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Save removal-only incremental face scans so removed photos no longer retain stale faces, groups or jersey numbers.
+
 - Add retained operation discovery to local MCP automation for reconnect and recovery inspection.
 - Keep batch Description Assistant suggestions retryable when queuing fails, preserving unsaved edits.
 - Prevent cancelled or superseded dictation language downloads from changing displayed readiness.

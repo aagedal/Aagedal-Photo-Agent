@@ -1102,6 +1102,132 @@ struct WhisperModelDistributionStateStoreTests {
         #expect(try await store.load()?.generation == snapshot.generation)
     }
 
+    @Test("Signed transfer cleanup preserves cached releases, retained models and replay authority")
+    func signedLifecycleTransferCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source")
+        let bytes = Data("retained transfer cleanup model".utf8)
+        try bytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let installed = try await store.install(fixture.receipt(2, bytes: bytes), from: source,
+                                               expectedGeneration: first.generation)
+        let modelURL = try #require(try await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let cache = fixture.directory.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        let partial = cache.appendingPathComponent(".tiny.\(UUID().uuidString).partial")
+        try Data("incomplete transfer".utf8).write(to: partial)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: partial.path)
+        let preserved = [".base.\(UUID().uuidString).partial", ".\(UUID().uuidString).partial",
+                         ".tiny.invalid.partial", "ggml-tiny-\(String(repeating: "a", count: 64)).bin"]
+        for name in preserved { try bytes.write(to: cache.appendingPathComponent(name)) }
+        let downloads = WhisperModelDownloadService(directory: cache,
+            fetch: { _, _, _ in Issue.record("Cleanup must never fetch") })
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        #expect(try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: installed.generation) == 1)
+        #expect(try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: installed.generation) == 0)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+        for name in preserved { #expect(try Data(contentsOf: cache.appendingPathComponent(name)) == bytes) }
+        #expect(try Data(contentsOf: modelURL) == bytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await store.load()?.release.rollbackCandidate != nil)
+        #expect(try await store.load()?.release.highestAcceptedSequence == 2)
+        let rolledBack = try await lifecycle.rollBack(expectedGeneration: installed.generation)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        #expect(try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: rolledBack.generation) == 0)
+    }
+
+    @Test("Transfer cleanup refuses stale, cancelled, corrupt and foreign authority before deletion")
+    func signedTransferCleanupAuthorityRefusals() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let installed = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let cache = fixture.directory.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        let partial = cache.appendingPathComponent(".tiny.\(UUID().uuidString).partial")
+        let bytes = Data("partial remains".utf8)
+        try bytes.write(to: partial)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: partial.path)
+        let downloads = WhisperModelDownloadService(directory: cache)
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: UUID())
+        }
+        let foreign = WhisperSignedModelLifecycle(trust: try WhisperModelDistributionTrust(
+            publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation), downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await foreign.cleanUpInterruptedTransfers(expectedGeneration: installed.generation)
+        }
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await #expect(throws: CancellationError.self) {
+                try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: installed.generation)
+            }
+        }
+        await cancelled.value
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        try Data("corrupt authority".utf8).write(to: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.invalidState) {
+            try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: installed.generation)
+        }
+        #expect(try Data(contentsOf: partial) == bytes)
+        try ledger.write(to: fixture.stateURL)
+        try FileManager.default.removeItem(at: fixture.stateURL)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: installed.generation)
+        }
+        #expect(try Data(contentsOf: partial) == bytes)
+    }
+
+    @Test("Transfer cleanup rechecks generation after cache admission without deleting stale partials")
+    func transferCleanupGenerationRace() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let first = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let nextReceipt = try fixture.receipt(2)
+        let cache = fixture.directory.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        let partial = cache.appendingPathComponent(".tiny.\(UUID().uuidString).partial")
+        try Data("partial remains".utf8).write(to: partial)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: partial.path)
+        let downloads = WhisperModelDownloadService(directory: cache)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await downloads.cleanUpInterruptedTransfers(modelID: "tiny") { operation in
+                _ = try await store.accept(nextReceipt, expectedGeneration: first.generation)
+                return try await store.cleanUpInterruptedTransfers(expectedGeneration: first.generation,
+                                                                  modelID: "tiny", operation: operation)
+            }
+        }
+        #expect(FileManager.default.fileExists(atPath: partial.path))
+        #expect(try await store.load()?.release.highestAcceptedSequence == 2)
+    }
+
+    @Test("Transfer cleanup does not create an absent cache and still checks authority")
+    func signedTransferCleanupAbsentCache() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let initial = try await store.accept(fixture.receipt(1), expectedGeneration: nil)
+        let cache = fixture.directory.appendingPathComponent("absent-cache")
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust,
+            downloads: WhisperModelDownloadService(directory: cache), store: store)
+        #expect(try await lifecycle.cleanUpInterruptedTransfers(expectedGeneration: initial.generation) == 0)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+        let downloads = WhisperModelDownloadService(directory: cache)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await downloads.cleanUpInterruptedTransfers(modelID: "tiny") { operation in
+                try await store.cleanUpInterruptedTransfers(expectedGeneration: UUID(), modelID: "tiny", operation: operation)
+            }
+        }
+    }
+
     @Test("Cleanup is bounded and preserves other-model and legacy staging files")
     func cleanupBoundsAndScope() async throws {
         let fixture = try Fixture()

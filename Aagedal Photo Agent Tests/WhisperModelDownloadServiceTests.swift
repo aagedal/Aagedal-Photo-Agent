@@ -482,6 +482,96 @@ struct WhisperModelDownloadServiceTests {
         _ = try await first.value
     }
 
+    @Test("Transfer cleanup refuses active transfers across service instances")
+    func transferCleanupBusy() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = bytes
+        let gate = TransferGate()
+        let service = WhisperModelDownloadService(directory: root, fetch: { model, destination, _ in
+            #expect(destination.lastPathComponent.hasPrefix(".\(model.id)."))
+            try bytes.write(to: destination)
+            await gate.pause()
+        })
+        let model = model()
+        let transfer = Task { try await service.download(model) }
+        while !(await gate.started) { await Task.yield() }
+        await #expect(throws: WhisperModelDownloadService.DownloadError.busy) {
+            try await service.cleanUpInterruptedTransfers(modelID: model.id) { try $0() }
+        }
+        let secondService = WhisperModelDownloadService(directory: root)
+        await #expect(throws: WhisperModelDownloadService.DownloadError.busy) {
+            try await secondService.cleanUpInterruptedTransfers(modelID: model.id) { try $0() }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 1)
+        await gate.resume()
+        _ = try await transfer.value
+        #expect(try await secondService.cleanUpInterruptedTransfers(modelID: model.id) { try $0() } == 0)
+    }
+
+    @Test("Transfer cleanup preflights every candidate before deleting", arguments: [false, true])
+    func transferCleanupUnsafeCandidate(hardlink: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let regular = root.appendingPathComponent(".fixture.\(UUID().uuidString).partial")
+        try bytes.write(to: regular)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: regular.path)
+        let source = root.appendingPathComponent("external")
+        try bytes.write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path)
+        let unsafe = root.appendingPathComponent(".fixture.\(UUID().uuidString).partial")
+        if hardlink { try FileManager.default.linkItem(at: source, to: unsafe) }
+        else { try FileManager.default.createSymbolicLink(at: unsafe, withDestinationURL: source) }
+        let service = WhisperModelDownloadService(directory: root)
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            try await service.cleanUpInterruptedTransfers(modelID: "fixture") { try $0() }
+        }
+        #expect(try Data(contentsOf: regular) == bytes)
+        #expect(try Data(contentsOf: source) == bytes)
+    }
+
+    @Test("Transfer cleanup bounds the full sweep before mutation")
+    func transferCleanupBounds() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var partials: [URL] = []
+        for _ in 0..<65 {
+            let partial = root.appendingPathComponent(".fixture.\(UUID().uuidString).partial")
+            try bytes.write(to: partial)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: partial.path)
+            partials.append(partial)
+        }
+        let service = WhisperModelDownloadService(directory: root)
+        await #expect(throws: WhisperModelDownloadService.DownloadError.cleanupLimitExceeded) {
+            try await service.cleanUpInterruptedTransfers(modelID: "fixture") { try $0() }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 65)
+        try FileManager.default.removeItem(at: partials[0])
+        #expect(try await service.cleanUpInterruptedTransfers(modelID: "fixture") { try $0() } == 64)
+    }
+
+    @Test("Transfer cleanup refuses a redirected cache after authorization suspension")
+    func transferCleanupDirectoryRace() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false,
+                                               attributes: [.posixPermissions: 0o700])
+        let partial = cache.appendingPathComponent(".fixture.\(UUID().uuidString).partial")
+        try bytes.write(to: partial)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: partial.path)
+        let moved = root.appendingPathComponent("moved")
+        let service = WhisperModelDownloadService(directory: cache)
+        await #expect(throws: WhisperModelDownloadService.DownloadError.unsafeStorage) {
+            try await service.cleanUpInterruptedTransfers(modelID: "fixture") { operation in
+                try FileManager.default.moveItem(at: cache, to: moved)
+                try FileManager.default.createSymbolicLink(at: cache, withDestinationURL: moved)
+                return try operation()
+            }
+        }
+        #expect(try Data(contentsOf: moved.appendingPathComponent(partial.lastPathComponent)) == bytes)
+    }
+
     @Test("Installed lookup refuses linked ancestors even when the model is absent")
     func installedLookupLinkedParent() async throws {
         let root = try fixture()

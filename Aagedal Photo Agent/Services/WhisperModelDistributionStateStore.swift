@@ -307,6 +307,30 @@ actor WhisperModelDistributionStateStore {
         })
     }
 
+    /// Holds authenticated generation authority throughout a synchronous cache
+    /// sweep. No actor suspension or ledger mutation occurs while this lock is held.
+    func cleanUpInterruptedTransfers(expectedGeneration: UUID, modelID: String,
+                                    operation: @escaping @Sendable () throws -> Int) async throws -> Int {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.authorizeTransferCleanup(expectedGeneration: expectedGeneration,
+                                                   modelID: modelID, operation: operation)
+        }
+    }
+
+    private func authorizeTransferCleanup(expectedGeneration: UUID, modelID: String,
+                                          operation: @Sendable () throws -> Int) throws -> Int {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, _, _) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        guard modelID == self.modelID else { throw WhisperModelDistributionTrust.TrustError.wrongModel }
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+        let removed = try operation()
+        try validateDirectoryIdentity()
+        return removed
+    }
+
     /// Legacy staging names carry no model identity. Explicitly remove one only when
     /// its complete bytes match authenticated retained authority and another verified,
     /// durable copy exists. Partial/unknown legacy files require separate recovery.

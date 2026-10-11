@@ -48,7 +48,7 @@ actor WhisperModelDownloadService {
     typealias Fetch = @Sendable (WhisperDownloadableModel, URL, @escaping Progress) async throws -> Void
 
     enum DownloadError: Error, LocalizedError, Equatable {
-        case invalidModel, unsafeStorage, storageChanged, invalidResponse, sizeMismatch, checksumMismatch, busy
+        case invalidModel, unsafeStorage, storageChanged, invalidResponse, sizeMismatch, checksumMismatch, busy, cleanupLimitExceeded
         var errorDescription: String? {
             switch self {
             case .invalidModel: "The selected downloadable model is invalid."
@@ -58,6 +58,7 @@ actor WhisperModelDownloadService {
             case .sizeMismatch: "The downloaded model has an unexpected size. Please try again."
             case .checksumMismatch: "The downloaded model failed checksum verification. Please try again."
             case .busy: "A model download is already in progress."
+            case .cleanupLimitExceeded: "Interrupted model cleanup exceeds the bounded maintenance limit."
             }
         }
     }
@@ -165,8 +166,9 @@ actor WhisperModelDownloadService {
         var directoryInfo = stat()
         guard fstat(directoryDescriptor, &directoryInfo) == 0,
               FileIdentity(directoryInfo).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
-        // Cooperating cache maintenance cannot retire a transfer's live staging file.
-        guard whisperTransferFlock(directoryDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+        // Every cooperating service retains a shared directory lock through the
+        // transfer; explicit orphan cleanup requires exclusive access after relaunch.
+        guard whisperTransferFlock(directoryDescriptor, LOCK_SH | LOCK_NB) == 0 else {
             throw DownloadError.busy
         }
         defer { _ = whisperTransferFlock(directoryDescriptor, LOCK_UN) }
@@ -274,6 +276,101 @@ actor WhisperModelDownloadService {
             retainedDirectoryDescriptor: descriptor, expectedGeneration: expectedGeneration)
     }
 
+    /// Only newly model-scoped transfer partials are owned by this maintenance
+    /// action. Published cache copies and legacy unscoped files are preserved.
+    /// Authorization executes the synchronous sweep under the release ledger lock.
+    func cleanUpInterruptedTransfers(modelID: String,
+        authorize: @Sendable (@escaping @Sendable () throws -> Int) async throws -> Int) async throws -> Int {
+        guard !downloading else { throw DownloadError.busy }
+        guard !modelID.isEmpty, modelID.utf8.count <= 64,
+              modelID.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else {
+            throw DownloadError.invalidModel
+        }
+        try Task.checkCancellation()
+        try validateAncestors(allowMissing: true)
+        guard let admitted = try identity(at: directory) else {
+            // Even an empty result requires current authenticated authority.
+            return try await authorize { try Task.checkCancellation(); return 0 }
+        }
+        try validateStorage(create: false)
+        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, FileIdentity(info).sameFile(as: admitted) else {
+            throw DownloadError.storageChanged
+        }
+        guard whisperTransferFlock(fd, LOCK_EX | LOCK_NB) == 0 else { throw DownloadError.busy }
+        defer { _ = whisperTransferFlock(fd, LOCK_UN) }
+        downloading = true
+        defer { downloading = false }
+        let cacheDirectory = directory
+        return try await authorize {
+            try Self.sweepInterruptedTransfers(directory: cacheDirectory, descriptor: fd,
+                                              admitted: admitted, modelID: modelID)
+        }
+    }
+
+    nonisolated private static func sweepInterruptedTransfers(directory: URL, descriptor fd: Int32,
+        admitted: FileIdentity, modelID: String) throws -> Int {
+        func validateDirectory() throws {
+            try validateAncestors(of: directory, allowMissing: false)
+            var info = stat()
+            guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                  info.st_uid == getuid(), info.st_mode & 0o022 == 0,
+                  FileIdentity(info).sameFile(as: admitted) else { throw DownloadError.storageChanged }
+        }
+        try validateDirectory()
+        let scanFD = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard scanFD >= 0 else { throw DownloadError.unsafeStorage }
+        guard let stream = fdopendir(scanFD) else {
+            close(scanFD)
+            throw DownloadError.unsafeStorage
+        }
+        defer { closedir(stream) }
+        var candidates: [(String, FileIdentity)] = []
+        var scanned = 0
+        let prefix = ".\(modelID)."
+        let suffix = ".partial"
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw DownloadError.unsafeStorage }
+                break
+            }
+            scanned += 1
+            guard scanned <= 4_096 else { throw DownloadError.cleanupLimitExceeded }
+            let capacity = Int(entry.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) { String(cString: $0) }
+            }
+            guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { continue }
+            let identifier = String(name.dropFirst(prefix.count).dropLast(suffix.count))
+            guard UUID(uuidString: identifier)?.uuidString == identifier else { continue }
+            var info = stat()
+            guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+                  info.st_nlink == 1, info.st_mode & 0o077 == 0 else { throw DownloadError.unsafeStorage }
+            candidates.append((name, FileIdentity(info)))
+            guard candidates.count <= 64 else { throw DownloadError.cleanupLimitExceeded }
+        }
+        try validateDirectory()
+        try Task.checkCancellation()
+        for (name, original) in candidates {
+            try Task.checkCancellation()
+            var info = stat()
+            guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+                  info.st_nlink == 1, info.st_mode & 0o077 == 0,
+                  FileIdentity(info) == original else { throw DownloadError.storageChanged }
+            guard unlinkat(fd, name, 0) == 0 else { throw DownloadError.unsafeStorage }
+        }
+        guard fsync(fd) == 0 else { throw DownloadError.unsafeStorage }
+        try validateDirectory()
+        return candidates.count
+    }
+
     private func targetURL(_ model: WhisperDownloadableModel) throws -> URL {
         guard !model.id.isEmpty, model.id.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }),
               model.byteCount > 0, model.byteCount <= maximumModelByteCount,
@@ -300,6 +397,10 @@ actor WhisperModelDownloadService {
     }
 
     private func validateAncestors(allowMissing: Bool) throws {
+        try Self.validateAncestors(of: directory, allowMissing: allowMissing)
+    }
+
+    nonisolated private static func validateAncestors(of directory: URL, allowMissing: Bool) throws {
         var info = stat()
         // Standard system aliases (/var and /tmp) are resolved by Foundation; reject additional links.
         var ancestor = directory
@@ -316,7 +417,7 @@ actor WhisperModelDownloadService {
         }
     }
 
-    private struct FileIdentity: Equatable {
+    nonisolated private struct FileIdentity: Equatable, Sendable {
         let device: dev_t
         let inode: ino_t
         let size: off_t

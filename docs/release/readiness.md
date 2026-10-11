@@ -16,6 +16,21 @@ Evidence: `build/continuation-7/`. No whole release gate closes. Next: productio
 batch write/recovery and operation execution; signed catalog/key/Settings integration; authentic
 RAW/HDR and decoder memory/cancellation qualification; broader native/external acceptance.
 
+**Develop capture / signed transfer cleanup / face pruning continuation (2026-10-11):**
+[Dated record](develop-capture-whisper-transfer-face-pruning-2026-10-11.md) records
+`2ce5bf9`, `4c502a8` and `e9746a9`: a reusable immutable Primary Develop request builder
+used by the live editor, authenticated generation-bound interrupted Whisper transfer
+cleanup with cross-instance active-transfer exclusion, and durable removal-only
+incremental face pruning. Independent source and evidence review pass. Focused tests
+pass 136 cases / five suites; final integrated regression passes 3,940 cases with two
+opt-in Sony skips and zero failures (390 Swift suites, 126.546 seconds). Repository
+checks, actual 35-tool helper protocol, bundled model and development signature pass.
+Evidence: `build/continuation-7/`. Native UI testing was not run because another app
+instance was already active; no new native or whole release gate closes. Next admit
+destination decoder/as-shot/HDR evidence and connect guarded Develop-template execution;
+integrate signed Whisper catalog/key/Settings lifecycle; extract typed complete-folder
+face-scan admission/outcomes; then continue physical IPTC and broader release qualification.
+
 **Develop saved-state preview / Whisper trust continuation (2026-10-11):**
 [Dated record](develop-preview-whisper-trust-2026-10-11.md) records `f9ff548` and `5f7bbe0`:
 revision-bound destination Develop control comparison using production crop/layer semantics,
