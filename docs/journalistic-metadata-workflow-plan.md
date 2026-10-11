@@ -1966,6 +1966,15 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
   transcription, and IPTC commits. Status must distinguish queued/running/completed/cancelled,
   verified success, definite failure, partial/uncertain mutation, retained recovery, and stale plan.
 
+**Saved-state Develop preview / Whisper trust continuation (2026-10-11):**
+`preview_develop_template` compares destination saved Camera Raw controls using exact template
+and photo carrier revisions, production crop policy and ephemeral remapped layer identifiers.
+Decoder/as-shot/HDR admission and physical Develop application remain unavailable. Signed Whisper
+lookup, rollback and explicit interrupted-install cleanup now authenticate the lifecycle's own
+trust anchor; lookup/maintenance retain exact generation binding. Production signed catalog/key
+and Settings integration remain open. See the
+[dated record](release/develop-preview-whisper-trust-2026-10-11.md).
+
 **Operation discovery continuation (2026-10-11):** `list_operations` now discovers at most
 256 retained local operation handles after reconnect with compact privacy-preserving summaries,
 fresh authorization checks and explicit unknown executor liveness. Batch Description Assistant

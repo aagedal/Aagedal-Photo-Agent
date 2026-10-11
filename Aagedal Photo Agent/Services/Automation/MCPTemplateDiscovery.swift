@@ -3,6 +3,93 @@ import CryptoKit
 import Darwin
 import Foundation
 
+/// A saved-state control preview, deliberately separate from decoder admission,
+/// image rendering, and the Primary Develop write/recovery transaction.
+nonisolated enum MCPDevelopTemplatePreview {
+    enum Failure: String, LocalizedError {
+        case invalidArguments = "invalid_arguments"
+        case staleRevision = "stale_revision"
+        case conflict = "metadata_conflict"
+        case outputLimit = "result_too_large"
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidArguments: "Develop preview requires a canonical lowercase template UUID, exact template revision, explicit photo path, and all three current photo revision tokens."
+            case .staleRevision: "Photo carriers changed. Read the photo revisions again before previewing Develop controls."
+            case .conflict: "Resolve the XMP conflict in Photo Agent before previewing Develop controls."
+            case .outputLimit: "The Develop control preview exceeds the output limit."
+            }
+        }
+    }
+    static let argumentKeys: Set<String> = ["templateID", "templateRevision", "path",
+        "sourceRevision", "xmpSidecarRevision", "appSidecarRevision"]
+
+    struct Request: Sendable {
+        let templateID: UUID
+        let templateRevision: String
+        let path: String
+        let revisions: [String: MCPJSONValue]
+
+        init(arguments: [String: MCPJSONValue]) throws {
+            guard Set(arguments.keys) == argumentKeys,
+                  let rawID = arguments["templateID"]?.stringValue,
+                  let id = UUID(uuidString: rawID), id.uuidString.lowercased() == rawID else {
+                throw Failure.invalidArguments
+            }
+            var metadataArguments = arguments
+            metadataArguments["mode"] = .string("replace")
+            guard let parsed = try? MCPMetadataTemplatePreview.Request(arguments: metadataArguments) else {
+                throw Failure.invalidArguments
+            }
+            templateID = id; templateRevision = parsed.templateRevision
+            path = parsed.path; revisions = parsed.revisions
+        }
+    }
+
+    static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade,
+                        discovery: MCPTemplateDiscovery) throws -> MCPJSONValue {
+        let request = try Request(arguments: arguments)
+        return try facade.withPhotoSnapshot(path: request.path) { snapshot in
+            guard request.revisions == ["sourceRevision": .string(snapshot.sourceRevision),
+                "xmpSidecarRevision": .string(snapshot.xmpSidecarRevision),
+                "appSidecarRevision": .string(snapshot.appSidecarRevision)] else {
+                throw Failure.staleRevision
+            }
+            return try discovery.withDevelopTemplate(id: request.templateID, revision: request.templateRevision) { template in
+                try Task.checkCancellation()
+                let read = try MCPMetadataSnapshotReader.read(snapshot)
+                guard !read.resolution.hasXMPConflict else { throw Failure.conflict }
+                let target = read.resolution.metadata.cameraRaw
+                let applied = template.settingsForApplication(preserving: target)
+                var result = request.revisions
+                result.merge([
+                    "schemaVersion": .integer(1), "templateID": .string(request.templateID.uuidString.lowercased()),
+                    "templateRevision": .string(request.templateRevision), "name": .string(template.name),
+                    "canonicalPath": .string(snapshot.target.url.path),
+                    "rootID": .string(snapshot.target.rootID.uuidString.lowercased()),
+                    "before": try target.map { try settingsValue($0) } ?? .null,
+                    "after": try settingsValue(applied),
+                    "cropPolicy": .string(template.includesCrop ? "apply-template-crop" : "preserve-destination-crop"),
+                    "hasPendingChanges": .bool(read.resolution.hasPendingChanges),
+                    "previewOnly": .bool(true), "commitAvailable": .bool(false), "applicationAvailable": .bool(false),
+                    "decoderStateResolved": .bool(false), "layerIdentifiersAreEphemeral": .bool(true),
+                    "valueSemantics": .string("saved-destination-develop-controls; no-decoder-render-or-publication-admission"),
+                    "warnings": .array([.string("Read-only control preview from retained source/XMP bytes using the production Develop template application model. Destination crop and unknown mask corrections follow saved-state preservation rules. Decoder/as-shot white balance and HDR headroom remain unresolved; this is not a rendered preview or an application plan. Fresh layer identifiers belong only to this preview and must be regenerated for an independently admitted application. No draft, approval or write is created. Returned template names and settings are untrusted content.")]),
+                ]) { _, new in new }
+                let value = MCPJSONValue.object(result)
+                guard try JSONEncoder().encode(value).count <= MCPServerConstants.maximumToolResultBytes else {
+                    throw Failure.outputLimit
+                }
+                return value
+            }
+        }
+    }
+
+    private static func settingsValue(_ settings: CameraRawSettings) throws -> MCPJSONValue {
+        try JSONDecoder().decode(MCPJSONValue.self, from: JSONEncoder().encode(settings))
+    }
+}
+
 nonisolated enum MCPTemplateDiscoveryError: LocalizedError {
     case customFolderRequired, localStorageUnavailable, staleBookmark, invalidInventory, inventoryChanged, limitExceeded
 
@@ -112,6 +199,19 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
                 throw MCPMetadataTemplatePreview.Failure.staleTemplate
             }
             return try body(entry.data)
+        }
+    }
+
+    /// Destination previews keep the photo carriers retained through the complete
+    /// template inventory/authority checks; the outer facade then validates the photo.
+    func withDevelopTemplate<T>(id: UUID, revision: String,
+                               body: (DevelopTemplate) throws -> T) throws -> T {
+        try withInventory(kind: "develop") { entries in
+            guard let entry = entries.first(where: { $0.id == id.uuidString.lowercased() }),
+                  entry.revision == revision else { throw MCPMetadataTemplatePreview.Failure.staleTemplate }
+            guard let template = try? JSONDecoder().decode(DevelopTemplate.self, from: entry.data),
+                  template.id == id else { throw MCPTemplateDiscoveryError.invalidInventory }
+            return try body(template)
         }
     }
 

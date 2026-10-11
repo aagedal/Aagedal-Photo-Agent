@@ -119,6 +119,20 @@ def probe(executable):
             result = connection.receive(identifier)["result"]
             require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
                     "Develop inspection accepted malformed or execution arguments")
+        require("preview_develop_template" in names, "Missing destination-bound Develop preview")
+        develop_preview = next(tool for tool in tools if tool["name"] == "preview_develop_template")
+        require(develop_preview["inputSchema"]["additionalProperties"] is False and
+                set(develop_preview["inputSchema"]["required"]) == {
+                    "templateID", "templateRevision", "path", "sourceRevision",
+                    "xmpSidecarRevision", "appSidecarRevision"},
+                "Develop preview must require exact template and photo authority")
+        for identifier, arguments in [(204, {}), (205, {"execute": True})]:
+            connection.send(request(identifier, "tools/call", {
+                "name": "preview_develop_template", "arguments": arguments,
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Develop preview accepted missing authority or execution arguments")
         require("create_team" in names, "Missing team creation")
         require("get_iptc_patch_plan" in names, "Missing plan retrieval")
         require("commit_iptc_patch" not in names, "Update probe when verified mutation ships")

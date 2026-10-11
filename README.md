@@ -118,7 +118,9 @@ the support table and validation records.
   from explicitly authorized default local or custom template folders (template iCloud sync must be off).
   `inspect_develop_template` returns production-decoded controls and crop policy for an exact template
   UUID/revision, with destination-state and layer-identity requirements. Inspection grants no application
-  authority; Develop-template execution remains unavailable through MCP. Photo-revision inspection
+  authority. `preview_develop_template` compares saved destination controls with the template using
+  exact photo revisions, crop policy and fresh ephemeral layer IDs. Decoder/as-shot state remains
+  unresolved; Develop-template execution remains unavailable through MCP. Photo-revision inspection
   captures opaque source, XMP and owned app-sidecar tokens. `preview_metadata_template` previews a
   template for one photo using exact template and photo revisions, with Append/Replace
   behavior matching the editor for descriptive fields, creators, organisations, scene/subject codes,

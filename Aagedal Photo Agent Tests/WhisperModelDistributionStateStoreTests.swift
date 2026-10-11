@@ -862,6 +862,54 @@ struct WhisperModelDistributionStateStoreTests {
         #expect(try Data(contentsOf: staged) == Data("staged".utf8))
     }
 
+    @Test("Lifecycle orphan cleanup requires matching trust and preserves retained authority")
+    func signedLifecycleOrphanCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source.bin")
+        let bytes = Data("retained signed model".utf8)
+        try bytes.write(to: source)
+        let installed = try await store.install(fixture.receipt(1, bytes: bytes), from: source,
+                                                expectedGeneration: nil)
+        let modelURL = try #require(try await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let staged = fixture.directory.appendingPathComponent(".tiny.\(UUID().uuidString).model-staging")
+        try Data("interrupted copy".utf8).write(to: staged)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        let unrelated = fixture.directory.appendingPathComponent(".base.\(UUID().uuidString).model-staging")
+        try Data("keep other model".utf8).write(to: unrelated)
+        let cache = fixture.directory.appendingPathComponent("unused-cache")
+        let downloads = WhisperModelDownloadService(directory: cache)
+        let foreignTrust = try WhisperModelDistributionTrust(
+            publicKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation)
+        let foreign = WhisperSignedModelLifecycle(trust: foreignTrust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await foreign.cleanUpInterruptedInstallation(expectedGeneration: installed.generation)
+        }
+        #expect(FileManager.default.fileExists(atPath: staged.path))
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await lifecycle.cleanUpInterruptedInstallation(expectedGeneration: UUID())
+        }
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await #expect(throws: CancellationError.self) {
+                try await lifecycle.cleanUpInterruptedInstallation(expectedGeneration: installed.generation)
+            }
+        }
+        await cancelled.value
+        #expect(FileManager.default.fileExists(atPath: staged.path))
+        #expect(try await lifecycle.cleanUpInterruptedInstallation(expectedGeneration: installed.generation) == 1)
+        #expect(try await lifecycle.cleanUpInterruptedInstallation(expectedGeneration: installed.generation) == 0)
+        #expect(!FileManager.default.fileExists(atPath: staged.path))
+        #expect(try Data(contentsOf: unrelated) == Data("keep other model".utf8))
+        #expect(try Data(contentsOf: modelURL) == bytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await store.load()?.generation == installed.generation)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+    }
+
     @Test("Cleanup is bounded and preserves other-model and legacy staging files")
     func cleanupBoundsAndScope() async throws {
         let fixture = try Fixture()
@@ -1103,8 +1151,12 @@ struct WhisperModelDistributionStateStoreTests {
         let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"))
         let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
         #expect(try await lifecycle.removeModels(expectedGeneration: current.generation) == 2)
+        #expect(try await lifecycle.installedURL() == nil)
         let removed = try #require(try await store.load())
         #expect(removed.generation != current.generation)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.retainedModelURL(expectedGeneration: current.generation, rollback: false)
+        }
         await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
             try await store.restoreMissingCurrentModel(from: source, expectedGeneration: current.generation)
         }
@@ -1187,6 +1239,61 @@ struct WhisperModelDistributionStateStoreTests {
         try Data("corrupt".utf8).write(to: url)
         #expect(try await store.removeInstalledModels(expectedGeneration: installed.generation) == 1)
         #expect(try await store.load()?.generation != installed.generation)
+    }
+
+    @Test("Lifecycle rollback refuses foreign trust without consuming retained authority")
+    func signedRollbackRequiresLifecycleTrust() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source.bin")
+        let firstBytes = Data("first rollback release".utf8)
+        let secondBytes = Data("second rollback release".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source,
+                                            expectedGeneration: nil)
+        let firstURL = try #require(try await store.installedURL())
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source,
+                                             expectedGeneration: first.generation)
+        let secondURL = try #require(try await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        let cache = fixture.directory.appendingPathComponent("unused-cache")
+        let downloads = WhisperModelDownloadService(directory: cache)
+        let foreignKey = Curve25519.Signing.PrivateKey()
+        let foreignTrust = try WhisperModelDistributionTrust(publicKey: foreignKey.publicKey.rawRepresentation)
+        let foreign = WhisperSignedModelLifecycle(trust: foreignTrust, downloads: downloads, store: store)
+
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await foreign.installedURL()
+        }
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await foreign.rollBack(expectedGeneration: second.generation)
+        }
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        #expect(try await store.installedURL() == secondURL)
+        #expect(try Data(contentsOf: firstURL) == firstBytes)
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        #expect(!FileManager.default.fileExists(atPath: cache.path))
+
+        let authorized = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await #expect(throws: CancellationError.self) {
+                try await authorized.rollBack(expectedGeneration: second.generation)
+            }
+        }
+        await cancelled.value
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await authorized.rollBack(expectedGeneration: first.generation)
+        }
+        let rolledBack = try await authorized.rollBack(expectedGeneration: second.generation)
+        #expect(rolledBack.release.highestAcceptedSequence == 2)
+        #expect(try await store.installedURL() == firstURL)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.unavailableRollback) {
+            try await authorized.rollBack(expectedGeneration: rolledBack.generation)
+        }
     }
 
     @Test("Two store instances cannot consume the same generation")

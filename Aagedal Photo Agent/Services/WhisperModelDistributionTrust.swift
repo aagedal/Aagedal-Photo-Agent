@@ -236,7 +236,15 @@ actor WhisperSignedModelLifecycle {
         return try await store.install(receipt, from: source, expectedGeneration: expectedGeneration)
     }
 
-    func installedURL() async throws -> URL? { try await store.installedURL() }
+    func installedURL() async throws -> URL? {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load() else { return nil }
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        // Bind the returned bytes to the authenticated snapshot even if another
+        // lifecycle mutates the ledger while the actor is suspended.
+        return try await store.retainedModelURL(expectedGeneration: snapshot.generation, rollback: false)
+    }
 
     /// Removal preserves signed release authority so relaunch or redownload cannot
     /// accept an older release as a first installation. Interrupted-copy cleanup is
@@ -249,6 +257,22 @@ actor WhisperSignedModelLifecycle {
         _ = try trust.verify(snapshot.release.current.descriptorData,
                              signature: snapshot.release.current.signature)
         return try await store.removeInstalledModels(expectedGeneration: expectedGeneration)
+    }
+
+    /// Explicit maintenance removes only this model's interrupted-install orphans.
+    /// Retained releases and replay protection survive; transfer-cache and legacy
+    /// staging cleanup remain separate. Missing authority never permits deletion.
+    func cleanUpInterruptedInstallation(expectedGeneration: UUID) async throws -> Int {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        try Task.checkCancellation()
+        // The store repeats generation/authentication checks and bounds/preflights
+        // the complete candidate set under its directory transaction lock.
+        return try await store.cleanUpInterruptedInstallation(expectedGeneration: expectedGeneration)
     }
 
     /// Explicit repair uses retained signed authority, never a server's latest release
@@ -296,6 +320,21 @@ actor WhisperSignedModelLifecycle {
     }
 
     func rollBack(expectedGeneration: UUID) async throws -> WhisperModelDistributionStateStore.Snapshot {
-        try await store.rollBackInstalled(expectedGeneration: expectedGeneration)
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        // A store authenticated with another key cannot confer rollback authority
+        // on this lifecycle. Validate both releases before consuming the candidate.
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        guard let candidate = snapshot.release.rollbackCandidate else {
+            throw WhisperModelDistributionTrust.TrustError.unavailableRollback
+        }
+        _ = try trust.verify(candidate.descriptorData, signature: candidate.signature)
+        try Task.checkCancellation()
+        // Loading suspends this actor; the store repeats the generation check and
+        // verifies retained bytes under its transaction lock before committing.
+        return try await store.rollBackInstalled(expectedGeneration: expectedGeneration)
     }
 }

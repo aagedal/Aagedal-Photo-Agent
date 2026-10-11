@@ -420,6 +420,16 @@ as-shot/decoder state that application must preserve and the need for fresh laye
 Inspection revalidates the authorized inventory and creates no per-photo preview or application plan.
 Develop-template application through MCP remains unavailable.
 
+Use `preview_develop_template` with the same canonical template ID/revision, an explicit `path`,
+and all three photo revision tokens from `get_photo_metadata` (`sourceRevision`,
+`xmpSidecarRevision`, `appSidecarRevision`) to compare saved Develop controls before and after
+application. It uses the app's template semantics: crop inclusion applies template crop; crop
+exclusion preserves destination crop; mask/watermark IDs and order references are regenerated.
+Those IDs belong only to the preview. Decoder/as-shot state remains unresolved, so this control
+comparison is not a rendered preview or application plan. It refuses stale carriers, template
+inventory/routing changes, revoked authorization and XMP conflicts. No edits are written and no
+consent or operation is created. Develop-template execution remains unavailable through MCP.
+
 Use `preview_metadata_template` with `templateID`, `templateRevision`, `mode` (`append` or `replace`),
 `path`, and the three revision tokens from `get_photo_metadata` to inspect one photo's affected values.
 It supports literal descriptive fields, Person Shown, creators, organisation names/codes, scene/subject

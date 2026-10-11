@@ -923,7 +923,7 @@ struct MCPServerCoreTests {
         #expect(tools.map { $0["name"] as? String } == [
             "start_voice_transcription",
             "open_voice_transcription_review",
-            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "inspect_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "inspect_develop_template", "preview_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -959,6 +959,36 @@ struct MCPServerCoreTests {
         #expect(tools.callTool(name: "preview_metadata_template", arguments: unknown).objectValue?["isError"] == .bool(true))
         try authorization.setEnabled(false)
         #expect(tools.callTool(name: "preview_metadata_template", arguments: arguments).objectValue?["isError"] == .bool(true))
+    }
+
+    @Test("Develop preview protocol requires exact typed authority and refuses execution arguments")
+    func developPreviewArguments() throws {
+        let authorization = store()
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization)
+        let arguments: [String: MCPJSONValue] = [
+            "templateID": .string(UUID().uuidString.lowercased()),
+            "templateRevision": .string("sha256:" + String(repeating: "a", count: 64)),
+            "path": .string("/unavailable/photo.jpg"),
+            "sourceRevision": .string("source"), "xmpSidecarRevision": .string("xmp"),
+            "appSidecarRevision": .string("app"),
+        ]
+        for key in MCPDevelopTemplatePreview.argumentKeys {
+            var missing = arguments
+            missing.removeValue(forKey: key)
+            let absent = tools.callTool(name: "preview_develop_template", arguments: missing)
+            #expect(absent.objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+            var wrongType = arguments
+            wrongType[key] = .bool(true)
+            let result = tools.callTool(name: "preview_develop_template", arguments: wrongType)
+            #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        var unknown = arguments
+        unknown["execute"] = .bool(true)
+        let result = tools.callTool(name: "preview_develop_template", arguments: unknown)
+        #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        try authorization.setEnabled(false)
+        #expect(tools.callTool(name: "preview_develop_template", arguments: arguments).objectValue?["isError"] == .bool(true))
     }
 
     @Test("Owned JSON draft inspection exposes only bounded descriptive fields and is not effective IPTC")
@@ -2095,6 +2125,11 @@ struct MCPServerCoreTests {
         let discovery = try response()
         #expect(discovery["id"] as? Int == 3)
         let discoveredTools = try #require((discovery["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        let developPreview = try #require(discoveredTools.first { $0["name"] as? String == "preview_develop_template" })
+        #expect((developPreview["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true)
+        let developSchema = try #require(developPreview["inputSchema"] as? [String: Any])
+        #expect(Set(developSchema["required"] as? [String] ?? []) == MCPDevelopTemplatePreview.argumentKeys)
+        #expect(developSchema["additionalProperties"] as? Bool == false)
         let templatePreview = try #require(discoveredTools.first { $0["name"] as? String == "preview_metadata_template" })
         #expect((templatePreview["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true)
         let templateSchema = try #require(templatePreview["inputSchema"] as? [String: Any])
