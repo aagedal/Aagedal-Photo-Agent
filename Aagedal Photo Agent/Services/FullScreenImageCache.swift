@@ -937,57 +937,20 @@ final class FullScreenImageCache: @unchecked Sendable {
             cacheLogger.info("CIRAWFilter unsupported for \(url.lastPathComponent), falling back")
             return nil
         }
-        // RAW 9 requires explicit opt-in. Auto and unsupported pins select the
-        // newest decoder advertised for this file, including its DNG variant.
-        // Apply the decoder before configuring its profile/render properties.
-        let decoderVersionRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference)
-        let decoderPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
-        if let selected = decoderPreference.selectedDecoder(in: rawFilter.supportedDecoderVersions.map(\.rawValue)),
-           let version = rawFilter.supportedDecoderVersions.first(where: { $0.rawValue == selected }) {
-            rawFilter.decoderVersion = version
-        }
-
-        rawFilter.isDraftModeEnabled = draftMode
-
-        // Camera RAW (default) leaves CIRAWFilter's own camera-matched boost/tone curve
-        // in place, closer to Finder/Preview. Linear RAW disables that boost so the Metal
-        // shader gets neutral scene-referred input.
-        let profile: RAWDecodeProfile
-        if let decodeProfile {
-            profile = decodeProfile
-        } else {
-            let profileRaw = UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile)
-            profile = RAWDecodeProfile(storedRawValue: profileRaw ?? "") ?? .camera
-        }
-        if profile == .linear {
-            rawFilter.boostAmount = 0
-            rawFilter.boostShadowAmount = 0
-        }
-
-        // Decode straight to the requested preview size: demosaic at the reduced scale
-        // instead of decoding the full sensor and shrinking afterward. Only ever downscale,
-        // and keep the same 1.5× slack the affine downsample used so output sizes are unchanged.
-        if let maxPixelSize, let longestSide = nativeLongestSide(of: url),
-           longestSide > maxPixelSize * 1.5 {
-            rawFilter.scaleFactor = Float(maxPixelSize / longestSide)
-        }
-        // Always decode scene-referred with maximum EDR headroom: highlight detail
-        // above SDR white survives as float values >1.0. (0 = tone-map/clamp to SDR;
-        // 1.0 = "use the headroom present in the file" ~4×/800 nits; 2.0 = maximum,
-        // toward the ~8×/1600-nit ceiling, matching Adobe Camera Raw's HDR rendering.)
-        // SDR vs HDR is now purely an output decision: SDR mode rolls the headroom off
-        // via ToneCurveGenerator's output tonemap (sourceHasHDRHeadroom), so toggling
-        // HDR never requires a re-decode and SDR keeps real highlight recovery.
-        rawFilter.extendedDynamicRangeAmount = 2.0
-        let neutralTemp = rawFilter.neutralTemperature
-        let neutralTint = rawFilter.neutralTint
-        guard let output = rawFilter.outputImage else {
-            cacheLogger.warning("CIRAWFilter outputImage nil for \(url.lastPathComponent)")
+        let decoderPreference = RAWDecoderVersionPreference(rawValue:
+            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? "") ?? .auto
+        let profile = decodeProfile ?? RAWDecodeProfile(storedRawValue:
+            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? "") ?? .camera
+        guard let result = RAWSourceDecoder.decode(rawFilter, draftMode: draftMode,
+            maxPixelSize: maxPixelSize, nativeLongestSide: nativeLongestSide(of: url),
+            profile: profile, decoderPreference: decoderPreference) else {
+            cacheLogger.warning("CIRAWFilter outputImage/state unavailable for \(url.lastPathComponent)")
             return nil
         }
-        let extent = output.extent
-        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) profile=\(profile.rawValue) decoder=\(rawFilter.decoderVersion.rawValue) scale=\(rawFilter.scaleFactor, format: .fixed(precision: 3)) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(neutralTemp))K tint=\(Int(neutralTint))")
-        return RAWDecodeResult(image: output, neutralTemperature: neutralTemp, neutralTint: neutralTint)
+        let extent = result.image.extent
+        cacheLogger.info("RAW decoded \(url.lastPathComponent) draft=\(draftMode) profile=\(profile.rawValue) decoder=\(rawFilter.decoderVersion.rawValue) scale=\(rawFilter.scaleFactor, format: .fixed(precision: 3)) \(Int(extent.width))x\(Int(extent.height)) asShot=\(Int(result.neutralTemperature))K tint=\(Int(result.neutralTint))")
+        return RAWDecodeResult(image: result.image, neutralTemperature: result.neutralTemperature,
+            neutralTint: result.neutralTint)
     }
 
     /// Load an HDR-preserving full-resolution image via CoreImage.

@@ -255,6 +255,58 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// An isolated transfer cache carries bytes, never authority. Keep the authenticated
+    /// ledger locked through the bounded sweep so a suspended request cannot delete
+    /// cache bytes under a retired generation. A retained cache descriptor binds the
+    /// pathname to the directory admitted by the download service before suspension.
+    func cleanUpTransferCache(in cache: URL?, retainedDirectoryDescriptor: Int32? = nil,
+                             expectedGeneration: UUID) async throws -> Int {
+        let paths = [admissionURL] + (cache.map { [$0.appendingPathComponent("ggml-\(modelID).bin")] } ?? [])
+        return try await StorageTransactionAdmission.shared.withAccess(to: Set(paths)) {
+            try await self.removeTransferCache(in: cache, retainedDirectoryDescriptor: retainedDirectoryDescriptor,
+                                               expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func removeTransferCache(in cache: URL?, retainedDirectoryDescriptor: Int32?,
+                                     expectedGeneration: UUID) throws -> Int {
+        let ledgerFD = try openTransaction()
+        defer { closeTransaction(ledgerFD) }
+        guard let (document, _, _) = try read(directoryFD: ledgerFD),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        try Task.checkCancellation()
+        guard let cache else { return 0 }
+        guard let retainedDirectoryDescriptor else { throw StoreError.unsafeStorage }
+        let cacheFD = try Self.openVerifiedDirectory(cache)
+        defer { close(cacheFD) }
+        var original = stat()
+        var opened = stat()
+        guard fstat(retainedDirectoryDescriptor, &original) == 0, fstat(cacheFD, &opened) == 0,
+              original.st_dev == opened.st_dev, original.st_ino == opened.st_ino,
+              !(opened.st_dev == directoryDevice && opened.st_ino == directoryInode) else {
+            throw StoreError.unsafeStorage
+        }
+        guard whisperReleaseFlock(cacheFD, LOCK_EX | LOCK_NB) == 0 else { throw StoreError.storageBusy }
+        defer { _ = whisperReleaseFlock(cacheFD, LOCK_UN) }
+        return try sweep(directoryFD: cacheFD, isCandidate: { name in
+            if name == "ggml-\(modelID).bin" { return true }
+            let prefix = ".\(modelID)."
+            let suffix = ".partial"
+            guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { return false }
+            let identifier = String(name.dropFirst(prefix.count).dropLast(suffix.count))
+            return UUID(uuidString: identifier)?.uuidString == identifier
+        }, validate: {
+            try self.validateDirectoryIdentity()
+            let fresh = try Self.openVerifiedDirectory(cache)
+            defer { close(fresh) }
+            var current = stat()
+            guard fstat(fresh, &current) == 0,
+                  current.st_dev == original.st_dev, current.st_ino == original.st_ino else {
+                throw StoreError.unsafeStorage
+            }
+        })
+    }
+
     /// Holds authenticated generation authority throughout a synchronous cache
     /// sweep. No actor suspension or ledger mutation occurs while this lock is held.
     func cleanUpInterruptedTransfers(expectedGeneration: UUID, modelID: String,
@@ -398,6 +450,13 @@ actor WhisperModelDistributionStateStore {
         // lowering replay protection, and maintenance must not silently erase it.
         var retained = Set([modelFilename(state.current), modelFilename(highWater)])
         if let rollback = state.rollbackCandidate { retained.insert(modelFilename(rollback)) }
+        return try sweep(directoryFD: fd, isCandidate: {
+            !retained.contains($0) && self.isCleanupCandidate($0)
+        }, validate: { try self.validateDirectoryIdentity() })
+    }
+
+    private func sweep(directoryFD fd: Int32, isCandidate: (String) -> Bool,
+                       validate: () throws -> Void) throws -> Int {
         let scanFD = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard scanFD >= 0 else { throw StoreError.unsafeStorage }
         guard let stream = fdopendir(scanFD) else {
@@ -422,7 +481,7 @@ actor WhisperModelDistributionStateStore {
                     String(cString: $0)
                 }
             }
-            guard !retained.contains(name), isCleanupCandidate(name) else { continue }
+            guard isCandidate(name) else { continue }
             var info = stat()
             guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
                   info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
@@ -430,7 +489,7 @@ actor WhisperModelDistributionStateStore {
             candidates.append((name, info))
             guard candidates.count <= 64 else { throw StoreError.cleanupLimitExceeded }
         }
-        try validateDirectoryIdentity()
+        try validate()
         for (name, original) in candidates {
             try Task.checkCancellation()
             var named = stat()
@@ -446,7 +505,7 @@ actor WhisperModelDistributionStateStore {
             guard unlinkat(fd, name, 0) == 0 else { throw StoreError.unsafeStorage }
         }
         guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
-        try validateDirectoryIdentity()
+        try validate()
         return candidates.count
     }
 

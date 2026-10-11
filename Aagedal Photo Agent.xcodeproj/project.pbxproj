@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000101 /* RAWSourceDecoder.swift */; };
 		C12700000000000000000102 /* DevelopTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000101 /* DevelopTemplate.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
 		1A021A74D4587B8447E8AE88 /* Aagedal Photo Agent/Models/ColorLabel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB6C665C6B4E6610CF7F7E00 /* Aagedal Photo Agent/Models/ColorLabel.swift */; };
@@ -293,6 +294,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C13000000000000000000101 /* RAWSourceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/RAWSourceDecoder.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000101 /* DevelopTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopTemplate.swift; path = "Aagedal Photo Agent/Models/DevelopTemplate.swift"; sourceTree = SOURCE_ROOT; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
 		0CF90B06B186D6E15C9E5B5E /* Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SwiftExifDictAdapter.swift"; sourceTree = SOURCE_ROOT; };
@@ -845,6 +847,7 @@
 				D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */,
 				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
+				C13000000000000000000101 /* RAWSourceDecoder.swift */,
 				C12700000000000000000101 /* DevelopTemplate.swift */,
 				C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */,
 				C91000000000000000000401 /* MCPMetadataTemplatePreview.swift */,
@@ -1298,6 +1301,7 @@
 				D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */,
 				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
+				C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */,
 				C12700000000000000000102 /* DevelopTemplate.swift in Sources */,
 				C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */,
 				C91000000000000000000402 /* MCPMetadataTemplatePreview.swift in Sources */,

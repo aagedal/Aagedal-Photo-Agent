@@ -275,6 +275,21 @@ actor WhisperSignedModelLifecycle {
         return try await store.cleanUpInterruptedInstallation(expectedGeneration: expectedGeneration)
     }
 
+    /// Explicitly retire completed and interrupted transfer-cache bytes for this model.
+    /// Retained installed releases and the replay floor remain in the separate ledger.
+    /// Unscoped legacy partials cannot establish model ownership and are preserved.
+    func cleanUpTransferCache(expectedGeneration: UUID) async throws -> Int {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        try Task.checkCancellation()
+        return try await downloads.cleanUpTransferCache(authorizedBy: store,
+                                                        expectedGeneration: expectedGeneration)
+    }
+
     /// Explicitly removes model-scoped interrupted transfer partials. The cache
     /// service excludes active cooperating transfers; the store holds generation
     /// authority throughout deletion. Completed downloads and retained models survive.

@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-08
+**Last reviewed:** 2026-10-11
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -27,6 +27,13 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Known People companion interchange](release/known-people-companion-interchange-design.md) —
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
+**Develop decoder / transfer cleanup continuation (2026-10-11):**
+[Retained-source admission and authenticated cache maintenance](release/develop-decoder-transfer-cache-2026-10-11.md)
+resolves target-specific RAW neutral and production headroom state for read-only Develop
+template previews, with shared native decoder policy and detected-container refusal. Signed
+Whisper cache cleanup authenticates generation and protects active transfers. Production
+Develop-template execution, signed Settings/catalog integration and broader release gates remain open.
 
 **Operation recovery continuation (2026-10-11):** [Retained operation discovery and description
 queue recovery](release/operation-discovery-description-queue-2026-10-11.md) adds MCP history

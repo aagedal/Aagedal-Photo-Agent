@@ -250,6 +250,32 @@ actor WhisperModelDownloadService {
         }
     }
 
+    /// Signed maintenance must retain authenticated generation authority throughout
+    /// deletion. The store locks both directories and preflights a bounded candidate set.
+    func cleanUpTransferCache(authorizedBy store: WhisperModelDistributionStateStore,
+                             expectedGeneration: UUID) async throws -> Int {
+        guard !downloading else { throw DownloadError.busy }
+        try Task.checkCancellation()
+        try validateAncestors(allowMissing: true)
+        // Even an absent cache requires current release authority.
+        guard let admittedDirectory = try identity(at: directory) else {
+            return try await store.cleanUpTransferCache(in: nil, expectedGeneration: expectedGeneration)
+        }
+        try validateStorage(create: false)
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              FileIdentity(info).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
+        let physicalDirectory = try physicalModelURL(directory.appendingPathComponent("unused"),
+                                                     directoryDescriptor: descriptor).deletingLastPathComponent()
+        downloading = true
+        defer { downloading = false }
+        return try await store.cleanUpTransferCache(in: physicalDirectory,
+            retainedDirectoryDescriptor: descriptor, expectedGeneration: expectedGeneration)
+    }
+
     /// Only newly model-scoped transfer partials are owned by this maintenance
     /// action. Published cache copies and legacy unscoped files are preserved.
     /// Authorization executes the synchronous sweep under the release ledger lock.

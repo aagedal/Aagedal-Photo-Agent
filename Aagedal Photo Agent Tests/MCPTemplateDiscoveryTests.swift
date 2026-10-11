@@ -55,8 +55,11 @@ struct MCPTemplateDiscoveryTests {
         let tools = MCPFoundationTools(authorizationStore: authorization, templateDiscovery: access)
         let dispatched = tools.callTool(name: "preview_develop_template", arguments: args)
         #expect(dispatched.objectValue?["isError"] == .bool(false))
-        #expect(dispatched.objectValue?["structuredContent"]?.objectValue?["decoderStateResolved"] == .bool(false))
+        #expect(dispatched.objectValue?["structuredContent"]?.objectValue?["decoderStateResolved"] == .bool(true))
         #expect(dispatched.objectValue?["structuredContent"]?.objectValue?["commitAvailable"] == .bool(false))
+        #expect(result["decoderAdmission"]?.objectValue?["whiteBalanceMode"] == .string("incremental"))
+        #expect(result["decoderAdmission"]?.objectValue?["sourceHasHDRHeadroom"] == .null)
+        #expect(result["decoderAdmission"]?.objectValue?["renderedPreview"] == .bool(false))
         let after = try #require(result["after"])
         let applied = try JSONDecoder().decode(CameraRawSettings.self, from: JSONEncoder().encode(after))
         let saved = try MCPMetadataSnapshotReader.read(snapshot).resolution.metadata.cameraRaw
@@ -67,12 +70,53 @@ struct MCPTemplateDiscoveryTests {
         #expect(maskID != mask.id && watermarkID != watermark.id)
         #expect(applied.layerOrder == [.mask(maskID), .global, .watermark(watermarkID)])
         #expect(applied.asShotNeutralTemperature == nil && applied.sourceHasHDRHeadroom == nil)
-        #expect(result["decoderStateResolved"] == .bool(false))
+        #expect(result["decoderStateResolved"] == .bool(true))
         #expect(result["previewOnly"] == .bool(true) && result["applicationAvailable"] == .bool(false))
         #expect(result["commitAvailable"] == .bool(false) && result["layerIdentifiersAreEphemeral"] == .bool(true))
         #expect(try Data(contentsOf: photo) == bytes as Data)
         #expect(try Data(contentsOf: xmpURL) == xmpBytes)
         #expect(try Data(contentsOf: templateURL) == templateBytes)
+        // A RAW target gets its own decoder neutral/headroom, never a template's
+        // transient editor state. The injected decoder only replaces source execution.
+        let rawPhoto = root.appendingPathComponent("frame.dng")
+        try (bytes as Data).write(to: rawPhoto)
+        let rawSnapshot = try facade.capturePhotoSnapshot(path: rawPhoto.path)
+        var rawArgs = args
+        rawArgs["path"] = .string(rawPhoto.path)
+        rawArgs["sourceRevision"] = .string(rawSnapshot.sourceRevision)
+        rawArgs["xmpSidecarRevision"] = .string(rawSnapshot.xmpSidecarRevision)
+        rawArgs["appSidecarRevision"] = .string(rawSnapshot.appSidecarRevision)
+        let rawResult = try MCPDevelopTemplatePreview.prepare(arguments: rawArgs, facade: facade,
+            discovery: access, resolveDecoder: { retained, target in
+                #expect(retained == bytes as Data)
+                #expect(target == rawPhoto)
+                return .init(isRAW: true, neutralTemperature: 7123, neutralTint: -7, sourceHasHDRHeadroom: true)
+            })
+        let rawApplied = try JSONDecoder().decode(CameraRawSettings.self,
+            from: JSONEncoder().encode(try #require(rawResult.objectValue?["after"])))
+        #expect(rawApplied.asShotNeutralTemperature == 7123)
+        #expect(rawApplied.asShotNeutralTint == -7)
+        #expect(rawApplied.sourceHasHDRHeadroom == true)
+        #expect(rawApplied.crop == applied.crop)
+        #expect(rawResult.objectValue?["decoderAdmission"]?.objectValue?["whiteBalanceMode"]
+            == .string("absolute-with-decoder-as-shot-reference"))
+        #expect(throws: MCPDevelopTemplatePreview.Failure.decoderUnavailable) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: rawArgs, facade: facade, discovery: access,
+                resolveDecoder: { _, _ in throw MCPDevelopTemplatePreview.Failure.decoderUnavailable })
+        }
+        for state in [
+            MCPDevelopTemplatePreview.DecoderState(isRAW: true, neutralTemperature: nil, neutralTint: 0, sourceHasHDRHeadroom: true),
+            .init(isRAW: true, neutralTemperature: .infinity, neutralTint: 0, sourceHasHDRHeadroom: true),
+            .init(isRAW: true, neutralTemperature: 6500, neutralTint: .nan, sourceHasHDRHeadroom: true),
+            .init(isRAW: true, neutralTemperature: 6500, neutralTint: 0, sourceHasHDRHeadroom: false),
+            .init(isRAW: false, neutralTemperature: nil, neutralTint: nil, sourceHasHDRHeadroom: nil),
+        ] {
+            #expect(throws: MCPDevelopTemplatePreview.Failure.decoderStateInvalid) {
+                _ = try MCPDevelopTemplatePreview.prepare(arguments: rawArgs, facade: facade, discovery: access,
+                    resolveDecoder: { _, _ in state })
+            }
+        }
+        #expect(try Data(contentsOf: rawPhoto) == bytes as Data)
         var stale = args; stale["sourceRevision"] = .string("stale")
         #expect(throws: MCPDevelopTemplatePreview.Failure.staleRevision) {
             _ = try MCPDevelopTemplatePreview.prepare(arguments: stale, facade: facade, discovery: access)
@@ -132,6 +176,33 @@ struct MCPTemplateDiscoveryTests {
         let changing = reader(authorization, root, checkpoint: { try? Data("changed".utf8).write(to: photo) })
         #expect(throws: (any Error).self) {
             _ = try MCPDevelopTemplatePreview.prepare(arguments: args, facade: facade, discovery: changing)
+        }
+    }
+
+    @Test("Retained-byte raster admission decodes real PNG and refuses missing or unsupported RAW bytes")
+    func developDecoderAdmission() throws {
+        let pixels = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 16, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(pixels.makeImage())
+        let bytes = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(bytes, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        // The nonexistent path supplies format policy only. Every source read uses Data.
+        let url = URL(fileURLWithPath: "/nonexistent/retained-source.png")
+        let state = try MCPDevelopTemplatePreview.resolveDecoderState(data: bytes as Data, url: url)
+        #expect(!state.isRAW)
+        #expect(state.neutralTemperature == nil && state.neutralTint == nil && state.sourceHasHDRHeadroom == nil)
+        #expect(throws: MCPDevelopTemplatePreview.Failure.decoderUnavailable) {
+            _ = try MCPDevelopTemplatePreview.resolveDecoderState(data: Data("invalid".utf8), url: url)
+        }
+        #expect(throws: MCPDevelopTemplatePreview.Failure.decoderUnavailable) {
+            _ = try MCPDevelopTemplatePreview.resolveDecoderState(data: bytes as Data,
+                url: URL(fileURLWithPath: "/nonexistent/retained-source.dng"))
+        }
+        #expect(throws: MCPDevelopTemplatePreview.Failure.decoderStateInvalid) {
+            try MCPDevelopTemplatePreview.DecoderState(isRAW: false, neutralTemperature: 6500,
+                neutralTint: 0, sourceHasHDRHeadroom: true).validate(for: url)
         }
     }
 
