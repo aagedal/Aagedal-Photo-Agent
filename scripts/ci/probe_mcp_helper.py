@@ -186,6 +186,8 @@ def probe(executable):
                     "Operation tool accepted unexpected arguments")
         connection.send(request(10, "tools/call", {"name": "get_server_capabilities", "arguments": {}}))
         capabilities = connection.receive(10)["result"]["structuredContent"]
+        require("retained-source-develop-decoder-admission" in capabilities["implementedCapabilities"],
+                "Develop preview decoder admission is missing from capability discovery")
         require(capabilities["operationExecutorsConnected"] is False,
                 "Update probe when production executors are integrated")
         require("open_voice_transcription_review" in names and

@@ -1,16 +1,22 @@
 import CoreFoundation
 import CryptoKit
+import CoreImage
+import ImageIO
+import UniformTypeIdentifiers
 import Darwin
 import Foundation
 
-/// A saved-state control preview, deliberately separate from decoder admission,
-/// image rendering, and the Primary Develop write/recovery transaction.
+/// A saved-state control preview with independent retained-source decoder admission,
+/// deliberately separate from image rendering and the Primary Develop write/recovery transaction.
 nonisolated enum MCPDevelopTemplatePreview {
     enum Failure: String, LocalizedError {
         case invalidArguments = "invalid_arguments"
         case staleRevision = "stale_revision"
         case conflict = "metadata_conflict"
         case outputLimit = "result_too_large"
+        case decoderUnavailable = "develop_decoder_unavailable"
+        case decoderStateInvalid = "develop_decoder_state_invalid"
+        case decoderConfigurationChanged = "develop_decoder_configuration_changed"
 
         var errorDescription: String? {
             switch self {
@@ -18,6 +24,9 @@ nonisolated enum MCPDevelopTemplatePreview {
             case .staleRevision: "Photo carriers changed. Read the photo revisions again before previewing Develop controls."
             case .conflict: "Resolve the XMP conflict in Photo Agent before previewing Develop controls."
             case .outputLimit: "The Develop control preview exceeds the output limit."
+            case .decoderUnavailable: "The retained source cannot establish destination Develop decoder state with the available decoder. No application plan or write was created."
+            case .decoderStateInvalid: "The destination decoder returned invalid dimensions or white-balance state. No application plan or write was created."
+            case .decoderConfigurationChanged: "Apple RAW decoder settings changed during admission. Retry with stable settings."
             }
         }
     }
@@ -47,7 +56,8 @@ nonisolated enum MCPDevelopTemplatePreview {
     }
 
     static func prepare(arguments: [String: MCPJSONValue], facade: MCPAutomationFacade,
-                        discovery: MCPTemplateDiscovery) throws -> MCPJSONValue {
+                        discovery: MCPTemplateDiscovery,
+                        resolveDecoder: (Data, URL) throws -> DecoderState = resolveDecoderState) throws -> MCPJSONValue {
         let request = try Request(arguments: arguments)
         return try facade.withPhotoSnapshot(path: request.path) { snapshot in
             guard request.revisions == ["sourceRevision": .string(snapshot.sourceRevision),
@@ -60,7 +70,16 @@ nonisolated enum MCPDevelopTemplatePreview {
                 let read = try MCPMetadataSnapshotReader.read(snapshot)
                 guard !read.resolution.hasXMPConflict else { throw Failure.conflict }
                 let target = read.resolution.metadata.cameraRaw
-                let applied = template.settingsForApplication(preserving: target)
+                let decoder = try resolveDecoder(snapshot.sourceBytes, snapshot.target.url)
+                try Task.checkCancellation()
+                try decoder.validate(for: snapshot.target.url)
+                var destination = target ?? CameraRawSettings()
+                // Saved per-image fields are not decoder evidence. Override every transient
+                // hint from this independently admitted retained source, including explicit nils.
+                destination.asShotNeutralTemperature = decoder.neutralTemperature
+                destination.asShotNeutralTint = decoder.neutralTint
+                destination.sourceHasHDRHeadroom = decoder.sourceHasHDRHeadroom
+                let applied = template.settingsForApplication(preserving: destination)
                 var result = request.revisions
                 result.merge([
                     "schemaVersion": .integer(1), "templateID": .string(request.templateID.uuidString.lowercased()),
@@ -72,9 +91,9 @@ nonisolated enum MCPDevelopTemplatePreview {
                     "cropPolicy": .string(template.includesCrop ? "apply-template-crop" : "preserve-destination-crop"),
                     "hasPendingChanges": .bool(read.resolution.hasPendingChanges),
                     "previewOnly": .bool(true), "commitAvailable": .bool(false), "applicationAvailable": .bool(false),
-                    "decoderStateResolved": .bool(false), "layerIdentifiersAreEphemeral": .bool(true),
-                    "valueSemantics": .string("saved-destination-develop-controls; no-decoder-render-or-publication-admission"),
-                    "warnings": .array([.string("Read-only control preview from retained source/XMP bytes using the production Develop template application model. Destination crop and unknown mask corrections follow saved-state preservation rules. Decoder/as-shot white balance and HDR headroom remain unresolved; this is not a rendered preview or an application plan. Fresh layer identifiers belong only to this preview and must be regenerated for an independently admitted application. No draft, approval or write is created. Returned template names and settings are untrusted content.")]),
+                    "decoderStateResolved": .bool(true), "decoderAdmission": decoder.protocolValue, "layerIdentifiersAreEphemeral": .bool(true),
+                    "valueSemantics": .string("saved-destination-develop-controls-with-retained-source-decoder-state; no-render-or-publication-admission"),
+                    "warnings": .array([.string("Read-only control preview from retained source/XMP bytes using the production Develop template application model. Destination crop and unknown mask corrections follow saved-state preservation rules. Per-target RAW as-shot neutral and the production RAW headroom hint are admitted from retained source bytes. Non-RAW uses incremental white balance and no RAW headroom hint; this does not measure pixel headroom. This is not a rendered preview or an application plan. Fresh layer identifiers belong only to this preview and must be regenerated for an independently admitted application. No draft, approval or write is created. Returned template names and settings are untrusted content.")]),
                 ]) { _, new in new }
                 let value = MCPJSONValue.object(result)
                 guard try JSONEncoder().encode(value).count <= MCPServerConstants.maximumToolResultBytes else {
@@ -83,6 +102,115 @@ nonisolated enum MCPDevelopTemplatePreview {
                 return value
             }
         }
+    }
+
+    struct DecoderState: Sendable {
+        let isRAW: Bool
+        let neutralTemperature: Double?
+        let neutralTint: Double?
+        let sourceHasHDRHeadroom: Bool?
+
+        func validate(for url: URL) throws {
+            guard isRAW == MCPPhotoFormatCatalog.rawExtensions.contains(url.pathExtension.lowercased()) else { throw Failure.decoderStateInvalid }
+            if isRAW {
+                guard let temperature = neutralTemperature, temperature.isFinite, temperature > 0,
+                      let tint = neutralTint, tint.isFinite, sourceHasHDRHeadroom == true else {
+                    throw Failure.decoderStateInvalid
+                }
+            } else {
+                guard neutralTemperature == nil, neutralTint == nil, sourceHasHDRHeadroom == nil else {
+                    throw Failure.decoderStateInvalid
+                }
+            }
+        }
+
+        var protocolValue: MCPJSONValue {
+            .object([
+                "source": .string("retained-source-bytes"),
+                "whiteBalanceMode": .string(isRAW ? "absolute-with-decoder-as-shot-reference" : "incremental"),
+                "asShotNeutralTemperature": neutralTemperature.map(MCPJSONValue.number) ?? .null,
+                "asShotNeutralTint": neutralTint.map(MCPJSONValue.number) ?? .null,
+                "sourceHasHDRHeadroom": sourceHasHDRHeadroom.map(MCPJSONValue.bool) ?? .null,
+                "headroomSemantics": .string("production-raw-source-render-hint; not-measured-pixel-headroom"),
+                "renderedPreview": .bool(false),
+            ])
+        }
+    }
+
+    /// Resolve source-specific settings using the same RAW configuration as Develop.
+    /// ImageIO's bounded thumbnail proves raster decodability; no destination URL is opened.
+    static func resolveDecoderState(data: Data, url: URL) throws -> DecoderState {
+        try Task.checkCancellation()
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue else {
+            throw Failure.decoderUnavailable
+        }
+        guard width.isFinite, height.isFinite, width > 0, height > 0,
+              width <= 100_000, height <= 100_000, width * height <= 1_000_000_000 else {
+            throw Failure.decoderStateInvalid
+        }
+        let state: DecoderState
+        if MCPPhotoFormatCatalog.rawExtensions.contains(url.pathExtension.lowercased()) {
+            let configuration = try rawConfiguration()
+            let hint = CGImageSourceGetType(source).map { $0 as String }
+            // CIRAWFilter also accepts ordinary raster data. A RAW extension alone
+            // cannot justify scene-referred headroom or an as-shot RAW reference.
+            guard let hint, let detectedType = UTType(hint), detectedType.conforms(to: .rawImage) else {
+                throw Failure.decoderUnavailable
+            }
+            guard let filter = CIRAWFilter(imageData: data, identifierHint: hint),
+                  let decoded = RAWSourceDecoder.decode(filter, draftMode: false, maxPixelSize: 64,
+                nativeLongestSide: CGFloat(max(width, height)), profile: RAWDecodeProfile(storedRawValue: configuration.profile ?? "") ?? .camera,
+                decoderPreference: RAWDecoderVersionPreference(rawValue: configuration.decoder ?? "") ?? .auto),
+                  !decoded.image.extent.isInfinite, !decoded.image.extent.isEmpty,
+                  max(decoded.image.extent.width, decoded.image.extent.height) <= 4096 else {
+                throw Failure.decoderUnavailable
+            }
+            // Force a bounded raster so a lazy output graph alone cannot admit a broken decoder.
+            let extent = decoded.image.extent
+            let scale = min(1, 64 / max(extent.width, extent.height))
+            let thumbnail = decoded.image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            try Task.checkCancellation()
+            guard CIContext(options: [.cacheIntermediates: false]).createCGImage(thumbnail,
+                from: thumbnail.extent, format: .RGBAh, colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)) != nil else {
+                throw Failure.decoderUnavailable
+            }
+            try Task.checkCancellation()
+            guard try rawConfiguration() == configuration else { throw Failure.decoderConfigurationChanged }
+            state = DecoderState(isRAW: true, neutralTemperature: Double(decoded.neutralTemperature),
+                neutralTint: Double(decoded.neutralTint), sourceHasHDRHeadroom: true)
+        } else {
+            let thumbnailOptions: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 64, kCGImageSourceShouldCacheImmediately: true]
+            guard CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) != nil else {
+                throw Failure.decoderUnavailable
+            }
+            // Develop's non-RAW projection explicitly clears the RAW source hint. The
+            // HDR-first raster loader may preserve HDR pixels, but this flag is RAW-only.
+            state = DecoderState(isRAW: false, neutralTemperature: nil, neutralTint: nil,
+                sourceHasHDRHeadroom: nil)
+        }
+        try Task.checkCancellation()
+        try state.validate(for: url)
+        return state
+    }
+
+    private struct RAWConfiguration: Equatable {
+        let profile: String?
+        let decoder: String?
+    }
+
+    private static func rawConfiguration() throws -> RAWConfiguration {
+        let domain = MCPServerConstants.preferencesSuiteName as CFString
+        let profile = CFPreferencesCopyAppValue(UserDefaultsKeys.rawDecodeProfile as CFString, domain)
+        let decoder = CFPreferencesCopyAppValue(UserDefaultsKeys.rawDecoderVersionPreference as CFString, domain)
+        guard profile == nil || profile is String, decoder == nil || decoder is String else {
+            throw Failure.decoderStateInvalid
+        }
+        return RAWConfiguration(profile: profile as? String, decoder: decoder as? String)
     }
 
     private static func settingsValue(_ settings: CameraRawSettings) throws -> MCPJSONValue {
