@@ -166,6 +166,57 @@ actor WhisperModelDistributionStateStore {
         }
     }
 
+    /// Explicit removal retires retained model bytes, including a consumed release's
+    /// high-water copy, without deleting signed authority or resetting replay protection.
+    /// Corrupt regular bytes are removable; unsafe entries refuse the entire preflight.
+    /// A new durable generation invalidates suspended installs/restorations before
+    /// deletion. A partial failure requires reloading before retrying absent copies.
+    func removeInstalledModels(expectedGeneration: UUID) async throws -> Int {
+        try await StorageTransactionAdmission.shared.withAccess(to: [admissionURL]) {
+            try await self.removeRetainedModels(expectedGeneration: expectedGeneration)
+        }
+    }
+
+    private func removeRetainedModels(expectedGeneration: UUID) throws -> Int {
+        let fd = try openTransaction()
+        defer { closeTransaction(fd) }
+        guard let (document, state, highWater) = try read(directoryFD: fd),
+              document.generation == expectedGeneration else { throw StoreError.staleGeneration }
+        let names = Set([state.current, state.rollbackCandidate, highWater].compactMap { $0 }.map(modelFilename))
+        var candidates: [(String, stat)] = []
+        for name in names.sorted() {
+            try Task.checkCancellation()
+            var info = stat()
+            if fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                guard errno == ENOENT else { throw StoreError.unsafeStorage }
+                continue
+            }
+            guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(),
+                  info.st_nlink == 1, info.st_mode & 0o077 == 0 else { throw StoreError.unsafeStorage }
+            candidates.append((name, info))
+        }
+        try validateDirectoryIdentity()
+        try Task.checkCancellation()
+        let retired = Document(schemaVersion: 1, generation: UUID(), modelID: modelID,
+                               record: document.record)
+        try write(retired, directoryFD: fd)
+        for (name, original) in candidates {
+            var named = stat()
+            guard fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  named.st_dev == original.st_dev, named.st_ino == original.st_ino,
+                  named.st_mode == original.st_mode, named.st_uid == original.st_uid,
+                  named.st_nlink == 1, named.st_size == original.st_size,
+                  named.st_ctimespec.tv_sec == original.st_ctimespec.tv_sec,
+                  named.st_ctimespec.tv_nsec == original.st_ctimespec.tv_nsec else {
+                throw StoreError.unsafeStorage
+            }
+            guard unlinkat(fd, name, 0) == 0 else { throw StoreError.unsafeStorage }
+        }
+        guard fsync(fd) == 0 else { throw StoreError.unsafeStorage }
+        try validateDirectoryIdentity()
+        return candidates.count
+    }
+
     private func readRetainedModelURL(expectedGeneration: UUID, rollback: Bool) throws -> URL? {
         let fd = try openTransaction()
         defer { closeTransaction(fd) }
@@ -647,6 +698,11 @@ actor WhisperModelDistributionStateStore {
         try Task.checkCancellation()
         let document = Document(schemaVersion: 1, generation: UUID(), modelID: modelID,
                                 record: WhisperModelReleaseRecord(state: next, highWater: highWater))
+        try write(document, directoryFD: fd)
+        return Snapshot(generation: document.generation, release: next)
+    }
+
+    private func write(_ document: Document, directoryFD fd: Int32) throws {
         let data = try JSONEncoder().encode(document)
         let temporary = ".\(filename).\(UUID().uuidString).staging"
         let stagedFD = openat(fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
@@ -665,7 +721,6 @@ actor WhisperModelDistributionStateStore {
         }
         guard fsync(fd) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         try validateDirectoryIdentity()
-        return Snapshot(generation: document.generation, release: next)
     }
 
     /// A lost ledger cannot be distinguished from first install using signed model
