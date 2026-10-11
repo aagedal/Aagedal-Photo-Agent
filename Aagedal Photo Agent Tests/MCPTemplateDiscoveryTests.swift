@@ -1,9 +1,157 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 import Testing
 @testable import Aagedal_Photo_Agent
 
 @Suite("Bounded MCP template header discovery")
 struct MCPTemplateDiscoveryTests {
+    @Test("Develop destination preview retains saved crop and regenerates independent layer references", arguments: [false, true])
+    func developDestinationPreview(includesCrop: Bool) throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Develop")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.25
+        settings.crop = CameraRawCrop(top: 0.2, left: 0.2, bottom: 0.8, right: 0.8, angle: 0, hasCrop: true)
+        let mask = MaskAdjustment()
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        settings.localAdjustments = [mask]
+        settings.watermarkLayers = [watermark]
+        settings.layerOrder = [.mask(mask.id), .global, .watermark(watermark.id)]
+        let template = DevelopTemplate(name: "Exposure", settings: settings, includesCrop: includesCrop)
+        let templateURL = directory.appendingPathComponent("\(template.id.uuidString).json")
+        let templateBytes = try JSONEncoder().encode(template)
+        try templateBytes.write(to: templateURL)
+        let photo = root.appendingPathComponent("frame.jpg")
+        let pixels = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 16, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(pixels.makeImage())
+        let bytes = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        try (bytes as Data).write(to: photo)
+        let xmpURL = root.appendingPathComponent("frame.xmp")
+        let xmpBytes = Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+        crs:Exposure2012="-0.5" crs:CropTop="0.1" crs:CropLeft="0.1" crs:CropBottom="0.9" crs:CropRight="0.9" crs:CropAngle="0" crs:HasCrop="True"/>
+        </rdf:RDF></x:xmpmeta>
+        """.utf8)
+        try xmpBytes.write(to: xmpURL)
+        let authorization = try store(root: root)
+        let access = reader(authorization, root)
+        let facade = MCPAutomationFacade(authorizationStore: authorization)
+        var args = try developArguments(access, id: template.id)
+        args["path"] = .string(photo.path)
+        let snapshot = try facade.capturePhotoSnapshot(path: photo.path)
+        args["sourceRevision"] = .string(snapshot.sourceRevision)
+        args["xmpSidecarRevision"] = .string(snapshot.xmpSidecarRevision)
+        args["appSidecarRevision"] = .string(snapshot.appSidecarRevision)
+        let value = try MCPDevelopTemplatePreview.prepare(arguments: args, facade: facade, discovery: access)
+        let result = try #require(value.objectValue)
+        let tools = MCPFoundationTools(authorizationStore: authorization, templateDiscovery: access)
+        let dispatched = tools.callTool(name: "preview_develop_template", arguments: args)
+        #expect(dispatched.objectValue?["isError"] == .bool(false))
+        #expect(dispatched.objectValue?["structuredContent"]?.objectValue?["decoderStateResolved"] == .bool(false))
+        #expect(dispatched.objectValue?["structuredContent"]?.objectValue?["commitAvailable"] == .bool(false))
+        let after = try #require(result["after"])
+        let applied = try JSONDecoder().decode(CameraRawSettings.self, from: JSONEncoder().encode(after))
+        let saved = try MCPMetadataSnapshotReader.read(snapshot).resolution.metadata.cameraRaw
+        #expect(applied.exposure2012 == 1.25)
+        #expect(applied.crop == (includesCrop ? template.settings.crop : saved?.crop))
+        let maskID = try #require(applied.localAdjustments?.first?.id)
+        let watermarkID = try #require(applied.watermarkLayers?.first?.id)
+        #expect(maskID != mask.id && watermarkID != watermark.id)
+        #expect(applied.layerOrder == [.mask(maskID), .global, .watermark(watermarkID)])
+        #expect(applied.asShotNeutralTemperature == nil && applied.sourceHasHDRHeadroom == nil)
+        #expect(result["decoderStateResolved"] == .bool(false))
+        #expect(result["previewOnly"] == .bool(true) && result["applicationAvailable"] == .bool(false))
+        #expect(result["commitAvailable"] == .bool(false) && result["layerIdentifiersAreEphemeral"] == .bool(true))
+        #expect(try Data(contentsOf: photo) == bytes as Data)
+        #expect(try Data(contentsOf: xmpURL) == xmpBytes)
+        #expect(try Data(contentsOf: templateURL) == templateBytes)
+        var stale = args; stale["sourceRevision"] = .string("stale")
+        #expect(throws: MCPDevelopTemplatePreview.Failure.staleRevision) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: stale, facade: facade, discovery: access)
+        }
+        var staleTemplate = args
+        staleTemplate["templateRevision"] = .string("sha256:" + String(repeating: "0", count: 64))
+        #expect(throws: MCPMetadataTemplatePreview.Failure.staleTemplate) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: staleTemplate, facade: facade, discovery: access)
+        }
+        let inventoryChanged = reader(authorization, root, checkpoint: {
+            try? Data("changed".utf8).write(to: templateURL)
+        })
+        #expect(throws: MCPTemplateDiscoveryError.self) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: args, facade: facade, discovery: inventoryChanged)
+        }
+        try templateBytes.write(to: templateURL)
+        let revoked = reader(authorization, root, checkpoint: { try? authorization.setEnabled(false) })
+        #expect(throws: (any Error).self) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: args, facade: facade, discovery: revoked)
+        }
+        try authorization.setEnabled(true)
+        var oversizedSettings = settings
+        oversizedSettings.version = String(repeating: "v", count: MCPServerConstants.maximumToolResultBytes)
+        let oversizedTemplate = DevelopTemplate(id: template.id, name: "Oversized", settings: oversizedSettings)
+        let oversizedBytes = try JSONEncoder().encode(oversizedTemplate)
+        try oversizedBytes.write(to: templateURL)
+        var oversizedArgs = args
+        oversizedArgs["templateRevision"] = try developArguments(access, id: template.id)["templateRevision"]
+        #expect(throws: MCPDevelopTemplatePreview.Failure.outputLimit) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: oversizedArgs, facade: facade, discovery: access)
+        }
+        #expect(try Data(contentsOf: templateURL) == oversizedBytes)
+        try templateBytes.write(to: templateURL)
+
+        let conflictBytes = Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+        <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <dc:title><rdf:Alt><rdf:li xml:lang="x-default">Sidecar title</rdf:li></rdf:Alt></dc:title>
+        </rdf:Description></rdf:RDF></x:xmpmeta>
+        """.utf8)
+        try conflictBytes.write(to: xmpURL)
+        let originalPhotoDate = try #require(FileManager.default.attributesOfItem(atPath: photo.path)[.modificationDate] as? Date)
+        try FileManager.default.setAttributes([.modificationDate: originalPhotoDate.addingTimeInterval(-60)], ofItemAtPath: xmpURL.path)
+        let conflictSnapshot = try facade.capturePhotoSnapshot(path: photo.path)
+        var conflictArgs = args
+        conflictArgs["sourceRevision"] = .string(conflictSnapshot.sourceRevision)
+        conflictArgs["xmpSidecarRevision"] = .string(conflictSnapshot.xmpSidecarRevision)
+        #expect(try MCPMetadataSnapshotReader.read(conflictSnapshot).resolution.hasXMPConflict)
+        #expect(throws: MCPDevelopTemplatePreview.Failure.conflict) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: conflictArgs, facade: facade, discovery: access)
+        }
+        #expect(try Data(contentsOf: xmpURL) == conflictBytes)
+        try xmpBytes.write(to: xmpURL)
+        let restored = try facade.capturePhotoSnapshot(path: photo.path)
+        args["sourceRevision"] = .string(restored.sourceRevision)
+        args["xmpSidecarRevision"] = .string(restored.xmpSidecarRevision)
+        let changing = reader(authorization, root, checkpoint: { try? Data("changed".utf8).write(to: photo) })
+        #expect(throws: (any Error).self) {
+            _ = try MCPDevelopTemplatePreview.prepare(arguments: args, facade: facade, discovery: changing)
+        }
+    }
+
+    @Test("Develop preview rejects malformed and noncanonical arguments before photo access")
+    func developPreviewArguments() throws {
+        let args: [String: MCPJSONValue] = ["templateID": .string("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            "templateRevision": .string("sha256:" + String(repeating: "a", count: 64)),
+            "path": .string("/photos/frame.jpg"), "sourceRevision": .string("source"),
+            "xmpSidecarRevision": .string("absent"), "appSidecarRevision": .string("absent")]
+        _ = try MCPDevelopTemplatePreview.Request(arguments: args)
+        for (key, value) in [("templateID", MCPJSONValue.string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")),
+                             ("mode", .string("replace")), ("path", .string("relative.jpg")),
+                             ("templateRevision", .string("sha256:" + String(repeating: "A", count: 64))),
+                             ("sourceRevision", .string(""))] {
+            var invalid = args; invalid[key] = value
+            #expect(throws: MCPDevelopTemplatePreview.Failure.invalidArguments) {
+                _ = try MCPDevelopTemplatePreview.Request(arguments: invalid)
+            }
+        }
+    }
     private func folder() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("apa-template-discovery-\(UUID())")
             .resolvingSymlinksInPath()
