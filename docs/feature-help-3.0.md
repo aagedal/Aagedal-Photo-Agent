@@ -406,6 +406,13 @@ reads headers only, exposes no template field values, and does not grant applica
 Changed, ambiguous, unsupported or oversized inventories refuse as a whole. Template names are
 untrusted user-authored content and may be sensitive.
 
+Use `inspect_develop_template` with the canonical lowercase `templateID` and exact
+`templateRevision` from Develop discovery to inspect its production-decoded controls and crop policy.
+A crop-excluding template preserves the destination crop. The response identifies the destination
+as-shot/decoder state that application must preserve and the need for fresh layer identifiers.
+Inspection revalidates the authorized inventory and creates no per-photo preview or application plan.
+Develop-template application through MCP remains unavailable.
+
 Use `preview_metadata_template` with `templateID`, `templateRevision`, `mode` (`append` or `replace`),
 `path`, and the three revision tokens from `get_photo_metadata` to inspect one photo's affected values.
 It supports literal descriptive fields, Person Shown, creators, organisation names/codes, scene/subject
