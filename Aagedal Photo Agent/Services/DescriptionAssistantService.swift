@@ -200,6 +200,34 @@ final class DescriptionAssistantModelSetup {
     private(set) var discoveredModels: [DiscoveredDescriptionModel] = []
     private(set) var isDiscovering = false
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
+    /// Selection contains only files already present, including app downloads and custom bookmarks.
+    var availableModels: [DiscoveredDescriptionModel] {
+        var models = discoveredModels.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        var seen = Set(models.map { $0.url.resolvingSymlinksInPath().path })
+        for model in DescriptionAssistantDownloadModel.allCases where downloadedModels.contains(model) {
+            let url = model.installedFile
+            guard FileManager.default.fileExists(atPath: url.path),
+                  seen.insert(url.resolvingSymlinksInPath().path).inserted else { continue }
+            models.append(.init(url: url, name: model.title, source: "Photo Agent", format: "GGUF"))
+        }
+        if let directory {
+            let accessing = directory.startAccessingSecurityScopedResource()
+            defer { if accessing { directory.stopAccessingSecurityScopedResource() } }
+            guard FileManager.default.fileExists(atPath: directory.path) else {
+                return models.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            }
+            let resolved = directory.resolvingSymlinksInPath().path
+            if let index = models.firstIndex(where: { $0.url.resolvingSymlinksInPath().path == resolved }) {
+                // Keep the bookmark path as the picker value even when discovery found a symlink alias.
+                let model = models[index]
+                models[index] = .init(url: directory, name: model.name, source: model.source, format: model.format)
+            } else {
+                models.append(.init(url: directory, name: directory.lastPathComponent,
+                                    source: "Selected file", format: DescriptionModelDiscovery.isGGUF(directory) ? "GGUF" : "MLX"))
+            }
+        }
+        return models.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
     var selectedModelName: String? {
         guard let directory else { return nil }
         return discoveredModels.first(where: {
@@ -226,8 +254,7 @@ final class DescriptionAssistantModelSetup {
     }
 
     static var defaultProvider: DescriptionAssistantProvider {
-        if #available(macOS 27.0, *) { return .appleFoundationModels }
-        return .localModel
+        .appleFoundationModels
     }
 
     func select(_ url: URL, activateProvider: Bool = true) throws {
@@ -286,7 +313,7 @@ final class DescriptionAssistantModelSetup {
         progress = 0
         message = "Checking shared caches for an existing copy…"
         task = Task {
-            defer { isInstalling = false; task = nil; refreshDownloadedModels() }
+            defer { isInstalling = false; task = nil; refreshDownloadedModels(); refreshDiscoveredModels() }
             do {
                 let lookup = Task.detached(priority: .utility) {
                     let artifact = model.artifact
@@ -297,18 +324,16 @@ final class DescriptionAssistantModelSetup {
                     try await lookup.value
                 } onCancel: { lookup.cancel() }
                 try Task.checkCancellation()
-                if let existing {
-                    try select(existing)
-                    message = "Using the existing \(model.title) model in place. No download needed."
+                if existing != nil {
+                    message = "\(model.title) is already on this Mac. Select it in Description Assistant. No download needed."
                     return
                 }
                 message = nil
-                let url = try await DescriptionAssistantService.shared.install(model: model) { value in
+                _ = try await DescriptionAssistantService.shared.install(model: model) { value in
                     Task { @MainActor in self.progress = value }
                 }
                 try Task.checkCancellation()
-                try select(url)
-                message = "\(model.title) is ready. Descriptions are processed locally."
+                message = "\(model.title) is ready. Select it in Description Assistant."
             } catch is CancellationError { message = "Download cancelled. You can retry when ready." }
             catch { message = error.localizedDescription }
         }
