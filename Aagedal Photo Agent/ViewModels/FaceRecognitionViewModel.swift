@@ -1136,8 +1136,9 @@ final class FaceRecognitionViewModel {
                 self.scanProgress = "0/\(toScan.count)"
             }
 
-            if toScan.isEmpty && !classificationWasCancelled {
-                // Nothing new to scan; release before advertising completion.
+            if toScan.isEmpty && toRemove.isEmpty && !classificationWasCancelled {
+                // Only a truly unchanged inventory can skip persistence. A removal-only
+                // scan must save the pruned faces, groups, numbers and signatures below.
                 reservation.release()
                 await MainActor.run {
                     self.isScanning = false

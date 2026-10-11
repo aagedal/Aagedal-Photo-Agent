@@ -69,6 +69,197 @@ nonisolated final class PrimaryDevelopWriteRequest: Sendable {
         self.replaceDevelop = replaceDevelop; self.replaceOrientation = replaceOrientation
     }
 }
+/// Immutable admission inputs shared by native and future automation callers.
+/// Evidence and watermark bytes must already be captured by the caller; building performs no I/O.
+nonisolated struct PrimaryDevelopWriteCapture: Sendable {
+    let imageURL: URL
+    let folderURL: URL
+    let loadID: UUID
+    let mode: MetadataWriteMode
+    let edited: IPTCMetadata
+    let previous: IPTCMetadata?
+    let original: IPTCMetadata?
+    let xmpBaseline: IPTCMetadata?
+    let embeddedBaseline: IPTCMetadata?
+    let expectedRecord: MetadataSidecar?
+    let expectedXMP: XMPSidecarWriteSnapshot?
+    let sourceRevision: SourceImageRevision?
+    let captureFailure: String?
+    let history: [MetadataHistoryEntry]
+    let timestamp: Date
+    let predecessor: PrimaryDevelopWriteRequest?
+    let watermarkDependencies: [PrimaryDevelopWatermarkDependency]
+}
+
+nonisolated enum PrimaryDevelopWriteRequestBuilder {
+    static func build(_ capture: PrimaryDevelopWriteCapture) -> PrimaryDevelopWriteRequest {
+        let edited = capture.edited
+        let ancestry = PrimaryDevelopWriteRequest.ancestry(of: capture.predecessor.map { [$0] } ?? [])
+        let identityMatches = ancestry.allSatisfy {
+            $0.imageURL == capture.imageURL && $0.folderURL == capture.folderURL && $0.loadID == capture.loadID
+        }
+        // Invalid ancestry is retained as a failed capture, but never supplies another editor's baselines.
+        let predecessor = identityMatches ? capture.predecessor : nil
+        let previous = predecessor?.edited ?? capture.previous
+        let changes = MetadataHistoryEntry.changes(from: previous ?? IPTCMetadata(), to: edited, timestamp: capture.timestamp)
+        var history = predecessor?.sidecar.history ?? capture.history
+        history.append(contentsOf: changes)
+        history.trimToHistoryLimit()
+        let sidecar = MetadataSidecar(sourceFile: capture.imageURL.lastPathComponent,
+            lastModified: capture.timestamp, pendingChanges: false,
+            metadata: edited, imageMetadataSnapshot: edited, history: history)
+        let writesEmbedded = DescriptiveMetadataWriteTargetResolver().resolve(
+            sourceURL: capture.imageURL, requestedMode: capture.mode).writesEmbedded
+        let xmpBaseline = predecessor?.edited ?? capture.xmpBaseline
+        // An XMP-only predecessor cannot acknowledge embedded technical state.
+        let embeddedPredecessor = PrimaryDevelopWriteRequest.ancestry(of: predecessor.map { [$0] } ?? []).first {
+            DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: $0.imageURL, requestedMode: $0.mode).writesEmbedded
+        }
+        let embeddedBaseline = embeddedPredecessor?.edited ?? capture.embeddedBaseline
+        let replaceDevelop = developSettingsChanged(edited.cameraRaw, xmpBaseline?.cameraRaw)
+            || (writesEmbedded && developSettingsChanged(edited.cameraRaw, embeddedBaseline?.cameraRaw))
+        let replaceOrientation = edited.exifOrientation != xmpBaseline?.exifOrientation
+            || (writesEmbedded && edited.exifOrientation != embeddedBaseline?.exifOrientation)
+        let structured = replaceDevelop ? StructuredWriteData(toneCurve: edited.cameraRaw?.toneCurve,
+            masks: edited.cameraRaw?.localAdjustments, watermarkLayers: edited.cameraRaw?.watermarkLayers,
+            hslAdjustments: edited.cameraRaw?.hslAdjustments, layerOrder: edited.cameraRaw?.layerOrder,
+            anonymizer: edited.cameraRaw?.anonymizer, unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
+            editorial: .init(metadata: edited), replaceCameraRawBlock: true)
+            : StructuredWriteData(editorial: .init(metadata: edited))
+        var fields = overwriteFields(from: edited, original: capture.original, includeCameraRaw: replaceDevelop)
+        if replaceDevelop && edited.cameraRaw == nil { clearAllCameraRawFields(into: &fields) }
+        let failure = capture.captureFailure
+            ?? (!identityMatches ? "The earlier captured Primary Develop edit belongs to another photo or editor load. This edit remains retained for recovery." : nil)
+            ?? (capture.sourceRevision == nil ? "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery." : nil)
+            ?? (capture.expectedXMP == nil ? "The loaded XMP revision is unavailable. This Primary Develop edit remains retained for recovery." : nil)
+        return PrimaryDevelopWriteRequest(imageURL: capture.imageURL, folderURL: capture.folderURL,
+            loadID: capture.loadID, mode: capture.mode, edited: edited, previous: previous,
+            original: capture.original, expectedRecord: capture.expectedRecord, expectedXMP: capture.expectedXMP,
+            sourceRevision: capture.sourceRevision, captureFailure: failure, sidecar: sidecar, changes: changes,
+            fields: fields, structured: structured, replaceDevelop: replaceDevelop,
+            replaceOrientation: replaceOrientation, predecessor: predecessor,
+            watermarkDependencies: capture.watermarkDependencies, embeddedBaseline: embeddedBaseline)
+    }
+
+    static func watermarkDependencyIDs(edited: IPTCMetadata, previous: IPTCMetadata?, original: IPTCMetadata?) -> Set<UUID> {
+        Set(([edited, previous, original].compactMap { $0 }).flatMap {
+            ($0.cameraRaw?.watermarkLayers ?? []).map(\.libraryAssetID)
+        })
+    }
+
+    static func developSettingsChanged(_ a: CameraRawSettings?, _ b: CameraRawSettings?) -> Bool {
+        func normalized(_ s: CameraRawSettings?) -> CameraRawSettings? {
+            guard var s else { return nil }
+            s.asShotNeutralTemperature = nil
+            s.asShotNeutralTint = nil
+            s.sourceHasHDRHeadroom = nil
+            return s
+        }
+        return normalized(a) != normalized(b)
+    }
+
+    static func overwriteFields(from metadata: IPTCMetadata, original: IPTCMetadata?,
+        includeCameraRaw: Bool = true, imageAspect: () -> Double? = { nil }) -> [MetadataFieldKey: String] {
+        var fields: [MetadataFieldKey: String] = [:]
+        fields[.headline] = metadata.title ?? ""
+        fields[.description] = metadata.description ?? ""
+        fields[.extendedDescription] = metadata.extendedDescription ?? ""
+        fields[.subject] = metadata.keywords.uniqued().joined(separator: ", ")
+        fields[.personInImage] = metadata.personShown.uniqued().joined(separator: ", ")
+        fields[.organisationInImageName] = metadata.organisationsShownNames.uniqued().joined(separator: ", ")
+        fields[.organisationInImageCode] = metadata.organisationsShownCodes.uniqued().joined(separator: ", ")
+        fields[.scene] = metadata.sceneCodes.uniqued().joined(separator: ", ")
+        fields[.subjectCode] = metadata.subjectCodes.uniqued().joined(separator: ", ")
+        fields[.mediaTopic] = metadata.mediaTopics.map(\.termIdentifier).uniqued().joined(separator: ", ")
+        fields[.genre] = metadata.genres.map(\.termIdentifier).uniqued().joined(separator: ", ")
+        fields[.digitalSourceType] = metadata.digitalSourceType?.newsCodeURI ?? ""
+        fields[.urgency] = metadata.urgency.map(String.init) ?? ""
+        fields[.creator] = metadata.creatorTransportValue ?? ""
+        fields[.creatorJobTitle] = metadata.creatorJobTitle ?? ""
+        fields[.descriptionWriter] = metadata.descriptionWriter ?? ""
+        fields[.credit] = metadata.credit ?? ""
+        fields[.rights] = metadata.copyright ?? ""
+        fields[.rightsUsageTerms] = metadata.rightsUsageTerms ?? ""
+        fields[.webStatementOfRights] = metadata.webStatementOfRights ?? ""
+        fields[.digitalImageGUID] = metadata.digitalImageGUID ?? ""
+        fields[.imageSupplierImageID] = metadata.imageSupplierImageID ?? ""
+        fields[.transmissionReference] = metadata.jobId ?? ""
+        fields[.dateCreated] = metadata.dateCreated ?? ""
+        fields[.city] = metadata.city ?? ""
+        fields[.sublocation] = metadata.sublocation ?? ""
+        fields[.provinceState] = metadata.provinceState ?? ""
+        fields[.country] = metadata.country ?? ""
+        fields[.countryCode] = metadata.countryCode ?? ""
+        fields[.event] = metadata.event ?? ""
+        fields[.instructions] = metadata.instructions ?? ""
+        fields[.source] = metadata.source ?? ""
+
+        if let lat = metadata.latitude, let lon = metadata.longitude {
+            fields[.gpsLatitude] = String(abs(lat))
+            fields[.gpsLatitudeRef] = lat >= 0 ? "N" : "S"
+            fields[.gpsLongitude] = String(abs(lon))
+            fields[.gpsLongitudeRef] = lon >= 0 ? "E" : "W"
+        } else {
+            fields[.gpsLatitude] = ""
+            fields[.gpsLatitudeRef] = ""
+            fields[.gpsLongitude] = ""
+            fields[.gpsLongitudeRef] = ""
+        }
+
+        // Caption-only saves must not touch the crs block at all — rewriting it
+        // (even merge-style) churns Adobe's develop settings for no reason.
+        if includeCameraRaw {
+            if let cameraRaw = metadata.cameraRaw {
+                fields.merge(cameraRaw.developWriteFields(imageAspect: imageAspect)) { _, new in new }
+            } else if original?.cameraRaw != nil {
+                clearAllCameraRawFields(into: &fields)
+            }
+        }
+        return fields
+    }
+
+    static func clearAllCameraRawFields(into fields: inout [MetadataFieldKey: String]) {
+        fields[.crsVersion] = ""
+        fields[.crsProcessVersion] = ""
+        fields[.crsWhiteBalance] = ""
+        fields[.crsTemperature] = ""
+        fields[.crsTint] = ""
+        fields[.crsIncrementalTemperature] = ""
+        fields[.crsIncrementalTint] = ""
+        fields[.crsExposure2012] = ""
+        fields[.crsContrast2012] = ""
+        fields[.crsHighlights2012] = ""
+        fields[.crsShadows2012] = ""
+        fields[.crsWhites2012] = ""
+        fields[.crsBlacks2012] = ""
+        fields[.crsSaturation] = ""
+        fields[.crsVibrance] = ""
+        fields[.aaphotoGlobalDensity] = ""
+        fields[.crsSharpness] = ""
+        fields[.crsClarity2012] = ""
+        fields[.crsDehaze] = ""
+        fields[.crsHasSettings] = "False"
+        fields[.crsCropTop] = ""
+        fields[.crsCropLeft] = ""
+        fields[.crsCropBottom] = ""
+        fields[.crsCropRight] = ""
+        fields[.crsCropAngle] = ""
+        fields[.crsHasCrop] = ""
+        fields[.crsCropConstrainToWarp] = ""
+        fields[.crsCropConstrainToUnitSquare] = ""
+        fields[.crsHDREditMode] = ""
+        fields[.crsHDRMaxValue] = ""
+        fields[.crsSDRBrightness] = ""
+        fields[.crsSDRContrast] = ""
+        fields[.crsSDRClarity] = ""
+        fields[.crsSDRHighlights] = ""
+        fields[.crsSDRShadows] = ""
+        fields[.crsSDRWhites] = ""
+        fields[.crsSDRBlend] = ""
+        fields[.crsToneCurveName2012] = ""
+    }
+}
+
 nonisolated struct PrimaryDevelopPhysicalReceipt: Sendable {
     let sourceRevision: SourceImageRevision
 }

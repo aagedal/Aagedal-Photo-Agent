@@ -264,6 +264,68 @@ struct ActivityHistoryTests {
         next.release()
     }
 
+    @Test("Removal-only incremental scans persist pruned results under admission",
+          arguments: [false, true], [false, true])
+    func removalOnlyScanPersistence(keepSurvivor: Bool, failSave: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FaceRemovalOnly-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let removed = folder.appendingPathComponent("removed.jpg")
+        let survivor = folder.appendingPathComponent("survivor.jpg")
+        let removedFace = DetectedFace(id: UUID(), imageURL: removed, faceRect: .zero,
+            featurePrintData: Data([1]), detectedAt: Date())
+        let survivingFace = DetectedFace(id: UUID(), imageURL: survivor, faceRect: .zero,
+            featurePrintData: Data([2]), detectedAt: Date())
+        let faces = keepSurvivor ? [removedFace, survivingFace] : [removedFace]
+        let group = FaceGroup(id: UUID(), name: "Preserved name",
+            representativeFaceID: removedFace.id, faceIDs: faces.map(\.id))
+        let signature = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        let numbers = faces.map { NumberDetection(imageURL: $0.imageURL, number: 7,
+            numberConfidence: 1, boundingBox: .zero) }
+        let original = FolderFaceData(folderURL: folder, faces: faces, groups: [group],
+            lastScanDate: .distantPast, scanComplete: true,
+            scannedFiles: Dictionary(uniqueKeysWithValues: faces.map { ($0.imageURL.path, signature) }),
+            embeddingVersion: FaceRecognitionDefaults.embeddingVersion, numberDetections: numbers)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        let document = folder.appendingPathComponent(".face_data/face_data.json")
+        let originalBytes = try Data(contentsOf: document)
+        let saved = MCPServerCoreTests.DataBox()
+        let service = FaceDataFolderLoadService(saveFaceData: { data in
+            #expect(throws: MCPProcessReservationError.busy) {
+                _ = try MCPProcessReservation.acquirePhoto(removed)
+            }
+            saved.write(try JSONEncoder().encode(data))
+            if failSave { throw CocoaError(.fileWriteNoPermission) }
+            try FaceDataStorageService().saveFaceData(data)
+        })
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: service,
+            fileSignatureService: FaceScanFileSignatureService { _ in signature })
+        viewModel.scanFolder(imageURLs: keepSurvivor ? [survivor] : [], folderURL: folder)
+        await viewModel.waitForCurrentScan()
+
+        let proposed = try JSONDecoder().decode(FolderFaceData.self, from: #require(saved.read()))
+        #expect(proposed.faces.map(\.id) == (keepSurvivor ? [survivingFace.id] : []))
+        #expect(proposed.groups.count == (keepSurvivor ? 1 : 0))
+        #expect(proposed.groups.first?.name == (keepSurvivor ? "Preserved name" : nil))
+        #expect(proposed.groups.first?.representativeFaceID == (keepSurvivor ? survivingFace.id : nil))
+        #expect(proposed.numberDetections?.map(\.imageURL) == (keepSurvivor ? [survivor] : []))
+        #expect(Set(proposed.scannedFiles.keys) == (keepSurvivor ? [survivor.path] : []))
+        #expect(proposed.scanComplete)
+        if failSave {
+            #expect(viewModel.errorMessage?.contains("Failed to save") == true)
+            #expect(try Data(contentsOf: document) == originalBytes)
+        } else {
+            #expect(storage.loadFaceData(for: folder)?.faces.map(\.id) == proposed.faces.map(\.id))
+            #expect(storage.loadFaceData(for: folder)?.scannedFiles == proposed.scannedFiles)
+        }
+        #expect(!viewModel.isScanning)
+        let lease = try MCPProcessReservation.acquireFolder(folder)
+        lease.release()
+    }
+
     @Test("Interactive face writes refuse busy folders before document or thumbnail mutation",
           arguments: [false, true])
     func interactiveFaceWriteAdmission(folderReservation: Bool) async throws {

@@ -341,3 +341,174 @@ struct PrimaryDevelopWriteServiceTests {
     }
 
 }
+
+@Suite("Immutable Primary Develop request capture")
+@MainActor
+struct PrimaryDevelopWriteRequestBuilderTests {
+    private let folder = URL(fileURLWithPath: "/private/tmp/DevelopCapture", isDirectory: true)
+    private let loadID = UUID()
+    private let timestamp = Date(timeIntervalSince1970: 1234)
+
+    private func metadata(exposure: Double, orientation: Int = 1) -> IPTCMetadata {
+        var value = IPTCMetadata(title: "Saved caption")
+        var settings = CameraRawSettings()
+        settings.exposure2012 = exposure
+        value.cameraRaw = settings
+        value.exifOrientation = orientation
+        return value
+    }
+
+    private func build(edited: IPTCMetadata, baseline: IPTCMetadata? = nil,
+        embedded: IPTCMetadata? = nil, original: IPTCMetadata? = nil,
+        mode: MetadataWriteMode = .writeToXMPSidecar, predecessor: PrimaryDevelopWriteRequest? = nil,
+        failure: String? = nil, imageName: String = "photo.jpg",
+        dependencies: [PrimaryDevelopWatermarkDependency] = [],
+        source: SourceImageRevision? = nil, xmp: XMPSidecarWriteSnapshot? = .init(data: nil),
+        captureLoadID: UUID? = nil, captureFolder: URL? = nil) -> PrimaryDevelopWriteRequest {
+        let captureFolder = captureFolder ?? folder
+        return PrimaryDevelopWriteRequestBuilder.build(.init(imageURL: captureFolder.appendingPathComponent(imageName),
+            folderURL: captureFolder, loadID: captureLoadID ?? loadID, mode: mode, edited: edited, previous: baseline,
+            original: original, xmpBaseline: baseline, embeddedBaseline: embedded,
+            expectedRecord: nil, expectedXMP: xmp, sourceRevision: source,
+            captureFailure: failure, history: [], timestamp: timestamp,
+            predecessor: predecessor, watermarkDependencies: dependencies))
+    }
+
+    @Test("Caption saves ignore render-only state and preserve foreign CRS")
+    func captionAndRenderOnlyFields() {
+        let baseline = metadata(exposure: 1.25)
+        var edited = baseline
+        edited.title = "New caption"
+        edited.cameraRaw?.asShotNeutralTemperature = 5600
+        edited.cameraRaw?.asShotNeutralTint = 12
+        edited.cameraRaw?.sourceHasHDRHeadroom = true
+        let request = build(edited: edited, baseline: baseline, embedded: baseline,
+            mode: .writeToFileAndXMPSidecar)
+        #expect(!request.replaceDevelop && !request.replaceOrientation)
+        #expect(!request.structured.replaceCameraRawBlock)
+        #expect(request.fields[.crsExposure2012] == nil)
+        #expect(request.fields[.headline] == "New caption")
+        #expect(request.structured.editorial != nil)
+    }
+
+    @Test("Reset clears all scalar CRS and structured block without borrowing original state")
+    func reset() {
+        let baseline = metadata(exposure: 1.25)
+        let request = build(edited: IPTCMetadata(), baseline: baseline)
+        #expect(request.replaceDevelop && request.structured.replaceCameraRawBlock)
+        #expect(request.fields[.crsExposure2012] == "")
+        #expect(request.fields[.crsCropTop] == "")
+        #expect(request.fields[.crsWhiteBalance] == "")
+        #expect(request.fields[.crsHasSettings] == "False")
+        #expect(request.structured.masks == nil && request.structured.watermarkLayers == nil)
+    }
+
+    @Test("XMP-only predecessor cannot acknowledge embedded develop or orientation")
+    func independentEmbeddedBaseline() {
+        let embedded = metadata(exposure: 0, orientation: 1)
+        let edited = metadata(exposure: 1.25, orientation: 6)
+        let predecessor = build(edited: edited, baseline: embedded)
+        let xmp = build(edited: edited, baseline: embedded, embedded: embedded, predecessor: predecessor)
+        #expect(!xmp.replaceDevelop && !xmp.replaceOrientation)
+        let both = build(edited: edited, baseline: embedded, embedded: embedded,
+            mode: .writeToFileAndXMPSidecar, predecessor: predecessor)
+        #expect(both.replaceDevelop && both.replaceOrientation)
+        #expect(both.embeddedBaseline == embedded)
+    }
+
+    @Test("Embedded ancestry supplies the correct destination baseline through XMP saves")
+    func embeddedAncestryAndHistory() {
+        let initial = metadata(exposure: 0)
+        let edited = metadata(exposure: 1.25)
+        let embedded = build(edited: edited, baseline: initial, embedded: initial,
+            mode: .writeToFileAndXMPSidecar)
+        var caption = edited; caption.title = "Next caption"
+        let xmp = build(edited: caption, predecessor: embedded)
+        let result = build(edited: caption, embedded: initial,
+            mode: .writeToFileAndXMPSidecar, predecessor: xmp)
+        #expect(!result.replaceDevelop && !result.replaceOrientation)
+        #expect(result.embeddedBaseline == edited)
+        #expect(result.previous == caption)
+        #expect(result.predecessor === xmp)
+        #expect(result.changes.isEmpty)
+        #expect(result.sidecar.history == xmp.sidecar.history)
+        #expect(result.sidecar.lastModified == timestamp)
+        #expect(result.sidecar.imageMetadataSnapshot == caption)
+        #expect(!result.sidecar.pendingChanges)
+    }
+
+    @Test("Proprietary RAW target never treats file mode as embedded admission")
+    func rawDestination() {
+        let edited = metadata(exposure: 1.25, orientation: 6)
+        let request = build(edited: edited, baseline: edited,
+            embedded: metadata(exposure: 0), mode: .writeToFileAndXMPSidecar, imageName: "photo.nef")
+        #expect(!request.replaceDevelop && !request.replaceOrientation)
+    }
+
+    @Test("Admission failure remains captured and original dependency bytes survive reset")
+    func evidenceAndDependencyCapture() {
+        let id = UUID()
+        var original = metadata(exposure: 1)
+        original.cameraRaw?.watermarkLayers = [WatermarkLayer(libraryAssetID: id)]
+        #expect(PrimaryDevelopWriteRequestBuilder.watermarkDependencyIDs(
+            edited: IPTCMetadata(), previous: original, original: original) == [id])
+        let image = folder.appendingPathComponent("watermark.png")
+        let dependency = PrimaryDevelopWatermarkDependency(id: id, asset: nil,
+            imageData: Data([1, 2, 3]), imageURL: image,
+            metadataURL: folder.appendingPathComponent("meta.json"), unavailableAtAdmission: true)
+        let result = build(edited: IPTCMetadata(), baseline: original, original: original,
+            failure: "Original XMP evidence failed", dependencies: [dependency])
+        #expect(result.captureFailure == "Original XMP evidence failed")
+        #expect(result.watermarkDependencies.first?.imageData == Data([1, 2, 3]))
+        #expect(result.original == original)
+        #expect(result.expectedXMP == .init(data: nil))
+        let missingSource = build(edited: original)
+        #expect(missingSource.captureFailure?.contains("source revision is unavailable") == true)
+        #expect(missingSource.edited == original)
+        // Editor overwrite semantics deliberately clear absent GPS rather than export's additive GPS.
+        #expect(result.fields[.gpsLatitude] == "" && result.fields[.gpsLongitude] == "")
+    }
+    @Test("Foreign photo, folder, load and hidden ancestor cannot supply baselines", arguments: [0, 1, 2, 3])
+    func foreignPredecessor(kind: Int) {
+        let initial = metadata(exposure: 0)
+        let edited = metadata(exposure: 1.25)
+        let foreign = build(edited: edited, baseline: initial,
+            imageName: kind == 0 ? "other.jpg" : "photo.jpg",
+            captureLoadID: kind == 2 ? UUID() : nil,
+            captureFolder: kind == 1 ? folder.appendingPathComponent("other") : nil)
+        // Build a deliberately inconsistent request directly to exercise deep ancestry validation.
+        let predecessor: PrimaryDevelopWriteRequest
+        if kind == 3 {
+            let matching = build(edited: edited, baseline: initial)
+            let other = build(edited: edited, baseline: initial, captureLoadID: UUID())
+            predecessor = PrimaryDevelopWriteRequest(imageURL: matching.imageURL, folderURL: folder,
+                loadID: loadID, mode: matching.mode, edited: edited, previous: initial, original: nil,
+                expectedRecord: nil, expectedXMP: matching.expectedXMP, sourceRevision: nil,
+                captureFailure: nil, sidecar: matching.sidecar, changes: matching.changes,
+                fields: matching.fields, structured: matching.structured, replaceDevelop: true,
+                replaceOrientation: false, predecessor: other)
+        } else { predecessor = foreign }
+        let result = build(edited: edited, baseline: initial, predecessor: predecessor)
+        #expect(result.captureFailure?.contains("another photo or editor load") == true)
+        #expect(result.predecessor == nil)
+        #expect(result.previous == initial)
+        #expect(result.replaceDevelop)
+        #expect(result.sidecar.history == result.changes)
+    }
+
+    @Test("Missing XMP evidence cannot become usable capture authority")
+    func missingXMPEvidence() {
+        let source = SourceImageRevision(canonicalURL: folder.appendingPathComponent("photo.jpg"),
+            fileResourceIdentifier: nil, filenameAtCreation: "photo.jpg", byteCount: 1,
+            contentModificationDate: timestamp, pixelWidth: nil, pixelHeight: nil,
+            exifOrientation: nil, sha256: String(repeating: "a", count: 64), hashCompletedAt: timestamp)
+        let result = build(edited: metadata(exposure: 1), source: source, xmp: nil)
+        #expect(result.captureFailure?.contains("XMP revision is unavailable") == true)
+        #expect(result.sourceRevision == source)
+        #expect(result.expectedXMP == nil)
+        let absentSidecar = build(edited: metadata(exposure: 1), source: source)
+        #expect(absentSidecar.captureFailure == nil)
+        #expect(absentSidecar.expectedXMP == .init(data: nil))
+    }
+
+}
