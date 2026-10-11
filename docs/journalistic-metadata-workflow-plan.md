@@ -1947,6 +1947,16 @@ remain open. See [cycle 92 evidence](release/cycle-92-batch-preview-publication-
   decoder/as-shot state independently, regenerate layer identifiers, honor the template's crop
   policy, preserve unrelated XMP, invalidate relevant caches, and use the retained Primary Develop
   write/recovery path rather than copying one image's transient editor state across the batch.
+
+**2026-10-11 decoder admission continuation:** Read-only single-photo Develop template preview
+now resolves retained source bytes independently through shared native RAW decoder policy,
+checks detected RAW container type, forces bounded raster admission and overrides saved transient
+neutral/headroom hints. It preserves the existing revision/crop/layer rules and refuses unavailable
+state. Signed Whisper transfer-cache cleanup now authenticates retained generation and protects
+active downloads through directory locking. Production Develop application, signed catalog/Settings
+integration and the full Phase 5A criteria remain open; see the
+[dated verification](release/develop-decoder-transfer-cache-2026-10-11.md).
+
 - [ ] Implement batch voice transcription for explicit photos. Return one durable operation with
   per-photo progress/outcomes, support cancellation, revalidate each associated audio revision, and
   publish editable drafts only. Transcription must never imply review, approval, template expansion,
