@@ -42,6 +42,20 @@ nonisolated enum FaceFolderScanAdmission: Sendable, Equatable {
     case refused(FaceFolderScanRefusal)
 }
 
+/// Retains the exact scheduled task even after the scanner clears its active slot.
+/// A later scan or refusal cannot replace this submission's completion evidence.
+nonisolated struct FaceFolderScanSubmission: Sendable {
+    let admission: FaceFolderScanAdmission
+    fileprivate let task: Task<FaceScanCompletion, Never>?
+
+    init(admission: FaceFolderScanAdmission, task: Task<FaceScanCompletion, Never>?) {
+        self.admission = admission
+        self.task = task
+    }
+
+    func completion() async -> FaceScanCompletion? { await task?.value }
+}
+
 /// Detection outcome and durable save evidence are separate: even a completed worker can fail
 /// persistence. Counts refer to incremental work, while unsignedFileCount covers the full request.
 nonisolated struct FaceScanCompletion: Sendable, Equatable {

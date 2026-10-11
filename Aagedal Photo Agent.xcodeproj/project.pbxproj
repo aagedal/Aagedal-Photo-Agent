@@ -79,6 +79,7 @@
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
+		C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */; };
 		AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2600000000000000000001 /* ActivityHistoryTests.swift */; };
 		AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2700000000000000000001 /* PreviousImportDetectorTests.swift */; };
 		AB2800000000000000000002 /* ICloudSyncCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2800000000000000000001 /* ICloudSyncCoordinatorTests.swift */; };
@@ -145,6 +146,7 @@
 		C5A000000000000000000006 /* MCPServerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* MCPServerCore.swift */; };
 		C5A000000000000000000007 /* photo-agent-mcp in Copy MCP Helper */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* photo-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		C5A000000000000000000012 /* MCPServerCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000011 /* MCPServerCoreTests.swift */; };
+		C9F000000000000000000002 /* MCPFaceScanAdmissionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F000000000000000000001 /* MCPFaceScanAdmissionService.swift */; };
 		C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000001 /* MCPTemplateDiscovery.swift */; };
 		C74000000000000000000012 /* MCPTemplateDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */; };
 		C75000000000000000000002 /* FFmpegWhisperJSONParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */; };
@@ -364,6 +366,7 @@
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
+		C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPFaceScanAdmissionServiceTests.swift; sourceTree = "<group>"; };
 		AB2600000000000000000001 /* ActivityHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ActivityHistoryTests.swift; sourceTree = "<group>"; };
 		AB2700000000000000000001 /* PreviousImportDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PreviousImportDetectorTests.swift; sourceTree = "<group>"; };
 		AB2800000000000000000001 /* ICloudSyncCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ICloudSyncCoordinatorTests.swift; sourceTree = "<group>"; };
@@ -429,6 +432,7 @@
 		C5A000000000000000000003 /* photo-agent-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "photo-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C5A000000000000000000005 /* MCPServerCore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPServerCore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPServerCore.swift"; sourceTree = SOURCE_ROOT; };
 		C5A000000000000000000011 /* MCPServerCoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPServerCoreTests.swift; sourceTree = "<group>"; };
+		C9F000000000000000000001 /* MCPFaceScanAdmissionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPFaceScanAdmissionService.swift; path = "Aagedal Photo Agent/Services/Automation/MCPFaceScanAdmissionService.swift"; sourceTree = SOURCE_ROOT; };
 		C74000000000000000000001 /* MCPTemplateDiscovery.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MCPTemplateDiscovery.swift; path = "Aagedal Photo Agent/Services/Automation/MCPTemplateDiscovery.swift"; sourceTree = SOURCE_ROOT; };
 		C74000000000000000000011 /* MCPTemplateDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPTemplateDiscoveryTests.swift; sourceTree = "<group>"; };
 		C75000000000000000000001 /* FFmpegWhisperJSONParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FFmpegWhisperJSONParserTests.swift; sourceTree = "<group>"; };
@@ -704,6 +708,7 @@
 				AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */,
 				AB2500000000000000000001 /* DevelopTemplateTests.swift */,
 				AB2600000000000000000001 /* ActivityHistoryTests.swift */,
+				C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */,
 				AB2700000000000000000001 /* PreviousImportDetectorTests.swift */,
 				AB2800000000000000000001 /* ICloudSyncCoordinatorTests.swift */,
 				AB2900000000000000000001 /* C2PASigningImportTests.swift */,
@@ -847,6 +852,7 @@
 				D91000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift */,
 				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
+				C9F000000000000000000001 /* MCPFaceScanAdmissionService.swift */,
 				C13000000000000000000101 /* RAWSourceDecoder.swift */,
 				C12700000000000000000101 /* DevelopTemplate.swift */,
 				C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */,
@@ -1184,6 +1190,7 @@
 				AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */,
 				AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */,
 				AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */,
+				C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */,
 				AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */,
 				AB2800000000000000000002 /* ICloudSyncCoordinatorTests.swift in Sources */,
 				AB2900000000000000000002 /* C2PASigningImportTests.swift in Sources */,
@@ -1301,6 +1308,7 @@
 				D92000000000000000000001 /* Aagedal Photo Agent/Services/Automation/MCPTeamLibrary.swift in Sources */,
 				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
+				C9F000000000000000000002 /* MCPFaceScanAdmissionService.swift in Sources */,
 				C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */,
 				C12700000000000000000102 /* DevelopTemplate.swift in Sources */,
 				C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */,

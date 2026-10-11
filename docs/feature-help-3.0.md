@@ -403,6 +403,14 @@ Call `list_transcription_providers` without arguments for stable provider IDs an
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
 it reports unknown availability and requires an app session. This catalog does not enable transcription.
 
+Call `prepare_face_scan` with an absolute authorized folder `path` to inspect its complete
+immediate local photo inventory. Optional Boolean `forceFullScan` and `includeJerseyNumbers`
+describe intent; jerseys imply a full rescan. The read-only response reports photo count and
+a filesystem-identity snapshot revision. Links, pending cloud photos and empty inventories
+refuse. The reservation ends when the response returns. This creates no retained plan,
+checks no model readiness and grants no consent or execution authority; `start_face_scan`
+remains unavailable.
+
 Call `list_templates` with `kind: "metadata"` or `kind: "develop"` to discover stable template
 UUIDs, names and exact-content revision hashes. Disable Templates iCloud sync and explicitly
 authorize the active folder in **Settings → Automation**: either your custom folder from
@@ -425,8 +433,8 @@ and all three photo revision tokens from `get_photo_metadata` (`sourceRevision`,
 `xmpSidecarRevision`, `appSidecarRevision`) to compare saved Develop controls before and after
 application. It uses the app's template semantics: crop inclusion applies template crop; crop
 exclusion preserves destination crop; mask/watermark IDs and order references are regenerated.
-Those IDs belong only to the preview. Decoder/as-shot state remains unresolved, so this control
-comparison is not a rendered preview or application plan. It refuses stale carriers, template
+Those IDs belong only to the preview. Destination decoder/as-shot state is resolved from retained
+source bytes; this control comparison is not a rendered preview or application plan. It refuses stale carriers, template
 inventory/routing changes, revoked authorization and XMP conflicts. No edits are written and no
 consent or operation is created. Develop-template execution remains unavailable through MCP.
 

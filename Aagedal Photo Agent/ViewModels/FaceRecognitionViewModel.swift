@@ -1486,6 +1486,18 @@ final class FaceRecognitionViewModel {
         return .scheduled(request)
     }
 
+    /// Captures scheduling and its exact task without yielding the MainActor. Callers that
+    /// need durable completion evidence must retain this handle rather than read the active
+    /// slot later; fast refusals and completed scans clear that slot.
+    func scheduleFolderScan(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false,
+                            includeJerseyNumbers: Bool = false) -> FaceFolderScanSubmission {
+        let admission = scanFolder(imageURLs: imageURLs, folderURL: folderURL,
+            forceFullScan: forceFullScan, includeJerseyNumbers: includeJerseyNumbers)
+        let task: Task<FaceScanCompletion, Never>?
+        if case .scheduled = admission { task = activeScanTask } else { task = nil }
+        return FaceFolderScanSubmission(admission: admission, task: task)
+    }
+
     /// Suspends until the scan that was active when this method was called finishes.
     /// Useful to coordinate navigation and deterministic tests without guessing a
     /// wall-clock duration for Vision work under system load.
