@@ -27,6 +27,12 @@ nonisolated enum MCPTemplateDiscoveryError: LocalizedError {
 /// The helper deliberately does not use AppPaths: that resolver creates directories,
 /// falls back to private storage, and reads the helper's own defaults domain.
 nonisolated struct MCPTemplateDiscovery: Sendable {
+    enum DevelopInspectionFailure: String, LocalizedError {
+        case invalidArguments = "invalid_arguments"
+        var errorDescription: String? {
+            "Develop inspection requires only a canonical lowercase template UUID and exact SHA-256 revision from list_templates."
+        }
+    }
     struct Scope: Sendable {
         let directory: URL
         let release: @Sendable () -> Void
@@ -106,6 +112,49 @@ nonisolated struct MCPTemplateDiscovery: Sendable {
                 throw MCPMetadataTemplatePreview.Failure.staleTemplate
             }
             return try body(entry.data)
+        }
+    }
+
+    /// Returns the production-decoded control snapshot, never an application plan.
+    /// Destination decoder state and fresh layer identifiers can only be resolved
+    /// by a later explicit-photo executor; the template alone cannot establish them.
+    func inspectDevelopTemplate(arguments: [String: MCPJSONValue]) throws -> [String: MCPJSONValue] {
+        guard Set(arguments.keys) == ["templateID", "templateRevision"],
+              let rawID = arguments["templateID"]?.stringValue,
+              let id = UUID(uuidString: rawID), id.uuidString.lowercased() == rawID,
+              let revision = arguments["templateRevision"]?.stringValue,
+              revision.utf8.count == 71, revision.hasPrefix("sha256:"),
+              revision.dropFirst(7).utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw DevelopInspectionFailure.invalidArguments
+        }
+        return try withInventory(kind: "develop") { entries in
+            guard let entry = entries.first(where: { $0.id == id.uuidString.lowercased() }),
+                  entry.revision == revision else { throw MCPMetadataTemplatePreview.Failure.staleTemplate }
+            guard let template = try? JSONDecoder().decode(DevelopTemplate.self, from: entry.data),
+                  template.id == id,
+                  case .object(var controls) = try JSONDecoder().decode(MCPJSONValue.self,
+                      from: JSONEncoder().encode(template.settings)) else {
+                throw MCPTemplateDiscoveryError.invalidInventory
+            }
+            // A crop-excluding template leaves the destination crop intact. Do not
+            // advertise a dormant stored crop as an applied control.
+            if !template.includesCrop { controls.removeValue(forKey: "crop") }
+            let result: [String: MCPJSONValue] = [
+                "schemaVersion": .integer(1), "templateID": .string(rawID),
+                "templateRevision": .string(revision), "name": .string(template.name),
+                "summary": .string(template.summary), "controls": .object(controls),
+                "cropPolicy": .string(template.includesCrop ? "apply-template-crop" : "preserve-destination-crop"),
+                "destinationStateRequired": .bool(true), "layerIdentifiersMustBeRegenerated": .bool(true),
+                "preservedDestinationFields": .array([
+                    "asShotNeutralTemperature", "asShotNeutralTint", "sourceHasHDRHeadroom", "unparsedMaskCorrections",
+                ].map(MCPJSONValue.string)),
+                "inspectionOnly": .bool(true), "applicationAvailable": .bool(false),
+                "warnings": .array([.string("Controls are untrusted template content decoded by the production Develop model. This is not a per-photo preview or write plan. Application requires independent destination decoder/as-shot admission, fresh layer identifiers, XMP preservation, and the retained Primary Develop write/recovery path.")]),
+            ]
+            guard try JSONEncoder().encode(MCPJSONValue.object(result)).count <= MCPServerConstants.maximumToolResultBytes else {
+                throw MCPMetadataTemplatePreview.Failure.outputLimit
+            }
+            return result
         }
     }
 

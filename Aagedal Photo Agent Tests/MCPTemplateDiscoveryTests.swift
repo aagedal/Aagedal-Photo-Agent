@@ -286,4 +286,132 @@ struct MCPTemplateDiscoveryTests {
         }
         #expect(tools.callTool(name: "list_templates", arguments: ["kind": .string("metadata")]).objectValue?["isError"] == .bool(false))
     }
+
+    private func developArguments(_ access: MCPTemplateDiscovery, id: UUID) throws -> [String: MCPJSONValue] {
+        let inventory = try access.list(kind: "develop")
+        guard case .array(let templates) = inventory["templates"],
+              let revision = templates.first(where: { $0.objectValue?["id"] == .string(id.uuidString.lowercased()) })?
+                .objectValue?["revision"] else { throw MCPTemplateDiscoveryError.invalidInventory }
+        return ["templateID": .string(id.uuidString.lowercased()), "templateRevision": revision]
+    }
+
+    @Test("Develop inspection decodes production controls and crop policy without destination authority", arguments: [false, true])
+    func developInspection(includesCrop: Bool) throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Develop")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1.25
+        settings.crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 3, hasCrop: true)
+        settings.asShotNeutralTemperature = 6400
+        settings.asShotNeutralTint = 4
+        settings.sourceHasHDRHeadroom = true
+        let template = DevelopTemplate(name: "Exposure", settings: settings, includesCrop: includesCrop)
+        let url = directory.appendingPathComponent("\(template.id.uuidString).json")
+        let bytes = try JSONEncoder().encode(template)
+        try bytes.write(to: url)
+        let authorization = try store(root: root)
+        let access = reader(authorization, root)
+        let arguments = try developArguments(access, id: template.id)
+        let tools = MCPFoundationTools(authorizationStore: authorization, templateDiscovery: access)
+        let result = tools.callTool(name: "inspect_develop_template", arguments: arguments)
+        #expect(result.objectValue?["isError"] == .bool(false))
+        let content = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        let controls = try #require(content["controls"]?.objectValue)
+        #expect(controls["exposure2012"] == .number(1.25))
+        #expect((controls["crop"] != nil) == includesCrop)
+        for key in ["asShotNeutralTemperature", "asShotNeutralTint", "sourceHasHDRHeadroom", "unparsedMaskCorrections"] {
+            #expect(controls[key] == nil)
+        }
+        #expect(content["cropPolicy"] == .string(includesCrop ? "apply-template-crop" : "preserve-destination-crop"))
+        #expect(content["inspectionOnly"] == .bool(true))
+        #expect(content["applicationAvailable"] == .bool(false))
+        #expect(content["destinationStateRequired"] == .bool(true))
+        #expect(content["layerIdentifiersMustBeRegenerated"] == .bool(true))
+        #expect(try Data(contentsOf: url) == bytes)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [url.lastPathComponent])
+        let definition = try #require(tools.toolDefinitions(configuration: try authorization.load()).first {
+            $0.objectValue?["name"] == .string("inspect_develop_template")
+        }?.objectValue)
+        #expect(definition["annotations"]?.objectValue?["readOnlyHint"] == .bool(true))
+        #expect(definition["inputSchema"]?.objectValue?["additionalProperties"] == .bool(false))
+    }
+
+    @Test("Develop inspection refuses stale identity, malformed production settings and inventory drift")
+    func developInspectionRefusals() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Develop")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let template = DevelopTemplate(name: "Exposure")
+        let url = directory.appendingPathComponent("\(template.id.uuidString).json")
+        try JSONEncoder().encode(template).write(to: url)
+        let authorization = try store(root: root)
+        let access = reader(authorization, root)
+        let arguments = try developArguments(access, id: template.id)
+        var stale = arguments; stale["templateRevision"] = .string("sha256:" + String(repeating: "0", count: 64))
+        #expect(throws: MCPMetadataTemplatePreview.Failure.staleTemplate) { _ = try access.inspectDevelopTemplate(arguments: stale) }
+        let changed = reader(authorization, root, checkpoint: { try? Data("changed".utf8).write(to: url) })
+        #expect(throws: MCPTemplateDiscoveryError.self) { _ = try changed.inspectDevelopTemplate(arguments: arguments) }
+        let malformed: [String: MCPJSONValue] = ["schemaVersion": .integer(1), "id": .string(template.id.uuidString),
+            "name": .string("Malformed"), "settings": .object(["exposure2012": .string("bad")])]
+        try JSONEncoder().encode(MCPJSONValue.object(malformed)).write(to: url)
+        let malformedArguments = try developArguments(access, id: template.id)
+        #expect(throws: MCPTemplateDiscoveryError.invalidInventory) { _ = try access.inspectDevelopTemplate(arguments: malformedArguments) }
+    }
+
+    @Test("Develop inspection refuses extra/noncanonical arguments and disabled authority before access")
+    func developInspectionArguments() throws {
+        let authorization = try store(enabled: false)
+        let access = MCPTemplateDiscovery(authorizationStore: authorization, resolveScope: {
+            Issue.record("Invalid/disabled inspection resolved template storage")
+            throw MCPTemplateDiscoveryError.invalidInventory
+        })
+        let tools = MCPFoundationTools(authorizationStore: authorization, templateDiscovery: access)
+        let valid: [String: MCPJSONValue] = ["templateID": .string(UUID().uuidString.lowercased()),
+            "templateRevision": .string("sha256:" + String(repeating: "a", count: 64))]
+        var extra = valid; extra["path"] = .string("/photos/frame.jpg")
+        var uppercase = valid; uppercase["templateID"] = .string(UUID().uuidString.uppercased())
+        var invalidRevision = valid; invalidRevision["templateRevision"] = .string("sha256:" + String(repeating: "A", count: 64))
+        for arguments in [[:], extra, uppercase, invalidRevision] {
+            #expect(tools.callTool(name: "inspect_develop_template", arguments: arguments)
+                .objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        #expect(throws: MCPAuthorizationError.disabled) { _ = try access.inspectDevelopTemplate(arguments: valid) }
+    }
+
+    @Test("Develop inspection preserves legacy crop semantics and refuses revoked authority and oversized controls")
+    func developInspectionLegacyAndBounds() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Develop")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let id = UUID()
+        let url = directory.appendingPathComponent("\(id.uuidString).json")
+        let legacy: [String: MCPJSONValue] = ["id": .string(id.uuidString), "name": .string("Legacy"),
+            "settings": .object(["crop": .object(["hasCrop": .bool(true), "top": .number(0.1), "left": .number(0.2),
+                "bottom": .number(0.9), "right": .number(0.8), "angle": .integer(0)])])]
+        let original = try JSONEncoder().encode(MCPJSONValue.object(legacy))
+        try original.write(to: url)
+        let authorization = try store(root: root)
+        let access = reader(authorization, root)
+        let arguments = try developArguments(access, id: id)
+        let content = try access.inspectDevelopTemplate(arguments: arguments)
+        #expect(content["cropPolicy"] == .string("apply-template-crop"))
+        #expect(content["controls"]?.objectValue?["crop"]?.objectValue?["hasCrop"] == .bool(true))
+        let revoked = reader(authorization, root, checkpoint: { try? authorization.setEnabled(false) })
+        #expect(throws: MCPTemplateDiscoveryError.self) { _ = try revoked.inspectDevelopTemplate(arguments: arguments) }
+        #expect(try Data(contentsOf: url) == original)
+        try authorization.setEnabled(true)
+        var oversized = legacy
+        oversized["settings"] = .object(["version": .string(String(repeating: "v", count: MCPServerConstants.maximumToolResultBytes))])
+        let oversizedBytes = try JSONEncoder().encode(MCPJSONValue.object(oversized))
+        try oversizedBytes.write(to: url)
+        let oversizedArguments = try developArguments(access, id: id)
+        #expect(throws: MCPMetadataTemplatePreview.Failure.outputLimit) {
+            _ = try access.inspectDevelopTemplate(arguments: oversizedArguments)
+        }
+        #expect(try Data(contentsOf: url) == oversizedBytes)
+    }
 }

@@ -2451,6 +2451,18 @@ final class CoreWorkflowSmokeTests: XCTestCase {
 
     @MainActor
     func testPinnedWhisperTranscribesAndPersistsAcrossRelaunch() throws {
+        try qualifyPinnedWhisperAcrossRelaunch(useGPU: false)
+    }
+
+    @MainActor
+    func testPinnedWhisperGPURequestTranscribesAndPersistsAcrossRelaunch() throws {
+        try qualifyPinnedWhisperAcrossRelaunch(useGPU: true)
+    }
+
+    /// The request and saved provenance are qualified here. A successful GPU request
+    /// alone cannot establish that whisper.cpp selected an accelerated backend.
+    @MainActor
+    private func qualifyPinnedWhisperAcrossRelaunch(useGPU: Bool) throws {
         let environment = ProcessInfo.processInfo.environment
         func supplied(_ key: String) -> String? { environment[key] ?? environment["TEST_RUNNER_" + key] }
         guard let modelPath = supplied("APA_NATIVE_WHISPER_MODEL"),
@@ -2491,6 +2503,10 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             XCTAssertFalse(app.descendants(matching: .any)["settings.transcription.whisper.downloadProgress"].exists)
             XCTAssertFalse(app.buttons["settings.transcription.whisper.download"].exists)
             XCTAssertTrue(visibleText(app.staticTexts["settings.transcription.whisper.inventory"]).contains("1 downloaded"))
+            let gpu = app.checkBoxes["caption.voiceMemo.whisper.useGPU"]
+            XCTAssertTrue(gpu.exists)
+            if run == 0, try XCTUnwrap(checkboxState(gpu)) != useGPU { gpu.click() }
+            XCTAssertEqual(checkboxState(gpu), useGPU)
             app.typeKey("w", modifierFlags: .command)
             if run == 0 {
                 let transcribe = app.buttons["caption.voiceMemo.transcribe"]
@@ -2515,7 +2531,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
                 let provenance = try XCTUnwrap(transcript["whisperProvenance"] as? [String: Any])
                 XCTAssertEqual(provenance["modelIdentifier"] as? String, "base")
                 XCTAssertEqual(provenance["modelSHA256"] as? String, modelHash)
-                XCTAssertEqual(provenance["useGPU"] as? Bool, false)
+                XCTAssertEqual(provenance["useGPU"] as? Bool, useGPU)
                 XCTAssertTrue((provenance["buildIdentifier"] as? String)?.hasPrefix("bundled-sha256:") == true)
             } else {
                 XCTAssertEqual(try Data(contentsOf: fixture.sidecarURL), retainedSidecar)

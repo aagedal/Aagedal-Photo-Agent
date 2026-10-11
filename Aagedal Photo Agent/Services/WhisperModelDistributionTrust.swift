@@ -238,6 +238,19 @@ actor WhisperSignedModelLifecycle {
 
     func installedURL() async throws -> URL? { try await store.installedURL() }
 
+    /// Removal preserves signed release authority so relaunch or redownload cannot
+    /// accept an older release as a first installation. Interrupted-copy cleanup is
+    /// a separate explicit maintenance action.
+    func removeModels(expectedGeneration: UUID) async throws -> Int {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        return try await store.removeInstalledModels(expectedGeneration: expectedGeneration)
+    }
+
     /// Explicit repair uses retained signed authority, never a server's latest release
     /// or the compiled catalog. It preserves the ledger and does not select rollback.
     func restoreCurrentModel(expectedGeneration: UUID,

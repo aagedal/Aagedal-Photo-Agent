@@ -1085,6 +1085,110 @@ struct WhisperModelDistributionStateStoreTests {
         #expect(third.release.highestAcceptedSequence == 3)
     }
 
+    @Test("Explicit signed removal preserves authority across relaunch and permits exact repair", arguments: [false, true])
+    func signedRemovalPreservesReplayFloor(rollback: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source.bin")
+        let firstBytes = Data("first retained model".utf8)
+        let secondBytes = Data("second retained model".utf8)
+        let first = try fixture.receipt(1, bytes: firstBytes)
+        let second = try fixture.receipt(2, bytes: secondBytes)
+        try firstBytes.write(to: source)
+        let initial = try await store.install(first, from: source, expectedGeneration: nil)
+        try secondBytes.write(to: source)
+        let update = try await store.install(second, from: source, expectedGeneration: initial.generation)
+        let current = rollback ? try await store.rollBackInstalled(expectedGeneration: update.generation) : update
+        let downloads = WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache"))
+        let lifecycle = WhisperSignedModelLifecycle(trust: try fixture.trust, downloads: downloads, store: store)
+        #expect(try await lifecycle.removeModels(expectedGeneration: current.generation) == 2)
+        let removed = try #require(try await store.load())
+        #expect(removed.generation != current.generation)
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.restoreMissingCurrentModel(from: source, expectedGeneration: current.generation)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.rollBackInstalled(expectedGeneration: current.generation)
+        }
+        #expect(try await lifecycle.removeModels(expectedGeneration: removed.generation) == 0)
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        #expect(try Data(contentsOf: source) == secondBytes)
+
+        let reopened = try fixture.store()
+        let loaded = try #require(try await reopened.load())
+        #expect(loaded.generation != removed.generation)
+        #expect(loaded.release.current.descriptorSHA256 == current.release.current.descriptorSHA256)
+        #expect(loaded.release.rollbackCandidate?.descriptorSHA256 == current.release.rollbackCandidate?.descriptorSHA256)
+        #expect(loaded.release.highestAcceptedSequence == 2)
+        #expect(try await reopened.retainedModelURL(expectedGeneration: loaded.generation, rollback: false) == nil)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.replayedRelease) {
+            try await reopened.accept(second, expectedGeneration: loaded.generation)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await reopened.accept(first, expectedGeneration: nil)
+        }
+        try (rollback ? firstBytes : secondBytes).write(to: source)
+        let restored = try await reopened.restoreMissingCurrentModel(from: source, expectedGeneration: loaded.generation)
+        #expect(try Data(contentsOf: restored) == (rollback ? firstBytes : secondBytes))
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+    }
+
+    @Test("Removal preflights every retained entry and never follows unsafe content", arguments: [false, true])
+    func signedRemovalUnsafePreflight(hardLink: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source.bin")
+        let firstBytes = Data("first retained bytes".utf8)
+        let secondBytes = Data("second retained bytes".utf8)
+        try firstBytes.write(to: source)
+        let first = try await store.install(fixture.receipt(1, bytes: firstBytes), from: source, expectedGeneration: nil)
+        let firstURL = try #require(try await store.installedURL())
+        try secondBytes.write(to: source)
+        let second = try await store.install(fixture.receipt(2, bytes: secondBytes), from: source, expectedGeneration: first.generation)
+        let secondURL = try #require(try await store.installedURL())
+        let ledger = try Data(contentsOf: fixture.stateURL)
+        if hardLink {
+            try FileManager.default.linkItem(at: firstURL, to: fixture.directory.appendingPathComponent("external-copy.bin"))
+        } else {
+            try FileManager.default.removeItem(at: firstURL)
+            try FileManager.default.createSymbolicLink(at: firstURL, withDestinationURL: source)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.unsafeStorage) {
+            try await store.removeInstalledModels(expectedGeneration: second.generation)
+        }
+        #expect(try Data(contentsOf: secondURL) == secondBytes)
+        #expect(try Data(contentsOf: source) == secondBytes)
+        #expect(try Data(contentsOf: fixture.stateURL) == ledger)
+    }
+
+    @Test("Removal refuses stale or foreign authority and can retire corrupt regular bytes")
+    func signedRemovalAuthorityAndCorruption() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try fixture.store()
+        let source = fixture.directory.appendingPathComponent("source.bin")
+        let bytes = Data("verified model".utf8)
+        try bytes.write(to: source)
+        let installed = try await store.install(fixture.receipt(1, bytes: bytes), from: source, expectedGeneration: nil)
+        let url = try #require(try await store.installedURL())
+        let foreignKey = Curve25519.Signing.PrivateKey()
+        let foreignTrust = try WhisperModelDistributionTrust(publicKey: foreignKey.publicKey.rawRepresentation)
+        let foreign = WhisperSignedModelLifecycle(trust: foreignTrust,
+            downloads: WhisperModelDownloadService(directory: fixture.directory.appendingPathComponent("cache")), store: store)
+        await #expect(throws: WhisperModelDistributionTrust.TrustError.invalidSignature) {
+            try await foreign.removeModels(expectedGeneration: installed.generation)
+        }
+        await #expect(throws: WhisperModelDistributionStateStore.StoreError.staleGeneration) {
+            try await store.removeInstalledModels(expectedGeneration: UUID())
+        }
+        #expect(try Data(contentsOf: url) == bytes)
+        try Data("corrupt".utf8).write(to: url)
+        #expect(try await store.removeInstalledModels(expectedGeneration: installed.generation) == 1)
+        #expect(try await store.load()?.generation != installed.generation)
+    }
+
     @Test("Two store instances cannot consume the same generation")
     func competingUpdates() async throws {
         let fixture = try Fixture()

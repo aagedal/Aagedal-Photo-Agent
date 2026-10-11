@@ -105,6 +105,20 @@ def probe(executable):
             }),
                     "Incorrect read-only annotation")
             require(tool["annotations"]["destructiveHint"] is False, "Unexpected destructive tool")
+        require("inspect_develop_template" in names, "Missing revision-bound Develop inspection")
+        develop_tool = next(tool for tool in tools if tool["name"] == "inspect_develop_template")
+        require(develop_tool["inputSchema"]["additionalProperties"] is False and
+                set(develop_tool["inputSchema"]["required"]) == {"templateID", "templateRevision"},
+                "Develop inspection must require exact template identity")
+        for identifier, arguments in [(201, {}), (202, {"templateID": "not-a-uuid", "templateRevision": "sha256:" + "a" * 64}),
+                                      (203, {"templateID": "00000000-0000-0000-0000-000000000001",
+                                             "templateRevision": "sha256:" + "a" * 64, "execute": True})]:
+            connection.send(request(identifier, "tools/call", {
+                "name": "inspect_develop_template", "arguments": arguments,
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Develop inspection accepted malformed or execution arguments")
         require("create_team" in names, "Missing team creation")
         require("get_iptc_patch_plan" in names, "Missing plan retrieval")
         require("commit_iptc_patch" not in names, "Update probe when verified mutation ships")
@@ -252,7 +266,7 @@ def probe(executable):
                 "providerDiscovery": True, "providerArgumentRefusal": True,
                 "operationArgumentRefusal": True, "publicationRequirementsArgumentRefusal": True,
                 "nativeReviewRequestArgumentRefusal": True, "honestExecutorBoundary": True,
-                "associatedAudioArgumentRefusal": True,
+                "associatedAudioArgumentRefusal": True, "developInspectionArgumentRefusal": True,
                 "transcriptionPreviewArgumentRefusal": True,
                 "transcriptionReviewArgumentRefusal": True,
                 "exit": 0, "stderrBytes": 0}

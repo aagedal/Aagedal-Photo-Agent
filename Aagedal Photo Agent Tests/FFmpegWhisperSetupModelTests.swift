@@ -120,10 +120,11 @@ struct FFmpegWhisperSetupModelTests {
         let setup = FFmpegWhisperSetupModel(defaults: defaults)
         #expect(setup.language == "auto")
         #expect(!setup.translate)
-        #expect(!setup.useGPU)
+        #expect(setup.useGPU)
+        #expect(defaults.object(forKey: FFmpegWhisperSetupModel.useGPUKey) == nil)
         setup.language = " NO "
         setup.translate = true
-        setup.useGPU = true
+        setup.useGPU = false
         #expect(setup.language == "no")
         setup.language = String(repeating: "x", count: 1000)
         #expect(setup.language.count == 16)
@@ -131,9 +132,18 @@ struct FFmpegWhisperSetupModelTests {
         let reopened = FFmpegWhisperSetupModel(defaults: defaults)
         #expect(reopened.language == "no")
         #expect(reopened.translate)
-        #expect(reopened.useGPU)
+        #expect(!reopened.useGPU)
         #expect(!reopened.executionConsent)
         #expect(reopened.provider() == nil)
+    }
+
+    @Test("Saved GPU and CPU preferences override the default", arguments: [false, true])
+    func savedGPUPreference(useGPU: Bool) {
+        let (preferences, suite) = defaults()
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(useGPU, forKey: FFmpegWhisperSetupModel.useGPUKey)
+        #expect(FFmpegWhisperSetupModel(defaults: preferences).useGPU == useGPU)
+        #expect(preferences.bool(forKey: FFmpegWhisperSetupModel.useGPUKey) == useGPU)
     }
 
     @Test("enabled custom provider snapshots settings and preserves exact translated provenance")
