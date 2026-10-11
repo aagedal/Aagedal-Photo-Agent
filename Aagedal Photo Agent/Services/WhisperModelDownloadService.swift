@@ -2,6 +2,9 @@ import CryptoKit
 import Darwin
 import Foundation
 
+@_silgen_name("flock")
+nonisolated private func whisperTransferFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
+
 /// Public GGML weights from whisper.cpp and NbAiLab, pinned to immutable revisions.
 nonisolated struct WhisperDownloadableModel: Identifiable, Hashable, Sendable {
     let id: String
@@ -162,9 +165,14 @@ actor WhisperModelDownloadService {
         var directoryInfo = stat()
         guard fstat(directoryDescriptor, &directoryInfo) == 0,
               FileIdentity(directoryInfo).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
+        // Cooperating cache maintenance cannot retire a transfer's live staging file.
+        guard whisperTransferFlock(directoryDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+            throw DownloadError.busy
+        }
+        defer { _ = whisperTransferFlock(directoryDescriptor, LOCK_UN) }
         downloading = true
         defer { downloading = false }
-        let temporary = directory.appendingPathComponent(".\(UUID().uuidString).partial")
+        let temporary = directory.appendingPathComponent(".\(model.id).\(UUID().uuidString).partial")
         // Cleanup stays bound to the admitted directory even if its pathname moves.
         defer { _ = unlinkat(directoryDescriptor, temporary.lastPathComponent, 0) }
         progress(0)
@@ -238,6 +246,32 @@ actor WhisperModelDownloadService {
         if unlinkat(descriptor, target.lastPathComponent, 0) != 0 && errno != ENOENT {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
+    }
+
+    /// Signed maintenance must retain authenticated generation authority throughout
+    /// deletion. The store locks both directories and preflights a bounded candidate set.
+    func cleanUpTransferCache(authorizedBy store: WhisperModelDistributionStateStore,
+                             expectedGeneration: UUID) async throws -> Int {
+        guard !downloading else { throw DownloadError.busy }
+        try Task.checkCancellation()
+        try validateAncestors(allowMissing: true)
+        // Even an absent cache requires current release authority.
+        guard let admittedDirectory = try identity(at: directory) else {
+            return try await store.cleanUpTransferCache(in: nil, expectedGeneration: expectedGeneration)
+        }
+        try validateStorage(create: false)
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw DownloadError.unsafeStorage }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              FileIdentity(info).sameFile(as: admittedDirectory) else { throw DownloadError.storageChanged }
+        let physicalDirectory = try physicalModelURL(directory.appendingPathComponent("unused"),
+                                                     directoryDescriptor: descriptor).deletingLastPathComponent()
+        downloading = true
+        defer { downloading = false }
+        return try await store.cleanUpTransferCache(in: physicalDirectory,
+            retainedDirectoryDescriptor: descriptor, expectedGeneration: expectedGeneration)
     }
 
     private func targetURL(_ model: WhisperDownloadableModel) throws -> URL {
