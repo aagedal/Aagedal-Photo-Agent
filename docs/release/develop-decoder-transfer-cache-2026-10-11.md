@@ -101,3 +101,28 @@ maximum native decoder memory footprint or preemption during synchronous decodin
 Production signed catalog/key publishing and Settings integration remain open. Cleanup is an
 explicit lifecycle API, with no new native management UI. Broader provider, hardware, privacy,
 interoperability, accessibility, packaging and release acceptance gates remain open.
+
+## PR #29 integration with current main
+
+The [pull request](https://github.com/aagedal/Aagedal-Photo-Agent/pull/29) was integrated
+with main `9b3ba02` in `61b0f53`. Overlapping Whisper changes retain both distinct APIs:
+`cleanUpInterruptedTransfers` preserves completed downloads, while `cleanUpTransferCache`
+retires completed cache copies and interrupted partials. Both retain authenticated generation
+and active-transfer protections. All test functions from both branches remain present.
+The incoming Primary Develop request builder and face-pruning changes are preserved.
+
+Fresh integration verification passes **259 focused tests / eight Swift suites**, then
+**3,947 passed, two opt-in Sony skips and zero failures out of 3,949 reported cases** across
+390 Swift suites in 124.188 seconds. Four full-suite priority-inversion warnings remain.
+Repository checks, the actual 35-tool helper probe, bundled-model validation and Debug signature
+verification pass. Independent conflict-resolution review found no blockers.
+The integrated native launch/open-folder smoke also passes: one test, 10.599 seconds
+(`pr29-native-smoke.xcresult`, `pr29-native-smoke.log`), with the same narrow scope described above.
+
+Evidence uses the existing derived-data directory with distinct `pr29-` artifact names:
+`pr29-focused.xcresult`, `pr29-focused-summary.json`, `pr29-full.xcresult`,
+`pr29-full-summary.json`, `pr29-repository.log`, `pr29-mcp-helper.json`,
+`pr29-model-bundle.log`, `pr29-signature.log` and `pr29-source-sha256.json`.
+Focused selectors add `PrimaryDevelopWriteServiceTests`, `PrimaryDevelopWriteRequestBuilderTests`
+and `ActivityHistoryTests` to the original five suites. The source identity is unchanged
+by subsequent documentation updates. No release-readiness criterion is newly closed.
