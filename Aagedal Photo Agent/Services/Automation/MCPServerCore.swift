@@ -2609,6 +2609,11 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: ["requestID"], readOnly: false
             ),
             definition(
+                name: "list_operations",
+                description: "Discover all retained local operation handles after reconnect. Requires Enable local automation. Returns at most 256 compact durable status summaries, newest-created first with UUID tie ordering. Includes native operations as well as helper-linked operations; history is shared by this local automation authority, not scoped to a client or folder. Omits owner identity, paths, transcript text, recovery receipts and per-item progress; use get_operation_status for exact retained details. Recorded state does not prove executor liveness, completion, rollback or permission to replay. Starts no work and performs no recovery or cleanup.",
+                properties: [:], required: []
+            ),
+            definition(
                 name: "get_operation_status",
                 description: "Inspect one durable operation coordination record. Requires Enable local automation. Reports recorded state, outcome and available ordered batch progress without photo paths or transcript text. Saved transcripts are ready for metadata variables; a failed or cancelled batch can retain saved drafts. Recorded state does not prove that an executor is alive. This status/cancellation tool starts no work. Authenticated transcription start requires a separate exact one-use native grant; face/template invocation remains under implementation.",
                 properties: ["operationID": .object(["type": .string("string"), "format": .string("uuid")])],
@@ -2815,6 +2820,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "open_voice_transcription_review", "start_voice_transcription": acceptedArguments = ["requestID", "requestEpoch"]
             case "request_iptc_patch_review": acceptedArguments = ["requestID", "requestEpoch", "planID", "purpose"]
             case "get_native_review_request", "cancel_native_review_request": acceptedArguments = ["requestID", "requestEpoch"]
+            case "list_operations": acceptedArguments = []
             case "get_operation_status", "cancel_operation": acceptedArguments = ["operationID"]
             case "create_team": acceptedArguments = Set(MCPTeamLibrary.properties.keys)
             case "inspect_path_authorization", "inspect_photo_revision", "inspect_app_photo_draft", "get_photo_metadata", "get_photo_voice_memo":
@@ -3004,6 +3010,31 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     value["operationCancellationStatus"] = .string(operationCancellationStatus)
                 }
                 return success(value)
+            case "list_operations":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                let registry = try operationRegistry ?? AutomationOperationRegistry(
+                    storageDirectory: AutomationOperationRegistry.defaultStorageDirectory())
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                let records = try registry.records().sorted {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                let summaries = records.map { record -> MCPJSONValue in
+                    var summary = operationStatusValue(record)
+                    // Discovery remains bounded even when every operation has 64 batch items.
+                    // Detailed progress and recovery receipts require explicit handle inspection.
+                    summary.removeValue(forKey: "recoveryResolution")
+                    summary["recoveryResolved"] = .bool(record.recoveryResolution != nil)
+                    summary["batchProgress"] = record.batchProgress.map { progress in
+                        .object(["itemCount": .integer(Int64(progress.itemCount)),
+                                 "completedCount": .integer(Int64(progress.completedCount))])
+                    } ?? .null
+                    return .object(summary)
+                }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                return success(["operations": .array(summaries), "count": .integer(Int64(records.count)),
+                    "maximumRecords": .integer(256), "scope": .string("durable-local-operation-history"),
+                    "executorLiveness": .string("unknown"), "discoveryOnly": .bool(true)])
             case "get_operation_status", "cancel_operation":
                 guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
                 guard Set(arguments.keys) == ["operationID"],
@@ -3041,7 +3072,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
-                        .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
+                        .string("durable-operation-discovery"), .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
                     ]),
                     "mutationToolsAvailable": .bool(true),
                     "operationExecutorsConnected": .bool(false),
