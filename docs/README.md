@@ -28,6 +28,13 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Historical face thumbnails / durable Develop checkpoints (2026-10-12):**
+[Repair and recovery continuation](release/face-thumbnail-develop-checkpoint-2026-10-12.md)
+qualifies loaded completion against retained crops, repairs missing thumbnails without
+discarding face identities, and adds durable batch checkpoint review evidence with
+XMP/JSON commit-authority checks. Native consent, rooted executors and broader release
+gates remain open.
+
 **Retained face authority / Develop batches (2026-10-12):**
 [Retained scan intents, truthful thumbnail persistence and captured batch execution](release/retained-face-authority-develop-batch-2026-10-12.md)
 adds session-bound face admission, incomplete/resumable thumbnail failure handling and

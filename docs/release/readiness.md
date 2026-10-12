@@ -3,6 +3,23 @@
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Helper-visible readiness and model/executable identity remain unresolved. Automation Settings now binds the exact retained request and ordered prepared photo set to concrete provider/options/model/executable identity, fresh readiness and explicit native consent. One durably admitted/linked operation retains original rooted reservations and carrier witnesses through inference, anchored transcript draft saves and terminal completion. Cancellation preserves completed drafts; retained linked requests cannot replay after relaunch. Epoch-bound intent inspection and confirmed cancelled-request capacity maintenance remain available. Authenticated exact-request transcription review presentation is available through the matching signed helper and running app; helper start now requires an exact one-use native grant. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the patched Media Converter-derived FFmpeg and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-10-12
 
+**Historical face-thumbnail / Develop checkpoint continuation (2026-10-12):**
+[Dated record](face-thumbnail-develop-checkpoint-2026-10-12.md) records `02b9124`,
+`56c8347` and `577194d`: loaded scan completion now requires retained thumbnails;
+explicit incremental repair preserves face/group/embedding/jersey identity; app-side
+Develop batches retain durable ordered checkpoints, exact physical receipts and
+unresolved effects, with post-checkpoint whole-set admission and synchronous XMP/JSON
+authority checks. Independent review passes. Focused tests pass 71 cases / three
+suites. Final integrated regression passes 4,001 tests with two opt-in Sony skips,
+zero failures (393 Swift suites, 124.752 seconds). All three native face workflows
+pass, including historical repair and relaunch. Repository, actual 36-tool helper,
+model bundle and development signature checks pass. Evidence: `build/continuation-11/`;
+all 13 source hashes match `577194d`, tested Debug build 742. Four integrated and four
+native runtime QoS/main-thread warnings retain performance qualification. No whole
+release gate closes. Next: authenticated native face execution and rooted effects;
+Develop template capture, consent, recovery UI and embedded/anchored commit authority;
+production signed Whisper catalog/key/Settings wiring; broader native/external gates.
+
 **Retained face authority / thumbnail persistence / Develop batch continuation (2026-10-12):**
 [Dated record](retained-face-authority-develop-batch-2026-10-12.md) covers `e187747`,
 `036ef5d` and `5ee9dc4`. Face admission can retain complete rooted inventories and
@@ -999,7 +1016,13 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Current after the 2026-10-12 continuation:** Connect the shared complete-folder face-scan
+**Current after the 2026-10-12 thumbnail/checkpoint continuation:** Historical missing
+face crops now qualify loaded completion and repair without losing manual identities.
+Develop batch checkpoints now persist ordered request/receipt evidence for review;
+XMP/JSON commit callbacks check synchronous authority after suspension. Connect
+template capture, native review, checkpoint recovery presentation and embedded
+commit authority before exposing production template execution.
+Connect the shared complete-folder face-scan
 contract and read-only rooted preparation to authenticated native intent and durable operation
 execution. Retain rooted authority through all scan/postprocessing writes, bind cancellation to
 the exact task, and account for thumbnail persistence failures before claiming verified completion.
