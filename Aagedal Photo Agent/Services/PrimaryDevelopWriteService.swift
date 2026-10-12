@@ -297,7 +297,8 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
     var hooks = PrimaryDevelopWriteHooks()
     func execute(_ request: PrimaryDevelopWriteRequest, predecessorResult: PrimaryDevelopWriteResult? = nil,
                  heldReservation: MCPProcessReservationLease? = nil,
-                 validateAuthority: @escaping @Sendable () async throws -> Void = {}) async -> PrimaryDevelopWriteResult {
+                 validateAuthority: @escaping @Sendable () async throws -> Void = {},
+                 validateCommitAuthority: @escaping @Sendable () throws -> Void = {}) async -> PrimaryDevelopWriteResult {
         var result = PrimaryDevelopWriteResult(requestID: request.id)
         do {
             try Task.checkCancellation()
@@ -353,7 +354,8 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             let completion = await service.completeSidecarAndMirrorXMP(request.sidecar, snapshot: snapshot,
                 mirrorOnlyIfExisting: !target.writesXMPSidecar, replaceDevelopSettings: request.replaceDevelop,
                 replaceOrientation: request.replaceOrientation, expectedSourceRevision: writtenSource,
-                beforeXMPCommit: hooks.beforeXMP, beforeJSONCommit: hooks.beforeJSON, afterJSONCommit: hooks.afterJSON)
+                beforeXMPCommit: hooks.beforeXMP, beforeJSONCommit: hooks.beforeJSON,
+                afterJSONCommit: hooks.afterJSON, validateCommitAuthority: validateCommitAuthority)
             result.completion = completion
             result.wasCancelled = completion.wasCancelled
             if !completion.completed {

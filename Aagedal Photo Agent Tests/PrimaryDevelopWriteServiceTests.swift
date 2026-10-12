@@ -16,6 +16,22 @@ private actor PrimaryTestCallCounter {
     func record() { count += 1 }
 }
 
+private nonisolated final class PrimaryTestCommitAuthority: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private var revoked = false
+    let refuseAt: Int
+    init(refuseAt: Int) { self.refuseAt = refuseAt }
+    func validate() throws {
+        try lock.withLock {
+            calls += 1
+            if revoked || calls == refuseAt { throw CocoaError(.fileWriteNoPermission) }
+        }
+    }
+    var count: Int { lock.withLock { calls } }
+    func revoke() { lock.withLock { revoked = true } }
+}
+
 private nonisolated final class PrimaryTestReadGate: @unchecked Sendable {
     private let lock = NSLock()
     private var armed = false
@@ -93,6 +109,45 @@ struct PrimaryDevelopWriteServiceTests {
         #expect(actual.cameraRaw?.exposure2012 == 1.25)
         #expect(actual.cameraRaw?.localAdjustments?.count == 1)
         #expect(result.completion?.writtenXMPSnapshot?.data == (try Data(contentsOf: XMPSidecarService().sidecarURL(for: image))))
+    }
+
+    @Test("Commit authority refusal preserves physical evidence at each XMP/JSON boundary", arguments: [1, 2, 3])
+    func commitAuthorityRefusal(boundary: Int) async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let captured = try await request(image)
+        let authority = PrimaryTestCommitAuthority(refuseAt: boundary)
+        let result = await PrimaryDevelopWriteService(engine: SwiftExifWriteEngine()).execute(captured,
+            validateCommitAuthority: { try authority.validate() })
+        #expect(!result.completed)
+        #expect(authority.count == boundary)
+        #expect(try Data(contentsOf: image) == original)
+        #expect(result.completion?.wroteXMPSidecar == (boundary > 1))
+        #expect(result.requiresRecovery == (boundary > 1))
+        let json = MetadataSidecarService().loadSidecar(for: image, in: folder)
+        #expect((json != nil) == (boundary == 3))
+        if boundary == 3 {
+            #expect(result.completion?.committedButUnverifiedSidecarURL != nil)
+            // JSON intentionally retains the editorial projection; CRS lives in XMP.
+            #expect(json?.metadata.title == captured.sidecar.metadata.title)
+            #expect(XMPSidecarService().loadSidecar(for: image)?.cameraRaw?.exposure2012 == 1.25)
+        }
+    }
+
+    @Test("Authority revoked after async admission refuses the next physical carrier", arguments: [true, false])
+    func authorityRevokedAfterAdmission(beforeXMP: Bool) async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await request(image)
+        let authority = PrimaryTestCommitAuthority(refuseAt: Int.max)
+        var hooks = PrimaryDevelopWriteHooks()
+        if beforeXMP { hooks.beforeXMP = { authority.revoke() } }
+        else { hooks.beforeJSON = { authority.revoke() } }
+        let result = await PrimaryDevelopWriteService(engine: SwiftExifWriteEngine(), hooks: hooks)
+            .execute(captured, validateCommitAuthority: { try authority.validate() })
+        #expect(!result.completed)
+        #expect(result.completion?.wroteXMPSidecar == !beforeXMP)
+        #expect(result.requiresRecovery == !beforeXMP)
+        #expect(MetadataSidecarService().loadSidecar(for: image, in: folder) == nil)
     }
 
     @Test("Original source and companion changes refuse physical writes", arguments: [0, 1, 2])

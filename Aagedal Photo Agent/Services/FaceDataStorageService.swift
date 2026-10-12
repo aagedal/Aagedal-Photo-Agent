@@ -150,6 +150,13 @@ nonisolated struct FaceDataFolderLoadEvidence: @unchecked Sendable {
     let requestedThumbnailCount: Int
     let processedThumbnailCount: Int
     let cleanupDisposition: CleanupDisposition
+
+    /// A historical completion flag is qualified by every retained face's current crop read.
+    /// This changes presentation only; durable repair remains an explicitly requested scan.
+    var scanCompleteWithThumbnails: Bool {
+        guard let faceData, faceData.scanComplete else { return false }
+        return faceData.faces.allSatisfy { thumbnailData[$0.id] != nil }
+    }
 }
 
 /// A cancelled folder load retains its exact thumbnail prefix for diagnostics, but callers must

@@ -2,6 +2,13 @@
 
 > Project planning index: [README.md](README.md)
 
+**2026-10-12 recovery continuation:**
+[Historical face thumbnails and durable Develop checkpoints](release/face-thumbnail-develop-checkpoint-2026-10-12.md)
+adds truthful loaded scan completion, identity-preserving crop repair, durable ordered
+batch request/receipt evidence and synchronous XMP/JSON commit-authority checks.
+Production native consent, rooted face/template execution, embedded commit authority
+and recovery presentation remain open; no broad acceptance criterion is checked.
+
 Cycle-9 continuation: [durable rotation implementation and evidence](release/cycle-09-durable-rotation-2026-09-11.md)
 records `b5840e4`, 2,569 passing integrated tests, independent review, and the remaining native
 rotation gate. No broad acceptance criterion is closed by this bounded implementation.

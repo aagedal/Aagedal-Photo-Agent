@@ -73,8 +73,9 @@ nonisolated struct FaceScanCompletion: Sendable, Equatable {
     /// Photos whose detection or required thumbnail persistence did not finish successfully.
     /// Multiple thumbnail failures in one photo count once here.
     var failureCount: Int = 0
+    /// Photos lacking a current scan signature or a required inherited thumbnail.
     var unsignedFileCount: Int = 0
-    /// Attempted thumbnail writes; these do not verify thumbnails inherited from prior scans.
+    /// Thumbnail generation or persistence failures, including repairs of inherited crops.
     var thumbnailFailureCount: Int = 0
     var cancelledThumbnailCount: Int = 0
     var persistenceError: String? = nil

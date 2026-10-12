@@ -50,6 +50,7 @@ nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
     let thumbnailFailureCount: Int
     let cancelledThumbnailCount: Int
     let thumbnailPersistenceError: String?
+    let incompleteThumbnailPaths: Set<String>
 }
 
 enum FaceScanQuiescenceError: LocalizedError, Equatable {
@@ -613,6 +614,7 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var faceDataPersistenceTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataLoadRequestID = UUID()
     private let detectionService = FaceDetectionService()
+    private let thumbnailRegenerator: (@Sendable (DetectedFace) async throws -> Data)?
     private let scanDetector: (@Sendable (URL, FaceDetectionService.DetectionConfig) async throws -> FaceDetectionService.DetectionResult)?
     /// Shared across off-main merge-suggestion recomputations so each face's feature print
     /// is unarchived once and reused, rather than allocating a fresh cache per call.
@@ -640,6 +642,7 @@ final class FaceRecognitionViewModel {
         folderLoadService: FaceDataFolderLoadService = .shared,
         fileSignatureService: FaceScanFileSignatureService = .shared,
         scanDetector: (@Sendable (URL, FaceDetectionService.DetectionConfig) async throws -> FaceDetectionService.DetectionResult)? = nil,
+        thumbnailRegenerator: (@Sendable (DetectedFace) async throws -> Data)? = nil,
         fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
         fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
             MetadataWriteMode.current(forC2PA: $0, isRaw: $1)
@@ -656,6 +659,7 @@ final class FaceRecognitionViewModel {
         self.folderLoadService = folderLoadService
         self.fileSignatureService = fileSignatureService
         self.scanDetector = scanDetector
+        self.thumbnailRegenerator = thumbnailRegenerator
     }
 
     deinit {
@@ -816,7 +820,7 @@ final class FaceRecognitionViewModel {
                 self.durableFaceSnapshots.removeAll()
                 self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = evidence.faceData
                 self.faceData = evidence.faceData
-                self.scanComplete = evidence.faceData?.scanComplete ?? false
+                self.scanComplete = evidence.scanCompleteWithThumbnails
                 self.installThumbnails(evidence.thumbnailData)
 
                 if case .deletionFailed(let message) = evidence.cleanupDisposition {
@@ -974,6 +978,7 @@ final class FaceRecognitionViewModel {
         let config = preparedConfig
         let detectionService = self.detectionService
         let scanDetector = self.scanDetector
+        let thumbnailRegenerator = self.thumbnailRegenerator
         let folderLoadService = self.folderLoadService
         let fileSignatureService = self.fileSignatureService
         let pendingPersistence = faceDataPersistenceTask
@@ -1111,6 +1116,16 @@ final class FaceRecognitionViewModel {
                 classificationWasCancelled = true
             }
 
+            // Only repair crops whose source identity is still unchanged. Retain their exact
+            // face IDs and groups, even if crop generation or persistence fails again.
+            let missingThumbnails = existingData?.faces.filter {
+                unchangedFiles.contains($0.imageURL.path)
+                    && initialSnapshot?.thumbnailData[$0.id] == nil
+            } ?? []
+            let missingThumbnailsByPath = Dictionary(grouping: missingThumbnails, by: { $0.imageURL.path })
+            let thumbnailRepairPaths = Set(missingThumbnailsByPath.keys)
+            let thumbnailRepairURLs = imageURLs.filter { thumbnailRepairPaths.contains($0.path) }
+
             // Start with existing faces (excluding those from removed/modified files)
             let initialFaces: [DetectedFace] = existingData?.faces.filter { face in
                 classificationWasCancelled || unchangedFiles.contains(face.imageURL.path)
@@ -1153,11 +1168,11 @@ final class FaceRecognitionViewModel {
             }
 
             await MainActor.run {
-                self.scanTotalCount = toScan.count
-                self.scanProgress = "0/\(toScan.count)"
+                self.scanTotalCount = toScan.count + thumbnailRepairURLs.count
+                self.scanProgress = "0/\(toScan.count + thumbnailRepairURLs.count)"
             }
 
-            if toScan.isEmpty && toRemove.isEmpty && !classificationWasCancelled && existingData?.scanComplete != false {
+            if toScan.isEmpty && thumbnailRepairURLs.isEmpty && toRemove.isEmpty && !classificationWasCancelled && existingData?.scanComplete != false {
                 // Only a truly unchanged inventory can skip persistence. A removal-only
                 // scan must save the pruned faces, groups, numbers and signatures below.
                 reservation.release()
@@ -1222,6 +1237,7 @@ final class FaceRecognitionViewModel {
                 var thumbnailFailureCount = 0
                 var cancelledThumbnailCount = 0
                 var thumbnailPersistenceError: String?
+                var incompleteThumbnailPaths = thumbnailRepairPaths
                 var imagesSinceLastSave = 0
                 var imagesSinceLastCluster = 0
                 var pendingFaces: [DetectedFace] = []
@@ -1338,10 +1354,63 @@ final class FaceRecognitionViewModel {
                     }
 
                     let current = processed
-                    let total = toScan.count
+                    let total = toScan.count + thumbnailRepairURLs.count
                     let errors = detectionErrors
                     let progress = errors > 0 ? "\(current)/\(total) (\(errors) failed)" : "\(current)/\(total)"
                     await reportProgress(current, progress)
+                }
+
+                // Repair inherited crops first. A failed repair leaves the source signature as
+                // identity evidence and an incomplete document, so retry preserves manual groups.
+                for url in thumbnailRepairURLs {
+                    guard !Task.isCancelled else { break }
+                    var repairFailed = false
+                    for face in missingThumbnailsByPath[url.path] ?? [] {
+                        guard !Task.isCancelled else {
+                            cancelledThumbnailCount += 1
+                            repairFailed = true
+                            break
+                        }
+                        do {
+                            let bytes: Data
+                            if let thumbnailRegenerator {
+                                bytes = try await thumbnailRegenerator(face)
+                            } else {
+                                bytes = try detectionService.regenerateThumbnail(for: face)
+                            }
+                            switch await folderLoadService.persistThumbnail(bytes, faceID: face.id, folderURL: folderURL) {
+                            case .committed:
+                                await reportThumbnail(face.id, bytes)
+                            case .cancelledBeforeCommit:
+                                cancelledThumbnailCount += 1
+                                repairFailed = true
+                            case .failed(_, let message):
+                                thumbnailFailureCount += 1
+                                thumbnailPersistenceError = thumbnailPersistenceError ?? message
+                                repairFailed = true
+                            }
+                        } catch is CancellationError {
+                            cancelledThumbnailCount += 1
+                            repairFailed = true
+                        } catch {
+                            thumbnailFailureCount += 1
+                            thumbnailPersistenceError = thumbnailPersistenceError ?? error.localizedDescription
+                            repairFailed = true
+                        }
+                    }
+                    if !repairFailed && !Task.isCancelled {
+                        switch await fileSignatureService.signature(for: url) {
+                        case .captured(_, let signature?) where signature == scannedFiles[url.path]:
+                            incompleteThumbnailPaths.remove(url.path)
+                        default:
+                            // Source drift invalidates retained detection authority on the next retry.
+                            scannedFiles.removeValue(forKey: url.path)
+                            repairFailed = true
+                        }
+                    }
+                    if repairFailed { detectionErrors += 1 }
+                    processed += 1
+                    await reportProgress(processed, "\(processed)/\(toScan.count + thumbnailRepairURLs.count)")
                 }
 
                 // Process images concurrently, capped at 4
@@ -1392,7 +1461,8 @@ final class FaceRecognitionViewModel {
                     failureCount: detectionErrors,
                     thumbnailFailureCount: thumbnailFailureCount,
                     cancelledThumbnailCount: cancelledThumbnailCount,
-                    thumbnailPersistenceError: thumbnailPersistenceError
+                    thumbnailPersistenceError: thumbnailPersistenceError,
+                    incompleteThumbnailPaths: incompleteThumbnailPaths
                 )
                 }
             }
@@ -1406,7 +1476,8 @@ final class FaceRecognitionViewModel {
             self.activeScanWorkerTask = nil
 
             let isCancelled = Task.isCancelled
-            let unsignedFileCount = imageURLs.filter { result.scannedFiles[$0.path] == nil }.count
+            let unsignedFileCount = imageURLs.filter { result.scannedFiles[$0.path] == nil
+                || result.incompleteThumbnailPaths.contains($0.path) }.count
             let scanSucceeded = !isCancelled && result.failureCount == 0 && unsignedFileCount == 0
 
             let folderData = FolderFaceData(
@@ -1486,7 +1557,7 @@ final class FaceRecognitionViewModel {
                     date: Date(),
                     title: folderURL.lastPathComponent,
                     successCount: succeeded,
-                    totalCount: toScan.count,
+                    totalCount: toScan.count + thumbnailRepairURLs.count,
                     wasCancelled: isCancelled,
                     persistenceError: completionPersistenceError,
                     files: []
@@ -3313,7 +3384,7 @@ final class FaceRecognitionViewModel {
                   case .complete(let evidence) = result.load else { return }
             self.stalePhotoDeletionFolders.remove(targetFolder.standardizedFileURL.path)
             self.faceData = evidence.faceData
-            self.scanComplete = evidence.faceData?.scanComplete ?? false
+            self.scanComplete = evidence.scanCompleteWithThumbnails
             self.installThumbnails(evidence.thumbnailData)
             if let failure = result.persistence?.failureMessage {
                 self.errorMessage = "Failed to delete face data: \(failure)"
@@ -3405,7 +3476,7 @@ final class FaceRecognitionViewModel {
                 guard faceDataRevision == revision else { return result(.staleStatePreserved) }
                 stalePhotoDeletionFolders.remove(folderIdentity)
                 faceData = evidence.faceData
-                scanComplete = evidence.faceData?.scanComplete ?? false
+                scanComplete = evidence.scanCompleteWithThumbnails
                 installThumbnails(evidence.thumbnailData)
                 if let failure = deletion.persistence?.failureMessage {
                     errorMessage = "Failed to delete face data: \(failure)"
