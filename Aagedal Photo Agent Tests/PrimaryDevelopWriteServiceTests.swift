@@ -150,6 +150,153 @@ struct PrimaryDevelopWriteServiceTests {
         #expect(MetadataSidecarService().loadSidecar(for: image, in: folder) == nil)
     }
 
+    @Test("Embedded authority refusal distinguishes untouched source from committed physical evidence", arguments: [1, 2, 3])
+    func embeddedCommitAuthorityRefusal(boundary: Int) async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        let authority = PrimaryTestCommitAuthority(refuseAt: boundary)
+        let result = await PrimaryDevelopWriteService(engine: SwiftExifWriteEngine()).execute(captured,
+            validateCommitAuthority: { try authority.validate() })
+        #expect(!result.completed && result.failure != nil && !result.wasCancelled)
+        #expect(authority.count == boundary)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .allSatisfy { !$0.hasPrefix(".aagedal_primary_") })
+        #expect(!result.wroteEmbedded)
+        #expect(result.embeddedMayHaveBeenWritten == (boundary == 3))
+        #expect(result.requiresRecovery == (boundary == 3))
+        #expect(result.completion == nil)
+        #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: image).path))
+        #expect(MetadataSidecarService().loadSidecar(for: image, in: folder) == nil)
+        if boundary < 3 {
+            #expect(try Data(contentsOf: image) == original)
+            #expect(result.sourceRevision == nil)
+        } else {
+            #expect(try Data(contentsOf: image) != original)
+            let actualRevision = try await SourceImageRevision.capture(at: image)
+            #expect(result.sourceRevision?.canonicalURL == actualRevision.canonicalURL)
+            #expect(result.sourceRevision?.sha256 == actualRevision.sha256)
+            let actual = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [image])[image])
+            #expect(actual.title == captured.edited.title)
+            #expect(actual.cameraRaw?.exposure2012 == 1.25)
+            #expect(actual.cameraRaw?.localAdjustments?.count == 1)
+            let payload = PrimaryDevelopRecoveryPayload(captured, result: result)
+            #expect(payload.embeddedMayHaveBeenWritten)
+            #expect(payload.writtenSourceRevision?.sha256 == actualRevision.sha256)
+        }
+    }
+
+    @Test("Embedded publication rechecks authority revoked during awaited admission")
+    func embeddedAuthorityRevokedDuringAdmission() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        let authority = PrimaryTestCommitAuthority(refuseAt: Int.max)
+        do {
+            _ = try await SwiftExifWriteEngine().writePrimaryDevelop(captured,
+                validatePreparedIntent: {
+                    await Task.yield()
+                    authority.revoke()
+                }, validateCommitAuthority: { try authority.validate() })
+            Issue.record("Revoked embedded authority unexpectedly published")
+        } catch let error as PrimaryDevelopPhysicalError {
+            #expect(!error.mayHaveWritten && error.sourceRevision == nil && !error.wasCancelled)
+        }
+        #expect(authority.count == 1)
+        #expect(try Data(contentsOf: image) == original)
+    }
+
+    @Test("Embedded authority runs after serialization with source intact and cleans refused staging")
+    func embeddedAuthorityAfterStaging() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        do {
+            _ = try await SwiftExifWriteEngine().writePrimaryDevelop(captured,
+                validatePreparedIntent: {}, validateCommitAuthority: {
+                    #expect(try Data(contentsOf: image) == original)
+                    let staged = try FileManager.default.contentsOfDirectory(at: folder,
+                        includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix(".aagedal_primary_") }
+                    #expect(staged.count == 1)
+                    let stagedDirectory = try #require(staged.first)
+                    let permissions = try FileManager.default.attributesOfItem(atPath: stagedDirectory.path)[.posixPermissions] as? NSNumber
+                    #expect(permissions?.intValue == 0o700)
+                    let actual = try readMetadata(from: stagedDirectory.appendingPathComponent(image.lastPathComponent))
+                    let exposure = actual.xmp?.simpleValue(namespace: "http://ns.adobe.com/camera-raw-settings/1.0/",
+                        property: "Exposure2012").flatMap(Double.init)
+                    #expect(exposure == 1.25)
+                    throw CocoaError(.fileWriteNoPermission)
+                })
+            Issue.record("Refused staging unexpectedly replaced the source")
+        } catch let error as PrimaryDevelopPhysicalError {
+            #expect(!error.mayHaveWritten && error.sourceRevision == nil)
+        }
+        #expect(try Data(contentsOf: image) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [image.lastPathComponent])
+    }
+
+    @Test("Embedded source drift after serialization is preserved without a write receipt")
+    func embeddedSourceDriftBeforePublication() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        let external = Data("External replacement during serialization".utf8)
+        do {
+            _ = try await SwiftExifWriteEngine().writePrimaryDevelop(captured,
+                validatePreparedIntent: {}, validateCommitAuthority: {
+                    try external.write(to: image)
+                })
+            Issue.record("Changed source unexpectedly overwritten")
+        } catch let error as PrimaryDevelopPhysicalError {
+            #expect(!error.mayHaveWritten && error.sourceRevision == nil && !error.wasCancelled)
+        }
+        #expect(try Data(contentsOf: image) == external)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [image.lastPathComponent])
+    }
+
+    @Test("Embedded publication cancellation is refused before writing")
+    func embeddedCancellationDuringAdmission() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: image)
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        let operation = Task {
+            try await SwiftExifWriteEngine().writePrimaryDevelop(captured, validatePreparedIntent: {
+                withUnsafeCurrentTask { $0?.cancel() }
+                await Task.yield()
+            })
+        }
+        do {
+            _ = try await operation.value
+            Issue.record("Cancelled embedded admission unexpectedly published")
+        } catch let error as PrimaryDevelopPhysicalError {
+            #expect(!error.mayHaveWritten && error.sourceRevision == nil && error.wasCancelled)
+        }
+        #expect(try Data(contentsOf: image) == original)
+    }
+
+    @Test("Embedded synchronous authority preserves native completion and exact physical receipt")
+    func embeddedCommitAuthorityCompletion() async throws {
+        let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o640,
+            .creationDate: Date(timeIntervalSince1970: 1234567890)], ofItemAtPath: image.path)
+        let originalValues = try image.resourceValues(forKeys: [.creationDateKey, .isHiddenKey])
+        let captured = try await request(image, mode: .writeToFileAndXMPSidecar)
+        let authority = PrimaryTestCommitAuthority(refuseAt: Int.max)
+        let result = await PrimaryDevelopWriteService(engine: SwiftExifWriteEngine()).execute(captured,
+            validateCommitAuthority: { try authority.validate() })
+        let installedValues = try image.resourceValues(forKeys: [.creationDateKey, .isHiddenKey])
+        #expect(installedValues.creationDate == originalValues.creationDate)
+        #expect(installedValues.isHidden == originalValues.isHidden)
+        let permissions = try FileManager.default.attributesOfItem(atPath: image.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o640)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .allSatisfy { !$0.hasPrefix(".aagedal_primary_") })
+        #expect(result.completed && result.wroteEmbedded && !result.embeddedMayHaveBeenWritten)
+        #expect(authority.count == 6) // Embedded staging/hash/receipt, then XMP/JSON publication/receipt.
+        let actual = try await SourceImageRevision.capture(at: image)
+        #expect(result.sourceRevision?.sha256 == actual.sha256)
+        #expect(result.completion?.wroteXMPSidecar == true)
+    }
+
     @Test("Original source and companion changes refuse physical writes", arguments: [0, 1, 2])
     func independentChanges(kind: Int) async throws {
         let (folder, image) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }

@@ -272,7 +272,8 @@ nonisolated struct PrimaryDevelopPhysicalError: LocalizedError, Sendable {
 }
 nonisolated protocol PrimaryDevelopWriting: Sendable {
     func writePrimaryDevelop(_ request: PrimaryDevelopWriteRequest,
-        validatePreparedIntent: @escaping @Sendable () async throws -> Void) async throws -> PrimaryDevelopPhysicalReceipt
+        validatePreparedIntent: @escaping @Sendable () async throws -> Void,
+        validateCommitAuthority: @escaping @Sendable () throws -> Void) async throws -> PrimaryDevelopPhysicalReceipt
 }
 nonisolated struct PrimaryDevelopWriteResult: Sendable {
     let requestID: UUID
@@ -342,10 +343,10 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
                 guard let engine = engine as? any PrimaryDevelopWriting else {
                     throw PrimaryDevelopWriteError(message: "This image writer cannot safely verify a retained Develop edit.")
                 }
-                let receipt = try await engine.writePrimaryDevelop(request) {
+                let receipt = try await engine.writePrimaryDevelop(request, validatePreparedIntent: {
                     try await validateAuthority()
                     try await service.validateWriteCompletionInHeldTransaction(snapshot, sourceRevision: source)
-                }
+                }, validateCommitAuthority: validateCommitAuthority)
                 result.wroteEmbedded = true; result.sourceRevision = receipt.sourceRevision
                 writtenSource = receipt.sourceRevision
                 try await hooks.afterEmbedded()

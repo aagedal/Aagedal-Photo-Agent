@@ -64,9 +64,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     }
 
     /// Retained Primary intent is validated under the physical writer's existing photo lock.
-    /// Any exception after admission to the writer is conservatively reported as possibly written.
+    /// Synchronous authority is checked after preparation immediately before publication and again
+    /// before issuing a verified receipt. Only an admitted physical write is possibly written.
     func writePrimaryDevelop(_ request: PrimaryDevelopWriteRequest,
-        validatePreparedIntent: @escaping @Sendable () async throws -> Void
+        validatePreparedIntent: @escaping @Sendable () async throws -> Void,
+        validateCommitAuthority: @escaping @Sendable () throws -> Void = {}
     ) async throws -> PrimaryDevelopPhysicalReceipt {
         guard !SupportedImageFormats.isRaw(url: request.imageURL) else {
             throw PrimaryDevelopPhysicalError(message: "RAW Develop metadata must use XMP.",
@@ -77,14 +79,21 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             var revision: SourceImageRevision?
             do {
                 try Task.checkCancellation()
+                let preparedSource = try await SourceImageRevision.capture(at: request.imageURL)
                 try await validatePreparedIntent()
-                attempted = true
                 var fields = request.fields
                 if request.replaceDevelop, let settings = request.edited.cameraRaw {
                     fields.merge(settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })) { _, new in new }
                 }
                 try self.writeFieldsToFile(fields, structuredData: request.structured,
-                    url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true)
+                    url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true,
+                    beforePublication: {
+                        try Task.checkCancellation()
+                        try validateCommitAuthority()
+                        try self.validatePrimarySource(preparedSource, at: request.imageURL)
+                        try validateCommitAuthority()
+                        attempted = true
+                    })
                 let written = try await SourceImageRevision.capture(at: request.imageURL)
                 revision = written
                 let actual = try readMetadata(from: request.imageURL)
@@ -94,6 +103,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 guard checked.canonicalURL == written.canonicalURL, checked.sha256 == written.sha256 else {
                     throw MetadataFieldMutationConflict()
                 }
+                try Task.checkCancellation()
+                try validateCommitAuthority()
                 return .init(sourceRevision: checked)
             } catch {
                 throw PrimaryDevelopPhysicalError(message: error.localizedDescription, mayHaveWritten: attempted,
@@ -452,12 +463,57 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
 
     // MARK: - Private Helpers
 
+    /// Rehash after serialization without yielding before publication. The stat/hash/stat
+    /// check rejects concurrent source drift; rooted descriptor publication remains separate.
+    private func validatePrimarySource(_ expected: SourceImageRevision, at url: URL) throws {
+        let io = SourceImageRevisionCaptureIO.system
+        let canonical = io.canonicalURL(url)
+        guard canonical == expected.canonicalURL else { throw MetadataFieldMutationConflict() }
+        let before = try io.snapshot(canonical)
+        let digest = try io.hash(canonical).lowercaseHexString
+        let after = try io.snapshot(canonical)
+        try Task.checkCancellation()
+        guard before.matches(after), digest == expected.sha256 else { throw MetadataFieldMutationConflict() }
+    }
+
+    /// Stage the library's complete serialization before checking retained authority. Keeping
+    /// the original extension preserves its proprietary-RAW refusal even for a renamed container.
+    /// Publication uses the same Foundation replacement and metadata preservation as the library.
+    /// This remains path-based; it does not grant descriptor-anchored root authority.
+    private func publishPrimaryMetadata(_ metadata: ImageMetadata, to url: URL,
+        beforePublication: () throws -> Void) throws {
+        let manager = FileManager.default
+        let values = try url.resourceValues(forKeys: [.isHiddenKey, .creationDateKey])
+        let isHidden = values.isHidden ?? url.lastPathComponent.hasPrefix(".")
+        let stagingDirectory = url.deletingLastPathComponent().appendingPathComponent(
+            ".aagedal_primary_\(UUID().uuidString)", isDirectory: true)
+        try manager.createDirectory(at: stagingDirectory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? manager.removeItem(at: stagingDirectory) }
+        let stagedURL = stagingDirectory.appendingPathComponent(url.lastPathComponent)
+        // The public writer retains its content-based RAW safety guard and default atomic
+        // staging semantics. Its destination is private staging, never the admitted photo.
+        var options = ImageMetadata.WriteOptions.default
+        if let creationDate = values.creationDate { options.fileCreationDate = .set(creationDate) }
+        try metadata.write(to: stagedURL, options: options)
+        try beforePublication()
+        _ = try manager.replaceItemAt(url, withItemAt: stagedURL)
+        var installedURL = url
+        var visibility = URLResourceValues()
+        visibility.isHidden = isHidden
+        try installedURL.setResourceValues(visibility)
+        if let creationDate = values.creationDate {
+            try manager.setAttributes([.creationDate: creationDate], ofItemAtPath: url.path)
+        }
+    }
+
     private func writeFieldsToFile(
         _ fields: [MetadataFieldKey: String],
         structuredData: StructuredWriteData,
         url: URL,
         completeEditorial: IPTCMetadata? = nil,
-        verifyPrimaryTechnical: Bool = false
+        verifyPrimaryTechnical: Bool = false,
+        beforePublication: (() throws -> Void)? = nil
     ) throws {
         var metadata = try readMetadata(from: url)
 
@@ -575,7 +631,11 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             metadata.xmp = xmp
         }
 
-        try metadata.write(to: url)
+        if let beforePublication {
+            try publishPrimaryMetadata(metadata, to: url, beforePublication: beforePublication)
+        } else {
+            try metadata.write(to: url)
+        }
         if verifyPrimaryTechnical {
             let actual = try readMetadata(from: url)
             func technical(_ xmp: XMPData?) -> [String: XMPValue] {
