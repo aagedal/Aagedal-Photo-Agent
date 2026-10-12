@@ -124,6 +124,71 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testHistoricalMissingFaceThumbnailRepairPersistsAcrossRelaunch() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let photo = photos.appendingPathComponent("smoke-1.jpg")
+        let people = fixtureRoot.appendingPathComponent("HistoricalFacePeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: people, withIntermediateDirectories: true)
+        let faceID = UUID().uuidString
+        let groupID = UUID().uuidString
+        let attributes = try FileManager.default.attributesOfItem(atPath: photo.path)
+        let modified = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        let size = try XCTUnwrap(attributes[.size] as? NSNumber)
+        let rectangle = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            CGRect(x: 0.25, y: 0.2, width: 0.3, height: 0.4)))
+        let face: [String: Any] = ["id": faceID, "imageURL": photo.absoluteString,
+            "faceRect": rectangle, "featurePrintData": Data().base64EncodedString(),
+            "groupID": groupID, "detectedAt": Date().timeIntervalSinceReferenceDate, "jerseyNumber": 7]
+        let group: [String: Any] = ["id": groupID, "name": "Historical fixture person",
+            "representativeFaceID": faceID, "faceIDs": [faceID], "userCreated": true]
+        // Version 3 is the current persisted embedding contract. This synthetic face verifies
+        // crop persistence and identity retention, without making a recognition accuracy claim.
+        let value: [String: Any] = ["folderURL": photos.absoluteString, "faces": [face],
+            "groups": [group], "lastScanDate": Date().timeIntervalSinceReferenceDate,
+            "scanComplete": true, "embeddingVersion": 3,
+            "scannedFiles": [photo.path: ["modificationDate": modified.timeIntervalSinceReferenceDate,
+                                         "fileSize": size]]]
+        let dataFolder = photos.appendingPathComponent(".face_data", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataFolder, withIntermediateDirectories: true)
+        let document = dataFolder.appendingPathComponent("face_data.json")
+        try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: document)
+        let thumbnail = dataFolder.appendingPathComponent("thumbnails/\(faceID).jpg")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: thumbnail.path))
+
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people, faceBarExpanded: true)
+        let rescan = app.buttons["scanFaces"]
+        XCTAssertTrue(rescan.waitForExistence(timeout: 15))
+        rescan.click()
+        expectation(for: NSPredicate { _, _ in
+            guard let bytes = try? Data(contentsOf: thumbnail), NSImage(data: bytes) != nil,
+                  let documentBytes = try? Data(contentsOf: document),
+                  let saved = try? JSONSerialization.jsonObject(with: documentBytes) as? [String: Any] else { return false }
+            return saved["scanComplete"] as? Bool == true
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 45)
+        XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 10))
+        let savedBytes = try Data(contentsOf: document)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: savedBytes) as? [String: Any])
+        let faces = try XCTUnwrap(saved["faces"] as? [[String: Any]])
+        let groups = try XCTUnwrap(saved["groups"] as? [[String: Any]])
+        XCTAssertEqual(faces.count, 1)
+        XCTAssertEqual(faces.first?["id"] as? String, faceID)
+        XCTAssertEqual(faces.first?["jerseyNumber"] as? Int, 7)
+        XCTAssertEqual(faces.first?["featurePrintData"] as? String, "")
+        XCTAssertEqual(groups.first?["id"] as? String, groupID)
+        XCTAssertEqual(groups.first?["name"] as? String, "Historical fixture person")
+        XCTAssertEqual(groups.first?["faceIDs"] as? [String], [faceID])
+        let thumbnailBytes = try Data(contentsOf: thumbnail)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people, faceBarExpanded: true)
+        XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 15))
+        XCTAssertEqual(try Data(contentsOf: thumbnail), thumbnailBytes)
+        let relaunched = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: document)) as? [String: Any])
+        XCTAssertEqual((relaunched["faces"] as? [[String: Any]])?.first?["id"] as? String, faceID)
+        XCTAssertEqual((relaunched["groups"] as? [[String: Any]])?.first?["id"] as? String, groupID)
+    }
+
+    @MainActor
     func testExplicitJerseyScanCancellation() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)

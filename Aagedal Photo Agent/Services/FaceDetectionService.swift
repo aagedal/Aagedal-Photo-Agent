@@ -113,6 +113,20 @@ nonisolated struct FaceDetectionService: Sendable {
         }
     }
 
+    /// Recreate a missing persisted crop without detecting faces or changing identity/group data.
+    func regenerateThumbnail(for face: DetectedFace) throws -> Data {
+        guard let source = CGImageSourceCreateWithURL(face.imageURL as CFURL, nil),
+              let image = makeWorkingImage(from: source),
+              face.faceRect.width > 0, face.faceRect.height > 0,
+              let crop = cropFace(from: image, normalizedRect: expandBoundingBox(
+                face.faceRect, by: 0.15, imageSize: CGSize(width: image.width, height: image.height))),
+              let data = generateThumbnail(from: crop, size: 120) else {
+            throw NSError(domain: "FaceDetectionService", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to recreate a missing face thumbnail"])
+        }
+        return data
+    }
+
     /// Detect faces in a single image, generate feature prints and thumbnails.
     /// Returns an array of `DetectedFace` and their thumbnail JPEG data keyed by face ID.
     func detectFaces(in imageURL: URL, config: DetectionConfig = DetectionConfig()) async throws -> DetectionResult {

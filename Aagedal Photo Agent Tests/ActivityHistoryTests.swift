@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ImageIO
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -266,6 +267,129 @@ struct ActivityHistoryTests {
         let final = try #require(storage.loadFaceData(for: folder))
         #expect(final.faces.isEmpty)
         #expect(final.groups.isEmpty)
+    }
+
+    @Test("Historical thumbnail recreation uses a stored face crop without a recognition model")
+    func historicalThumbnailRecreationFromImage() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HistoricalCrop-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let context = try #require(CGContext(data: nil, width: 200, height: 100,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.8, green: 0.3, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        let source = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(photo as CFURL,
+            "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, source, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let face = DetectedFace(id: UUID(), imageURL: photo,
+            faceRect: CGRect(x: 0.25, y: 0.2, width: 0.3, height: 0.4),
+            featurePrintData: Data([1]), detectedAt: .distantPast)
+        let bytes = try FaceDetectionService().regenerateThumbnail(for: face)
+        let recreated = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(recreated, 0, nil))
+        // AppKit draws in points; a Retina host encodes twice as many pixels.
+        #expect(image.width == image.height)
+        #expect(image.width >= 120)
+    }
+
+    @Test("Historical missing thumbnails repair without losing signed faces or named groups",
+          arguments: ["success", "generationFailure", "saveFailure", "cancelled", "cancellationError", "sourceDrift"])
+    func historicalThumbnailRepair(outcome: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HistoricalFaceThumb-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let signature = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        let faces = (0..<2).map { _ in DetectedFace(id: UUID(), imageURL: photo,
+            faceRect: CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3),
+            featurePrintData: Data([4]), detectedAt: .distantPast) }
+        let group = FaceGroup(id: UUID(), name: "Retained person", representativeFaceID: faces[1].id,
+            faceIDs: faces.map(\.id))
+        let numbers = [NumberDetection(imageURL: photo, number: 7, numberConfidence: 1, boundingBox: .zero)]
+        let original = FolderFaceData(folderURL: folder, faces: faces, groups: [group],
+            lastScanDate: .distantPast, scanComplete: true, scannedFiles: [photo.path: signature],
+            embeddingVersion: FaceRecognitionDefaults.embeddingVersion, numberDetections: numbers)
+        let storage = FaceDataStorageService()
+        try storage.saveFaceData(original)
+        try Data([1]).write(to: photo)
+        // One crop survives; the missing representative must be repaired under its exact ID.
+        try storage.saveThumbnail(Data([8]), for: faces[0].id, folderURL: folder)
+        let gate = FaceThumbnailCancellationGate()
+        let signatures = FaceScanFileSignatureService { url in
+            (try? Data(contentsOf: url)) == Data([1]) ? signature
+                : FileSignature(modificationDate: .distantPast, fileSize: 2)
+        }
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: FaceDataFolderLoadService(saveThumbnail: { bytes, id, folder in
+                if outcome == "saveFailure" { throw CocoaError(.fileWriteNoPermission) }
+                try storage.saveThumbnail(bytes, for: id, folderURL: folder)
+            }), fileSignatureService: signatures,
+            scanDetector: { _, _ in
+                Issue.record("Unchanged historical faces must not be detected again")
+                return .init(faces: [])
+            }, thumbnailRegenerator: { face in
+                #expect(face.id == faces[1].id)
+                #expect(throws: MCPProcessReservationError.busy) {
+                    _ = try MCPProcessReservation.acquirePhoto(photo)
+                }
+                if outcome == "cancelled" { await gate.pauseDetection() }
+                if outcome == "generationFailure" { throw CocoaError(.fileReadCorruptFile) }
+                if outcome == "cancellationError" { throw CancellationError() }
+                if outcome == "sourceDrift" { try Data([1, 2]).write(to: photo) }
+                return Data([9])
+            })
+        let originalBytes = try Data(contentsOf: folder.appendingPathComponent(".face_data/face_data.json"))
+        viewModel.loadFaceData(for: folder, cleanupPolicy: .never)
+        await viewModel.waitForCurrentFaceDataLoad()
+        #expect(!viewModel.scanComplete)
+        #expect(viewModel.faceData?.groups.first?.id == group.id)
+        #expect(try Data(contentsOf: folder.appendingPathComponent(".face_data/face_data.json")) == originalBytes)
+        let submission = viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        if outcome == "cancelled" {
+            await gate.waitUntilEntered()
+            viewModel.cancelScan()
+            await gate.release()
+        }
+        let completion = try #require(await submission.completion())
+        #expect(completion.processedCount == 1)
+        #expect(completion.succeeded == (outcome == "success"))
+        #expect(completion.unsignedFileCount == (outcome == "success" ? 0 : 1))
+        #expect(completion.thumbnailFailureCount == (["generationFailure", "saveFailure"].contains(outcome) ? 1 : 0))
+        #expect(completion.cancelledThumbnailCount == (["cancelled", "cancellationError"].contains(outcome) ? 1 : 0))
+        let saved = try #require(storage.loadFaceData(for: folder))
+        #expect(saved.scanComplete == (outcome == "success"))
+        #expect(saved.faces.map(\.id) == faces.map(\.id))
+        #expect(saved.faces.map(\.featurePrintData) == faces.map(\.featurePrintData))
+        #expect(saved.groups.first?.id == group.id)
+        #expect(saved.groups.first?.name == group.name)
+        #expect(saved.groups.first?.faceIDs == group.faceIDs)
+        #expect(saved.groups.first?.representativeFaceID == group.representativeFaceID)
+        #expect(saved.numberDetections?.map(\.number) == [7])
+        #expect(storage.loadThumbnail(for: faces[0].id, folderURL: folder) == Data([8]))
+        #expect(saved.scannedFiles[photo.path] == (outcome == "sourceDrift" ? nil : signature))
+
+        if outcome != "sourceDrift" {
+            let retry = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+                writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+                fileSignatureService: signatures,
+                scanDetector: { _, _ in Issue.record("Repair retry must preserve identity"); return .init(faces: []) },
+                thumbnailRegenerator: { face in
+                    #expect(face.id == faces[1].id)
+                    return Data([9])
+                })
+            let retried = try #require(await retry.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+            #expect(retried.succeeded)
+            #expect(retried.processedCount == (outcome == "success" ? 0 : 1))
+            let final = try #require(storage.loadFaceData(for: folder))
+            #expect(final.scanComplete)
+            #expect(final.groups.first?.id == group.id)
+            #expect(final.faces.map(\.id) == faces.map(\.id))
+            #expect(storage.loadThumbnail(for: faces[1].id, folderURL: folder) == Data([9]))
+        }
     }
 
     @Test("Cancellation before thumbnail commit preserves a resumable document without unsaved face references")
@@ -573,7 +697,10 @@ struct ActivityHistoryTests {
             embeddingVersion: FaceRecognitionDefaults.embeddingVersion, numberDetections: numbers)
         let storage = FaceDataStorageService()
         try storage.saveFaceData(original)
-        if keepSurvivor { try Data([1]).write(to: survivor) }
+        if keepSurvivor {
+            try Data([1]).write(to: survivor)
+            try storage.saveThumbnail(Data([1]), for: survivingFace.id, folderURL: folder)
+        }
         let document = folder.appendingPathComponent(".face_data/face_data.json")
         let originalBytes = try Data(contentsOf: document)
         let saved = MCPServerCoreTests.DataBox()
