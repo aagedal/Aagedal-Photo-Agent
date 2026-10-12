@@ -14,7 +14,9 @@ nonisolated struct DevelopTemplateBatchIntent: Sendable {
         guard !requests.isEmpty, requests.count <= Self.maximumPhotos,
               !templateRevision.isEmpty else { throw DevelopTemplateBatchFailure.invalidIntent }
         var identities = Set<String>()
+        var requestIDs = Set<UUID>()
         for request in requests {
+            guard requestIDs.insert(request.id).inserted else { throw DevelopTemplateBatchFailure.duplicatePhoto }
             guard request.predecessor == nil, request.captureFailure == nil,
                   request.mode != .historyOnly, request.sourceRevision != nil,
                   request.expectedXMP != nil, request.imageURL.isFileURL,
@@ -48,8 +50,15 @@ nonisolated struct DevelopTemplateBatchExecutionResult: Sendable {
     var activeRequestID: UUID?
     var failure: String?
     var retentionFailure: String?
+    /// A mismatched worker receipt is evidence, never a valid completion for this intent.
+    var unexpectedReceipt: DevelopTemplateBatchUnexpectedReceipt?
     var completedCount: Int { results.compactMap { $0 }.filter(\.completed).count }
     var recoveryPayload: DevelopTemplateBatchRecoveryPayload { .init(self) }
+}
+
+nonisolated struct DevelopTemplateBatchUnexpectedReceipt: Encodable, Sendable {
+    let reportedRequestID: UUID
+    let evidence: PrimaryDevelopRecoveryPayload
 }
 
 /// Complete original intents and physical receipts are retained together. A later editor
@@ -65,15 +74,19 @@ nonisolated final class DevelopTemplateBatchRecoveryPayload: Encodable, Sendable
     let failure: String?
     let retentionFailure: String?
     let photos: [PrimaryDevelopRecoveryPayload]
+    let resultCompletions: [Bool?]
+    let unexpectedReceipt: DevelopTemplateBatchUnexpectedReceipt?
 
     init(_ result: DevelopTemplateBatchExecutionResult) {
         batchID = result.intent.id; templateID = result.intent.templateID
         templateRevision = result.intent.templateRevision; outcome = result.outcome
         activeRequestID = result.activeRequestID; failure = result.failure
         retentionFailure = result.retentionFailure
+        unexpectedReceipt = result.unexpectedReceipt
         photos = result.intent.requests.indices.map {
             PrimaryDevelopRecoveryPayload(result.intent.requests[$0], result: result.results[$0])
         }
+        resultCompletions = result.results.map { $0.map(\.completed) }
     }
 }
 
@@ -87,13 +100,24 @@ nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
     static let maximumRecoveryBytes = 268_435_456
     let write: Writer
 
-    init(engine: any MetadataWriteEngine, hooks: PrimaryDevelopWriteHooks = .init()) {
+    init(engine: any MetadataWriteEngine, hooks: PrimaryDevelopWriteHooks = .init(),
+         validateCommitAuthority: @escaping @Sendable () throws -> Void = {}) {
         let service = PrimaryDevelopWriteService(engine: engine, hooks: hooks)
-        write = { await service.execute($0, heldReservation: $1, validateAuthority: $2) }
+        write = { await service.execute($0, heldReservation: $1, validateAuthority: $2,
+                                      validateCommitAuthority: validateCommitAuthority) }
     }
 
     /// Injectable physical writer, while admission and reservation checks remain production.
     init(write: @escaping Writer) { self.write = write }
+
+    /// App-side durable retention adapter. Recovery loading is evidence for review only;
+    /// this entry point still requires independent native authority validation.
+    func execute(_ intent: DevelopTemplateBatchIntent,
+                 validateAuthority: @escaping AuthorityValidation,
+                 checkpointStore: DevelopTemplateBatchCheckpointStore) async -> DevelopTemplateBatchExecutionResult {
+        await execute(intent, validateAuthority: validateAuthority,
+                      retain: { try await checkpointStore.retain($0) })
+    }
 
     func execute(_ intent: DevelopTemplateBatchIntent,
                  validateAuthority: @escaping AuthorityValidation,
@@ -123,10 +147,15 @@ nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
                 try await Self.retainBounded(result, retain: retain)
                 // A failed prewrite checkpoint cannot authorize physical mutation.
                 try await validateAuthority(intent)
+                if index == 0 {
+                    for captured in intent.requests { try await Self.validateCarriers(captured) }
+                }
                 try Task.checkCancellation()
                 effectsPossible = true
                 let receipt = await write(request, reservations[request.id]!) { try await validateAuthority(intent) }
                 guard receipt.requestID == request.id else {
+                    result.unexpectedReceipt = .init(reportedRequestID: receipt.requestID,
+                        evidence: PrimaryDevelopRecoveryPayload(request, result: receipt))
                     throw DevelopTemplateBatchFailure.resultIdentityChanged
                 }
                 result.results[index] = receipt; result.activeRequestID = nil

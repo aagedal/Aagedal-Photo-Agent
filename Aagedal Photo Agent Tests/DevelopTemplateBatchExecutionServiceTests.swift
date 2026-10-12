@@ -235,4 +235,147 @@ struct DevelopTemplateBatchExecutionServiceTests {
         #expect(lease.coversPhoto(photos[1]))
         #expect(!FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: photos[0]).path))
     }
+
+    @Test("Durable checkpoints reload original ordered requests and completed receipts after restart")
+    func durableCheckpointRoundTrip() async throws {
+        let (folder, photos) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(Array(photos.reversed()))
+        let directory = folder.appendingPathComponent("journal")
+        let store = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let result = await DevelopTemplateBatchExecutionService(engine: SwiftExifWriteEngine()).execute(captured,
+            validateAuthority: { _ in }, checkpointStore: store)
+        #expect(result.outcome == .completed && result.retentionFailure == nil)
+        let restarted = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let saved = try await restarted.load(captured.id)
+        #expect(saved.outcome == .completed && saved.completedCount == 2 && !saved.needsReview)
+        #expect(saved.receipts.allSatisfy { $0 != nil })
+        let payload = try #require(JSONSerialization.jsonObject(with: saved.recoveryData) as? [String: Any])
+        let retained = try #require(payload["photos"] as? [[String: Any]])
+        #expect(retained.map { $0["requestID"] as? String } == captured.requests.map { Optional($0.id.uuidString) })
+        #expect(try await restarted.allCheckpoints().count == 1)
+    }
+
+    @Test("Corrupt and newer checkpoint files are refused and preserved before writes", arguments: [false, true])
+    func checkpointRefusesUnreadable(newer: Bool) async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let directory = folder.appendingPathComponent("journal")
+        let batchDirectory = directory.appendingPathComponent(captured.id.uuidString)
+        try FileManager.default.createDirectory(at: batchDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let url = batchDirectory.appendingPathComponent("operations.json")
+        let bytes = Data((newer ? "{\"formatVersion\":2}" : "broken checkpoint").utf8)
+        try bytes.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let store = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let calls = DevelopBatchTestCounter()
+        let worker = DevelopTemplateBatchExecutionService { request, _, _ in
+            await calls.record(); return .init(requestID: request.id)
+        }
+        let result = await worker.execute(captured, validateAuthority: { _ in }, checkpointStore: store)
+        #expect(result.outcome == .failed && result.retentionFailure != nil)
+        #expect(await calls.count == 0)
+        #expect(try Data(contentsOf: url) == bytes)
+    }
+
+    @Test("Stored intent and returned physical receipts cannot be replaced or erased")
+    func checkpointImmutableEvidence() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let store = DevelopTemplateBatchCheckpointStore(directory: folder.appendingPathComponent("journal"))
+        var state = DevelopTemplateBatchExecutionResult(intent: captured, results: [nil])
+        try await store.retain(state)
+        let altered = try DevelopTemplateBatchIntent(id: captured.id, templateID: captured.templateID,
+            templateRevision: "different revision", requests: captured.requests)
+        await #expect(throws: DevelopTemplateBatchCheckpointError.immutableIntentChanged) {
+            try await store.retain(.init(intent: altered, results: [nil]))
+        }
+        state.outcome = .running; state.activeRequestID = captured.requests[0].id
+        try await store.retain(state)
+        state.activeRequestID = nil
+        var receipt = PrimaryDevelopWriteResult(requestID: captured.requests[0].id)
+        receipt.wroteEmbedded = true; receipt.failure = "physical failure"
+        state.results[0] = receipt
+        try await store.retain(state)
+        state.results[0] = nil
+        await #expect(throws: DevelopTemplateBatchCheckpointError.receiptChanged) { try await store.retain(state) }
+        let saved = try await store.load(captured.id)
+        #expect(saved.needsReview && saved.receipts[0] != nil && saved.sequence == 3)
+    }
+
+    @Test("A later source changed during running retention prevents the first write")
+    func staleLaterPhotoAtRunningCheckpoint() async throws {
+        let (folder, photos) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let calls = DevelopBatchTestCounter()
+        let worker = DevelopTemplateBatchExecutionService { request, _, _ in
+            await calls.record(); return .init(requestID: request.id)
+        }
+        let result = await worker.execute(captured, validateAuthority: { _ in }, retain: { state in
+            if state.activeRequestID == captured.requests[0].id {
+                try Data("external source".utf8).write(to: photos[1])
+            }
+        })
+        let callCount = await calls.count
+        #expect(result.outcome == .failed && callCount == 0)
+    }
+
+    @Test("Unexpected physical receipts remain durable recovery evidence")
+    func unexpectedReceiptRetained() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let reportedID = UUID()
+        let store = DevelopTemplateBatchCheckpointStore(directory: folder.appendingPathComponent("journal"))
+        let worker = DevelopTemplateBatchExecutionService { _, _, _ in
+            var receipt = PrimaryDevelopWriteResult(requestID: reportedID)
+            receipt.embeddedMayHaveBeenWritten = true
+            return receipt
+        }
+        let result = await worker.execute(captured, validateAuthority: { _ in }, checkpointStore: store)
+        #expect(result.outcome == .recoveryRequired && result.retentionFailure == nil)
+        #expect(result.results[0] == nil && result.unexpectedReceipt?.reportedRequestID == reportedID)
+        let saved = try await store.load(captured.id)
+        let payload = try #require(JSONSerialization.jsonObject(with: saved.recoveryData) as? [String: Any])
+        let unexpected = try #require(payload["unexpectedReceipt"] as? [String: Any])
+        #expect(unexpected["reportedRequestID"] as? String == reportedID.uuidString)
+        let evidence = try #require(unexpected["evidence"] as? [String: Any])
+        #expect(evidence["embeddedMayHaveBeenWritten"] as? Bool == true)
+    }
+
+    @Test("Another store cannot reset unresolved or stronger checkpoint evidence")
+    func checkpointCrossInstanceAdmission() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let directory = folder.appendingPathComponent("journal")
+        let first = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let second = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let prepared = DevelopTemplateBatchExecutionResult(intent: captured, results: [nil])
+        try await first.retain(prepared)
+        var running = prepared; running.outcome = .running; running.activeRequestID = captured.requests[0].id
+        try await first.retain(running)
+        await #expect(throws: DevelopTemplateBatchCheckpointError.invalidCheckpoint) { try await second.retain(prepared) }
+        var erasedActive = running; erasedActive.activeRequestID = nil
+        await #expect(throws: DevelopTemplateBatchCheckpointError.invalidCheckpoint) { try await second.retain(erasedActive) }
+        let saved = try await second.load(captured.id)
+        #expect(saved.sequence == 2 && saved.activeRequestID == captured.requests[0].id)
+    }
+
+    @Test("Checkpoint payload corruption and symlink storage are refused")
+    func checkpointHashAndSymlinkRefusal() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let directory = folder.appendingPathComponent("journal")
+        let store = DevelopTemplateBatchCheckpointStore(directory: directory)
+        let prepared = DevelopTemplateBatchExecutionResult(intent: captured, results: [nil])
+        try await store.retain(prepared)
+        let file = directory.appendingPathComponent(captured.id.uuidString).appendingPathComponent("operations.json")
+        var envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        envelope["sha256"] = "invalid"
+        try JSONSerialization.data(withJSONObject: envelope).write(to: file)
+        await #expect(throws: DevelopTemplateBatchCheckpointError.corruptCheckpoint) { try await store.load(captured.id) }
+        let alias = folder.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        let aliased = DevelopTemplateBatchCheckpointStore(directory: alias)
+        await #expect(throws: (any Error).self) { try await aliased.retain(prepared) }
+    }
 }
