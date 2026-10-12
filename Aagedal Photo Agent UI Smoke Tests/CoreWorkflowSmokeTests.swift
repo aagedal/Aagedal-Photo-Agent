@@ -975,6 +975,62 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testDevelopRecoveryInspectionPreservesUnreadableEvidence() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let photoBytes = try Data(contentsOf: image)
+        let directory = fixtureRoot.appendingPathComponent("DevelopCheckpoints", isDirectory: true)
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let evidence = directory.appendingPathComponent("unreadable-evidence")
+        let bytes = Data("retained evidence requiring investigation".utf8)
+        try bytes.write(to: evidence)
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 16)).click()
+        let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let choose = settings.buttons["develop.batchRecovery.chooseFolder"]
+        for _ in 0..<12 where !choose.exists {
+            let scrollViews = settings.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
+        }
+        XCTAssertTrue(choose.waitForExistence(timeout: 8))
+        choose.click()
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        let goTo = app.sheets.textFields.firstMatch
+        XCTAssertTrue(goTo.waitForExistence(timeout: 5))
+        goTo.typeText(directory.path)
+        goTo.typeKey(.return, modifierFlags: [])
+        let open = app.sheets.buttons["Open"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.click()
+        let entries = app.descendants(matching: .any)
+            .matching(identifier: "develop.batchRecovery.entry.unreadable-evidence")
+        let status = app.staticTexts["develop.batchRecovery.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertTrue(status.label.contains("Evidence inspected")
+            || (status.value as? String)?.contains("Evidence inspected") == true, status.debugDescription)
+        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5))
+        let displayedEntry = entries.allElementsBoundByIndex.map {
+            $0.label + " " + (($0.value as? String) ?? "")
+        }.joined(separator: " ")
+        XCTAssertTrue(displayedEntry.contains("unreadable-evidence") && displayedEntry.contains("Inspection blocked"),
+            entries.debugDescription)
+        app.buttons["develop.batchRecovery.refresh"].click()
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["unreadable-evidence"])
+        XCTAssertEqual(try Data(contentsOf: evidence), bytes)
+        XCTAssertEqual(try Data(contentsOf: image), photoBytes)
+    }
+
+    @MainActor
     func testNativeClientRequestRequiresConsentAndPersistsOperationLink() throws {
         try exerciseNativeClientRequest(cancel: false)
     }

@@ -213,6 +213,10 @@ struct AutomationSettingsView: View {
                 AutomationOperationHistoryView()
             }
 
+            Section("Develop Batch Recovery") {
+                DevelopTemplateBatchRecoveryView()
+            }
+
             Section("Interrupted XMP Publication") {
                 AutomationRecoveryView()
                     .id(model.configuration.authorizationRevision)
