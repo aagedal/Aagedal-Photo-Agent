@@ -11,6 +11,7 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         case invalidInventory = "invalid_inventory"
         case staleSnapshot = "stale_snapshot"
         case authorizationChanged = "authorization_changed"
+        case releasedReservation = "released_face_scan_reservation"
 
         var errorDescription: String? {
             switch self {
@@ -18,6 +19,7 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
             case .invalidInventory: "Face scanning requires a nonempty complete immediate inventory of local regular supported images, without links or pending downloads."
             case .staleSnapshot: "The folder image inventory changed. Prepare the face scan again."
             case .authorizationChanged: "Automation folder authorization changed. Prepare the face scan again."
+            case .releasedReservation: "The retained face scan reservation was released. Prepare and admit a new intent."
             }
         }
     }
@@ -94,6 +96,86 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         guard current.target == prepared.target, current.images == prepared.images,
               current.snapshotRevision == prepared.snapshotRevision else { throw Failure.staleSnapshot }
         return current
+    }
+
+    /// Native admission foundation only: retains the original complete inventory and
+    /// exclusive folder lease until explicit release or deinitialization. This is not
+    /// consent, durable admission or an executor. Callers must separately establish
+    /// those grants and use anchored writes; path-based writes are not made safe here.
+    func retain(_ prepared: PreparedFolder) throws -> RetainedFolder {
+        try Task.checkCancellation()
+        guard try authorizationStore.load() == prepared.authorization else { throw Failure.authorizationChanged }
+        let current = try authorizationStore.authorizeExistingPath(prepared.folderURL.path)
+        guard current == prepared.target else { throw Failure.staleSnapshot }
+        let lease = try MCPProcessReservation.acquireFolder(prepared.folderURL)
+        let descriptor = Darwin.open(prepared.folderURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { lease.release(); throw Failure.invalidInventory }
+        let retained = RetainedFolder(prepared: prepared, service: self, lease: lease, descriptor: descriptor)
+        do { try retained.validate(); return retained }
+        catch { retained.release(); throw error }
+    }
+
+    /// A retained kernel descriptor and lease survive asynchronous scanner suspension.
+    /// Synchronous boundary checks serialize against release. The descriptor must not
+    /// escape a checked callback or be closed by its caller. No mutation grant is minted.
+    final class RetainedFolder: @unchecked Sendable {
+        let prepared: PreparedFolder
+        private let service: MCPFaceScanAdmissionService
+        private let lock = NSRecursiveLock()
+        private var lease: MCPProcessReservationLease?
+        private var descriptor: Int32
+
+        fileprivate init(prepared: PreparedFolder, service: MCPFaceScanAdmissionService,
+                         lease: MCPProcessReservationLease, descriptor: Int32) {
+            self.prepared = prepared; self.service = service
+            self.lease = lease; self.descriptor = descriptor
+        }
+
+        func validate() throws { try withValidatedFolder { _, _ in } }
+
+        /// A cheap poll checks frozen authorization and retained folder identity.
+        /// Full inventory validation remains required before each effect boundary.
+        func checkAuthority() throws {
+            try lock.withLock {
+                try requireActive()
+                try Task.checkCancellation()
+                try service.verifyFolder(descriptor, target: prepared.target, authorization: prepared.authorization)
+            }
+        }
+
+        func withValidatedFolder<Value>(_ body: (PreparedFolder, Int32) throws -> Value) throws -> Value {
+            try lock.withLock {
+                try requireActive()
+                try validateInventory()
+                let value = try body(prepared, descriptor)
+                try requireActive()
+                try validateInventory()
+                return value
+            }
+        }
+
+        private func validateInventory() throws {
+            try Task.checkCancellation()
+            try service.verifyFolder(descriptor, target: prepared.target, authorization: prepared.authorization)
+            guard try service.inventory(descriptor, target: prepared.target) == prepared.images,
+                  try service.inventory(descriptor, target: prepared.target) == prepared.images else {
+                throw Failure.staleSnapshot
+            }
+            try service.verifyFolder(descriptor, target: prepared.target, authorization: prepared.authorization)
+        }
+
+        private func requireActive() throws {
+            guard lease != nil, descriptor >= 0 else { throw Failure.releasedReservation }
+        }
+
+        func release() {
+            lock.withLock {
+                if descriptor >= 0 { Darwin.close(descriptor); descriptor = -1 }
+                lease?.release(); lease = nil
+            }
+        }
+
+        deinit { release() }
     }
 
     private func capture(_ request: Request) throws -> PreparedFolder {

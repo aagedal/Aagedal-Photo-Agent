@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */; };
 		C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000101 /* RAWSourceDecoder.swift */; };
 		C12700000000000000000102 /* DevelopTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000101 /* DevelopTemplate.swift */; };
 		0C1ADAD92A3144D7BA24FF49 /* PendingMetadataWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7C63B9D939F4E40B0B04647 /* PendingMetadataWriteServiceTests.swift */; };
@@ -296,6 +297,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchExecutionServiceTests.swift; sourceTree = "<group>"; };
 		C13000000000000000000101 /* RAWSourceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/RAWSourceDecoder.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000101 /* DevelopTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopTemplate.swift; path = "Aagedal Photo Agent/Models/DevelopTemplate.swift"; sourceTree = SOURCE_ROOT; };
 		046B36C5AB784B3D9DE9EE9D /* VariableConflictRecoveryCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VariableConflictRecoveryCallerTests.swift; sourceTree = "<group>"; };
@@ -743,6 +745,7 @@
 				D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */,
 				D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */,
 				D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */,
+				D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */,
 				D3C009000000000000000001 /* DevelopSourceDecodeServiceTests.swift */,
@@ -1225,6 +1228,7 @@
 				D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */,
 				D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */,
 				D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */,
+				D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */,
 				D3C009000000000000000002 /* DevelopSourceDecodeServiceTests.swift in Sources */,

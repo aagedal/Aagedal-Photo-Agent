@@ -144,4 +144,158 @@ struct MCPFaceScanAdmissionServiceTests {
         try FileManager.default.createSymbolicLink(at: f.root, withDestinationURL: original)
         #expect(throws: (any Error).self) { try f.service.revalidate(prepared) }
     }
+
+    @Test("Retained rooted inventory excludes participating writers across suspension")
+    func retainedAcrossSuspension() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let prepared = try f.service.prepare(arguments: f.arguments)
+        let retained = try f.service.retain(prepared)
+        defer { retained.release() }
+        await Task.yield()
+        try retained.validate()
+        #expect(throws: MCPProcessReservationError.busy) { try MCPProcessReservation.acquirePhoto(f.photos[0]) }
+        #expect(throws: MCPProcessReservationError.busy) { try MCPProcessReservation.acquireFolder(f.root) }
+        #expect(try retained.withValidatedFolder { snapshot, descriptor in
+            snapshot.snapshotRevision == prepared.snapshotRevision && descriptor >= 0
+        })
+        retained.release(); retained.release()
+        #expect(throws: MCPFaceScanAdmissionService.Failure.releasedReservation) { try retained.validate() }
+        #expect(throws: MCPFaceScanAdmissionService.Failure.releasedReservation) { try retained.checkAuthority() }
+        let lease = try MCPProcessReservation.acquirePhoto(f.photos[0]); lease.release()
+    }
+
+    @Test("Retained complete inventory refuses drift before a boundary callback", arguments: ["add", "modify", "disabled", "replace-root"])
+    func retainedDrift(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let retained = try f.service.retain(f.service.prepare(arguments: f.arguments))
+        defer { retained.release() }
+        let moved = f.root.appendingPathExtension("original")
+        defer { try? FileManager.default.removeItem(at: moved) }
+        switch kind {
+        case "add": try Data("new".utf8).write(to: f.root.appendingPathComponent("new.jpg"))
+        case "modify": try Data("changed image".utf8).write(to: f.photos[0])
+        case "disabled": try f.authority.setEnabled(false)
+        default:
+            try FileManager.default.moveItem(at: f.root, to: moved)
+            try FileManager.default.createDirectory(at: f.root, withIntermediateDirectories: false)
+        }
+        var invoked = false
+        #expect(throws: (any Error).self) {
+            try retained.withValidatedFolder { _, _ in invoked = true }
+        }
+        #expect(!invoked)
+    }
+
+    @Test("Boundary completion refuses external input changes instead of reporting success")
+    func retainedPostBoundaryDrift() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let retained = try f.service.retain(f.service.prepare(arguments: f.arguments))
+        defer { retained.release() }
+        #expect(throws: MCPFaceScanAdmissionService.Failure.staleSnapshot) {
+            try retained.withValidatedFolder { _, _ in
+                try Data("changed input bytes".utf8).write(to: f.photos[0])
+            }
+        }
+    }
+
+    @Test("Failed retained admission and deinitialization release reservations")
+    func retainedCleanup() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let prepared = try f.service.prepare(arguments: f.arguments)
+        try Data("new".utf8).write(to: f.root.appendingPathComponent("new.jpg"))
+        #expect(throws: MCPFaceScanAdmissionService.Failure.staleSnapshot) { try f.service.retain(prepared) }
+        let next = try MCPProcessReservation.acquireFolder(f.root); next.release()
+        var retained: MCPFaceScanAdmissionService.RetainedFolder? = try f.service.retain(f.service.prepare(arguments: f.arguments))
+        #expect(retained != nil)
+        retained = nil
+        let last = try MCPProcessReservation.acquireFolder(f.root); last.release()
+    }
+
+    nonisolated private final class ClockBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var date = Date(timeIntervalSince1970: 1_800_000_000)
+        func read() -> Date { lock.withLock { date } }
+        func advance(_ interval: TimeInterval) { lock.withLock { date.addTimeInterval(interval) } }
+    }
+
+    @Test("Immutable session intents bind normalized options and expire without extending on inspection")
+    func immutableIntent() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let clock = ClockBox()
+        let store = MCPFaceScanIntentStore(admission: f.service, clock: { clock.read() })
+        var arguments = f.arguments; arguments["includeJerseyNumbers"] = .bool(true)
+        let intent = try store.prepare(arguments: arguments)
+        #expect(intent.prepared.forceFullScan)
+        #expect(intent.prepared.includeJerseyNumbers)
+        #expect(intent.expiresAt.timeIntervalSince(intent.createdAt) == 300)
+        clock.advance(299)
+        #expect(try store.inspect(id: intent.id).expiresAt == intent.expiresAt)
+        let retained = try store.retain(id: intent.id)
+        defer { retained.release() }
+        clock.advance(1)
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try store.retain(id: intent.id) }
+        // Expiry gates admission; original authority remains checked for retained work.
+        try retained.validate()
+        retained.release()
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try store.inspect(id: intent.id) }
+        #expect(throws: MCPFaceScanIntentStore.Failure.unknownIntent) {
+            try MCPFaceScanIntentStore(admission: f.service).inspect(id: intent.id)
+        }
+    }
+
+    @Test("Intent stores bound both entries and total retained photos and prune expired capacity")
+    func intentBounds() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let clock = ClockBox()
+        let store = MCPFaceScanIntentStore(admission: f.service, maximumIntents: 1, clock: { clock.read() })
+        _ = try store.prepare(arguments: f.arguments)
+        #expect(throws: MCPFaceScanIntentStore.Failure.capacity) { try store.prepare(arguments: f.arguments) }
+        clock.advance(300)
+        _ = try store.prepare(arguments: f.arguments)
+        #expect(throws: MCPFaceScanIntentStore.Failure.capacity) {
+            try MCPFaceScanIntentStore(admission: f.service, maximumRetainedPhotos: 1).prepare(arguments: f.arguments)
+        }
+        #expect(throws: MCPFaceScanIntentStore.Failure.capacity) {
+            try MCPFaceScanIntentStore(admission: f.service, maximumIntents: 0).prepare(arguments: f.arguments)
+        }
+    }
+
+    @Test("Intents refuse a backwards clock and changed authority before retention")
+    func intentRefusals() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let clock = ClockBox()
+        let store = MCPFaceScanIntentStore(admission: f.service, clock: { clock.read() })
+        let intent = try store.prepare(arguments: f.arguments)
+        clock.advance(-1)
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try store.inspect(id: intent.id) }
+        clock.advance(1)
+        try f.authority.setEnabled(false)
+        #expect(throws: (any Error).self) { try store.retain(id: intent.id) }
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+
+    @Test("Cancellation refuses retained boundaries and cleanup remains available")
+    func retainedCancellation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let retained = try f.service.retain(f.service.prepare(arguments: f.arguments))
+        let task = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do { try retained.validate(); return false }
+            catch is CancellationError { return true }
+            catch { return false }
+        }
+        #expect(await task.value)
+        retained.release()
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+    @Test("Nonfinite intent clocks refuse without retaining a snapshot")
+    func invalidIntentClock() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let store = MCPFaceScanIntentStore(admission: f.service, clock: { Date(timeIntervalSince1970: .nan) })
+        #expect(throws: MCPFaceScanIntentStore.Failure.invalidClock) { try store.prepare(arguments: f.arguments) }
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
 }

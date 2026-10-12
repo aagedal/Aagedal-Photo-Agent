@@ -78,6 +78,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     let importResultCounts: ActivityImportResultCounts?
     /// Credential-free upload transport evidence. `nil` for imports, face scans, and legacy data.
     let deliveryTransportSecurity: DeliveryTransportSecurity?
+    /// Durable-write failure, retained separately from per-photo detection counts.
+    let persistenceError: String?
     let files: [ActivityFileRecord]
 
     init(
@@ -92,6 +94,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         wasCancelled: Bool = false,
         importResultCounts: ActivityImportResultCounts? = nil,
         deliveryTransportSecurity: DeliveryTransportSecurity? = nil,
+        persistenceError: String? = nil,
         files: [ActivityFileRecord]
     ) {
         self.id = id
@@ -105,6 +108,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.wasCancelled = wasCancelled
         self.importResultCounts = importResultCounts
         self.deliveryTransportSecurity = deliveryTransportSecurity
+        self.persistenceError = persistenceError
         self.files = files
     }
 
@@ -121,7 +125,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         }
         if wasCancelled {
             let item = kind == .faceScan || kind == .transcription ? "photo" : "file"
-            return "\(noun) cancelled — \(successCount) of \(totalCount) \(item)\(totalCount == 1 ? "" : "s")"
+            let suffix = persistenceError == nil ? "" : " (save failed)"
+            return "\(noun) cancelled — \(successCount) of \(totalCount) \(item)\(totalCount == 1 ? "" : "s")\(suffix)"
         }
         var line: String
         if kind == .transcription {
@@ -137,13 +142,14 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         var problems: [String] = []
         if failureCount > 0 { problems.append("\(failureCount) failed") }
         if verificationFailures > 0 { problems.append("\(verificationFailures) verification issue\(verificationFailures == 1 ? "" : "s")") }
+        if persistenceError != nil { problems.append("save failed") }
         if !problems.isEmpty { line += " (\(problems.joined(separator: ", ")))" }
         return line
     }
 
     /// True when every attempted file succeeded and nothing failed verification.
     var isClean: Bool {
-        !wasCancelled && failureCount == 0 && verificationFailures == 0
+        !wasCancelled && failureCount == 0 && verificationFailures == 0 && persistenceError == nil
     }
 }
 
