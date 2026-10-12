@@ -28,6 +28,12 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Retained face authority / Develop batches (2026-10-12):**
+[Retained scan intents, truthful thumbnail persistence and captured batch execution](release/retained-face-authority-develop-batch-2026-10-12.md)
+adds session-bound face admission, incomplete/resumable thumbnail failure handling and
+an app-side Develop writer with mandatory recovery checkpoints. Rooted automation
+execution, native consent/storage wiring and broader release gates remain open.
+
 **Face-scan admission continuation (2026-10-12):**
 [Complete-folder admission and typed outcomes](release/face-folder-scan-admission-2026-10-12.md)
 protects saved results from subset inventories, pending-cloud inputs and cancelled
