@@ -28,6 +28,13 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Retained face effects / Develop recovery inspection (2026-10-12):**
+[Scanner authority and recovery continuation](release/retained-face-effects-develop-recovery-2026-10-12.md)
+connects retained intents to native scan boundaries, preserves post-effect receipts,
+checks embedded Develop authority after serialization, and adds read-only checkpoint
+inspection in Automation Settings. Authenticated execution, durable face operations,
+anchored mutation and broader release gates remain open.
+
 **Historical face thumbnails / durable Develop checkpoints (2026-10-12):**
 [Repair and recovery continuation](release/face-thumbnail-develop-checkpoint-2026-10-12.md)
 qualifies loaded completion against retained crops, repairs missing thumbnails without

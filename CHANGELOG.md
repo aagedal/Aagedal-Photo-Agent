@@ -4,6 +4,10 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Add read-only Develop batch recovery inspection in Automation Settings, including interrupted writes and unreadable checkpoint evidence.
+- Recheck retained Develop authority and source bytes after embedded metadata serialization, preserving physical write evidence when completion is refused.
+- Connect retained face-scan intents to scanner authority checks and preserve committed thumbnail, document and reset evidence after refusal.
+
 ## 3.0.0-beta.3 — 2026-10-11
 
 This third public beta continues 3.0 testing. See [known limitations](docs/limitations-3.0.md). Back up application data and test with copies of photos: this beta replaces the stable app and shares its data locations, and older versions may not understand data written by 3.0.
