@@ -94,7 +94,7 @@ nonisolated struct FaceDataStorageService: Sendable {
     func saveThumbnail(_ jpegData: Data, for faceID: UUID, folderURL: URL) throws {
         let thumbDir = thumbnailsDirectory(for: folderURL)
         try FileManager.default.createDirectory(at: thumbDir, withIntermediateDirectories: true)
-        try jpegData.write(to: thumbnailURL(for: faceID, folderURL: folderURL))
+        try jpegData.write(to: thumbnailURL(for: faceID, folderURL: folderURL), options: .atomic)
     }
 
     // MARK: - Delete

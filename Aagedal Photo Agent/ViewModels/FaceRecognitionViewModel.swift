@@ -47,6 +47,9 @@ nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
     let numbers: [NumberDetection]
     let processedCount: Int
     let failureCount: Int
+    let thumbnailFailureCount: Int
+    let cancelledThumbnailCount: Int
+    let thumbnailPersistenceError: String?
 }
 
 enum FaceScanQuiescenceError: LocalizedError, Equatable {
@@ -610,6 +613,7 @@ final class FaceRecognitionViewModel {
     @ObservationIgnored private var faceDataPersistenceTask: Task<Void, Never>?
     @ObservationIgnored private var faceDataLoadRequestID = UUID()
     private let detectionService = FaceDetectionService()
+    private let scanDetector: (@Sendable (URL, FaceDetectionService.DetectionConfig) async throws -> FaceDetectionService.DetectionResult)?
     /// Shared across off-main merge-suggestion recomputations so each face's feature print
     /// is unarchived once and reused, rather than allocating a fresh cache per call.
     /// FeaturePrintCache is thread-safe (`@unchecked Sendable`).
@@ -635,6 +639,7 @@ final class FaceRecognitionViewModel {
         imageTrashHandler: any ImageTrashHandling = SystemImageTrashHandler(),
         folderLoadService: FaceDataFolderLoadService = .shared,
         fileSignatureService: FaceScanFileSignatureService = .shared,
+        scanDetector: (@Sendable (URL, FaceDetectionService.DetectionConfig) async throws -> FaceDetectionService.DetectionResult)? = nil,
         fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
         fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
             MetadataWriteMode.current(forC2PA: $0, isRaw: $1)
@@ -650,6 +655,7 @@ final class FaceRecognitionViewModel {
         self.imageTrashHandler = imageTrashHandler
         self.folderLoadService = folderLoadService
         self.fileSignatureService = fileSignatureService
+        self.scanDetector = scanDetector
     }
 
     deinit {
@@ -967,6 +973,7 @@ final class FaceRecognitionViewModel {
         preparedConfig.sportsModeEnabled = includeJerseyNumbers
         let config = preparedConfig
         let detectionService = self.detectionService
+        let scanDetector = self.scanDetector
         let folderLoadService = self.folderLoadService
         let fileSignatureService = self.fileSignatureService
         let pendingPersistence = faceDataPersistenceTask
@@ -1117,9 +1124,10 @@ final class FaceRecognitionViewModel {
             let initialNumbers: [NumberDetection] = existingData?.numberDetections?.filter { number in
                 classificationWasCancelled || unchangedFiles.contains(number.imageURL.path)
             } ?? []
-            // Remove faces from deleted/modified files
+            // Prune groups for every face dropped above, including a previous partial
+            // photo whose thumbnail failure prevented it from receiving a signature.
             let removedFaceIDs = Set(existingData?.faces.filter { face in
-                toRemove.contains(face.imageURL.path)
+                !classificationWasCancelled && !unchangedFiles.contains(face.imageURL.path)
             }.map(\.id) ?? [])
 
             // Clean up groups
@@ -1211,6 +1219,9 @@ final class FaceRecognitionViewModel {
                 var allNumbers = initialNumbers
                 var processed = 0
                 var detectionErrors = 0
+                var thumbnailFailureCount = 0
+                var cancelledThumbnailCount = 0
+                var thumbnailPersistenceError: String?
                 var imagesSinceLastSave = 0
                 var imagesSinceLastCluster = 0
                 var pendingFaces: [DetectedFace] = []
@@ -1256,13 +1267,10 @@ final class FaceRecognitionViewModel {
 
                 // Ingest a completed image. Expensive clustering is coalesced separately.
                 func processImage(scannedURL: URL, detection: FaceDetectionService.DetectionResult, failed: Bool) async {
-                    if failed { detectionErrors += 1 }
+                    var imageFailed = failed
                     allNumbers.append(contentsOf: detection.standaloneNumbers)
 
                     for result in detection.faces {
-                        faceIndexByID[result.face.id] = allFaces.count
-                        allFaces.append(result.face)
-                        pendingFaces.append(result.face)
                         let thumbnailPersistence = await folderLoadService.persistThumbnail(
                             result.thumbnail,
                             faceID: result.face.id,
@@ -1270,21 +1278,30 @@ final class FaceRecognitionViewModel {
                         )
                         switch thumbnailPersistence {
                         case .committed:
+                            // Only retain faces whose thumbnails were durably installed.
+                            faceIndexByID[result.face.id] = allFaces.count
+                            allFaces.append(result.face)
+                            pendingFaces.append(result.face)
                             await reportThumbnail(result.face.id, result.thumbnail)
                         case .cancelledBeforeCommit:
-                            break
+                            cancelledThumbnailCount += 1
+                            imageFailed = true
                         case .failed(_, let message):
+                            thumbnailFailureCount += 1
+                            thumbnailPersistenceError = thumbnailPersistenceError ?? message
+                            imageFailed = true
                             scanLogger.warning("Failed to save thumbnail for face \(result.face.id): \(message)")
                         }
                     }
 
+                    if imageFailed { detectionErrors += 1 }
                     imagesSinceLastCluster += 1
                     if imagesSinceLastCluster >= clusteringImageBatchSize {
                         flushPendingClustering()
                     }
 
                     // A failed image must remain eligible for the next incremental scan.
-                    if !failed {
+                    if !imageFailed {
                         switch await fileSignatureService.signature(for: scannedURL) {
                         case .captured(let imageURL, let signature?):
                             scannedFiles[imageURL.path] = signature
@@ -1345,7 +1362,12 @@ final class FaceRecognitionViewModel {
 
                     taskGroup.addTask(priority: .utility) {
                         do {
-                            let detection = try await detectionService.detectFaces(in: url, config: config)
+                            let detection: FaceDetectionService.DetectionResult
+                            if let scanDetector {
+                                detection = try await scanDetector(url, config)
+                            } else {
+                                detection = try await detectionService.detectFaces(in: url, config: config)
+                            }
                             return (url, detection, false)
                         } catch {
                             scanLogger.warning("Face detection failed for \(url.lastPathComponent): \(error.localizedDescription)")
@@ -1367,7 +1389,10 @@ final class FaceRecognitionViewModel {
                     scannedFiles: scannedFiles,
                     numbers: allNumbers,
                     processedCount: processed,
-                    failureCount: detectionErrors
+                    failureCount: detectionErrors,
+                    thumbnailFailureCount: thumbnailFailureCount,
+                    cancelledThumbnailCount: cancelledThumbnailCount,
+                    thumbnailPersistenceError: thumbnailPersistenceError
                 )
                 }
             }
@@ -1402,8 +1427,11 @@ final class FaceRecognitionViewModel {
                 await folderLoadService.persist(folderData)
             }.value
             let finalPersistenceError = finalPersistence.failureMessage
-            if let finalPersistenceError {
-                self.errorMessage = "Failed to save face data: \(finalPersistenceError)"
+            let persistenceError = [result.thumbnailPersistenceError, finalPersistenceError]
+                .compactMap { $0 }.joined(separator: "; ")
+            let completionPersistenceError = persistenceError.isEmpty ? nil : persistenceError
+            if let completionPersistenceError {
+                self.errorMessage = "Failed to save face scan results: \(completionPersistenceError)"
             }
 
             // A detached child is intentional here: a cancelled scan still saves and presents
@@ -1460,11 +1488,12 @@ final class FaceRecognitionViewModel {
                     successCount: succeeded,
                     totalCount: toScan.count,
                     wasCancelled: isCancelled,
+                    persistenceError: completionPersistenceError,
                     files: []
                 ))
             }
 
-            if !isCancelled, finalPersistenceError == nil,
+            if !isCancelled, completionPersistenceError == nil,
                self.displayedFolderURL == folderURL.standardizedFileURL {
                 // Known People matching is always automatic now. `applyKnownPeopleMatches`
                 // no-ops when the database is empty, so this is safe to always call.
@@ -1480,7 +1509,9 @@ final class FaceRecognitionViewModel {
                 processedCount: result.processedCount,
                 failureCount: result.failureCount,
                 unsignedFileCount: unsignedFileCount,
-                persistenceError: finalPersistenceError
+                thumbnailFailureCount: result.thumbnailFailureCount,
+                cancelledThumbnailCount: result.cancelledThumbnailCount,
+                persistenceError: completionPersistenceError
             )
         }
         return .scheduled(request)

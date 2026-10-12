@@ -70,12 +70,18 @@ nonisolated struct FaceScanCompletion: Sendable, Equatable {
     let folderURL: URL
     let outcome: Outcome
     var processedCount: Int = 0
+    /// Photos whose detection or required thumbnail persistence did not finish successfully.
+    /// Multiple thumbnail failures in one photo count once here.
     var failureCount: Int = 0
     var unsignedFileCount: Int = 0
+    /// Attempted thumbnail writes; these do not verify thumbnails inherited from prior scans.
+    var thumbnailFailureCount: Int = 0
+    var cancelledThumbnailCount: Int = 0
     var persistenceError: String? = nil
 
     var succeeded: Bool {
-        guard persistenceError == nil, failureCount == 0, unsignedFileCount == 0 else { return false }
+        guard persistenceError == nil, failureCount == 0, unsignedFileCount == 0,
+              thumbnailFailureCount == 0, cancelledThumbnailCount == 0 else { return false }
         switch outcome {
         case .completed, .unchanged: return true
         case .partial, .cancelled, .refused: return false

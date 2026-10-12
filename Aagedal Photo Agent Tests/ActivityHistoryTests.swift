@@ -178,6 +178,145 @@ struct ActivityHistoryTests {
         #expect(FaceDataStorageService().loadFaceData(for: folder)?.scanComplete == false)
     }
 
+    @Test("Thumbnail write failures remain partial, unsigned and resumable", arguments: [false, true])
+    func faceThumbnailPersistenceFailure(failDocument: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceThumbFailure-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try Data([1]).write(to: photo)
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
+            featurePrintData: Data(), detectedAt: Date())
+        let failure = CocoaError(.fileWriteNoPermission)
+        let history = ActivityHistoryStore()
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), activityHistory: history,
+            faceModelAvailability: .available,
+            folderLoadService: FaceDataFolderLoadService(saveFaceData: { data in
+                if failDocument { throw CocoaError(.fileWriteUnknown) }
+                try FaceDataStorageService().saveFaceData(data)
+            }, saveThumbnail: { _, _, _ in throw failure }),
+            scanDetector: { _, _ in .init(faces: [(face, Data([1, 2]))]) })
+        let submission = viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        let completion = try #require(await submission.completion())
+        #expect(completion.outcome == .partial)
+        #expect(completion.processedCount == 1)
+        #expect(completion.failureCount == 1)
+        #expect(completion.thumbnailFailureCount == 1)
+        #expect(completion.cancelledThumbnailCount == 0)
+        #expect(completion.unsignedFileCount == 1)
+        #expect(completion.persistenceError?.contains(failure.localizedDescription) == true)
+        #expect(!completion.succeeded)
+        let entry = try #require(history.entries.first)
+        #expect(!entry.isClean)
+        #expect(entry.successCount == 0)
+        #expect(entry.persistenceError == completion.persistenceError)
+        #expect(entry.summary.contains("save failed"))
+        let storage = FaceDataStorageService()
+        if failDocument {
+            #expect(!storage.faceDataExists(for: folder))
+        } else {
+            let saved = try #require(storage.loadFaceData(for: folder))
+            #expect(!saved.scanComplete)
+            #expect(saved.faces.isEmpty)
+            #expect(saved.groups.isEmpty)
+            #expect(saved.scannedFiles[photo.path] == nil)
+        }
+
+        // The failed image must be detected again rather than accepted as unchanged.
+        let retry = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { _, _ in .init(faces: []) })
+        let retried = try #require(await retry.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+        #expect(retried.processedCount == 1)
+        #expect(retried.succeeded)
+        #expect(storage.loadFaceData(for: folder)?.scanComplete == true)
+    }
+
+    @Test("A mixed thumbnail result retries the entire photo without retaining stale groups")
+    func mixedFaceThumbnailRetry() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceThumbMixed-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try Data([1]).write(to: photo)
+        let faces = (0..<2).map { _ in DetectedFace(id: UUID(), imageURL: photo,
+            faceRect: .zero, featurePrintData: Data(), detectedAt: Date()) }
+        let storage = FaceDataStorageService()
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: FaceDataFolderLoadService(saveThumbnail: { bytes, id, folder in
+                if id == faces[1].id { throw CocoaError(.fileWriteNoPermission) }
+                try storage.saveThumbnail(bytes, for: id, folderURL: folder)
+            }), scanDetector: { _, _ in .init(faces: faces.map { ($0, Data([1])) }) })
+        let completion = try #require(await viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+        #expect(completion.failureCount == 1)
+        #expect(completion.thumbnailFailureCount == 1)
+        #expect(viewModel.errorMessage?.contains("Failed to save face scan results") == true)
+        let partial = try #require(storage.loadFaceData(for: folder))
+        #expect(partial.faces.map(\.id) == [faces[0].id])
+        #expect(partial.groups.flatMap(\.faceIDs) == [faces[0].id])
+        #expect(partial.scannedFiles[photo.path] == nil)
+
+        let retry = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { _, _ in .init(faces: []) })
+        let retried = try #require(await retry.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+        #expect(retried.succeeded)
+        let final = try #require(storage.loadFaceData(for: folder))
+        #expect(final.faces.isEmpty)
+        #expect(final.groups.isEmpty)
+    }
+
+    @Test("Cancellation before thumbnail commit preserves a resumable document without unsaved face references")
+    func faceThumbnailCancellation() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceThumbCancel-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try Data([1]).write(to: photo)
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
+            featurePrintData: Data(), detectedAt: Date())
+        let gate = FaceThumbnailCancellationGate()
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: FaceDataFolderLoadService(saveThumbnail: { _, _, _ in
+                Issue.record("A cancelled thumbnail must not enter the saver")
+            }), scanDetector: { _, _ in
+                await gate.pauseDetection()
+                return .init(faces: [(face, Data([1]))])
+            })
+        let submission = viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        await gate.waitUntilEntered()
+        viewModel.cancelScan()
+        await gate.release()
+        let completion = try #require(await submission.completion())
+        #expect(completion.outcome == .cancelled)
+        #expect(completion.cancelledThumbnailCount == 1)
+        #expect(completion.thumbnailFailureCount == 0)
+        #expect(completion.persistenceError == nil)
+        #expect(!completion.succeeded)
+        let saved = try #require(FaceDataStorageService().loadFaceData(for: folder))
+        #expect(!saved.scanComplete)
+        #expect(saved.faces.isEmpty)
+        #expect(saved.groups.isEmpty)
+        #expect(saved.scannedFiles[photo.path] == nil)
+    }
+
+    @Test("Activity retains document save failures and reads history without that field")
+    func activityPersistenceFailureCodable() throws {
+        let entry = ActivityEntry(kind: .faceScan, date: Date(), title: "Scan",
+            successCount: 1, totalCount: 1, persistenceError: "disk write failed", files: [])
+        #expect(!entry.isClean)
+        #expect(entry.summary == "Face scan of 1 photo completed (save failed)")
+        let bytes = try JSONEncoder().encode(entry)
+        #expect(try JSONDecoder().decode(ActivityEntry.self, from: bytes).persistenceError == entry.persistenceError)
+        let legacy = try JSONDecoder().decode(ActivityEntry.self,
+            from: dataRemovingKey("persistenceError", from: bytes))
+        #expect(legacy.persistenceError == nil)
+        #expect(legacy.isClean)
+    }
+
     @Test("An incomplete signed snapshot is durably completed instead of only changing presentation", arguments: [false, true])
     func typedFaceScanCompletesSignedSnapshot(failSave: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceSignedPartial-\(UUID())")
@@ -192,8 +331,9 @@ struct ActivityHistoryTests {
         try Data([1]).write(to: photo)
         let document = folder.appendingPathComponent(".face_data/face_data.json")
         let originalBytes = try Data(contentsOf: document)
+        let history = ActivityHistoryStore()
         let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
-            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            writeEngine: SwiftExifWriteEngine(), activityHistory: history, faceModelAvailability: .available,
             folderLoadService: FaceDataFolderLoadService(saveFaceData: { data in
                 if failSave { throw CocoaError(.fileWriteNoPermission) }
                 try FaceDataStorageService().saveFaceData(data)
@@ -207,6 +347,10 @@ struct ActivityHistoryTests {
         #expect(completion.processedCount == 0)
         #expect(completion.succeeded == !failSave)
         #expect((completion.persistenceError != nil) == failSave)
+        let entry = try #require(history.entries.first)
+        #expect(entry.isClean == !failSave)
+        #expect((entry.persistenceError != nil) == failSave)
+        #expect(entry.summary.contains("save failed") == failSave)
         #expect(viewModel.scanComplete == !failSave)
         #expect(storage.loadFaceData(for: folder)?.scanComplete == !failSave)
         if failSave { #expect(try Data(contentsOf: document) == originalBytes) }
@@ -1201,4 +1345,27 @@ private func dataRemovingKey(_ key: String, from data: Data) -> Data {
     var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     object[key] = nil
     return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+}
+
+private actor FaceThumbnailCancellationGate {
+    private var entered = false
+    private var entryWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func pauseDetection() async {
+        entered = true
+        entryWaiter?.resume()
+        entryWaiter = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { entryWaiter = $0 }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
 }
