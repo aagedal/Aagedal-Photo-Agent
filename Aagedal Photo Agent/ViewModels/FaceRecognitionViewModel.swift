@@ -51,6 +51,8 @@ nonisolated private struct FaceScanWorkerResult: @unchecked Sendable {
     let cancelledThumbnailCount: Int
     let thumbnailPersistenceError: String?
     let incompleteThumbnailPaths: Set<String>
+    let committedThumbnailIDs: [UUID]
+    let documentPersistenceResults: [FaceDataPersistenceResult]
 }
 
 enum FaceScanQuiescenceError: LocalizedError, Equatable {
@@ -951,10 +953,33 @@ final class FaceRecognitionViewModel {
     ///   - includeJerseyNumbers: Explicitly runs jersey OCR alongside a full face rescan.
     ///     The caller must confirm that existing face groups/names will be reset.
     @discardableResult
-    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false) -> FaceFolderScanAdmission {
+    func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false,
+                    retainedAuthority: MCPFaceScanAdmissionService.RetainedFolder? = nil) -> FaceFolderScanAdmission {
         let request = FaceFolderScanRequest(imageURLs: imageURLs, folderURL: folderURL,
             forceFullScan: forceFullScan, includeJerseyNumbers: includeJerseyNumbers)
         guard !isScanning else { return .refused(.scanAlreadyRunning) }
+        if let retainedAuthority {
+            let prepared = retainedAuthority.prepared
+            guard request.folderURL == prepared.folderURL.standardizedFileURL,
+                  request.imageURLs.map(\.standardizedFileURL) == prepared.imageURLs.map(\.standardizedFileURL),
+                  request.forceFullScan == prepared.forceFullScan,
+                  request.includeJerseyNumbers == prepared.includeJerseyNumbers else {
+                return .refused(.invalidInventory("the retained intent differs from the requested scan"))
+            }
+            do { try retainedAuthority.validate() }
+            catch { return .refused(.reservationFailed(error.localizedDescription)) }
+        }
+        let effectAuthority: FaceDataFolderLoadService.EffectAuthority?
+        if let retained = retainedAuthority {
+            effectAuthority = { folder in
+                guard folder.standardizedFileURL == retained.prepared.folderURL.standardizedFileURL else {
+                    throw MCPFaceScanAdmissionService.Failure.staleSnapshot
+                }
+                try retained.validateForEffect(folderURL: folder)
+            }
+        } else {
+            effectAuthority = nil
+        }
         guard faceModelAvailability.isAvailable else {
             errorMessage = faceModelAvailability.detail
             return .refused(.modelUnavailable(faceModelAvailability))
@@ -993,15 +1018,21 @@ final class FaceRecognitionViewModel {
         scanningGroups = []
 
         activeScanTask = Task(priority: .userInitiated) {
+            defer { retainedAuthority?.release() }
             _ = await pendingPersistence?.value
             // Acquire off MainActor before reading or deleting the scan snapshot. The folder
             // lease excludes both helper photo reads and retained GUI writes until the exact
             // final result (including cancelled partial work) has been persisted and reloaded.
-            let reservation: MCPProcessReservationLease
+            let reservation: MCPProcessReservationLease?
             do {
-                reservation = try await Task.detached(priority: .utility) {
-                    try MCPProcessReservation.acquireFolder(folderURL)
-                }.value
+                if let retainedAuthority {
+                    try retainedAuthority.validate()
+                    reservation = nil
+                } else {
+                    reservation = try await Task.detached(priority: .utility) {
+                        try MCPProcessReservation.acquireFolder(folderURL)
+                    }.value
+                }
             } catch {
                 self.errorMessage = error.localizedDescription
                 self.isScanning = false
@@ -1016,7 +1047,21 @@ final class FaceRecognitionViewModel {
                     outcome: .refused(.reservationFailed(error.localizedDescription))
                 )
             }
-            defer { reservation.release() }
+            defer { reservation?.release() }
+
+            @MainActor func refuseAuthority(_ error: any Error, reset: FaceDataDeletionResult? = nil) -> FaceScanCompletion {
+                self.errorMessage = error.localizedDescription
+                self.isScanning = false
+                self.isCancellingScan = false
+                self.scanningFolderURL = nil
+                self.scanProgress = ""
+                self.scanProcessedCount = 0
+                self.scanTotalCount = 0
+                self.activeScanTask = nil
+                return FaceScanCompletion(folderURL: request.folderURL,
+                    outcome: .refused(.reservationFailed(error.localizedDescription)),
+                    persistenceError: error.localizedDescription, resetPersistence: reset)
+            }
 
             // Validate the caller's whole scope before reset/pruning can discard saved results.
             let inventoryRefusal = await Task.detached(priority: .utility) {
@@ -1034,14 +1079,19 @@ final class FaceRecognitionViewModel {
                 return FaceScanCompletion(folderURL: request.folderURL, outcome: .refused(inventoryRefusal))
             }
 
+            do { try effectAuthority?(folderURL) }
+            catch { return refuseAuthority(error) }
+
+            var resetPersistence: FaceDataDeletionResult?
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
                 // Preparation is deliberately detached from later scan cancellation. Rename
                 // quiescence may cancel immediately, but the scan still needs a stable starting
                 // snapshot and must durably write its exact partial completion before returning.
                 let deletion = await Task.detached(priority: .utility) {
-                    await folderLoadService.deleteAll(for: folderURL)
+                    await folderLoadService.deleteAll(for: folderURL, effectAuthority: effectAuthority)
                 }.value
+                resetPersistence = deletion
                 guard case .committed = deletion else {
                     // A failed reset must never become permission to overwrite the previous
                     // document with a fresh scan. Retain presentation and its durable baseline
@@ -1059,7 +1109,8 @@ final class FaceRecognitionViewModel {
                     return FaceScanCompletion(
                         folderURL: folderURL.standardizedFileURL,
                         outcome: .refused(.resetFailed(self.errorMessage ?? "Face scan reset failed.")),
-                        persistenceError: deletion.failureMessage
+                        persistenceError: deletion.failureMessage,
+                        resetPersistence: deletion
                     )
                 }
                 if self.displayedFolderURL == folderURL.standardizedFileURL {
@@ -1072,7 +1123,8 @@ final class FaceRecognitionViewModel {
                 initialSnapshot = nil
             } else {
                 let preparation = await Task.detached(priority: .utility) {
-                    await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never)
+                    await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never,
+                        readOnlyRecovery: retainedAuthority != nil)
                 }.value
                 switch preparation {
                 case .complete(let evidence):
@@ -1172,10 +1224,13 @@ final class FaceRecognitionViewModel {
                 self.scanProgress = "0/\(toScan.count + thumbnailRepairURLs.count)"
             }
 
+            do { try effectAuthority?(folderURL) }
+            catch { return refuseAuthority(error, reset: resetPersistence) }
+
             if toScan.isEmpty && thumbnailRepairURLs.isEmpty && toRemove.isEmpty && !classificationWasCancelled && existingData?.scanComplete != false {
                 // Only a truly unchanged inventory can skip persistence. A removal-only
                 // scan must save the pruned faces, groups, numbers and signatures below.
-                reservation.release()
+                reservation?.release()
                 await MainActor.run {
                     self.isScanning = false
                     self.isCancellingScan = false
@@ -1193,7 +1248,7 @@ final class FaceRecognitionViewModel {
                         self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = existingData
                         self.faceData = existingData
                         self.installThumbnails(initialSnapshot?.thumbnailData ?? [:])
-                        self.updateMergeSuggestions()
+                        if retainedAuthority == nil { self.updateMergeSuggestions() }
                     }
                 }
                 return FaceScanCompletion(
@@ -1208,6 +1263,7 @@ final class FaceRecognitionViewModel {
                 self.errorMessage = message
             }
             let reportGroups: @MainActor @Sendable ([FaceGroup]) -> Void = { [self] groups in
+                do { try effectAuthority?(folderURL) } catch { return }
                 self.scanningGroups = groups
             }
             let reportProgress: @MainActor @Sendable (Int, String) -> Void = { [self] count, progress in
@@ -1215,6 +1271,7 @@ final class FaceRecognitionViewModel {
                 self.scanProgress = progress
             }
             let reportThumbnail: @MainActor @Sendable (UUID, Data) -> Void = { [self] faceID, data in
+                do { try effectAuthority?(folderURL) } catch { return }
                 guard self.displayedFolderURL == folderURL.standardizedFileURL,
                       let image = NSImage(data: data) else { return }
                 self.thumbnailDataByFaceID[faceID] = data
@@ -1237,6 +1294,8 @@ final class FaceRecognitionViewModel {
                 var thumbnailFailureCount = 0
                 var cancelledThumbnailCount = 0
                 var thumbnailPersistenceError: String?
+                var committedThumbnailIDs: [UUID] = []
+                var documentPersistenceResults: [FaceDataPersistenceResult] = []
                 var incompleteThumbnailPaths = thumbnailRepairPaths
                 var imagesSinceLastSave = 0
                 var imagesSinceLastCluster = 0
@@ -1283,6 +1342,12 @@ final class FaceRecognitionViewModel {
 
                 // Ingest a completed image. Expensive clustering is coalesced separately.
                 func processImage(scannedURL: URL, detection: FaceDetectionService.DetectionResult, failed: Bool) async {
+                    do { try effectAuthority?(folderURL) }
+                    catch {
+                        detectionErrors += 1
+                        thumbnailPersistenceError = thumbnailPersistenceError ?? error.localizedDescription
+                        return
+                    }
                     var imageFailed = failed
                     allNumbers.append(contentsOf: detection.standaloneNumbers)
 
@@ -1290,15 +1355,22 @@ final class FaceRecognitionViewModel {
                         let thumbnailPersistence = await folderLoadService.persistThumbnail(
                             result.thumbnail,
                             faceID: result.face.id,
-                            folderURL: folderURL
+                            folderURL: folderURL,
+                            effectAuthority: effectAuthority
                         )
                         switch thumbnailPersistence {
                         case .committed:
+                            committedThumbnailIDs.append(result.face.id)
                             // Only retain faces whose thumbnails were durably installed.
                             faceIndexByID[result.face.id] = allFaces.count
                             allFaces.append(result.face)
                             pendingFaces.append(result.face)
                             await reportThumbnail(result.face.id, result.thumbnail)
+                        case .committedButUnverified(let faceID, let message, _):
+                            committedThumbnailIDs.append(faceID)
+                            thumbnailFailureCount += 1
+                            thumbnailPersistenceError = thumbnailPersistenceError ?? message
+                            imageFailed = true
                         case .cancelledBeforeCommit:
                             cancelledThumbnailCount += 1
                             imageFailed = true
@@ -1342,7 +1414,8 @@ final class FaceRecognitionViewModel {
                             embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                             numberDetections: allNumbers
                         )
-                        let persistence = await folderLoadService.persist(progressData)
+                        let persistence = await folderLoadService.persist(progressData, effectAuthority: effectAuthority)
+                        documentPersistenceResults.append(persistence)
                         if let failure = persistence.failureMessage {
                             await reportSaveError("Failed to save face data: \(failure)")
                         }
@@ -1372,15 +1445,23 @@ final class FaceRecognitionViewModel {
                             break
                         }
                         do {
+                            try effectAuthority?(folderURL)
                             let bytes: Data
                             if let thumbnailRegenerator {
                                 bytes = try await thumbnailRegenerator(face)
                             } else {
                                 bytes = try detectionService.regenerateThumbnail(for: face)
                             }
-                            switch await folderLoadService.persistThumbnail(bytes, faceID: face.id, folderURL: folderURL) {
+                            switch await folderLoadService.persistThumbnail(bytes, faceID: face.id, folderURL: folderURL,
+                                effectAuthority: effectAuthority) {
                             case .committed:
+                                committedThumbnailIDs.append(face.id)
                                 await reportThumbnail(face.id, bytes)
+                            case .committedButUnverified(let faceID, let message, _):
+                                committedThumbnailIDs.append(faceID)
+                                thumbnailFailureCount += 1
+                                thumbnailPersistenceError = thumbnailPersistenceError ?? message
+                                repairFailed = true
                             case .cancelledBeforeCommit:
                                 cancelledThumbnailCount += 1
                                 repairFailed = true
@@ -1417,6 +1498,13 @@ final class FaceRecognitionViewModel {
                 var pending = 0
 
                 for url in toScan {
+                    do { try effectAuthority?(folderURL) }
+                    catch {
+                        thumbnailPersistenceError = thumbnailPersistenceError ?? error.localizedDescription
+                        detectionErrors += 1
+                        taskGroup.cancelAll()
+                        break
+                    }
                     if Task.isCancelled {
                         taskGroup.cancelAll()
                         break
@@ -1431,12 +1519,14 @@ final class FaceRecognitionViewModel {
 
                     taskGroup.addTask(priority: .utility) {
                         do {
+                            try effectAuthority?(folderURL)
                             let detection: FaceDetectionService.DetectionResult
                             if let scanDetector {
                                 detection = try await scanDetector(url, config)
                             } else {
                                 detection = try await detectionService.detectFaces(in: url, config: config)
                             }
+                            try effectAuthority?(folderURL)
                             return (url, detection, false)
                         } catch {
                             scanLogger.warning("Face detection failed for \(url.lastPathComponent): \(error.localizedDescription)")
@@ -1462,7 +1552,9 @@ final class FaceRecognitionViewModel {
                     thumbnailFailureCount: thumbnailFailureCount,
                     cancelledThumbnailCount: cancelledThumbnailCount,
                     thumbnailPersistenceError: thumbnailPersistenceError,
-                    incompleteThumbnailPaths: incompleteThumbnailPaths
+                    incompleteThumbnailPaths: incompleteThumbnailPaths,
+                    committedThumbnailIDs: committedThumbnailIDs,
+                    documentPersistenceResults: documentPersistenceResults
                 )
                 }
             }
@@ -1495,21 +1587,25 @@ final class FaceRecognitionViewModel {
             // prevents the persistence service from treating the parent cancellation as a
             // pre-commit cancellation request.
             let finalPersistence = await Task.detached(priority: .utility) {
-                await folderLoadService.persist(folderData)
+                await folderLoadService.persist(folderData, effectAuthority: effectAuthority)
             }.value
-            let finalPersistenceError = finalPersistence.failureMessage
-            let persistenceError = [result.thumbnailPersistenceError, finalPersistenceError]
-                .compactMap { $0 }.joined(separator: "; ")
-            let completionPersistenceError = persistenceError.isEmpty ? nil : persistenceError
-            if let completionPersistenceError {
-                self.errorMessage = "Failed to save face scan results: \(completionPersistenceError)"
-            }
-
             // A detached child is intentional here: a cancelled scan still saves and presents
             // its exact partial result, so its just-committed thumbnails must be loaded even
             // though the parent scan task carries cancellation.
             let thumbnailRefresh = await Task.detached(priority: .utility) {
-                await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never)
+                do { try effectAuthority?(folderURL) }
+                catch {
+                    return FaceDataFolderLoadResult.cancelled(CancelledFaceDataFolderLoadEvidence(
+                        folderURL: folderURL.standardizedFileURL, requestedThumbnailCount: 0, processedThumbnailCount: 0))
+                }
+                let loaded = await folderLoadService.load(folderURL: folderURL, cleanupPolicy: .never,
+                    readOnlyRecovery: retainedAuthority != nil)
+                do { try effectAuthority?(folderURL) }
+                catch {
+                    return .cancelled(CancelledFaceDataFolderLoadEvidence(
+                        folderURL: folderURL.standardizedFileURL, requestedThumbnailCount: 0, processedThumbnailCount: 0))
+                }
+                return loaded
             }.value
             let refreshedThumbnailData: [UUID: Data]
             switch thumbnailRefresh {
@@ -1519,27 +1615,39 @@ final class FaceRecognitionViewModel {
                 refreshedThumbnailData = [:]
             }
 
-            reservation.release()
+            let presentationAuthorityError: String?
+            do { try effectAuthority?(folderURL); presentationAuthorityError = nil }
+            catch { presentationAuthorityError = error.localizedDescription }
+            let finalPersistenceError = finalPersistence.failureMessage ?? presentationAuthorityError
+            let persistenceError = [result.thumbnailPersistenceError, finalPersistenceError]
+                .compactMap { $0 }.joined(separator: "; ")
+            let completionPersistenceError = persistenceError.isEmpty ? nil : persistenceError
+            if let completionPersistenceError {
+                self.errorMessage = "Failed to save face scan results: \(completionPersistenceError)"
+            }
+
+            reservation?.release()
             await MainActor.run {
                 self.photoDeletionGenerations[folderURL.standardizedFileURL.path, default: 0] &+= 1
-                if case .complete(let evidence) = thumbnailRefresh {
+                if case .complete(let evidence) = thumbnailRefresh,
+                   retainedAuthority == nil || completionPersistenceError == nil {
                     self.durableFaceSnapshots[folderURL.standardizedFileURL.path] = evidence.faceData
                 }
                 let isDisplayedFolder = self.displayedFolderURL == folderURL.standardizedFileURL
-                if isDisplayedFolder {
+                if isDisplayedFolder, retainedAuthority == nil || completionPersistenceError == nil {
                     self.faceData = folderData
                     self.scanComplete = scanSucceeded && finalPersistenceError == nil
                     if !refreshedThumbnailData.isEmpty || folderData.faces.isEmpty {
                         self.installThumbnails(refreshedThumbnailData)
                     }
-                    self.updateMergeSuggestions()
+                    if retainedAuthority == nil { self.updateMergeSuggestions() }
 
                     // Sports mode: resolve detected numbers → player names (or surface
                     // the colour-mapping confirmation if not yet confirmed).
-                    if config.sportsModeEnabled {
+                    if config.sportsModeEnabled, retainedAuthority == nil {
                         self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
                     }
-                } else {
+                } else if retainedAuthority == nil {
                     self.deferredPostprocessingFolders.insert(folderURL.standardizedFileURL)
                 }
                 self.isScanning = false
@@ -1564,7 +1672,7 @@ final class FaceRecognitionViewModel {
                 ))
             }
 
-            if !isCancelled, completionPersistenceError == nil,
+            if retainedAuthority == nil, !isCancelled, completionPersistenceError == nil,
                self.displayedFolderURL == folderURL.standardizedFileURL {
                 // Known People matching is always automatic now. `applyKnownPeopleMatches`
                 // no-ops when the database is empty, so this is safe to always call.
@@ -1582,10 +1690,28 @@ final class FaceRecognitionViewModel {
                 unsignedFileCount: unsignedFileCount,
                 thumbnailFailureCount: result.thumbnailFailureCount,
                 cancelledThumbnailCount: result.cancelledThumbnailCount,
-                persistenceError: completionPersistenceError
+                persistenceError: completionPersistenceError,
+                committedThumbnailIDs: result.committedThumbnailIDs,
+                documentPersistenceResults: result.documentPersistenceResults + [finalPersistence],
+                resetPersistence: resetPersistence
             )
         }
         return .scheduled(request)
+    }
+
+    /// Internal native bridge only. The caller must separately establish consent and
+    /// operation retention; this capability advertises no helper execution permission.
+    func scheduleRetainedFolderScan(intents: MCPFaceScanIntentStore, id: UUID) throws -> FaceFolderScanSubmission {
+        let retained = try intents.retain(id: id)
+        let prepared = retained.prepared
+        let admission = scanFolder(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL,
+            forceFullScan: prepared.forceFullScan, includeJerseyNumbers: prepared.includeJerseyNumbers,
+            retainedAuthority: retained)
+        if case .scheduled = admission {
+            return FaceFolderScanSubmission(admission: admission, task: activeScanTask)
+        }
+        retained.release()
+        return FaceFolderScanSubmission(admission: admission, task: nil)
     }
 
     /// Captures scheduling and its exact task without yielding the MainActor. Callers that
