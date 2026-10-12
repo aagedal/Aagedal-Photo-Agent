@@ -295,12 +295,17 @@ nonisolated struct PrimaryDevelopWriteHooks: Sendable {
 nonisolated struct PrimaryDevelopWriteService: Sendable {
     let engine: any MetadataWriteEngine
     var hooks = PrimaryDevelopWriteHooks()
-    func execute(_ request: PrimaryDevelopWriteRequest, predecessorResult: PrimaryDevelopWriteResult? = nil) async -> PrimaryDevelopWriteResult {
+    func execute(_ request: PrimaryDevelopWriteRequest, predecessorResult: PrimaryDevelopWriteResult? = nil,
+                 heldReservation: MCPProcessReservationLease? = nil,
+                 validateAuthority: @escaping @Sendable () async throws -> Void = {}) async -> PrimaryDevelopWriteResult {
         var result = PrimaryDevelopWriteResult(requestID: request.id)
         do {
             try Task.checkCancellation()
-            let reservation = try MCPProcessReservation.acquirePhoto(request.imageURL)
-            defer { reservation.release() }
+            guard heldReservation?.coversPhoto(request.imageURL) != false else {
+                throw MCPProcessReservationError.unavailable
+            }
+            let reservation = try heldReservation ?? MCPProcessReservation.acquirePhoto(request.imageURL)
+            defer { if heldReservation == nil { reservation.release() } }
             if let message = request.captureFailure { throw PrimaryDevelopWriteError(message: message) }
             let admittedSource: SourceImageRevision?
             let admittedXMP: XMPSidecarWriteSnapshot?
@@ -331,17 +336,20 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             }
             var writtenSource = source
             let target = DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: request.imageURL, requestedMode: request.mode)
+            try await validateAuthority()
             if target.writesEmbedded {
                 guard let engine = engine as? any PrimaryDevelopWriting else {
                     throw PrimaryDevelopWriteError(message: "This image writer cannot safely verify a retained Develop edit.")
                 }
                 let receipt = try await engine.writePrimaryDevelop(request) {
+                    try await validateAuthority()
                     try await service.validateWriteCompletionInHeldTransaction(snapshot, sourceRevision: source)
                 }
                 result.wroteEmbedded = true; result.sourceRevision = receipt.sourceRevision
                 writtenSource = receipt.sourceRevision
                 try await hooks.afterEmbedded()
             }
+            try await validateAuthority()
             let completion = await service.completeSidecarAndMirrorXMP(request.sidecar, snapshot: snapshot,
                 mirrorOnlyIfExisting: !target.writesXMPSidecar, replaceDevelopSettings: request.replaceDevelop,
                 replaceOrientation: request.replaceOrientation, expectedSourceRevision: writtenSource,
