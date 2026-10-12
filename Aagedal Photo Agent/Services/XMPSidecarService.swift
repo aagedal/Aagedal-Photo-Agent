@@ -339,12 +339,14 @@ struct XMPSidecarService: Sendable {
         onlyIfExisting: Bool,
         replaceDevelopSettings: Bool,
         replaceOrientation: Bool,
-        onInstalled: @escaping @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in }
+        onInstalled: @escaping @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in },
+        validateCommitAuthority: @escaping @Sendable () throws -> Void = {}
     ) async throws -> Bool {
         let technicalOnly = onlyIfExisting && expectedSnapshot.data == nil
         let createsTechnicalSidecar = replaceDevelopSettings && metadata.cameraRaw?.isEmpty == false
         return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
-            onlyIfExisting: onlyIfExisting && !createsTechnicalSidecar, onInstalled: onInstalled) { xmp in
+            onlyIfExisting: onlyIfExisting && !createsTechnicalSidecar, onInstalled: onInstalled,
+            validateCommitAuthority: validateCommitAuthority) { xmp in
             let tiffOrientation = xmp.simpleValue(namespace: XMPNamespace.tiff, property: "Orientation")
             let exifOrientation = xmp.simpleValue(namespace: XMPNamespace.exif, property: "Orientation")
             if !technicalOnly {
@@ -590,6 +592,7 @@ struct XMPSidecarService: Sendable {
         onlyIfExisting: Bool = false,
         beforeRevisionCheck: @Sendable (Int) -> Void = { _ in },
         onInstalled: @Sendable (XMPSidecarWriteSnapshot) -> Void = { _ in },
+        validateCommitAuthority: @Sendable () throws -> Void = {},
         mutation: @Sendable (inout XMPData) -> Void
     ) async throws -> Bool {
         let url = sidecarURL(for: imageURL)
@@ -619,6 +622,8 @@ struct XMPSidecarService: Sendable {
             await Task.yield()
             guard try Self.currentData(at: url) == sourceData else { continue }
 
+            // No suspension separates this caller check from physical publication.
+            try validateCommitAuthority()
             try stagedData.write(to: url, options: .atomic)
             onInstalled(XMPSidecarWriteSnapshot(data: stagedData))
             let installedData = try Data(contentsOf: url)

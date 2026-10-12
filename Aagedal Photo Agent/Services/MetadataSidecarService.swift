@@ -1069,7 +1069,8 @@ struct MetadataSidecarService: Sendable {
         verifyWrittenMetadata: (@Sendable (IPTCMetadata) throws -> Void)? = nil,
         beforeXMPCommit: @escaping @Sendable () throws -> Void = {},
         beforeJSONCommit: @escaping @Sendable () throws -> Void = {},
-        afterJSONCommit: @escaping @Sendable () throws -> Void = {}
+        afterJSONCommit: @escaping @Sendable () throws -> Void = {},
+        validateCommitAuthority: @escaping @Sendable () throws -> Void = {}
     ) async -> MetadataSidecarPersistenceResult {
         guard !Task.isCancelled else {
             return .init(installedSidecar: nil, wroteXMPSidecar: false, wasCancelled: true, failure: nil)
@@ -1107,7 +1108,8 @@ struct MetadataSidecarService: Sendable {
                 wroteXMP = try await XMPSidecarService().writeMetadataInHeldTransaction(sidecar.metadata,
                     for: snapshot.imageURL, expectedSnapshot: .init(data: snapshot.xmpData),
                     onlyIfExisting: mirrorOnlyIfExisting, replaceDevelopSettings: replaceDevelopSettings,
-                    replaceOrientation: replaceOrientation, onInstalled: { xmpReceipt.record($0) })
+                    replaceOrientation: replaceOrientation, onInstalled: { xmpReceipt.record($0) },
+                    validateCommitAuthority: validateCommitAuthority)
                 skippedXMP = !wroteXMP
                 stage = .metadataSidecar
                 try beforeJSONCommit()
@@ -1130,9 +1132,11 @@ struct MetadataSidecarService: Sendable {
                       try self.xmpBytes(for: snapshot.imageURL) == committedXMP.data else {
                     throw self.ownershipChanged(snapshot.imageURL)
                 }
+                try validateCommitAuthority()
                 let saved = try self.saveSidecar(sidecar, for: snapshot.imageURL, in: snapshot.folderURL)
                 committed = true
                 try afterJSONCommit()
+                try validateCommitAuthority()
                 guard let readBack = self.loadSidecar(for: snapshot.imageURL, in: snapshot.folderURL),
                       Self.samePersistedRecord(readBack, saved) else { throw CocoaError(.fileReadCorruptFile) }
                 installed = readBack
