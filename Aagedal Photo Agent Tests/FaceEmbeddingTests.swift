@@ -2530,7 +2530,7 @@ struct FaceFolderLoadServiceTests {
         #expect(source.contains("scheduleFaceDataPersistence("))
         #expect(source.contains("scheduleFaceDataDeletion(for:"))
         #expect(source.contains("await folderLoadService.persistThumbnail("))
-        #expect(source.contains("await folderLoadService.persist(folderData)"))
+        #expect(source.contains("await folderLoadService.persist(folderData, effectAuthority: effectAuthority)"))
         #expect(!source.contains("storageService.saveFaceData"))
         #expect(!source.contains("storageService.saveThumbnail"))
         #expect(!source.contains("storageService.deleteThumbnail"))
