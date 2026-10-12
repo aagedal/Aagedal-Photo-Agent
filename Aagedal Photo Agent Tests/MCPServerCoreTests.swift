@@ -923,7 +923,7 @@ struct MCPServerCoreTests {
         #expect(tools.map { $0["name"] as? String } == [
             "start_voice_transcription",
             "open_voice_transcription_review",
-            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "list_templates", "inspect_develop_template", "preview_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "prepare_face_scan", "list_templates", "inspect_develop_template", "preview_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {
@@ -989,6 +989,34 @@ struct MCPServerCoreTests {
         #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
         try authorization.setEnabled(false)
         #expect(tools.callTool(name: "preview_develop_template", arguments: arguments).objectValue?["isError"] == .bool(true))
+    }
+
+    @Test("Face preparation tool refuses execution arguments and reports only read-only inventory")
+    func facePreparationToolContract() throws {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("image".utf8).write(to: root.appendingPathComponent("frame.jpg"))
+        let authorization = store()
+        try authorization.addRoot(root)
+        try authorization.setEnabled(true)
+        let tools = MCPFoundationTools(authorizationStore: authorization)
+        for arguments: [String: MCPJSONValue] in [[:], ["path": .bool(true)],
+            ["path": .string(root.path), "execute": .bool(true)],
+            ["path": .string(root.path), "forceFullScan": .string("true")]] {
+            let result = tools.callTool(name: "prepare_face_scan", arguments: arguments)
+            #expect(result.objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        let result = tools.callTool(name: "prepare_face_scan", arguments: ["path": .string(root.path)])
+        #expect(result.objectValue?["isError"] == .bool(false))
+        let content = try #require(result.objectValue?["structuredContent"]?.objectValue)
+        #expect(content["photoCount"] == .integer(1))
+        #expect(content["executionAvailable"] == .bool(false))
+        #expect(content["mutationAuthorized"] == .bool(false))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data").path))
+        #expect(!tools.supportsTool(named: "start_face_scan"))
+        try authorization.setEnabled(false)
+        #expect(tools.callTool(name: "prepare_face_scan", arguments: ["path": .string(root.path)])
+            .objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
     }
 
     @Test("Owned JSON draft inspection exposes only bounded descriptive fields and is not effective IPTC")

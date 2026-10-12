@@ -133,6 +133,20 @@ def probe(executable):
             result = connection.receive(identifier)["result"]
             require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
                     "Develop preview accepted missing authority or execution arguments")
+        require("prepare_face_scan" in names, "Missing rooted read-only face preparation")
+        face_tool = next(tool for tool in tools if tool["name"] == "prepare_face_scan")
+        require(face_tool["inputSchema"]["additionalProperties"] is False and
+                set(face_tool["inputSchema"]["required"]) == {"path"},
+                "Face preparation must require explicit folder authority")
+        require("start_face_scan" not in names, "Update probe when guarded face execution ships")
+        for identifier, arguments in [(206, {}), (207, {"path": "/unavailable", "execute": True}),
+                                      (208, {"path": "/unavailable", "forceFullScan": "true"})]:
+            connection.send(request(identifier, "tools/call", {
+                "name": "prepare_face_scan", "arguments": arguments,
+            }))
+            result = connection.receive(identifier)["result"]
+            require(result["isError"] is True and result["structuredContent"]["code"] == "invalid_arguments",
+                    "Face preparation accepted malformed or execution arguments")
         require("create_team" in names, "Missing team creation")
         require("get_iptc_patch_plan" in names, "Missing plan retrieval")
         require("commit_iptc_patch" not in names, "Update probe when verified mutation ships")

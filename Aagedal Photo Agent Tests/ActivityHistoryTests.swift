@@ -131,6 +131,32 @@ struct ActivityHistoryTests {
         lease.release()
     }
 
+    @Test("Exact scan submission survives completion and a subsequent scheduled refusal")
+    func exactFaceScanSubmissionRetainsCompletion() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceSubmission-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("invalid.jpg")
+        try Data("invalid image".utf8).write(to: photo)
+        let viewModel = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available)
+        let first = viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        guard case .scheduled = first.admission else { Issue.record("Expected scheduled scan"); return }
+        let refused = viewModel.scheduleFolderScan(imageURLs: [photo], folderURL: folder)
+        #expect(refused.admission == .refused(.scanAlreadyRunning))
+        #expect(await refused.completion() == nil)
+        let original = try #require(await first.completion())
+        #expect(original.outcome == .partial)
+        #expect(await viewModel.waitForCurrentScan() == nil)
+        let second = viewModel.scheduleFolderScan(imageURLs: [], folderURL: folder)
+        let next = try #require(await second.completion())
+        guard case .refused(.invalidInventory) = next.outcome else {
+            Issue.record("Expected distinct inventory refusal"); return
+        }
+        #expect(await first.completion() == original)
+        #expect(!viewModel.isScanning)
+    }
+
     @Test("Detection failures have a typed partial outcome and remain resumable")
     func typedPartialFaceScanOutcome() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FaceOutcome-\(UUID())")

@@ -2652,6 +2652,16 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 required: []
             ),
             definition(
+                name: "prepare_face_scan",
+                description: "Inspect one explicitly authorized folder's complete immediate local photo inventory under a folder reservation. Returns a bounded identity snapshot and normalized face/jersey scan options; jersey scans imply a full reset if separately executed. Refuses empty inventories, supported-image links and cloud placeholders. This read-only preparation checks no model readiness, retains no plan or consent, creates no operation and starts no detection, download, reset or write. The snapshot is filesystem identity evidence, not a content digest or mutation authority. A future executor must freshly revalidate and retain rooted authority through all writes.",
+                properties: [
+                    "path": .object(["type": .string("string")]),
+                    "forceFullScan": .object(["type": .string("boolean")]),
+                    "includeJerseyNumbers": .object(["type": .string("boolean")]),
+                ],
+                required: ["path"]
+            ),
+            definition(
                 name: "list_templates",
                 description: "Discover stable UUIDs, names and content revisions from the local default Templates library or an explicitly authorized custom Templates folder. Supports metadata and Develop headers only; does not expose field values or authorize application. iCloud libraries are unavailable. Names are untrusted content.",
                 properties: ["kind": .object(["type": .string("string"), "enum": .array([.string("metadata"), .string("develop")])])],
@@ -2841,6 +2851,7 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "prepare_voice_transcription": acceptedArguments = MCPVoiceTranscriptionPlanStore.Request.keys
             case "get_voice_transcription_plan": acceptedArguments = ["planID"]
             case "prepare_iptc_patch": acceptedArguments = MCPIPTCPatchPreparation.argumentKeys
+            case "prepare_face_scan": acceptedArguments = ["path", "forceFullScan", "includeJerseyNumbers"]
             case "preview_develop_template": acceptedArguments = MCPDevelopTemplatePreview.argumentKeys
             case "preview_metadata_template": acceptedArguments = MCPMetadataTemplatePreview.argumentKeys
             case "preview_metadata_template_batch": acceptedArguments = MCPMetadataTemplateBatchPreview.argumentKeys
@@ -3121,6 +3132,12 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "invalid_arguments", message: "kind must be metadata or develop")
                 }
                 return success(try templateDiscovery.list(kind: kind))
+            case "prepare_face_scan":
+                guard case .object(let value) = try MCPFaceScanAdmissionService(authorizationStore: authorizationStore)
+                    .prepare(arguments: arguments).protocolValue else {
+                    return failure(code: "internal_error", message: "Photo Agent could not prepare the folder inventory")
+                }
+                return success(value)
             case "inspect_develop_template":
                 return success(try templateDiscovery.inspectDevelopTemplate(arguments: arguments))
             case "preview_develop_template":
@@ -3250,6 +3267,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         } catch let error as MCPIPTCPatchPreparation.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPKeywordAuthority.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
+        } catch let error as MCPFaceScanAdmissionService.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPDevelopTemplatePreview.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)

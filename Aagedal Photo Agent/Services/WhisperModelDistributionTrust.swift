@@ -236,6 +236,18 @@ actor WhisperSignedModelLifecycle {
         return try await store.install(receipt, from: source, expectedGeneration: expectedGeneration)
     }
 
+    /// Settings retains this authenticated generation across explicit lifecycle actions.
+    func snapshot() async throws -> WhisperModelDistributionStateStore.Snapshot? {
+        try Task.checkCancellation()
+        guard let snapshot = try await store.load() else { return nil }
+        _ = try trust.verify(snapshot.release.current.descriptorData,
+                             signature: snapshot.release.current.signature)
+        if let previous = snapshot.release.rollbackCandidate {
+            _ = try trust.verify(previous.descriptorData, signature: previous.signature)
+        }
+        return snapshot
+    }
+
     func installedURL() async throws -> URL? {
         try Task.checkCancellation()
         guard let snapshot = try await store.load() else { return nil }
@@ -244,6 +256,14 @@ actor WhisperSignedModelLifecycle {
         // Bind the returned bytes to the authenticated snapshot even if another
         // lifecycle mutates the ledger while the actor is suspended.
         return try await store.retainedModelURL(expectedGeneration: snapshot.generation, rollback: false)
+    }
+
+    /// The explicit caller's retained generation also binds publication settlement.
+    func installedURL(expectedGeneration: UUID) async throws -> URL? {
+        guard let snapshot = try await self.snapshot(), snapshot.generation == expectedGeneration else {
+            throw WhisperModelDistributionStateStore.StoreError.staleGeneration
+        }
+        return try await store.retainedModelURL(expectedGeneration: expectedGeneration, rollback: false)
     }
 
     /// Removal preserves signed release authority so relaunch or redownload cannot

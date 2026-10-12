@@ -1948,6 +1948,14 @@ persistence cannot claim success; pending cloud placeholders preserve existing r
 Authenticated rooted MCP folder admission and durable operation execution remain open; see
 the [dated verification](release/face-folder-scan-admission-2026-10-12.md).
 
+**2026-10-12 rooted preparation continuation:** `prepare_face_scan` exposes read-only complete
+immediate local inventory preparation with exact authorization/folder/image identity snapshots,
+strict scan options and drift refusal. Native callers can retain an exact scheduled-task
+completion handle after the active slot clears. These are preparation and completion foundations;
+authenticated execution, retained authority through writes, exact cancellation and durable operation
+progress remain required for `start_face_scan`. See the
+[continuation record](release/rooted-face-preparation-signed-whisper-settings-2026-10-12.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.
