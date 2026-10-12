@@ -1,5 +1,13 @@
 import CryptoKit
+import Darwin
 import Foundation
+
+nonisolated struct DevelopTemplateBatchCheckpointInventoryEntry: Sendable, Identifiable {
+    enum Issue: String, Sendable { case corrupt, newerVersion, unavailable }
+    let id: String
+    let checkpoint: DevelopTemplateBatchCheckpoint?
+    let issue: Issue?
+}
 
 nonisolated enum DevelopTemplateBatchCheckpointError: Error, Equatable {
     case invalidCheckpoint, corruptCheckpoint, unsupportedVersion, immutableIntentChanged, receiptChanged, terminalCheckpoint
@@ -109,6 +117,85 @@ actor DevelopTemplateBatchCheckpointStore {
                 }
                 return try load(id)
             }
+    }
+
+    /// Read-only discovery keeps unreadable entries visible beside valid evidence.
+    /// The selected directory and every ancestor must be real directories; no
+    /// journal, lock, or permissions are created or repaired during inspection.
+    func recoveryInventory() throws -> [DevelopTemplateBatchCheckpointInventoryEntry] {
+        let root = try openInventoryDirectory()
+        guard let stream = fdopendir(root) else {
+            Darwin.close(root)
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+                break
+            }
+            let capacity = Int(entry.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) { String(cString: $0) }
+            }
+            guard name != ".", name != ".." else { continue }
+            guard names.count < 1_024 else { throw AutomationOperationRegistry.Failure.capacity }
+            names.append(name)
+        }
+        var retainedBytes = 0
+        let entries = try names.sorted().map { name -> DevelopTemplateBatchCheckpointInventoryEntry in
+            guard let id = UUID(uuidString: name), name == id.uuidString else {
+                return .init(id: name, checkpoint: nil, issue: .corrupt)
+            }
+            do {
+                let checkpoint = try load(id)
+                guard checkpoint.recoveryData.count <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes - retainedBytes else {
+                    throw AutomationOperationRegistry.Failure.capacity
+                }
+                retainedBytes += checkpoint.recoveryData.count
+                return .init(id: name, checkpoint: checkpoint, issue: nil)
+            }
+            catch DevelopTemplateBatchCheckpointError.unsupportedVersion {
+                return .init(id: name, checkpoint: nil, issue: .newerVersion)
+            } catch DevelopTemplateBatchCheckpointError.corruptCheckpoint {
+                return .init(id: name, checkpoint: nil, issue: .corrupt)
+            } catch AutomationOperationRegistry.Failure.capacity { throw AutomationOperationRegistry.Failure.capacity }
+            catch { return .init(id: name, checkpoint: nil, issue: .unavailable) }
+        }
+        let fresh = try openInventoryDirectory()
+        defer { Darwin.close(fresh) }
+        var original = stat(), current = stat()
+        guard fstat(root, &original) == 0, fstat(fresh, &current) == 0,
+              original.st_dev == current.st_dev, original.st_ino == current.st_ino else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        return entries
+    }
+
+    private func openInventoryDirectory() throws -> Int32 {
+        guard directory.isFileURL, directory.path.hasPrefix("/") else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        let components = directory.path.split(separator: "/").map(String.init)
+        guard !components.isEmpty, !components.contains(".."), !components.contains(".") else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        var current = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard current >= 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+        do {
+            for component in components {
+                let next = Darwin.openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard next >= 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+                Darwin.close(current); current = next
+            }
+            var status = stat()
+            guard fstat(current, &status) == 0, status.st_uid == geteuid(), status.st_mode & 0o077 == 0 else {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            return current
+        } catch { Darwin.close(current); throw error }
     }
 
     private func persistence(_ id: UUID) -> AutomationOperationPersistence {

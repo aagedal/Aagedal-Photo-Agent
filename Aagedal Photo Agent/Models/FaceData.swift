@@ -79,6 +79,10 @@ nonisolated struct FaceScanCompletion: Sendable, Equatable {
     var thumbnailFailureCount: Int = 0
     var cancelledThumbnailCount: Int = 0
     var persistenceError: String? = nil
+    /// Exact physical effect results survive post-publication authority refusal.
+    var committedThumbnailIDs: [UUID] = []
+    var documentPersistenceResults: [FaceDataPersistenceResult] = []
+    var resetPersistence: FaceDataDeletionResult? = nil
 
     var succeeded: Bool {
         guard persistenceError == nil, failureCount == 0, unsignedFileCount == 0,

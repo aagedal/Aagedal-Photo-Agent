@@ -78,22 +78,29 @@ nonisolated struct FaceDataStorageService: Sendable {
 
     // MARK: - Save
 
-    func saveFaceData(_ faceData: FolderFaceData) throws {
+    func saveFaceData(_ faceData: FolderFaceData,
+                      effectAuthority: FaceDataFolderLoadService.EffectAuthority? = nil) throws {
         let dir = faceDataDirectory(for: faceData.folderURL)
         let thumbDir = thumbnailsDirectory(for: faceData.folderURL)
 
+        try effectAuthority?(faceData.folderURL)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try effectAuthority?(faceData.folderURL)
         try FileManager.default.createDirectory(at: thumbDir, withIntermediateDirectories: true)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(faceData)
+        try effectAuthority?(faceData.folderURL)
         try data.write(to: dataFileURL(for: faceData.folderURL), options: .atomic)
     }
 
-    func saveThumbnail(_ jpegData: Data, for faceID: UUID, folderURL: URL) throws {
+    func saveThumbnail(_ jpegData: Data, for faceID: UUID, folderURL: URL,
+                       effectAuthority: FaceDataFolderLoadService.EffectAuthority? = nil) throws {
         let thumbDir = thumbnailsDirectory(for: folderURL)
+        try effectAuthority?(folderURL)
         try FileManager.default.createDirectory(at: thumbDir, withIntermediateDirectories: true)
+        try effectAuthority?(folderURL)
         try jpegData.write(to: thumbnailURL(for: faceID, folderURL: folderURL), options: .atomic)
     }
 
@@ -203,6 +210,7 @@ nonisolated struct FaceDataPersistenceEvidence: Sendable, Equatable {
     let deletedThumbnailIDs: [UUID]
     let thumbnailFailures: [ThumbnailFailure]
     let cancellationRequestedAfterCommit: Bool
+    var authorityFailure: String? = nil
 }
 
 nonisolated enum FaceDataPersistenceResult: Sendable, Equatable {
@@ -215,7 +223,7 @@ nonisolated enum FaceDataPersistenceResult: Sendable, Equatable {
         case .failedBeforeCommit(_, let message):
             message
         case .committed(let evidence):
-            evidence.thumbnailFailures.first?.message
+            evidence.authorityFailure ?? evidence.thumbnailFailures.first?.message
         case .cancelledBeforeCommit:
             nil
         }
@@ -224,18 +232,22 @@ nonisolated enum FaceDataPersistenceResult: Sendable, Equatable {
 
 nonisolated enum FaceThumbnailPersistenceResult: Sendable, Equatable {
     case committed(faceID: UUID, cancellationRequestedAfterCommit: Bool)
+    case committedButUnverified(faceID: UUID, message: String, cancellationRequestedAfterCommit: Bool)
     case cancelledBeforeCommit(faceID: UUID)
     case failed(faceID: UUID, message: String)
 }
 
 nonisolated enum FaceDataDeletionResult: Sendable, Equatable {
     case committed(folderURL: URL, cancellationRequestedAfterCommit: Bool)
+    case committedButUnverified(folderURL: URL, message: String, cancellationRequestedAfterCommit: Bool)
     case cancelledBeforeCommit(folderURL: URL)
     case failed(folderURL: URL, message: String)
 
     var failureMessage: String? {
-        if case .failed(_, let message) = self { return message }
-        return nil
+        switch self {
+        case .failed(_, let message), .committedButUnverified(_, let message, _): return message
+        default: return nil
+        }
     }
 }
 
@@ -424,6 +436,9 @@ actor FaceDataFolderLoadService {
 
     static let shared = FaceDataFolderLoadService()
 
+    /// Synchronous full-scope validation at each publication boundary; grants no consent.
+    typealias EffectAuthority = @Sendable (URL) throws -> Void
+
     typealias FaceDataLoader = @Sendable (URL) -> FolderFaceData?
     typealias FaceDataExistenceChecker = @Sendable (URL) -> Bool
     typealias ThumbnailLoader = @Sendable (UUID, URL) -> Data?
@@ -438,6 +453,8 @@ actor FaceDataFolderLoadService {
     private let faceDataExists: FaceDataExistenceChecker
     private let loadThumbnail: ThumbnailLoader
     private let deleteFaceData: FaceDataDeleter
+    private let usesDefaultFaceDataSaver: Bool
+    private let usesDefaultThumbnailSaver: Bool
     private let saveFaceData: FaceDataSaver
     private let saveThumbnail: ThumbnailSaver
     private let deleteThumbnail: ThumbnailDeleter
@@ -457,12 +474,8 @@ actor FaceDataFolderLoadService {
         deleteFaceData: @escaping FaceDataDeleter = { folderURL in
             try FaceDataStorageService().deleteFaceData(for: folderURL)
         },
-        saveFaceData: @escaping FaceDataSaver = { faceData in
-            try FaceDataStorageService().saveFaceData(faceData)
-        },
-        saveThumbnail: @escaping ThumbnailSaver = { data, faceID, folderURL in
-            try FaceDataStorageService().saveThumbnail(data, for: faceID, folderURL: folderURL)
-        },
+        saveFaceData: FaceDataSaver? = nil,
+        saveThumbnail: ThumbnailSaver? = nil,
         deleteThumbnail: @escaping ThumbnailDeleter = { faceID, folderURL in
             try FaceDataStorageService().deleteThumbnail(for: faceID, folderURL: folderURL)
         },
@@ -478,8 +491,10 @@ actor FaceDataFolderLoadService {
         self.faceDataExists = faceDataExists
         self.loadThumbnail = loadThumbnail
         self.deleteFaceData = deleteFaceData
-        self.saveFaceData = saveFaceData
-        self.saveThumbnail = saveThumbnail
+        self.usesDefaultFaceDataSaver = saveFaceData == nil
+        self.usesDefaultThumbnailSaver = saveThumbnail == nil
+        self.saveFaceData = saveFaceData ?? { try FaceDataStorageService().saveFaceData($0) }
+        self.saveThumbnail = saveThumbnail ?? { try FaceDataStorageService().saveThumbnail($0, for: $1, folderURL: $2) }
         self.deleteThumbnail = deleteThumbnail
         self.currentDate = currentDate
     }
@@ -550,7 +565,8 @@ actor FaceDataFolderLoadService {
     /// face scans do). Interactive callers use `persistWithFolderReservation` instead.
     func persist(
         _ faceData: FolderFaceData,
-        deletingThumbnailIDs thumbnailIDs: [UUID] = []
+        deletingThumbnailIDs thumbnailIDs: [UUID] = [],
+        effectAuthority: EffectAuthority? = nil
     ) -> FaceDataPersistenceResult {
         let folderURL = faceData.folderURL.standardizedFileURL
         guard !Task.isCancelled else {
@@ -558,7 +574,12 @@ actor FaceDataFolderLoadService {
         }
 
         do {
-            try saveFaceData(faceData)
+            try effectAuthority?(folderURL)
+            if usesDefaultFaceDataSaver {
+                try FaceDataStorageService().saveFaceData(faceData, effectAuthority: effectAuthority)
+            } else {
+                try saveFaceData(faceData)
+            }
         } catch {
             return .failedBeforeCommit(
                 folderURL: folderURL,
@@ -566,13 +587,22 @@ actor FaceDataFolderLoadService {
             )
         }
 
+        var authorityFailure: String?
+        do { try effectAuthority?(folderURL) }
+        catch { authorityFailure = error.localizedDescription }
+
         var deletedIDs: [UUID] = []
         var failures: [FaceDataPersistenceEvidence.ThumbnailFailure] = []
         for faceID in thumbnailIDs {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled, authorityFailure == nil else { break }
+            do {
+                try effectAuthority?(folderURL)
+            } catch { authorityFailure = error.localizedDescription; break }
             do {
                 try deleteThumbnail(faceID, faceData.folderURL)
                 deletedIDs.append(faceID)
+                do { try effectAuthority?(folderURL) }
+                catch { authorityFailure = error.localizedDescription; break }
             } catch {
                 failures.append(.init(faceID: faceID, message: error.localizedDescription))
             }
@@ -585,20 +615,30 @@ actor FaceDataFolderLoadService {
             deletedThumbnailIDs: deletedIDs,
             thumbnailFailures: failures,
             cancellationRequestedAfterCommit: Task.isCancelled
-                || deletedIDs.count + failures.count < thumbnailIDs.count
+                || (authorityFailure == nil && deletedIDs.count + failures.count < thumbnailIDs.count),
+            authorityFailure: authorityFailure
         ))
     }
 
     func persistThumbnail(
         _ data: Data,
         faceID: UUID,
-        folderURL: URL
+        folderURL: URL,
+        effectAuthority: EffectAuthority? = nil
     ) -> FaceThumbnailPersistenceResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(faceID: faceID)
         }
         do {
-            try saveThumbnail(data, faceID, folderURL)
+            try effectAuthority?(folderURL)
+            if usesDefaultThumbnailSaver {
+                try FaceDataStorageService().saveThumbnail(data, for: faceID, folderURL: folderURL, effectAuthority: effectAuthority)
+            } else {
+                try saveThumbnail(data, faceID, folderURL)
+            }
+            do { try effectAuthority?(folderURL) }
+            catch { return .committedButUnverified(faceID: faceID, message: error.localizedDescription,
+                cancellationRequestedAfterCommit: Task.isCancelled) }
             return .committed(
                 faceID: faceID,
                 cancellationRequestedAfterCommit: Task.isCancelled
@@ -622,13 +662,17 @@ actor FaceDataFolderLoadService {
         }
     }
 
-    func deleteAll(for folderURL: URL) -> FaceDataDeletionResult {
+    func deleteAll(for folderURL: URL, effectAuthority: EffectAuthority? = nil) -> FaceDataDeletionResult {
         let standardizedFolderURL = folderURL.standardizedFileURL
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(folderURL: standardizedFolderURL)
         }
         do {
+            try effectAuthority?(folderURL)
             try deleteFaceData(folderURL)
+            do { try effectAuthority?(folderURL) }
+            catch { return .committedButUnverified(folderURL: standardizedFolderURL, message: error.localizedDescription,
+                cancellationRequestedAfterCommit: Task.isCancelled) }
             return .committed(
                 folderURL: standardizedFolderURL,
                 cancellationRequestedAfterCommit: Task.isCancelled
@@ -738,7 +782,8 @@ actor FaceDataFolderLoadService {
     /// Document-only consumers use the non-mutating `loadDocument` path instead.
     func load(
         folderURL: URL,
-        cleanupPolicy: FaceCleanupPolicy
+        cleanupPolicy: FaceCleanupPolicy,
+        readOnlyRecovery: Bool = false
     ) -> FaceDataFolderLoadResult {
         let standardizedFolderURL = folderURL.standardizedFileURL
         guard !Task.isCancelled else {
@@ -749,7 +794,7 @@ actor FaceDataFolderLoadService {
             ))
         }
 
-        guard let faceData = loadFaceData(folderURL) else {
+        guard let faceData = (readOnlyRecovery ? loadDocumentFaceData(folderURL) : loadFaceData(folderURL)) else {
             let evidence = FaceDataFolderLoadEvidence(
                 folderURL: standardizedFolderURL,
                 faceData: nil,
@@ -776,7 +821,7 @@ actor FaceDataFolderLoadService {
         }
 
         let cleanupDisposition: FaceDataFolderLoadEvidence.CleanupDisposition
-        if let maximumAge = cleanupPolicy.timeInterval,
+        if !readOnlyRecovery, let maximumAge = cleanupPolicy.timeInterval,
            currentDate().timeIntervalSince(faceData.lastScanDate) > maximumAge {
             do {
                 try deleteFaceData(folderURL)

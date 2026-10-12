@@ -39,6 +39,14 @@ struct UITestLaunchConfigurationTests {
         #expect(production.knownPeopleRootURL == nil)
     }
 
+    @Test("A disposable watermark root requires the UI-testing gate")
+    func watermarkRootIsGated() {
+        let flags = ["--ui-test-watermark-root", "/private/tmp/Watermark UI Test"]
+        #expect(UITestLaunchConfiguration(arguments: flags).watermarkRootURL == nil)
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing"] + flags).watermarkRootURL?.path == flags[1])
+        #expect(UITestLaunchConfiguration(arguments: ["--ui-testing"]).watermarkRootURL == nil)
+    }
+
     @Test("A missing disposable root stays absent")
     func missingRoot() {
         let configuration = UITestLaunchConfiguration(arguments: [

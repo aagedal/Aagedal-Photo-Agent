@@ -340,6 +340,9 @@ struct DevelopTemplateBatchExecutionServiceTests {
         #expect(unexpected["reportedRequestID"] as? String == reportedID.uuidString)
         let evidence = try #require(unexpected["evidence"] as? [String: Any])
         #expect(evidence["embeddedMayHaveBeenWritten"] as? Bool == true)
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: store).inspect()
+        #expect(reviews.first?.unexpectedReceiptID == reportedID.uuidString)
+        #expect(reviews.first?.unexpectedPhysicalEvidence == ["Embedded metadata may have been written"])
     }
 
     @Test("Another store cannot reset unresolved or stronger checkpoint evidence")
@@ -377,5 +380,90 @@ struct DevelopTemplateBatchExecutionServiceTests {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
         let aliased = DevelopTemplateBatchCheckpointStore(directory: alias)
         await #expect(throws: (any Error).self) { try await aliased.retain(prepared) }
+    }
+
+    @Test("Recovery inventory presents valid ordered evidence alongside corrupt and newer entries without mutation")
+    func recoveryInventoryPreservesUnreadableEvidence() async throws {
+        let (folder, photos) = try fixture(); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(Array(photos.reversed()))
+        let directory = folder.appendingPathComponent("journal")
+        let store = DevelopTemplateBatchCheckpointStore(directory: directory)
+        var running = DevelopTemplateBatchExecutionResult(intent: captured, results: [nil, nil])
+        try await store.retain(running)
+        running.outcome = .running; running.activeRequestID = captured.requests[0].id
+        try await store.retain(running)
+        let validFile = directory.appendingPathComponent(captured.id.uuidString).appendingPathComponent("operations.json")
+        let original = try Data(contentsOf: validFile)
+        let badID = UUID(), newerID = UUID()
+        var files: [(URL, Data)] = []
+        for (id, bytes) in [(badID, Data("broken".utf8)), (newerID, Data("{\"formatVersion\":2}".utf8))] {
+            let child = directory.appendingPathComponent(id.uuidString)
+            try FileManager.default.createDirectory(at: child, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            for (name, data) in [("operations.lock", Data()), ("operations.json", bytes)] {
+                let file = child.appendingPathComponent(name)
+                try data.write(to: file)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                files.append((file, data))
+            }
+        }
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: store).inspect()
+        #expect(reviews.count == 3)
+        #expect(reviews.first { $0.id == badID.uuidString }?.issue == .corrupt)
+        #expect(reviews.first { $0.id == newerID.uuidString }?.issue == .newerVersion)
+        let valid = try #require(reviews.first { $0.id == captured.id.uuidString })
+        #expect(valid.needsReview && valid.outcome == .running && valid.sequence == 2)
+        #expect(valid.photos.map(\.imageURL) == captured.requests.map(\.imageURL))
+        #expect(valid.photos[0].active && valid.photos[0].completed == nil)
+        #expect(valid.templateID == captured.templateID && valid.templateRevision == captured.templateRevision)
+        #expect(try Data(contentsOf: validFile) == original)
+        for (file, bytes) in files { #expect(try Data(contentsOf: file) == bytes) }
+    }
+
+    @Test("Read-only recovery does not create missing folders or missing lock files and refuses symlink roots")
+    func recoveryInventoryReadOnlyAdmission() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let missing = folder.appendingPathComponent("missing")
+        await #expect(throws: (any Error).self) {
+            try await DevelopTemplateBatchCheckpointStore(directory: missing).recoveryInventory()
+        }
+        #expect(!FileManager.default.fileExists(atPath: missing.path))
+        let captured = try await intent(photos)
+        let directory = folder.appendingPathComponent("journal")
+        let store = DevelopTemplateBatchCheckpointStore(directory: directory)
+        try await store.retain(.init(intent: captured, results: [nil]))
+        let child = directory.appendingPathComponent(captured.id.uuidString)
+        let lock = child.appendingPathComponent("operations.lock")
+        try FileManager.default.removeItem(at: lock)
+        let inventory = try await store.recoveryInventory()
+        #expect(inventory.count == 1 && inventory[0].issue == .unavailable)
+        #expect(!FileManager.default.fileExists(atPath: lock.path))
+        let alias = folder.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        await #expect(throws: (any Error).self) {
+            try await DevelopTemplateBatchCheckpointStore(directory: alias).recoveryInventory()
+        }
+    }
+
+    @Test("Recovery presentation distinguishes incomplete physical receipts from pending work")
+    func recoveryPhysicalReceiptPresentation() async throws {
+        let (folder, photos) = try fixture(count: 1); defer { try? FileManager.default.removeItem(at: folder) }
+        let captured = try await intent(photos)
+        let store = DevelopTemplateBatchCheckpointStore(directory: folder.appendingPathComponent("journal"))
+        var state = DevelopTemplateBatchExecutionResult(intent: captured, results: [nil])
+        try await store.retain(state)
+        state.outcome = .running; state.activeRequestID = captured.requests[0].id
+        try await store.retain(state)
+        var receipt = PrimaryDevelopWriteResult(requestID: captured.requests[0].id)
+        receipt.embeddedMayHaveBeenWritten = true; receipt.failure = "interrupted embedded write"
+        state.results[0] = receipt; state.activeRequestID = nil; state.outcome = .recoveryRequired
+        state.retentionFailure = "earlier checkpoint could not be retained"
+        try await store.retain(state)
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: store).inspect()
+        let photo = try #require(reviews.first?.photos.first)
+        #expect(photo.completed == false && !photo.active)
+        #expect(photo.physicalEvidence == ["Embedded metadata may have been written"])
+        #expect(photo.failure == "interrupted embedded write")
+        #expect(reviews.first?.retentionFailure == "earlier checkpoint could not be retained")
     }
 }

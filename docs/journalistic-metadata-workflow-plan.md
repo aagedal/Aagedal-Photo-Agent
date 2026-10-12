@@ -1963,6 +1963,16 @@ authenticated execution, retained authority through writes, exact cancellation a
 progress remain required for `start_face_scan`. See the
 [continuation record](release/rooted-face-preparation-signed-whisper-settings-2026-10-12.md).
 
+**2026-10-12 retained scanner effects and recovery inspection:** The native internal
+bridge now drives exact retained intents through checked scanner reads, thumbnail/document
+publication and final presentation, retaining physical effect receipts after refusal.
+Embedded Develop serialization now precedes final source/authority checks and private
+staging replacement. Automation Settings can inspect durable Develop checkpoints,
+including corrupt/newer entries and unexpected receipts, without replay permission.
+Authenticated consent, durable face operations, production template capture/storage wiring
+and descriptor-anchored mutation remain open. No whole Phase 5A checkbox closes; see
+the [continuation evidence](release/retained-face-effects-develop-recovery-2026-10-12.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.

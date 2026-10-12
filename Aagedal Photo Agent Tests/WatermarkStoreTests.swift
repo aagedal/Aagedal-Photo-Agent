@@ -47,6 +47,97 @@ struct WatermarkStoreTests {
         return url
     }
 
+    @Test("text overlays contain visible glyphs and transparent padding")
+    func textOverlayTransparency() async throws {
+        let data = try await TextWatermarkRenderer.shared.renderPNG(
+            configuration: TextWatermarkConfiguration(text: "© Photographer", fontSize: 48)
+        )
+        let bitmap = try #require(NSBitmapImageRep(data: data))
+        #expect(bitmap.hasAlpha)
+        #expect(bitmap.pixelsWide <= 4_096 && bitmap.pixelsHigh <= 4_096)
+        #expect(bitmap.colorAt(x: 0, y: 0)?.alphaComponent == 0)
+        var hasVisibleGlyph = false
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0 {
+                hasVisibleGlyph = true
+                break
+            }
+            if hasVisibleGlyph { break }
+        }
+        #expect(hasVisibleGlyph)
+    }
+
+    @Test("multiline Unicode text has additional vertical space")
+    func textOverlayMultiline() async throws {
+        let singleData = try await TextWatermarkRenderer.shared.renderPNG(
+            configuration: TextWatermarkConfiguration(text: "Åagedal 東京", fontSize: 48)
+        )
+        let multilineData = try await TextWatermarkRenderer.shared.renderPNG(
+            configuration: TextWatermarkConfiguration(text: "Åagedal 東京\n© 2026", fontFamily: .serif,
+                                                     fontSize: 48, bold: true, italic: true)
+        )
+        let single = try #require(NSBitmapImageRep(data: singleData))
+        let multiline = try #require(NSBitmapImageRep(data: multilineData))
+        #expect(multiline.pixelsHigh > single.pixelsHigh)
+    }
+
+    @Test("text overlays reject invalid inputs before allocating a bitmap")
+    func textOverlayBounds() async throws {
+        await #expect(throws: TextWatermarkError.emptyText) {
+            try await TextWatermarkRenderer.shared.renderPNG(configuration: TextWatermarkConfiguration(text: " \n "))
+        }
+        await #expect(throws: TextWatermarkError.textTooLong) {
+            try await TextWatermarkRenderer.shared.renderPNG(configuration: TextWatermarkConfiguration(text: String(repeating: "a", count: 2_049)))
+        }
+        await #expect(throws: TextWatermarkError.invalidFontSize) {
+            try await TextWatermarkRenderer.shared.renderPNG(configuration: TextWatermarkConfiguration(text: "Text", fontSize: .nan))
+        }
+        await #expect(throws: TextWatermarkError.invalidColor) {
+            try await TextWatermarkRenderer.shared.renderPNG(configuration: TextWatermarkConfiguration(text: "Text", color: TextWatermarkColor(alpha: 0)))
+        }
+        await #expect(throws: TextWatermarkError.canvasTooLarge) {
+            try await TextWatermarkRenderer.shared.renderPNG(configuration: TextWatermarkConfiguration(text: String(repeating: "W", count: 100), fontSize: 512))
+        }
+    }
+
+    @Test("created text overlays persist through reload and clean up their temporary PNG")
+    func textOverlayPersistence() async throws {
+        let root = makeTempDir()
+        defer { teardown(root) }
+        let store = await activate(root)
+        let requestID = UUID()
+        let result = try await store.createTextOverlay(
+            configuration: TextWatermarkConfiguration(text: "© Åagedal"), name: "Signature", requestID: requestID
+        )
+        guard case .committed(let commit) = result else {
+            Issue.record("Expected a durable text overlay import")
+            return
+        }
+        #expect(commit.requestID == requestID)
+        #expect(commit.asset.name == "Signature")
+        #expect(FileManager.default.fileExists(atPath: commit.imageURL.path))
+        #expect(!FileManager.default.fileExists(atPath: commit.sourceURL.deletingLastPathComponent().path))
+        let reloaded = await activate(root)
+        #expect(reloaded.assets.contains(where: { $0.id == commit.asset.id }))
+        #expect(reloaded.imageData(forAssetID: commit.asset.id) == commit.imageData)
+    }
+
+    @Test("cancelled text creation does not publish an asset")
+    func textOverlayCancelledBeforeRender() async throws {
+        let root = makeTempDir()
+        defer { teardown(root) }
+        let store = await activate(root)
+        let requestID = UUID()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await store.createTextOverlay(
+                configuration: TextWatermarkConfiguration(text: "Cancelled"), name: "Cancelled", requestID: requestID
+            )
+        }
+        #expect(try await task.value == .cancelledBeforeAccess(requestID: requestID))
+        #expect(store.assets.isEmpty)
+    }
+
     @Test("an old-root import returns its durable commit without repopulating the replacement")
     func oldRootImportCannotPublish() async throws {
         let oldRoot = makeTempDir()

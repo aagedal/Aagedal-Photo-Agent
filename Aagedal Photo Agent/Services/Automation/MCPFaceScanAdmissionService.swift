@@ -124,6 +124,7 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         private let lock = NSRecursiveLock()
         private var lease: MCPProcessReservationLease?
         private var descriptor: Int32
+        private var effectRefusal: (any Error)?
 
         fileprivate init(prepared: PreparedFolder, service: MCPFaceScanAdmissionService,
                          lease: MCPProcessReservationLease, descriptor: Int32) {
@@ -132,6 +133,24 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         }
 
         func validate() throws { try withValidatedFolder { _, _ in } }
+
+        /// Effect refusal is terminal for this retained intent, even if an external
+        /// edit is later undone. Inspection remains independent and grants no retry.
+        func validateForEffect(folderURL: URL) throws {
+            try lock.withLock {
+                if let effectRefusal { throw effectRefusal }
+                do {
+                    try requireActive()
+                    guard folderURL.standardizedFileURL == prepared.folderURL.standardizedFileURL else {
+                        throw Failure.staleSnapshot
+                    }
+                    try validateInventory()
+                } catch {
+                    effectRefusal = error
+                    throw error
+                }
+            }
+        }
 
         /// A cheap poll checks frozen authorization and retained folder identity.
         /// Full inventory validation remains required before each effect boundary.

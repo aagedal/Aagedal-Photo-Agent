@@ -762,6 +762,35 @@ final class WatermarkStore {
 
     // MARK: - CRUD
 
+    /// Renders a reusable transparent PNG and installs it through the same durable import
+    /// transaction as a selected file. Capture the route before rendering can suspend.
+    func createTextOverlay(
+        configuration: TextWatermarkConfiguration,
+        name: String,
+        requestID: UUID
+    ) async throws -> WatermarkLibraryImportResult {
+        let generation = storageGeneration
+        let renderer = TextWatermarkRenderer.shared
+        let sourceURL: URL
+        do {
+            sourceURL = try await renderer.createTemporaryPNG(configuration: configuration)
+        } catch is CancellationError {
+            return .cancelledBeforeAccess(requestID: requestID)
+        }
+        do {
+            guard storageGeneration == generation, !Task.isCancelled else {
+                await renderer.removeTemporaryPNG(at: sourceURL)
+                return .cancelledBeforeAccess(requestID: requestID)
+            }
+            let result = try await importPNG(from: sourceURL, name: name, requestID: requestID)
+            await renderer.removeTemporaryPNG(at: sourceURL)
+            return result
+        } catch {
+            await renderer.removeTemporaryPNG(at: sourceURL)
+            throw error
+        }
+    }
+
     /// Imports a PNG from an arbitrary source URL (e.g. a `.fileImporter` result), decodes
     /// its pixel dimensions, copies the bytes into this item's own folder, and adds it to
     /// the library. Throws `WatermarkImportError.notAPNG` if the file isn't a readable image.

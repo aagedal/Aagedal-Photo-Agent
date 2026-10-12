@@ -975,6 +975,62 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testDevelopRecoveryInspectionPreservesUnreadableEvidence() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let photoBytes = try Data(contentsOf: image)
+        let directory = fixtureRoot.appendingPathComponent("DevelopCheckpoints", isDirectory: true)
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let evidence = directory.appendingPathComponent("unreadable-evidence")
+        let bytes = Data("retained evidence requiring investigation".utf8)
+        try bytes.write(to: evidence)
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 16)).click()
+        let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let choose = settings.buttons["develop.batchRecovery.chooseFolder"]
+        for _ in 0..<12 where !choose.exists {
+            let scrollViews = settings.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
+        }
+        XCTAssertTrue(choose.waitForExistence(timeout: 8))
+        choose.click()
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        let goTo = app.sheets.textFields.firstMatch
+        XCTAssertTrue(goTo.waitForExistence(timeout: 5))
+        goTo.typeText(directory.path)
+        goTo.typeKey(.return, modifierFlags: [])
+        let open = app.sheets.buttons["Open"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.click()
+        let entries = app.descendants(matching: .any)
+            .matching(identifier: "develop.batchRecovery.entry.unreadable-evidence")
+        let status = app.staticTexts["develop.batchRecovery.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertTrue(status.label.contains("Evidence inspected")
+            || (status.value as? String)?.contains("Evidence inspected") == true, status.debugDescription)
+        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5))
+        let displayedEntry = entries.allElementsBoundByIndex.map {
+            $0.label + " " + (($0.value as? String) ?? "")
+        }.joined(separator: " ")
+        XCTAssertTrue(displayedEntry.contains("unreadable-evidence") && displayedEntry.contains("Inspection blocked"),
+            entries.debugDescription)
+        app.buttons["develop.batchRecovery.refresh"].click()
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["unreadable-evidence"])
+        XCTAssertEqual(try Data(contentsOf: evidence), bytes)
+        XCTAssertEqual(try Data(contentsOf: image), photoBytes)
+    }
+
+    @MainActor
     func testNativeClientRequestRequiresConsentAndPersistsOperationLink() throws {
         try exerciseNativeClientRequest(cancel: false)
     }
@@ -3118,6 +3174,46 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTextWatermarkCreatorPersistsTransparentOverlay() throws {
+        let root = fixtureRoot.appendingPathComponent("Watermarks", isDirectory: true)
+        launch(workflow: "open-folder", folder: try makePhotoFolder(count: 1), watermarkRoot: root)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 16)).click()
+        settings.outlines["Sidebar"].staticTexts["Watermarks"].firstMatch.click()
+        let open = app.buttons["textWatermark.openCreator"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        open.click()
+        let create = app.buttons["textWatermark.create"]
+        XCTAssertTrue(create.waitForExistence(timeout: 5))
+        XCTAssertFalse(create.isEnabled)
+        let name = app.textFields["textWatermark.name"]
+        name.click()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("Smoke text overlay")
+        let text = app.textViews["textWatermark.text"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        text.click()
+        text.typeText("Copyright 2026\nPhoto Agent")
+        XCTAssertTrue(app.images["textWatermark.preview"].waitForExistence(timeout: 10))
+        XCTAssertTrue(create.isEnabled)
+        create.click()
+        XCTAssertTrue(app.staticTexts["Smoke text overlay"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(create.exists)
+        let items = root.appendingPathComponent("items", isDirectory: true)
+        let directories = try FileManager.default.contentsOfDirectory(at: items, includingPropertiesForKeys: nil)
+        XCTAssertEqual(directories.count, 1)
+        let imageURL = try XCTUnwrap(directories.first).appendingPathComponent("image.png")
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: imageURL)))
+        XCTAssertTrue(bitmap.hasAlpha)
+        XCTAssertGreaterThan(bitmap.pixelsWide, 100)
+        XCTAssertGreaterThan(bitmap.pixelsHigh, 100)
+        let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: directories[0].appendingPathComponent("meta.json"))) as? [String: Any]
+        XCTAssertEqual(metadata?["name"] as? String, "Smoke text overlay")
+    }
+
+    @MainActor
     func testTemplateEditorActionsAndByteConflictRecovery() throws {
         let root = fixtureRoot.appendingPathComponent("Templates", isDirectory: true)
         let developRoot = root.appendingPathComponent("Develop", isDirectory: true)
@@ -3349,6 +3445,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         profileStore: URL? = nil,
         knownPeopleRoot: URL? = nil,
         templateRoot: URL? = nil,
+        watermarkRoot: URL? = nil,
         faceBarExpanded: Bool = false,
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
@@ -3401,6 +3498,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-profile-store", profileStore)
         append("--ui-test-known-people-root", knownPeopleRoot)
         append("--ui-test-template-root", templateRoot)
+        append("--ui-test-watermark-root", watermarkRoot)
         append("--ui-test-patch-review-folder", patchReviewFolder)
         if keywordPatch { app.launchArguments.append("--ui-test-keyword-patch") }
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }
