@@ -26,6 +26,7 @@ struct UITestLaunchConfiguration {
     let profileStoreURL: URL?
     let knownPeopleRootURL: URL?
     let templateRootURL: URL?
+    let watermarkRootURL: URL?
     let whisperDefaultsSuite: String?
     let patchReviewFolderURL: URL?
     let patchReviewRequested: Bool
@@ -61,6 +62,9 @@ struct UITestLaunchConfiguration {
         // has no side effects and keeps the production storage override opt-in.
         knownPeopleRootURL = isEnabled
             ? value(after: "--ui-test-known-people-root").map { URL(fileURLWithPath: $0) }
+            : nil
+        watermarkRootURL = isEnabled
+            ? value(after: "--ui-test-watermark-root").map { URL(fileURLWithPath: $0) }
             : nil
         whisperDefaultsSuite = isEnabled ? value(after: "--ui-test-whisper-defaults-suite") : nil
         operationRecoveryRequested = isEnabled && arguments.contains("--ui-test-operation-recovery")

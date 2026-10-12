@@ -10,6 +10,7 @@ struct WatermarksLibraryContent: View {
     @State private var selection: UUID?
     @State private var showDeleteAlert = false
     @State private var isImportingPNG = false
+    @State private var isCreatingText = false
     @State private var importErrorMessage: String?
     @State private var importTask: Task<Void, Never>?
     @State private var importRequestID: UUID?
@@ -76,6 +77,11 @@ struct WatermarksLibraryContent: View {
                     Image(systemName: "plus")
                 }
                 .help("Import a PNG watermark")
+                .accessibilityLabel("Import PNG watermark")
+
+                Button("Create Text…") { isCreatingText = true }
+                    .help("Create a reusable text watermark")
+                    .accessibilityIdentifier("textWatermark.openCreator")
 
                 Button { showDeleteAlert = true } label: {
                     Image(systemName: "trash")
@@ -95,6 +101,12 @@ struct WatermarksLibraryContent: View {
             allowsMultipleSelection: true
         ) { result in
             handleImport(result)
+        }
+        .sheet(isPresented: $isCreatingText) {
+            TextWatermarkCreatorView(store: store) { asset in
+                searchText = ""
+                selection = asset.id
+            }
         }
         .alert("Delete this watermark?", isPresented: $showDeleteAlert) {
             Button("Delete", role: .destructive) {
@@ -193,7 +205,7 @@ struct WatermarksLibraryContent: View {
             ContentUnavailableView(
                 "No Watermark Selected",
                 systemImage: "seal",
-                description: Text("Import a PNG, or select one from the list.")
+                description: Text("Import a PNG, create a text watermark, or select one from the list.")
             )
         }
     }
@@ -342,6 +354,8 @@ private struct WatermarkThumbnail: View {
 /// image preview.
 struct CheckerboardBackground: View {
     var tileSize: CGFloat = 8
+    var lightColor: Color = Color(white: 0.92)
+    var darkColor: Color = Color(white: 0.8)
 
     var body: some View {
         Canvas { context, size in
@@ -358,7 +372,7 @@ struct CheckerboardBackground: View {
                     )
                     context.fill(
                         Path(rect),
-                        with: .color(isLight ? Color(white: 0.92) : Color(white: 0.8))
+                        with: .color(isLight ? lightColor : darkColor)
                     )
                 }
             }

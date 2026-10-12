@@ -21,6 +21,18 @@ button for leaving the review table.
   silently writes analysis locations, notes, annotations, or findings into IPTC/XMP.
 - **Compare Two Images** is enabled when exactly two images are selected.
 
+## Create a text watermark
+
+Open **Settings → Watermarks → Create Text…** beside the PNG import control. Give the
+overlay a name, enter one or more lines of text, and choose System, Serif or Monospaced,
+font size, bold/italic, color and opacity. The checkerboard preview shows transparency.
+Choose **Create** to save and select the watermark in the library, then adjust its default
+placement in the editor. Use it through the existing Develop watermark controls.
+
+Text watermarks are saved as transparent PNG assets. Create another overlay to change the
+text or style later. Text supports up to 2,048 UTF-16 units, font sizes of 8–512 pixels,
+and an output canvas of at most 4,096 pixels in either dimension.
+
 ## Restore metadata edits
 
 Open **Metadata editing history** to choose a retained history point or **Original State**.

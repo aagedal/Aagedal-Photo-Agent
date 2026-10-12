@@ -3174,6 +3174,46 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTextWatermarkCreatorPersistsTransparentOverlay() throws {
+        let root = fixtureRoot.appendingPathComponent("Watermarks", isDirectory: true)
+        launch(workflow: "open-folder", folder: try makePhotoFolder(count: 1), watermarkRoot: root)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 16)).click()
+        settings.outlines["Sidebar"].staticTexts["Watermarks"].firstMatch.click()
+        let open = app.buttons["textWatermark.openCreator"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        open.click()
+        let create = app.buttons["textWatermark.create"]
+        XCTAssertTrue(create.waitForExistence(timeout: 5))
+        XCTAssertFalse(create.isEnabled)
+        let name = app.textFields["textWatermark.name"]
+        name.click()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("Smoke text overlay")
+        let text = app.textViews["textWatermark.text"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        text.click()
+        text.typeText("Copyright 2026\nPhoto Agent")
+        XCTAssertTrue(app.images["textWatermark.preview"].waitForExistence(timeout: 10))
+        XCTAssertTrue(create.isEnabled)
+        create.click()
+        XCTAssertTrue(app.staticTexts["Smoke text overlay"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(create.exists)
+        let items = root.appendingPathComponent("items", isDirectory: true)
+        let directories = try FileManager.default.contentsOfDirectory(at: items, includingPropertiesForKeys: nil)
+        XCTAssertEqual(directories.count, 1)
+        let imageURL = try XCTUnwrap(directories.first).appendingPathComponent("image.png")
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: Data(contentsOf: imageURL)))
+        XCTAssertTrue(bitmap.hasAlpha)
+        XCTAssertGreaterThan(bitmap.pixelsWide, 100)
+        XCTAssertGreaterThan(bitmap.pixelsHigh, 100)
+        let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: directories[0].appendingPathComponent("meta.json"))) as? [String: Any]
+        XCTAssertEqual(metadata?["name"] as? String, "Smoke text overlay")
+    }
+
+    @MainActor
     func testTemplateEditorActionsAndByteConflictRecovery() throws {
         let root = fixtureRoot.appendingPathComponent("Templates", isDirectory: true)
         let developRoot = root.appendingPathComponent("Develop", isDirectory: true)
@@ -3405,6 +3445,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         profileStore: URL? = nil,
         knownPeopleRoot: URL? = nil,
         templateRoot: URL? = nil,
+        watermarkRoot: URL? = nil,
         faceBarExpanded: Bool = false,
         localeIdentifier: String? = nil,
         transcriptionProvider: String = "appleSpeech",
@@ -3457,6 +3498,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         append("--ui-test-profile-store", profileStore)
         append("--ui-test-known-people-root", knownPeopleRoot)
         append("--ui-test-template-root", templateRoot)
+        append("--ui-test-watermark-root", watermarkRoot)
         append("--ui-test-patch-review-folder", patchReviewFolder)
         if keywordPatch { app.launchArguments.append("--ui-test-keyword-patch") }
         if operationRecovery { app.launchArguments.append("--ui-test-operation-recovery") }

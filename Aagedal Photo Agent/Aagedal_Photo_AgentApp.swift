@@ -20,6 +20,9 @@ struct Aagedal_Photo_AgentApp: App {
         if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.knownPeopleRootURL {
             KnownPeopleService.storageOverrideURL = root.standardizedFileURL
         }
+        if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.watermarkRootURL {
+            WatermarkStore.storageOverrideURL = root.standardizedFileURL
+        }
         _knownPeopleInterchangeController = State(initialValue: KnownPeopleInterchangeController(
             operations: KnownPeopleInterchangeProductionOperations()
         ))

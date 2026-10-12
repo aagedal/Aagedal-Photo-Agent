@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Create reusable text watermarks beside the overlay settings, with multiline text, font styles, color, transparency and a live preview.
+
 - Add read-only Develop batch recovery inspection in Automation Settings, including interrupted writes and unreadable checkpoint evidence.
 - Recheck retained Develop authority and source bytes after embedded metadata serialization, preserving physical write evidence when completion is refused.
 - Connect retained face-scan intents to scanner authority checks and preserve committed thumbnail, document and reset evidence after refusal.
