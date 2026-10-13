@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "artifactSHA256": "4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1",
-  "artifactBytes": 60477800,
+  "artifactSHA256": "95cdaad232586ff7cbc1f398f7544a44b58f6a8f52929211a6bacab09be5497e",
+  "artifactBytes": 60144496,
   "sourceArchiveSHA256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
   "sourceArchiveScope": "Supplied original FFmpeg snapshot, not complete modified corresponding source",
   "patchedFilterSHA256": "eba0b4645581f5fd14f841f25b83550522d67d064aaa9fd752c828fa9ba38b71",
@@ -52,5 +52,17 @@
     }
   },
   "noticesSHA256": "59140c20f2f5df69a385e77fad8e4bda289f70a13ddf83b3c0c9dc138ae3145c",
-  "artifactIdentityScope": "Frozen imported bundle; the external supplied path may be rebuilt concurrently and is not used for later identity measurements."
+  "artifactIdentityScope": "Frozen imported bundle; the external supplied path may be rebuilt concurrently and is not used for later identity measurements.",
+  "preSigningArtifactSHA256": "4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1",
+  "preSigningArtifactBytes": 60477800,
+  "signedQualification": "docs/provenance/ffmpeg-photo-agent-9.0.2-signed-qualification.json",
+  "signedDelivery": {
+    "archiveSHA256": "064f07a7a0b5f775e1333c9e3827bc55726a875dff624d9a9e3707eb8739b54d",
+    "submittedArchiveSHA256": "10ee9b931e892896bf21b8b115e0cde9cd6397a93348364e13f7f2a7b4500a10",
+    "cdhash": "406bc36b0f170c7910de95032cba1cdfe5763495",
+    "teamID": "3R5QGG9DW6",
+    "codeEquivalentToPreSigningArtifact": true,
+    "localSignatureCheckPassed": true,
+    "localNotarizedCodeCheckPassed": true
+  }
 }

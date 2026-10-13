@@ -4,7 +4,7 @@
     {
       "id": "ffmpeg-photo",
       "artifactPath": "Aagedal Photo Agent/Resources/ffmpeg",
-      "artifactSHA256": "4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1",
+      "artifactSHA256": "95cdaad232586ff7cbc1f398f7544a44b58f6a8f52929211a6bacab09be5497e",
       "required": true,
       "version": "9.0.2",
       "versionCommand": [

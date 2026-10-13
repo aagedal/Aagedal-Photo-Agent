@@ -2,19 +2,27 @@
 
 Photo Agent's development bundle uses the user-supplied `photo-agent` FFmpeg 9.0.2
 artifact from `/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8`.
+The current source resource is the subsequently supplied Developer ID signed delivery.
 The shared `full` variant and the other application's video-to-SRT binary were not
 replaced by this integration. The previous 9.0.1 record remains historical evidence
 in [ffmpeg-whisper-bundled.md](ffmpeg-whisper-bundled.md) and its JSON companion.
 
 ## Artifact and source identity
 
-- Supplied executable: `dist/9.0.2/photo-agent/ffmpeg`.
+- Supplied archive: `dist/9.0.2/ffmpeg-9.0.2-photo-agent-signed.zip`;
+  extracted member `photo-agent/ffmpeg`.
 - Bundled destination: `Aagedal Photo Agent/Resources/ffmpeg`.
-- SHA-256: `4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1`.
-- Size: 60,477,800 bytes. Identity refers to the frozen imported bundle; the
+- SHA-256: `95cdaad232586ff7cbc1f398f7544a44b58f6a8f52929211a6bacab09be5497e`.
+- Size: 60,144,496 bytes. Identity refers to the frozen imported bundle; the
   external build output path can be rebuilt concurrently.
-- Architecture: arm64; source qualification describes an ad-hoc linker signature.
-  Later distribution signing changes the file digest.
+- Architecture: arm64; Developer ID Application: Truls Aagedal (3R5QGG9DW6),
+  hardened runtime and secure timestamp. Local strict signature and notarized-code
+  requirement checks pass. App builds re-sign the copied helper and regenerate
+  its runtime descriptor; this helper ticket does not notarize the containing app.
+- Initial pre-signing artifact: 60,477,800 bytes, SHA-256
+  `4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1`.
+  Mach-O header, non-signing load commands and code/data/linkage payloads match
+  the signed delivery after excluding signature allocation and zero padding.
 - Recipe deployment target: macOS 11.0. This is build metadata, not validation on
   every supported macOS release or a separate framework compatibility matrix.
 - Original archive: `sources/ffmpeg-9.0.2.tar.xz`, SHA-256
@@ -27,6 +35,19 @@ in [ffmpeg-whisper-bundled.md](ffmpeg-whisper-bundled.md) and its JSON companion
 
 The original archive, binary, and both corrected filter members were hashed locally.
 The Whisper patch is byte-identical to Photo Agent's existing pinned correction.
+
+## Signed delivery
+
+Delivery ZIP SHA-256:
+`064f07a7a0b5f775e1333c9e3827bc55726a875dff624d9a9e3707eb8739b54d`.
+The retained [signed qualification](ffmpeg-photo-agent-9.0.2-signed-qualification.json)
+and [notarization log](ffmpeg-photo-agent-9.0.2-notarization.json) identify submission
+`29ebb580-93bf-40a2-a419-eaba2dfae891` as Accepted, with no issues. Its submitted ZIP
+hash is `10ee9b931e892896bf21b8b115e0cde9cd6397a93348364e13f7f2a7b4500a10`,
+which differs from the later delivery ZIP. The extracted helper's CDHash
+`406bc36b0f170c7910de95032cba1cdfe5763495` matches the ticket and independently
+passes the local notarized-code requirement. No claim is made that the two ZIPs
+are byte-identical or that the app's re-signed copy shares that ticket identity.
 
 | Modification | Patch SHA-256 | Corrected source SHA-256 |
 | --- | --- | --- |
@@ -82,7 +103,7 @@ The executable reports GPL version 3 or later, and the configure flags contain
 `--enable-gpl --enable-version3` without `--enable-nonfree`. Original license headers
 remain in the retained filter source/patch material. The patch and build records
 are local provenance evidence; complete modified FFmpeg and dependency source
-publication, source delivery verification, release signing/notarization and the
+publication, source delivery verification, containing-app release signing/notarization and the
 legal distribution gate remain open. The original FFmpeg archive alone does not
 satisfy those uncompleted source-delivery tasks.
 

@@ -1,0 +1,47 @@
+{
+  "variant": "photo-agent",
+  "artifact": {
+    "binaries": {
+      "ffmpeg": {
+        "path": "/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8/dist/9.0.2/photo-agent/ffmpeg",
+        "sha256": "95cdaad232586ff7cbc1f398f7544a44b58f6a8f52929211a6bacab09be5497e",
+        "signature": "Developer ID Application: Truls Aagedal (3R5QGG9DW6); hardened runtime; secure timestamp",
+        "pre_signing_sha256": "4020b2049584b45e9bda4767ed4fd26cc0dd276dca0bcbac7c069beb97b3cfd1",
+        "cdhash": "406bc36b0f170c7910de95032cba1cdfe5763495"
+      },
+      "ffprobe": {
+        "path": "/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8/dist/9.0.2/photo-agent/ffprobe",
+        "sha256": "1dd524a6e9279533a5849d9ad6e7d2793bed14332672b47543ed12c98713644f",
+        "signature": "Developer ID Application: Truls Aagedal (3R5QGG9DW6); hardened runtime; secure timestamp",
+        "pre_signing_sha256": "56968e592fc7e51f404aa228ce3f25493fee387b6fc99cc144eaf810d636514b",
+        "cdhash": "bf598788226e349b4f738e24a5bdbaf483230530"
+      }
+    },
+    "whisper_filter_sha256": "eba0b4645581f5fd14f841f25b83550522d67d064aaa9fd752c828fa9ba38b71",
+    "yadif_filter_sha256": "950f9acd1346a45171710c163d5f78c0673b0dcd59d57ee767b66919a07c7e37",
+    "notarization": {
+      "status": "Accepted",
+      "submission_id": "29ebb580-93bf-40a2-a419-eaba2dfae891",
+      "issues": null,
+      "submitted_archive_sha256": "10ee9b931e892896bf21b8b115e0cde9cd6397a93348364e13f7f2a7b4500a10",
+      "ticket_code_hashes_verified": true,
+      "local_online_check": "Passed: final ffmpeg and ffprobe paths satisfy the notarized code requirement with online checking."
+    }
+  },
+  "validation": {
+    "feature_lists_identical": true,
+    "codec_smoke_checks_per_variant": 46,
+    "yadif_hardware_checks_per_variant": 4,
+    "photo_agent_whisper_real_process_checks": 23,
+    "whisper_runtime_report": "/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8/build/whisper-runtime-final/report.json",
+    "sanitizers": "ASan/UBSan: 63 text, 14 runtime/fault, 11 timing, 12 allocation cases; source and overwrite refusal",
+    "signed_runtime_report": "/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8/build/whisper-runtime-signed/report.json",
+    "signed_yadif_checks_per_variant": 4
+  },
+  "patches": {
+    "af_whisper-canonical-json.patch": "f34d798a927a417c28ad6b6836b2ed881ab758b2de61170ea8f3c9000ed9ce68",
+    "yadif-videotoolbox-autorelease.patch": "ef03bb929ff86d5a8fc3052065e2e120d38ff6d64df6c592c331b0ee18dce595"
+  },
+  "source_archive_sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+  "dependency_reuse": "/Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-118d2ca2/compiled"
+}
