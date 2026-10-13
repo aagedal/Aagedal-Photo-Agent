@@ -131,7 +131,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let resolved = try XCTUnwrap(Darwin.realpath(photos.path, nil))
         let canonical = String(cString: resolved); free(resolved)
         var identity = stat()
-        XCTAssertEqual(Darwin.stat(canonical, &identity), 0)
+        XCTAssertEqual(Darwin.lstat(canonical, &identity), 0)
         let authorization = try JSONSerialization.data(withJSONObject: [
             "schemaVersion": 1, "authorizationRevision": UUID().uuidString, "isEnabled": true,
             "roots": [["id": UUID().uuidString, "displayName": "Disposable reviewed face folder",

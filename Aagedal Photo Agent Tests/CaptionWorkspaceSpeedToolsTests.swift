@@ -1833,7 +1833,9 @@ struct CaptionWorkspaceSpeedToolsTests {
 
         let settings = try source("Aagedal Photo Agent/Views/Settings/SettingsView.swift")
         #expect(settings.contains(".onChange(of: settingsViewModel.requestedDestination)"))
-        #expect(settings.contains("case .metadata: selection = .metadata"))
+        #expect(settings.contains("case .metadata: showDestination(.metadata)"))
+        #expect(settings.contains("private func showDestination(_ section: SettingsSection)"))
+        #expect(settings.contains("searchText = \"\""))
         #expect(settings.contains("settingsViewModel.requestedDestination = nil"))
         #expect(settings.contains("RequiredMetadataFieldsSection(settingsViewModel: settingsViewModel)"))
 
