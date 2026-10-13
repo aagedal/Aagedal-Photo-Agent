@@ -1,5 +1,8 @@
 # Bundled FFmpeg with Whisper — development integration, 2026-09-21
 
+Historical 9.0.1 record. The current bundled artifact is documented in
+[Photo Agent FFmpeg 9.0.2 provenance](ffmpeg-photo-agent-9.0.2.md).
+
 Photo Agent now embeds the attributed full FFmpeg 9.0.1 build derived from Aagedal Media
 Converter's source companion, with Photo Agent's canonical JSON and sample-bound timing
 patch. It is not a byte-for-byte copy of Media Converter's binary. That unmodified emitter

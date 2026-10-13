@@ -479,11 +479,11 @@ License texts ship with the app (Settings → Licenses) and live under `Aagedal 
 The app bundles a GPL-licensed **FFmpeg** binary. In accordance with the GPL, the corresponding source is available:
 
 <!-- BEGIN GENERATED BUNDLED GPL SOURCE -->
-- **FFmpeg 9.0.1**, built with `--enable-gpl --enable-version3 --enable-whisper`.
+- **FFmpeg 9.0.2**, built with `--enable-gpl --enable-version3 --enable-whisper`.
   This full build supports image export and local voice memo transcription. Network and
   device support is compiled in; transcription restricts input protocols to local files.
 - [Exact source inputs, local patches and build evidence](docs/provenance/ffmpeg-whisper-bundled.md)
-  are pinned in the component manifest. Preparation: `scripts/ffmpeg/prepare_full_candidate.py`.
+  are pinned in the component manifest. Preparation: `docs/provenance/ffmpeg-photo-agent-9.0.2-build/scripts/12b-ffmpeg-photo-agent.sh`.
   The complete corresponding source companion must accompany a release; an upstream
   FFmpeg tarball alone does not reproduce this modified build and its dependencies.
 <!-- END GENERATED BUNDLED GPL SOURCE -->

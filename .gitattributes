@@ -1,0 +1,3 @@
+# Imported provenance recipes and patch context retain their original bytes.
+# validate_bundled_components.py checks their pinned SHA-256 values.
+docs/provenance/ffmpeg-photo-agent-9.0.2-build/** whitespace=-blank-at-eol,-blank-at-eof
