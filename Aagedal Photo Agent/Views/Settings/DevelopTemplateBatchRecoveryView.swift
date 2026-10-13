@@ -8,19 +8,23 @@ struct DevelopTemplateBatchRecoveryView: View {
     @State private var inspection: Task<Void, Never>?
     @State private var generation = UUID()
     @State private var isLoading = false
+    @State private var allowsMissingDirectory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Choose the retained checkpoint folder to review interrupted Develop batches. Review preserves evidence. Applying edits again requires a new operation after checking the saved photos and metadata.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("Choose Develop Recovery Folder…", action: choose)
-                    .accessibilityIdentifier("develop.batchRecovery.chooseFolder")
+                Button("Review Managed Develop Recovery", action: inspectManaged)
+                    .accessibilityIdentifier("develop.batchRecovery.managed")
                 if let directory {
-                    Button("Refresh") { inspect(directory) }
+                    Button("Refresh") { inspect(directory, allowMissingDirectory: allowsMissingDirectory) }
                         .accessibilityIdentifier("develop.batchRecovery.refresh")
                 }
             }.disabled(isLoading)
+            Button("Choose Develop Recovery Folder…", action: choose)
+                .accessibilityIdentifier("develop.batchRecovery.chooseFolder")
+                .disabled(isLoading)
             if let directory { Text(verbatim: directory.path).font(.caption).textSelection(.enabled) }
             if isLoading { ProgressView().controlSize(.small) }
             if let message { Text(verbatim: message).accessibilityIdentifier("develop.batchRecovery.status") }
@@ -86,8 +90,19 @@ struct DevelopTemplateBatchRecoveryView: View {
         else { panel.begin(completionHandler: completion) }
     }
 
-    private func inspect(_ selected: URL) {
+    private func inspectManaged() {
+        do {
+            let selected = try DevelopTemplateBatchCheckpointStore.defaultStorageDirectory()
+            directory = selected
+            inspect(selected, allowMissingDirectory: true)
+        } catch {
+            message = "The managed Develop recovery location is unavailable. Choose the retained checkpoint folder to inspect its evidence."
+        }
+    }
+
+    private func inspect(_ selected: URL, allowMissingDirectory: Bool = false) {
         guard !isLoading else { return }
+        allowsMissingDirectory = allowMissingDirectory
         let request = UUID(); generation = request; isLoading = true; reviews = []; message = nil
         inspection = Task { @MainActor in
             let scoped = selected.startAccessingSecurityScopedResource()
@@ -97,7 +112,7 @@ struct DevelopTemplateBatchRecoveryView: View {
             }
             do {
                 let service = DevelopTemplateBatchRecoveryService(store: .init(directory: selected))
-                let result = try await service.inspect()
+                let result = try await service.inspect(allowMissingDirectory: allowMissingDirectory)
                 guard generation == request, !Task.isCancelled else { return }
                 reviews = result
                 message = result.isEmpty ? "No retained Develop checkpoints found in this folder." : "Evidence inspected. Saved files have not been checked for changes since these checkpoints."

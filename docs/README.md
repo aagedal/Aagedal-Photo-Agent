@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-12
+**Last reviewed:** 2026-10-13
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -27,6 +27,20 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Known People companion interchange](release/known-people-companion-interchange-design.md) —
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
+**Dedicated Photo Agent FFmpeg 9.0.2 integration (2026-10-13):**
+[Integration evidence](release/ffmpeg-9.0.2-photo-agent-integration-2026-10-13.md)
+records the app-only patched variant, real production transcription checks on source
+and app-signed helpers, signed runtime descriptor, updated provenance/notices and
+passing integrated regression. SDR AVIF encoder drift is measured; shared video-to-SRT
+binaries and remaining native/provider/source-delivery release gates remain separate.
+
+**Durable face operations / independent Develop capture (2026-10-13):**
+[Operation, capture and managed recovery continuation](release/face-operations-develop-capture-2026-10-13.md)
+adds durable exact-intent face operation receipts, exact-task cancellation and retained
+native-authority checks, independent target-specific Develop capture and managed
+checkpoint discovery in Settings. Production native review/consent wiring, rooted
+physical publication and broader release gates remain open.
 
 **Retained face effects / Develop recovery inspection (2026-10-12):**
 [Scanner authority and recovery continuation](release/retained-face-effects-develop-recovery-2026-10-12.md)

@@ -256,6 +256,9 @@
 		BEA510000000000000000001 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000001 /* MLXLLM */; };
 		BEA510000000000000000002 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000002 /* MLXVLM */; };
 		BEA510000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000003 /* MLXLMCommon */; };
+		D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */; };
+		D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */; };
+		D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -545,6 +548,9 @@
 		F71F3E691A602BC79FD197DF /* Aagedal Photo Agent/Services/SidecarReconciliation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/SidecarReconciliation.swift"; sourceTree = SOURCE_ROOT; };
 		C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoAssociationServiceTests.swift; sourceTree = "<group>"; };
 		C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoMediaKeyTests.swift; sourceTree = "<group>"; };
+		D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchCaptureServiceTests.swift; sourceTree = "<group>"; };
+		D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchStorageTests.swift; sourceTree = "<group>"; };
+		D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanOperationServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -745,6 +751,9 @@
 				D3C006000000000000000001 /* DevelopInteractiveRenderCoordinatorTests.swift */,
 				D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */,
 				D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */,
+				D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */,
+				D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */,
+				D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */,
 				D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */,
@@ -1228,6 +1237,9 @@
 				D3C006000000000000000002 /* DevelopInteractiveRenderCoordinatorTests.swift in Sources */,
 				D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */,
 				D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */,
+				D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */,
+				D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */,
+				D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */,
 				D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */,

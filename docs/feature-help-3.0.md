@@ -411,6 +411,13 @@ has stopped, unfinished work becomes **Recovery required**. Inspect the affected
 metadata before retrying. No operation is automatically replayed or repaired; older records without
 owner-lock evidence remain unresolved.
 
+Settings → Automation → **Develop Batch Recovery** provides **Review Managed Develop
+Recovery** for the app's retained checkpoint location, or **Choose Develop Recovery
+Folder…** for an original private checkpoint folder. Refresh preserves the evidence
+and reports an empty managed location without creating storage. Expand an entry to
+review ordered photos, physical write receipts and unresolved effects. This inspection
+does not check current photo bytes or authorize applying edits again.
+
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
 it reports unknown availability and requires an app session. This catalog does not enable transcription.

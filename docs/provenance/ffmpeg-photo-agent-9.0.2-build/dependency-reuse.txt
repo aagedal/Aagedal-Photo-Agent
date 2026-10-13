@@ -1,0 +1,2 @@
+Dependency prefix and existing full/photo binaries copied read-only from /Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-118d2ca2.
+Matching version header retained in .build-progress. pkg-config prefix paths rebased to /Users/truls.aagedal/.t3/worktrees/ffmpeg-apple-silicon/t3-8b3606d8.

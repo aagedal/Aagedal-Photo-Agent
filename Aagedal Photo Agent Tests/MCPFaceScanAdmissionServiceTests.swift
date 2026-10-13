@@ -421,6 +421,45 @@ struct MCPFaceScanAdmissionServiceTests {
         let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
     }
 
+    @Test("Independent native authority refusal releases retained admission without scanner effects") @MainActor
+    func nativeAuthorityInitialRefusal() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let store = MCPFaceScanIntentStore(admission: f.service)
+        let intent = try store.prepare(arguments: f.arguments)
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { _, _ in Issue.record("Refused native authority must not detect"); return .init(faces: []) })
+        let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id,
+            validateNativeAuthority: { throw CocoaError(.userCancelled) })
+        guard case .refused = submission.admission else { Issue.record("Native refusal must refuse scheduling"); return }
+        #expect(!model.isScanning)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".face_data").path))
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+    @Test("Independent native authority revocation during detection refuses subsequent publication") @MainActor
+    func nativeAuthorityRevokedDuringDetection() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let store = MCPFaceScanIntentStore(admission: f.service)
+        let intent = try store.prepare(arguments: f.arguments)
+        let native = ConfigurationBox()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { _, _ in
+                await Task.yield()
+                native.write(Data([1]))
+                return .init(faces: [])
+            })
+        let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id,
+            validateNativeAuthority: { if native.read() != nil { throw CocoaError(.userCancelled) } })
+        let completion = try #require(await submission.completion())
+        #expect(!completion.succeeded)
+        #expect(completion.persistenceError != nil)
+        #expect(try f.authority.load().isEnabled)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".face_data").path))
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
     @Test("Failed initial asynchronous authority check releases even caller-retained lease") @MainActor
     func retainedScanInitialFailureReleasesLease() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

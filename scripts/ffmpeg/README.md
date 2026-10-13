@@ -1,5 +1,10 @@
 # FFmpeg Whisper canonical JSON source correction
 
+The current 9.0.2 Photo Agent build and its retained recipe are recorded in
+[current provenance](../../docs/provenance/ffmpeg-photo-agent-9.0.2.md).
+The attributed 9.0.1 rebuild instructions below remain historical; the filter
+correction and its pinned source contract also apply to the 9.0.2 variant.
+
 **Current integration:** the revised cycle-79 executable is now bundled for development.
 See [artifact identity, source delivery and validation](../../docs/provenance/ffmpeg-whisper-bundled.md).
 The investigation and build history below describe the earlier source-preparation stage;

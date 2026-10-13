@@ -990,6 +990,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         app.typeKey(",", modifierFlags: .command)
         let settings = app.windows["com_apple_SwiftUI_Settings_window"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        app.activate()
         settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
             .withOffset(CGVector(dx: 0, dy: 16)).click()
         let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
@@ -997,11 +998,27 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         automation.click()
         let choose = settings.buttons["develop.batchRecovery.chooseFolder"]
         for _ in 0..<12 where !choose.exists {
+            app.activate()
             let scrollViews = settings.scrollViews
             XCTAssertGreaterThan(scrollViews.count, 0)
             scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
         }
         XCTAssertTrue(choose.waitForExistence(timeout: 8))
+        let managed = settings.buttons["develop.batchRecovery.managed"]
+        XCTAssertTrue(managed.waitForExistence(timeout: 8))
+        managed.click()
+        let status = app.staticTexts["develop.batchRecovery.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        let empty = NSPredicate { _, _ in
+            status.label.contains("No retained Develop checkpoints")
+                || (status.value as? String)?.contains("No retained Develop checkpoints") == true
+        }
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        app.buttons["develop.batchRecovery.refresh"].click()
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").path))
         choose.click()
         app.typeKey("g", modifierFlags: [.command, .shift])
         let goTo = app.sheets.textFields.firstMatch
@@ -1010,14 +1027,17 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         goTo.typeKey(.return, modifierFlags: [])
         let open = app.sheets.buttons["Open"].firstMatch
         XCTAssertTrue(open.waitForExistence(timeout: 5))
-        open.click()
+        // Finish the panel through its default keyboard action. A native click can
+        // leave a sheet open when overlapping desktop windows obscure its frame.
+        open.typeKey(.return, modifierFlags: [])
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: open)
+        waitForExpectations(timeout: 8)
         let entries = app.descendants(matching: .any)
             .matching(identifier: "develop.batchRecovery.entry.unreadable-evidence")
-        let status = app.staticTexts["develop.batchRecovery.status"]
+        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 8))
         XCTAssertTrue(status.waitForExistence(timeout: 8))
         XCTAssertTrue(status.label.contains("Evidence inspected")
             || (status.value as? String)?.contains("Evidence inspected") == true, status.debugDescription)
-        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5))
         let displayedEntry = entries.allElementsBoundByIndex.map {
             $0.label + " " + (($0.value as? String) ?? "")
         }.joined(separator: " ")
@@ -3477,6 +3497,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-workflow", workflow,
             "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
             "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
+            "--ui-test-develop-checkpoint-root", fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").resolvingSymlinksInPath().path,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {

@@ -54,6 +54,10 @@ nonisolated struct FaceFolderScanSubmission: Sendable {
     }
 
     func completion() async -> FaceScanCompletion? { await task?.value }
+
+    /// Cancels only this retained submission, even after the scanner has moved to
+    /// another task. Completion must still be drained to retain persistence evidence.
+    func cancel() { task?.cancel() }
 }
 
 /// Detection outcome and durable save evidence are separate: even a completed worker can fail
