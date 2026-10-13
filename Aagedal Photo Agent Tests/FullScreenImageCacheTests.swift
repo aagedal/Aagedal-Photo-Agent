@@ -464,6 +464,68 @@ struct FullScreenImageCacheTests {
         }
     }
 
+    @Test("Final edited previews fit a retina cache shared by two browser panes")
+    @MainActor
+    func oversizedEditedPreviewFitsTwoPaneBudget() throws {
+        let url = try makeTempPNG(width: 4200, height: 2800)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let source = try #require(CIImage(contentsOf: url))
+        let sized = FullScreenImageCache.screenSizedPreview(source, maxPixelSize: 3456)
+        let rendered = try #require(CameraRawApproximation.createDisplayCGImage(sized, from: sized.extent))
+        #expect(max(rendered.width, rendered.height) <= 3457)
+        #expect(FullScreenImageCache.hasEnoughPixels(rendered, for: 3456))
+        let coordinator = ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
+        let firstPane = FullScreenImageCache(memoryCoordinator: coordinator)
+        let secondPane = FullScreenImageCache(memoryCoordinator: coordinator)
+        defer { withExtendedLifetime(secondPane) {} }
+        firstPane.store(rendered, for: url, orientation: 1, renderToken: "edited", isEdited: true)
+        #expect(firstPane.cachedImage(for: url, orientation: 1, renderToken: "edited", isEdited: true, minimumPixelSize: 3456) != nil)
+        let small = CIImage(color: .black).cropped(to: CGRect(x: 0, y: 0, width: 100, height: 60))
+        #expect(FullScreenImageCache.screenSizedPreview(small, maxPixelSize: 3456).extent == small.extent)
+    }
+
+    @Test("Edited RAW quality retries asynchronously and rejects undersized results")
+    func editedRAWQualityRetry() async throws {
+        let url = try makeTempPNG(width: 128, height: 64)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let full = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 128))
+        let small = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 32))
+        let upgraded = await FullScreenImageCache.resolvedRAWPreviewAsync(candidate: small, requiredSize: 128) { full }
+        #expect(upgraded?.width == 128)
+        #expect(await FullScreenImageCache.resolvedRAWPreviewAsync(candidate: small, requiredSize: 128) { small } == nil)
+        let reused = await FullScreenImageCache.resolvedRAWPreviewAsync(candidate: full, requiredSize: 128) {
+            Issue.record("A sufficient render must not trigger another sensor decode")
+            return nil
+        }
+        #expect(reused?.width == 128)
+    }
+
+    @Test("Navigation preserves a running prefetch for the newly selected image")
+    func selectedPrefetchSurvivesNavigation() async throws {
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pixels = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 256))
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let cache = FullScreenImageCache(previewDecoder: { _, _, _, _ in
+            entered.continuation.yield(())
+            // Model a non-preemptible decode that finishes after navigation.
+            for await _ in release.stream { break }
+            return pixels
+        })
+        let placeholder = URL(fileURLWithPath: "/tmp/placeholder-\(UUID().uuidString).jpg")
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        for await _ in entered.stream { break }
+        cache.startPrefetch(currentIndex: 1, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        release.continuation.yield(())
+        release.continuation.finish()
+
+        #expect(await cache.awaitPrefetchedImage(for: url) != nil)
+        #expect(cache.cachedImage(for: url) != nil)
+        cache.cancelAllPrefetch()
+        entered.continuation.finish()
+    }
+
     @Test("Returns nil when no prefetch is in flight for the URL")
     func noInFlightPrefetchReturnsNil() async {
         let cache = FullScreenImageCache()

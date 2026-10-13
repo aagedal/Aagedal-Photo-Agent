@@ -703,19 +703,6 @@ struct FullScreenImageView: View {
                                 Text("Scaling: \(scaling.useNearestNeighbor ? "Nearest Neighbour" : "Bilinear")")
                                     .font(.caption2)
                                     .foregroundStyle(.white.opacity(0.7))
-
-                                if canOpenComparison {
-                                    Button {
-                                        onRequestComparison(renderEdits)
-                                    } label: {
-                                        Label("Compare", systemImage: "rectangle.split.2x1")
-                                            .font(.caption)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.white)
-                                    .help("Compare with another image (C)")
-                                    .accessibilityLabel("Compare current image with another image")
-                                }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -762,6 +749,11 @@ struct FullScreenImageView: View {
             }
         }
         .onDisappear {
+            renderGeneration += 1
+            fullLoadTask?.cancel()
+            phase05Task?.cancel()
+            fullResTask?.cancel()
+            settingsReloadTask?.cancel()
             imageCache.cancelAllPrefetch()
         }
         .onKeyPress(.leftArrow) {
@@ -781,6 +773,8 @@ struct FullScreenImageView: View {
             return .handled
         }
         .task(id: "\(currentImageFile?.url.absoluteString ?? "nil")|\(renderEdits)") {
+            settingsReloadTask?.cancel()
+            settingsReloadTask = nil
             let urlChanged = currentImageFile?.url != lastOrientationURL
             if urlChanged {
                 // Reset zoom/pan only when navigating to a different image
@@ -824,8 +818,11 @@ struct FullScreenImageView: View {
             settingsReloadTask?.cancel()
             settingsReloadTask = Task {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-                imageCache.invalidateImage(for: url)
+                guard !Task.isCancelled, currentImageFile?.url == url else { return }
+                imageCache.invalidateEditedImage(for: url)
+                isFullResLoaded = false
+                fullResTask?.cancel()
+                fullResTask = nil
                 await loadImage()
             }
         }
@@ -1336,15 +1333,17 @@ struct FullScreenImageView: View {
             hiResApplied = true
             isLoading = false
             triggerPrefetch(for: url)
+            loadFullResIfNeeded()
             return
         }
 
-        if let displayPreview = imageCache.cachedDisplayPreview(
+        let displayPreview = imageCache.cachedDisplayPreview(
             for: url,
             orientation: imageOrientation,
             renderToken: renderToken,
             isEdited: isEdited
-        ) {
+        )
+        if let displayPreview {
             currentImage = makeLoadedImage(from: displayPreview)
             lastLoadedOrientation = imageOrientation
         } else if let thumb = viewModel.thumbnailService.thumbnail(for: url),
@@ -1376,7 +1375,7 @@ struct FullScreenImageView: View {
         // Phase 0.5 provides a quick preview; Phase 2 replaces it with retina resolution.
         let fullStart = CFAbsoluteTimeGetCurrent()
         imageLogger.info("\(filename): Phase 2 starting (retina resolution, parallel with Phase 0.5)")
-        fullLoadTask = Task.detached(priority: .medium) {
+        fullLoadTask = Task.detached(priority: .userInitiated) {
             guard !Task.isCancelled else { return }
             // Reuse an in-flight prefetch decode rather than decoding this exact
             // image a second time concurrently (fast navigation).
@@ -1387,25 +1386,21 @@ struct FullScreenImageView: View {
                 isEdited: isEdited,
                 minimumPixelSize: requiredPixelSize
             )
-            if image == nil, needsHDRLoad {
-                if isRAW {
-                    // Use CIRAWFilter for flat/neutral decode — get as-shot WB for correct rendering.
-                    // Decode straight to screen resolution (not full sensor then shrink).
-                    let rawFileOrientation = FullScreenImageCache.fileEXIFOrientation(at: url)
-                    if let rawResult = FullScreenImageCache.loadRAWImage(from: url, draftMode: false, maxPixelSize: sourceDecodeMaxPx) {
-                        guard !Task.isCancelled else { return }
-                        var settings = cameraRaw
-                        settings?.asShotNeutralTemperature = Double(rawResult.neutralTemperature)
-                        settings?.asShotNeutralTint = Double(rawResult.neutralTint)
-                        settings?.sourceHasHDRHeadroom = true
-                        let ciImage = FullScreenImageCache.downsample(rawResult.image, maxPixelSize: sourceDecodeMaxPx)
-                        image = Self.applyCameraRaw(to: ciImage, settings: settings, exifOrientation: imageOrientation, fileOrientation: rawFileOrientation)
-                    }
-                } else {
-                    if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(from: url, maxPixelSize: sourceDecodeMaxPx) {
-                        guard !Task.isCancelled else { return }
-                        image = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
-                    }
+            if image == nil, cameraRaw != nil {
+                // Use the same crop-aware render as browser warming and prefetch. A
+                // foreground worker keeps the selected image ahead of queued thumbnails.
+                image = await FullScreenImageCache.decodedEditedPreview(
+                    for: url,
+                    settings: cameraRaw,
+                    orientation: imageOrientation,
+                    screenMaxPx: screenMaxPx,
+                    isolation: EditedPreviewRenderWorker()
+                )
+            } else if image == nil, needsHDRLoad {
+                if let result = await FullScreenImageCache.loadHDRPreviewOffPoolWithOrientation(
+                    from: url, maxPixelSize: sourceDecodeMaxPx
+                ), !Task.isCancelled {
+                    image = Self.applyCameraRaw(to: result.image, settings: nil, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                 }
             }
             guard !Task.isCancelled else { return }
@@ -1428,7 +1423,32 @@ struct FullScreenImageView: View {
                 let loaded = Self.applyCameraRaw(to: result.image, settings: cameraRaw, exifOrientation: imageOrientation, fileOrientation: result.orientation)
                 image = loaded
             }
-            guard let image else { return }
+            if isRAW {
+                image = await FullScreenImageCache.resolvedRAWPreviewAsync(
+                    candidate: image, requiredSize: requiredPixelSize
+                ) {
+                    // Retry at native sensor size if scaling/cropping left too few pixels.
+                    // Never mark an embedded or undersized edited preview as complete.
+                    await FullScreenImageCache.decodedEditedPreview(
+                        for: url,
+                        settings: cameraRaw,
+                        orientation: imageOrientation,
+                        screenMaxPx: screenMaxPx,
+                        sourceMaxPixelSize: nativeSize.map { max($0.width, $0.height) } ?? sourceDecodeMaxPx,
+                        isolation: EditedPreviewRenderWorker()
+                    )
+                }
+            }
+            guard !Task.isCancelled else { return }
+            guard let image else {
+                await MainActor.run {
+                    guard expectedGeneration == renderGeneration,
+                          currentImageFile?.url == url else { return }
+                    isLoading = false
+                    loadFailure = FullScreenLoadFailure(url: url, isRenderingEdits: isEdited)
+                }
+                return
+            }
             let fullElapsed = CFAbsoluteTimeGetCurrent() - fullStart
             guard !Task.isCancelled else {
                 imageLogger.info("\(filename): Phase 2 cancelled after \(String(format: "%.1f", fullElapsed * 1000))ms")
@@ -1441,7 +1461,10 @@ struct FullScreenImageView: View {
                 }
                 if currentImageFile?.url == url {
                     imageLogger.info("\(filename): Phase 2 done in \(String(format: "%.1f", fullElapsed * 1000))ms (\(image.width)x\(image.height))")
-                    currentImage = makeLoadedImage(from: image)
+                    // A zoom decode can finish first; never replace it with fewer pixels.
+                    if !isFullResLoaded {
+                        currentImage = makeLoadedImage(from: image)
+                    }
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
@@ -1454,11 +1477,15 @@ struct FullScreenImageView: View {
                         isEdited: isEdited
                     )
                     triggerPrefetch(for: url)
+                    loadFullResIfNeeded()
                 } else {
                     imageLogger.info("\(filename): Phase 2 done but image changed, discarding")
                 }
             }
         }
+
+        // A cached quick preview already fills this role; avoid rendering it twice.
+        guard displayPreview == nil else { return }
 
         // Phase 0.5: Screen-sized ImageIO preview, independent of speculative/HDR work.
         // Stored so it can be cancelled when the user toggles edit mode or navigates,
@@ -1547,7 +1574,7 @@ struct FullScreenImageView: View {
         // Hi-res overlay (not the cold-load overlay): the fit-view image is
         // already on screen and sharp enough; this only signals the zoom upgrade.
         isLoadingHires = true
-        fullResTask = Task.detached(priority: .medium) {
+        fullResTask = Task.detached(priority: .userInitiated) {
             let factsResult = await FullScreenImagePresentationFactsService.shared.load(
                 imageURL: url,
                 requestID: requestID
@@ -1559,6 +1586,7 @@ struct FullScreenImageView: View {
                     guard expectedGeneration == renderGeneration,
                           currentImageFile?.url == url else { return }
                     isLoadingHires = false
+                    fullResTask = nil
                 }
                 return
             }
@@ -1600,11 +1628,13 @@ struct FullScreenImageView: View {
                 guard expectedGeneration == renderGeneration,
                       currentImageFile?.url == url else { return }
                 isLoadingHires = false
+                fullResTask = nil
                 guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
                 lastLoadedOrientation = orientation
                 isFullResLoaded = true
+                hiResApplied = true
             }
         }
     }
@@ -1629,12 +1659,16 @@ struct FullScreenImageView: View {
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
         let visibleImages = viewModel.visibleImages
+        guard visibleImages.indices.contains(currentIndex) else { return }
         let imageURLs = visibleImages.map(\.url)
+        // Only neighbours can be prefetched. Avoid rebuilding settings dictionaries
+        // for an entire large folder on every arrow-key press.
+        let neighbours = visibleImages[max(0, currentIndex - 4)..<min(visibleImages.count, currentIndex + 5)]
 
         // Build lookups of CameraRaw settings and orientation for prefetch processing
         let settingsLookup: [URL: CameraRawSettings] = {
             var dict: [URL: CameraRawSettings] = [:]
-            for image in visibleImages {
+            for image in neighbours {
                 // Match the foreground render's HDR normalization so prefetched edited
                 // images aren't SDR-clipped (see hdrNormalized).
                 if let settings = Self.hdrNormalized(image.cameraRawSettings, isNativeHDR: image.isNativeHDR) {
@@ -1645,7 +1679,7 @@ struct FullScreenImageView: View {
         }()
         let orientationLookup: [URL: Int] = {
             var dict: [URL: Int] = [:]
-            for image in visibleImages {
+            for image in neighbours {
                 dict[image.url] = image.exifOrientation
             }
             return dict

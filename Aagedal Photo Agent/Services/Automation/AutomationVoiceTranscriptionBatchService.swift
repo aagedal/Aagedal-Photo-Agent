@@ -145,7 +145,7 @@ actor AutomationVoiceTranscriptionBatchService {
                          executionGuard: ExecutionGuard? = nil) async throws -> AutomationOperationRegistry.Record {
         let retained = inputs
         let registry = registry, dependencies = dependencies
-        let owner = await coordinator.ownerID
+        let owner = coordinator.ownerID
         return try await coordinator.submit(kind: .voiceTranscription,
             operationID: lifecycle?.operationID ?? UUID(), admission: {
                 try lifecycle?.admission(owner)

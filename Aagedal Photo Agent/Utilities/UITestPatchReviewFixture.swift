@@ -118,7 +118,7 @@ enum UITestPatchReviewFixture {
                     <?xpacket end="w"?>
                     """.utf8)
                 try originalXMP.write(to: photo.deletingPathExtension().appendingPathExtension("xmp"), options: .withoutOverwriting)
-                guard var metadata = try XMPSidecarService().loadSidecar(for: photo) else { throw Failure.invalidPlan }
+                guard var metadata = XMPSidecarService().loadSidecar(for: photo) else { throw Failure.invalidPlan }
                 metadata.credit = "Original pending history credit"
                 _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: photo.lastPathComponent,
                     pendingChanges: true, metadata: metadata, imageMetadataSnapshot: metadata), for: photo, in: root)

@@ -38,6 +38,7 @@ printf 'validated %d property lists and project.pbxproj\n' "$plist_count"
 
 say "Verifying bundled binary and model provenance"
 python3 -B scripts/ci/test_bundled_component_validator.py
+python3 -B scripts/web_downloads/test_bundle_runtime.py
 python3 -B scripts/ci/test_auraface_source_fetch.py
 python3 -B scripts/ci/test_auraface_coreml_build.py
 python3 -B scripts/ci/test_auraface_distribution.py

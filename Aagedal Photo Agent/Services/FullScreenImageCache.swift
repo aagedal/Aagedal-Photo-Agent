@@ -123,7 +123,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let editedCache = NSCache<NSString, CGImage>()
     nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSString, CGImage>()
 
-    nonisolated(unsafe) private var prefetchTasks: [PrefetchKey: Task<Void, Never>] = [:]
+    nonisolated(unsafe) private var prefetchTasks: [PrefetchKey: PrefetchRequest] = [:]
     /// When true, `startPrefetch` is a no-op and in-flight prefetch is cancelled. Set while the
     /// develop editor is active: speculative prefetch decodes call ImageIO's XMP parsing
     /// (`CGImageSourceCopyPropertiesAtIndex`), which races the editor's concurrent NSXML sidecar
@@ -133,6 +133,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private var _editingMemoryProfile = false
     private let lock = NSLock()
     private let memoryCoordinator: ImageMemoryCoordinator
+    private let previewDecoder: @Sendable (URL, CameraRawSettings?, Int, CGFloat) async -> CGImage?
     nonisolated(unsafe) private var memoryRegistrations: [ImageMemoryCoordinator.Registration] = []
     /// NSCache cannot enumerate or remove keys by URL. Track the exact variants written
     /// to each cache so invalidating one image does not flush every edited preview.
@@ -141,14 +142,27 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private var editedImageKeysByURL: [URL: Set<NSString>] = [:]
     nonisolated(unsafe) private var editedDisplayPreviewKeysByURL: [URL: Set<NSString>] = [:]
 
-    private struct PrefetchKey: Hashable, Sendable {
+    nonisolated private struct PrefetchRequest: Sendable {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    nonisolated private struct PrefetchKey: Hashable, Sendable {
         let url: URL
         let orientation: Int?
         let renderToken: String?
         let isEdited: Bool
     }
 
-    init(memoryCoordinator: ImageMemoryCoordinator = .shared) {
+    init(
+        memoryCoordinator: ImageMemoryCoordinator = .shared,
+        previewDecoder: @escaping @Sendable (URL, CameraRawSettings?, Int, CGFloat) async -> CGImage? = {
+            await FullScreenImageCache.decodedEditedPreview(
+                for: $0, settings: $1, orientation: $2, screenMaxPx: $3
+            )
+        }
+    ) {
+        self.previewDecoder = previewDecoder
         self.memoryCoordinator = memoryCoordinator
         memoryRegistrations = [
             memoryCoordinator.register(
@@ -429,20 +443,22 @@ final class FullScreenImageCache: @unchecked Sendable {
         let targetIndices = candidates.prefix(itemLimit)
             .map { currentIndex + $0 }
             .filter { $0 >= 0 && $0 < images.count }
-        let targetURLs = Set(targetIndices.map { images[$0] })
+        let orderedTargetURLs = targetIndices.map { images[$0] }
+        let targetURLs = Set(orderedTargetURLs)
+        let currentURL = images.indices.contains(currentIndex) ? images[currentIndex] : nil
 
         let tasksToCancel = lock.withLock { () -> [Task<Void, Never>] in
             var toCancel: [Task<Void, Never>] = []
-            let keysToCancel = prefetchTasks.keys.filter { !targetURLs.contains($0.url) }
+            let keysToCancel = prefetchTasks.keys.filter { !targetURLs.contains($0.url) && $0.url != currentURL }
             for key in keysToCancel {
                 guard let task = prefetchTasks.removeValue(forKey: key) else { continue }
-                toCancel.append(task)
+                toCancel.append(task.task)
             }
             return toCancel
         }
         for task in tasksToCancel { task.cancel() }
 
-        for url in targetURLs {
+        for url in orderedTargetURLs {
             let settings = settingsForURL?(url)
                 ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
             let requestedOrientation = orientationForURL?(url)
@@ -468,15 +484,17 @@ final class FullScreenImageCache: @unchecked Sendable {
                 ) != nil { return true }
                 if prefetchTasks[prefetchKey] != nil { return true }
 
+                let requestID = UUID()
                 let task = Task.detached(priority: .medium) { [weak self] in
-                    guard let self, !Task.isCancelled else { return }
-                    defer { self.removePrefetchTask(for: prefetchKey) }
+                    guard let self else { return }
+                    defer { self.removePrefetchTask(for: prefetchKey, requestID: requestID) }
+                    guard !Task.isCancelled else { return }
                     let filename = url.lastPathComponent
                     cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
 
                     let orientation = cacheOrientation ?? Self.displayOrientation(for: url)
-                    guard let image = await Self.decodedEditedPreview(
-                        for: url, settings: settings, orientation: orientation, screenMaxPx: screenMaxPx
+                    guard let image = await self.previewDecoder(
+                        url, settings, orientation, screenMaxPx
                     ), !Task.isCancelled else {
                         cacheLogger.info("Prefetch failed/cancelled: \(filename)")
                         return
@@ -492,15 +510,18 @@ final class FullScreenImageCache: @unchecked Sendable {
                     cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height), edited=\(isEdited))")
                 }
 
-                prefetchTasks[prefetchKey] = task
+                prefetchTasks[prefetchKey] = PrefetchRequest(id: requestID, task: task)
                 return false
             }
             if alreadyHandled { continue }
         }
     }
 
-    nonisolated private func removePrefetchTask(for key: PrefetchKey) {
-        _ = lock.withLock { prefetchTasks.removeValue(forKey: key) }
+    nonisolated private func removePrefetchTask(for key: PrefetchKey, requestID: UUID) {
+        lock.withLock {
+            guard prefetchTasks[key]?.id == requestID else { return }
+            prefetchTasks.removeValue(forKey: key)
+        }
     }
 
     nonisolated private func removePrefetchTasksLocked(for url: URL) -> [Task<Void, Never>] {
@@ -508,7 +529,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         let keysToRemove = prefetchTasks.keys.filter { $0.url == url }
         for key in keysToRemove {
             if let task = prefetchTasks.removeValue(forKey: key) {
-                removed.append(task)
+                removed.append(task.task)
             }
         }
         return removed
@@ -536,7 +557,7 @@ final class FullScreenImageCache: @unchecked Sendable {
             return cached
         }
         guard let task = lock.withLock({ prefetchTasks[key] }) else { return nil }
-        await task.value
+        await task.task.value
         return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited, minimumPixelSize: minimumPixelSize)
     }
 
@@ -578,7 +599,7 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated func cancelAllPrefetch() {
         let tasksToCancel = lock.withLock {
-            let tasks = Array(prefetchTasks.values)
+            let tasks = prefetchTasks.values.map(\.task)
             prefetchTasks.removeAll()
             return tasks
         }
@@ -612,6 +633,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         settings: CameraRawSettings?,
         orientation: Int,
         screenMaxPx: CGFloat,
+        sourceMaxPixelSize: CGFloat? = nil,
         isolation: isolated EditedPreviewRenderWorker = .shared
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
@@ -634,14 +656,14 @@ final class FullScreenImageCache: @unchecked Sendable {
         guard !Task.isCancelled else { return nil }
         let sourceMaxPx: CGFloat
         if settings?.crop?.isEffectiveCrop == true {
-            sourceMaxPx = cropAwareSourceMaxPixelSize(
+            sourceMaxPx = max(sourceMaxPixelSize ?? 0, cropAwareSourceMaxPixelSize(
                 outputMaxPixelSize: screenMaxPx,
                 settings: settings,
                 exifOrientation: rawFileOrientation,
                 sourcePixelSize: nativePixelSize(of: url)
-            )
+            ))
         } else {
-            sourceMaxPx = screenMaxPx
+            sourceMaxPx = sourceMaxPixelSize ?? screenMaxPx
         }
 
         if settings != nil {
@@ -675,6 +697,10 @@ final class FullScreenImageCache: @unchecked Sendable {
                     processed = processed.oriented(correction)
                 }
                 guard !Task.isCancelled else { return nil }
+                // Crop-aware sensor decoding may deliberately retain a larger source.
+                // Bound the final bitmap to the display target so oversized HDR crops
+                // do not immediately evict themselves from a pane's primary cache.
+                processed = screenSizedPreview(processed, maxPixelSize: screenMaxPx)
                 image = CameraRawApproximation.createDisplayCGImage(processed, from: processed.extent)
             }
         }
@@ -868,6 +894,20 @@ final class FullScreenImageCache: @unchecked Sendable {
         return decoded
     }
 
+    /// Edited RAW renders also need a quality check after crop and materialization.
+    /// A decoder's scaled output can be smaller than its requested dimensions.
+    nonisolated static func resolvedRAWPreviewAsync(
+        candidate: CGImage?,
+        requiredSize: CGFloat,
+        decode: () async -> CGImage?
+    ) async -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        if let candidate, hasEnoughPixels(candidate, for: requiredSize) { return candidate }
+        guard let decoded = await decode(), !Task.isCancelled,
+              hasEnoughPixels(decoded, for: requiredSize) else { return nil }
+        return decoded
+    }
+
     nonisolated private static func rawPreviewFallback(
         candidate: CGImage?, from url: URL, requiredSize: CGFloat
     ) -> CGImage? {
@@ -893,6 +933,15 @@ final class FullScreenImageCache: @unchecked Sendable {
         guard longestSide > maxPixelSize * 1.5 else { return ciImage }
         let scale = maxPixelSize / longestSide
         return ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    }
+
+    /// Bound final edited output exactly; the source decoder's 1.5x tolerance is
+    /// useful before crop, but wastes cache memory when applied to the final bitmap.
+    nonisolated static func screenSizedPreview(_ image: CIImage, maxPixelSize: CGFloat) -> CIImage {
+        let longestSide = max(image.extent.width, image.extent.height)
+        guard maxPixelSize > 0, longestSide.isFinite, longestSide > maxPixelSize else { return image }
+        let scale = maxPixelSize / longestSide
+        return image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
     }
 
     /// Native pixel dimensions of an image file, read from metadata only (no decode).

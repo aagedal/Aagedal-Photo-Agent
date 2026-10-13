@@ -25,7 +25,7 @@ nonisolated final class MCPIPTCPatchPlanPersistence: Sendable {
         defer { Darwin.close(lock) }
         try validateFile(lock)
         guard patchPlanFlock(lock, LOCK_EX | LOCK_NB) == 0 else { throw MCPIPTCPatchPlanStore.Failure.storageUnavailable }
-        defer { patchPlanFlock(lock, LOCK_UN) }
+        defer { _ = patchPlanFlock(lock, LOCK_UN) }
         try validateNamedIdentity(lock, name: "plans.lock", root: root)
         let existing = try read(root)
         let (result, replacement) = try body(existing)

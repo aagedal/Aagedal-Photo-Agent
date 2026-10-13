@@ -10,10 +10,13 @@ import sys
 
 source, destination = map(Path, sys.argv[1:])
 if not source.is_dir():
-    raise SystemExit("Missing web downloader runtime. Run scripts/web_downloads/prepare_runtime.py first.")
+    raise SystemExit("error: Missing Vendor/web-download-runtime in this checkout. Run python3 scripts/web_downloads/fetch_python.py, then python3 scripts/web_downloads/prepare_runtime.py build/web-download-python. See scripts/web_downloads/README.md.")
 manifest = json.loads((source / "runtime.json").read_text())
 actual_files = set()
 for path in source.rglob("*"):
+    # Finder metadata is not runtime content and must not invalidate a prepared tree.
+    if path.name == ".DS_Store":
+        continue
     if path.is_symlink():
         try:
             path.resolve(strict=True).relative_to(source.resolve())
@@ -29,7 +32,7 @@ for name, digest in manifest["files"].items():
         raise RuntimeError(f"Downloader runtime artifact mismatch: {name}")
 if destination.exists():
     shutil.rmtree(destination)
-shutil.copytree(source, destination, symlinks=True)
+shutil.copytree(source, destination, symlinks=True, ignore=shutil.ignore_patterns(".DS_Store"))
 identity = os.environ.get("EXPANDED_CODE_SIGN_IDENTITY") or "-"
 if os.environ.get("CODE_SIGNING_ALLOWED") != "NO":
     magics = (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")

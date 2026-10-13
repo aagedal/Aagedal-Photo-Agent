@@ -257,9 +257,9 @@
       ],
       "buildRecipe": {
         "repositoryPath": "scripts/web_downloads/prepare_runtime.py",
-        "revision": "sha256:1cce19e4fe5245b440bd15503f7a7fea1dda45b4231d47ca90615d2768dbfdd2",
+        "revision": "sha256:c940dd808547d2cbe1245cab6588879994cfe8c1365fdbe0a6dd8b1d716ae960",
         "supportingFiles": {
-          "scripts/web_downloads/bundle_runtime.py": "sha256:aea23acb65dfc96b8100ba02791efacf3b843aa009d233eadce50579fdfaaf13",
+          "scripts/web_downloads/bundle_runtime.py": "sha256:81dd6f164df6591ba7c30db92ca8fc9afebc617cce8a4fa38a42db4e924bf848",
           "scripts/web_downloads/packages.lock.json": "sha256:3c81f274479a84e85628e5c7877e9d4ba5a0779b7b34444311b023e2bbd60fb0",
           "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py": "sha256:f5c1342a238b36a13cec7da1ef09d68c5f7c685bf71166b77aa9d0175b803e2d",
           "scripts/web_downloads/fetch_python.py": "sha256:9b8a8c0a0594288f9bc9fc2b0b11d111387cffc4221e534c9d0d8c3cb76a9496"

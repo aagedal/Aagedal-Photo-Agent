@@ -21,7 +21,16 @@ behavior and boundaries.
 brew install aagedal/casks/aagedal-photo-agent
 ```
 
-Or build from source:
+Or build from source. First provision the reviewed [face model](Aagedal%20Photo%20Agent/Resources/Models/README.md),
+[llama runtime](scripts/llama/README.md), and [web downloader runtime](scripts/web_downloads/README.md)
+in each checkout or worktree. These build resources are excluded from Git. For the web downloader:
+
+```bash
+python3 scripts/web_downloads/fetch_python.py
+python3 scripts/web_downloads/prepare_runtime.py build/web-download-python
+```
+
+Then build:
 
 ```bash
 xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
