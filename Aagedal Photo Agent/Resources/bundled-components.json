@@ -229,6 +229,48 @@
         "Local GGUF text completion for Gemma 4, Qwen3.5 and Ministral 3 with Metal acceleration; no listening server"
       ],
       "additionalLicensePaths": []
+    },
+    {
+      "id": "python-web-downloads",
+      "artifactPath": "Vendor/web-download-runtime/bin/python3.13",
+      "artifactSHA256": "7fc33c67b5d5d91b3ce9ab16d2a354ad623f438c24eed3f543a57fc635aea683",
+      "required": false,
+      "version": "3.13.13",
+      "versionCommand": [
+        "-I",
+        "--version"
+      ],
+      "expectedVersionPrefix": "Python 3.13.13",
+      "upstream": {
+        "url": "https://github.com/astral-sh/python-build-standalone",
+        "revision": "20260602",
+        "releaseTag": "20260602",
+        "provenancePath": "scripts/web_downloads/README.md",
+        "archiveURL": "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.13.13%2B20260602-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "archiveSHA256": "b929647e1ebe243bd8b66c731e102b97dd7bdcc08127f03b7b22997ac4667403"
+      },
+      "license": "PSF-2.0 and included third-party notices; gallery-dl GPL-2.0; yt-dlp Unlicense",
+      "licensePath": "Aagedal Photo Agent/Resources/Licenses/License-Python.txt",
+      "additionalLicensePaths": [
+        "Aagedal Photo Agent/Resources/Licenses/License-gallery-dl.txt",
+        "Aagedal Photo Agent/Resources/Licenses/License-yt-dlp.txt"
+      ],
+      "buildRecipe": {
+        "repositoryPath": "scripts/web_downloads/prepare_runtime.py",
+        "revision": "sha256:1cce19e4fe5245b440bd15503f7a7fea1dda45b4231d47ca90615d2768dbfdd2",
+        "supportingFiles": {
+          "scripts/web_downloads/bundle_runtime.py": "sha256:aea23acb65dfc96b8100ba02791efacf3b843aa009d233eadce50579fdfaaf13",
+          "scripts/web_downloads/packages.lock.json": "sha256:3c81f274479a84e85628e5c7877e9d4ba5a0779b7b34444311b023e2bbd60fb0",
+          "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py": "sha256:f5c1342a238b36a13cec7da1ef09d68c5f7c685bf71166b77aa9d0175b803e2d",
+          "scripts/web_downloads/fetch_python.py": "sha256:9b8a8c0a0594288f9bc9fc2b0b11d111387cffc4221e534c9d0d8c3cb76a9496"
+        }
+      },
+      "targetArchitectures": [
+        "arm64"
+      ],
+      "runtimeCapabilities": [
+        "Isolated private Python runtime with gallery-dl 1.32.16 and yt-dlp 2026.8.19; no listener; runtime.json verifies the complete prepared tree; package generations update independently via verified pure Python wheels"
+      ]
     }
   ]
 }

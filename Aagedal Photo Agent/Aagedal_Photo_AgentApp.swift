@@ -127,6 +127,10 @@ struct Aagedal_Photo_AgentApp: App {
                     .disabled(recentFolders.folders.isEmpty)
                 }
 
+                Button("Import from Web URL…") {
+                    commandRouter.send(.showWebImport)
+                }
+
                 Button("Import Photos...") {
                     commandRouter.send(.showImport)
                 }

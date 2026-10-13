@@ -8,6 +8,7 @@ xcuserdata/
 
 # Build
 build/
+Vendor/web-download-runtime/
 
 # Large bundled CoreML face model (~125 MB) — excluded from git due to size.
 # See "Aagedal Photo Agent/Resources/Models/README.md" for how to obtain/build it.

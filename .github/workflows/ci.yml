@@ -74,6 +74,12 @@ jobs:
             python3 -B scripts/build_auraface_coreml.py verify
           } | tee "$RUNNER_TEMP/model-reproduction.log"
 
+      - name: Prepare pinned private web downloader runtime
+        run: |
+          python3 scripts/web_downloads/fetch_python.py
+          python3 scripts/web_downloads/prepare_runtime.py build/web-download-python
+          Vendor/web-download-runtime/bin/python3 -I -B scripts/web_downloads/test_bridge.py
+
       # CI uses ad-hoc signing; distribution and authenticated helper qualification
       # require the separately signed release candidate. Restricted iCloud
       # entitlements cannot launch under an ad-hoc signature without a profile.

@@ -25,6 +25,7 @@ enum AppCommand: Equatable, Sendable {
     case resetAllEdits
     case removeAllIPTC
     case showImport
+    case showWebImport
     case backupEditedFiles
     case backupEditedFilesForFolder(URL)
     case openInInternalEditor

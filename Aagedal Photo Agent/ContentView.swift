@@ -107,7 +107,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
                      .rotateClockwise, .rotateCounterclockwise,
                      .renameSelected, .duplicateSelected,
                      .resetAllEdits, .removeAllIPTC,
-                     .showImport, .openInInternalEditor, .openInExternalEditor,
+                     .showImport, .showWebImport, .openInInternalEditor, .openInExternalEditor,
                      .deleteSelected,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
                      .setScopeMode, .toggleGamutClipping,
@@ -177,6 +177,7 @@ struct ContentView: View {
     @State private var isShowingSaveTemplateName = false
     @State private var isShowingSaveDevelopTemplateName = false
     @State private var isShowingImport = false
+    @State private var isShowingWebImport = false
     /// Height of the main window's content area, used to cap sheet heights.
     @State private var windowContentHeight: CGFloat = 0
     @State private var backupEditedFolderItem: BackupEditedItem?
@@ -523,6 +524,9 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isShowingImport) { importSheet }
+            .sheet(isPresented: $isShowingWebImport) {
+                WebImportView { folder in browserViewModel.loadFolder(url: folder) }
+            }
             .sheet(item: Bindable(browserViewModel).batchRenameSheetRequest) { request in
                 BatchRenameSheet(
                     request: request,
@@ -850,6 +854,8 @@ struct ContentView: View {
                     performAfterCaptionFlush { browserViewModel.confirmResetAllEdits() }
                 case .removeAllIPTC:
                     performAfterCaptionFlush { browserViewModel.confirmRemoveAllIPTC() }
+                case .showWebImport:
+                    isShowingWebImport = true
                 case .showImport:
                     importViewModel.prepareForNewSession()
                     isShowingImport = true
@@ -2760,7 +2766,7 @@ struct ContentView: View {
                          .rotateClockwise, .rotateCounterclockwise,
                          .renameSelected, .duplicateSelected,
                          .resetAllEdits, .removeAllIPTC,
-                         .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                         .showImport, .showWebImport, .backupEditedFiles, .backupEditedFilesForFolder,
                          .openInInternalEditor, .openInExternalEditor,
                          .deleteSelected, .moveRejectedToFolder,
                          .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,
@@ -4320,7 +4326,7 @@ struct ContentViewModifiers: ViewModifier {
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
                      .renameSelected, .duplicateSelected,
                      .resetAllEdits, .removeAllIPTC,
-                     .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                     .showImport, .showWebImport, .backupEditedFiles, .backupEditedFilesForFolder,
                      .openInInternalEditor,
                      .moveRejectedToFolder,
                      .addNewMask, .removeOrResetSelectedEditLayer, .toggleHDR,

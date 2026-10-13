@@ -127,6 +127,7 @@ struct SettingsView: View {
         case signing
         case sync
         case updates
+        case webDownloads
         case automation
         case shortcuts
         case licenses
@@ -154,6 +155,7 @@ struct SettingsView: View {
             case .ftp: return "FTP"
             case .signing: return "Signing"
             case .sync: return "iCloud Sync"
+            case .webDownloads: return "Web Downloads"
             case .updates: return "Updates"
             case .automation: return "Automation"
             case .shortcuts: return "Shortcuts"
@@ -182,6 +184,7 @@ struct SettingsView: View {
             case .ftp: return "arrow.up.to.line"
             case .signing: return "signature"
             case .sync: return "icloud"
+            case .webDownloads: return "arrow.down.circle"
             case .updates: return "arrow.triangle.2.circlepath"
             case .automation: return "terminal"
             case .shortcuts: return "keyboard"
@@ -219,6 +222,7 @@ struct SettingsView: View {
                     row(.locations)
                     row(.format)
                     row(.ftp)
+                    row(.webDownloads)
                     row(.signing)
                 }
                 Section("Application") {
@@ -312,6 +316,7 @@ struct SettingsView: View {
         case .transcription: TranscriptionSettingsView()
         case .descriptionAssistant: Form { DescriptionAssistantModelSetupView() }.formStyle(.grouped)
         case .descriptionModels: DescriptionAssistantModelDownloadsView()
+        case .webDownloads: WebDownloadsSettingsView()
         case .general: generalTab
         case .rawDecoding: rawDecodingTab
         case .developControls: developControlsTab

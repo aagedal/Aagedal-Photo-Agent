@@ -926,7 +926,7 @@ struct EditWorkspaceView: View {
                  .rotateClockwise, .rotateCounterclockwise,
                  .renameSelected, .duplicateSelected,
                  .resetAllEdits, .removeAllIPTC,
-                 .showImport, .backupEditedFiles, .backupEditedFilesForFolder,
+                 .showImport, .showWebImport, .backupEditedFiles, .backupEditedFilesForFolder,
                  .openInInternalEditor, .openInExternalEditor,
                  .deleteSelected, .moveRejectedToFolder,
                  .setScopeMode, .toggleGamutClipping,

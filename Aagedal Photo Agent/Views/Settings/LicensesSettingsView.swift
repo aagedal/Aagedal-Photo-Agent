@@ -15,6 +15,9 @@ struct LicensesSettingsView: View {
         ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
 
     private static let components: [Component] = [
+        Component(name: "Python", detail: "Private relocatable web downloader runtime", licenseName: "PSF and included notices", licenseResource: "License-Python", url: URL(string: "https://www.python.org")),
+        Component(name: "gallery-dl", detail: "Bundled and independently updatable post/media extractor", licenseName: "GPL-2.0", licenseResource: "License-gallery-dl", url: URL(string: "https://codeberg.org/mikf/gallery-dl")),
+        Component(name: "yt-dlp", detail: "Bundled and independently updatable video downloader", licenseName: "Unlicense", licenseResource: "License-yt-dlp", url: URL(string: "https://github.com/yt-dlp/yt-dlp")),
         Component(
             name: "Aagedal Photo Agent",
             detail: "Version \(appVersion) — © Truls Aagedal",
