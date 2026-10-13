@@ -24,6 +24,34 @@ struct DevelopTemplateBatchStorageTests {
         await #expect(throws: (any Error).self) { try await service.inspect() }
     }
 
+    @Test("Managed capture discovery is read-only and UI tests cannot inspect user storage")
+    func admissionStorage() async throws {
+        let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try DevelopTemplateBatchAdmissionStore.defaultStorageDirectory(
+            applicationSupportDirectory: root, arguments: [])
+        #expect(directory.path == root.path + "/Aagedal Photo Agent/Automation/DevelopAdmissions")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        #expect(try await store.inspect().isEmpty)
+        #expect(try await store.inspect().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        #expect(throws: (any Error).self) {
+            try DevelopTemplateBatchAdmissionStore.defaultStorageDirectory(arguments: ["--ui-testing"])
+        }
+        #expect(throws: (any Error).self) {
+            try DevelopTemplateBatchAdmissionStore.defaultStorageDirectory(
+                arguments: ["--ui-testing", "--ui-test-develop-admission-root", "relative"])
+        }
+        #expect(try DevelopTemplateBatchAdmissionStore.defaultStorageDirectory(
+            arguments: ["--ui-testing", "--ui-test-develop-admission-root", root.path]) == root)
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+        await #expect(throws: (any Error).self) {
+            try await DevelopTemplateBatchAdmissionStore(directory: alias.appendingPathComponent("missing")).inspect()
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        await #expect(throws: (any Error).self) { try await DevelopTemplateBatchAdmissionStore(directory: root).inspect() }
+    }
+
     @Test("Missing-tolerant discovery still refuses symlink and public roots")
     func unsafeRoot() async throws {
         let root = try fixture(); defer { try? FileManager.default.removeItem(at: root) }

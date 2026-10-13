@@ -213,6 +213,10 @@ struct AutomationSettingsView: View {
                 AutomationOperationHistoryView()
             }
 
+            Section("Develop Capture History") {
+                DevelopTemplateBatchAdmissionView()
+            }
+
             Section("Develop Batch Recovery") {
                 DevelopTemplateBatchRecoveryView()
             }

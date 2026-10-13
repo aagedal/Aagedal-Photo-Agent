@@ -83,6 +83,9 @@ These are material product and evidence boundaries, not a list of unfinished int
   once and currently permits sidecar destinations only. Embedded destinations refuse
   until owned physical-effect stages are represented explicitly. Native execution UI,
   descriptor-anchored publication and synchronous physical commit authority remain open.
+  Develop Capture History inspects retained review dispositions and ordered photo revisions,
+  without restoring executable requests or consent. Consumed admission is not proof of a write.
+  Cancelled journals remain retained; cleanup requires replay-preventing tombstones.
   Face receipt inspection reports historical effects; it does not verify current files
   or authorize replay.
 
