@@ -990,6 +990,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         app.typeKey(",", modifierFlags: .command)
         let settings = app.windows["com_apple_SwiftUI_Settings_window"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        app.activate()
         settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
             .withOffset(CGVector(dx: 0, dy: 16)).click()
         let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
@@ -997,6 +998,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         automation.click()
         let choose = settings.buttons["develop.batchRecovery.chooseFolder"]
         for _ in 0..<12 where !choose.exists {
+            app.activate()
             let scrollViews = settings.scrollViews
             XCTAssertGreaterThan(scrollViews.count, 0)
             scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
@@ -1025,13 +1027,17 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         goTo.typeKey(.return, modifierFlags: [])
         let open = app.sheets.buttons["Open"].firstMatch
         XCTAssertTrue(open.waitForExistence(timeout: 5))
-        open.click()
+        // Finish the panel through its default keyboard action. A native click can
+        // leave a sheet open when overlapping desktop windows obscure its frame.
+        open.typeKey(.return, modifierFlags: [])
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: open)
+        waitForExpectations(timeout: 8)
         let entries = app.descendants(matching: .any)
             .matching(identifier: "develop.batchRecovery.entry.unreadable-evidence")
+        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 8))
         XCTAssertTrue(status.waitForExistence(timeout: 8))
         XCTAssertTrue(status.label.contains("Evidence inspected")
             || (status.value as? String)?.contains("Evidence inspected") == true, status.debugDescription)
-        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5))
         let displayedEntry = entries.allElementsBoundByIndex.map {
             $0.label + " " + (($0.value as? String) ?? "")
         }.joined(separator: " ")
