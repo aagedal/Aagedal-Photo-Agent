@@ -28,6 +28,13 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Develop capture history (2026-10-13):**
+[Historical admission inspection continuation](release/develop-capture-history-2026-10-13.md)
+adds managed read-only capture discovery and Settings presentation of ordered revisions
+and review dispositions. Cancelled records remain retained to prevent replay. Automated
+regression passes; native acceptance is blocked by automation initialization and active
+app use. Native execution, safe cleanup and broader release gates remain open.
+
 **Native face consent / durable Develop admission (2026-10-13):**
 [Consent, admission and receipt inspection continuation](release/native-face-consent-develop-admission-2026-10-13.md)
 adds revocable exact-intent face consent with monotonic expiry, durable single-use

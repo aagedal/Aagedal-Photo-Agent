@@ -1997,6 +1997,16 @@ construction and descriptor-anchored/synchronous physical commit authority remai
 these foundations do not close `start_face_scan` or Develop-template application. See the
 [dated record](release/native-face-consent-develop-admission-2026-10-13.md).
 
+**2026-10-13 historical admission inspection continuation:** Managed Develop admission
+storage and Settings capture history expose validated ordered photo/carrier revisions
+and historical awaiting/consumed/cancelled disposition without executable requests,
+consent or replay. Inspection never creates absent storage. Cancelled journals remain
+retained until safe tombstones can preserve replay refusal through capacity cleanup.
+Focused and integrated regression pass; native testing is unverified after automation
+initialization failures and an interrupted computer-use fallback. Native review/execution,
+embedded/rooted commits and whole Phase 5A gates remain open; see the
+[dated evidence](release/develop-capture-history-2026-10-13.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.
