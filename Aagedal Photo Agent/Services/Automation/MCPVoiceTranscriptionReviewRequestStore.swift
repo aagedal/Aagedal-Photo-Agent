@@ -346,8 +346,8 @@ nonisolated final class MCPVoiceTranscriptionReviewRequestStore: Sendable {
             let archive = try JSONDecoder().decode(Archive.self, from: envelope.payload)
             guard [1, 2].contains(archive.schemaVersion), Self.canonicalUUID(archive.currentEpoch),
                   archive.records.count <= maximumRecords, Set(archive.records.map(\.requestID)).count == archive.records.count,
-                  Set(archive.records.compactMap { $0.admission?.admissionID }).count == archive.records.filter { $0.admission != nil }.count,
-                  Set(archive.records.compactMap { $0.admission?.operationID }).count == archive.records.filter { $0.admission != nil }.count else { throw Failure.invalidStorage }
+                  Set(archive.records.compactMap { $0.admission?.admissionID }).count == archive.records.filter({ $0.admission != nil }).count,
+                  Set(archive.records.compactMap { $0.admission?.operationID }).count == archive.records.filter({ $0.admission != nil }).count else { throw Failure.invalidStorage }
             for record in archive.records {
                 try record.intent.validate()
                 guard Self.canonicalUUID(record.requestID), Self.canonicalUUID(record.requestEpoch),

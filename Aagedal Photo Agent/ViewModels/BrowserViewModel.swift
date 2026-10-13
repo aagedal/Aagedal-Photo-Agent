@@ -560,7 +560,9 @@ final class BrowserViewModel {
         retinaPreCacheTask = nil
         retinaPreCacheRequestID = nil
 
-        guard selectedImageIDs.count == 1,
+        // The loupe owns the foreground decode and adjacent prefetch while open.
+        // Starting another retina render here doubles work on every navigation.
+        guard !isFullScreen, selectedImageIDs.count == 1,
               let url = selectedImageIDs.first,
               let index = urlToImageIndex[url] else { return }
         // Full screen opens with edits rendered unless "show originals" is on —
@@ -579,6 +581,9 @@ final class BrowserViewModel {
         let fullScreenImageCache = fullScreenImageCache
 
         retinaPreCacheTask = Task(priority: .utility) { [weak self] in
+            // Let rapid grid navigation settle before starting a sensor decode.
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, self?.isFullScreen == false else { return }
             let factsResult = await presentationFactsService.load(
                 imageURL: url,
                 requestID: requestID

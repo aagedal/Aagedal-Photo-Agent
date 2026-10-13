@@ -23,7 +23,7 @@ if version != lock["pythonVersion"]:
 destination = args.destination.resolve()
 if destination.exists():
     raise SystemExit("Destination exists; remove the generated runtime before preparing a replacement")
-shutil.copytree(source, destination, symlinks=True)
+shutil.copytree(source, destination, symlinks=True, ignore=shutil.ignore_patterns(".DS_Store"))
 python = destination / "bin/python3"
 bridge = root / "Aagedal Photo Agent/Resources/WebDownloads/web_download_bridge.py"
 with tempfile.TemporaryDirectory() as temporary:
@@ -51,7 +51,7 @@ for path in sorted(destination.rglob("*")):
             path.resolve().relative_to(destination)
         except ValueError:
             raise RuntimeError(f"Runtime contains an external symlink: {path}")
-    elif path.is_file() and "__pycache__" not in path.parts:
+    elif path.is_file() and path.name != ".DS_Store" and "__pycache__" not in path.parts:
         files[str(path.relative_to(destination))] = hashlib.sha256(path.read_bytes()).hexdigest()
 for path in destination.rglob("__pycache__"):
     shutil.rmtree(path)

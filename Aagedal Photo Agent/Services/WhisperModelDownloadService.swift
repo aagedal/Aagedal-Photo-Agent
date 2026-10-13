@@ -219,7 +219,7 @@ actor WhisperModelDownloadService {
             fcntl(directoryDescriptor, F_GETPATH, pointer.baseAddress!)
         }
         guard status == 0 else { throw DownloadError.storageChanged }
-        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+        return URL(fileURLWithPath: String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self), isDirectory: true)
             .appendingPathComponent(target.lastPathComponent)
     }
 

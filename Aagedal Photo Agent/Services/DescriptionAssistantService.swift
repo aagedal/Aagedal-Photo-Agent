@@ -143,16 +143,33 @@ actor DescriptionAssistantService {
             let input = try await context.processor.prepare(input: UserInput(prompt: prompt,
                 images: image.map { [.ciImage(CIImage(cgImage: $0))] } ?? []))
             guard input.text.tokens.size <= 3_072 else { throw DescriptionAssistantError.inputTooLong }
-            // The synchronous visitor keeps model ownership until GPU iteration actually
-            // stops, including cancellation. An AsyncStream consumer can terminate earlier
-            // than its producer and release our admission guard while the GPU is still busy.
-            let result = try MLXLMCommon.generate(input: input,
-                parameters: GenerateParameters(maxTokens: 768, temperature: 0.1), context: context) { tokens in
-                Task.isCancelled || tokens.count >= 768 ? .stop : .more
+            let iterator = try TokenIterator(input: input, model: context.model,
+                parameters: GenerateParameters(maxTokens: 768, temperature: 0.1))
+            let (stream, generationTask) = MLXLMCommon.generateTask(
+                promptTokenCount: input.text.tokens.size,
+                modelConfiguration: context.configuration,
+                tokenizer: context.tokenizer,
+                iterator: iterator)
+            // Keep the model and admission guard until the producer has finished,
+            // including GPU synchronization after cancellation of the stream consumer.
+            let (output, tokenCount) = await withTaskCancellationHandler {
+                var output = ""
+                var tokenCount = 0
+                for await generation in stream {
+                    switch generation {
+                    case .chunk(let text): output += text
+                    case .info(let info): tokenCount = info.generationTokenCount
+                    case .toolCall: break
+                    }
+                }
+                await generationTask.value
+                return (output, tokenCount)
+            } onCancel: {
+                generationTask.cancel()
             }
             try Task.checkCancellation()
-            guard result.tokens.count < 768 else { throw DescriptionAssistantError.outputLimit }
-            return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard tokenCount < 768 else { throw DescriptionAssistantError.outputLimit }
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 }
