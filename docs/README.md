@@ -28,6 +28,16 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Native face review / replay-safe Develop cleanup (2026-10-13):**
+[Review and cleanup continuation](release/native-face-review-develop-cleanup-2026-10-13.md)
+adds browser-native exact-inventory consent using the existing scanner, off-main model
+load preflight and installation-generation authority, progress/cancellation/receipts,
+and explicit cancelled-capture cleanup with permanent bounded replay protection.
+Focused and full regression pass. Computer-use capture preview/Cancel/Refresh passes;
+native end-to-end cases remain blocked by activation, recorded in the dated report.
+Helper face execution, descriptor-anchored effects, Develop native execution and broader
+release gates remain open.
+
 **Develop capture history (2026-10-13):**
 [Historical admission inspection continuation](release/develop-capture-history-2026-10-13.md)
 adds managed read-only capture discovery and Settings presentation of ordered revisions
