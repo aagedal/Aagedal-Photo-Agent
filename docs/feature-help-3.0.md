@@ -418,6 +418,14 @@ and reports an empty managed location without creating storage. Expand an entry 
 review ordered photos, physical write receipts and unresolved effects. This inspection
 does not check current photo bytes or authorize applying edits again.
 
+Settings → Automation → **Face Scan Receipts** provides **Review Managed Face Scan
+Receipts** and **Choose Face Scan Receipt Folder…**. Refresh reads the original private
+archive without creating absent storage or repairing unreadable evidence. Expand a
+receipt to inspect recorded scan options, committed thumbnail/document counts, reset
+effects, and cancellation after a commit. An interrupted receipt cannot prove whether
+all effects completed. Inspection does not check current photos, restore face data,
+or authorize a new scan.
+
 Call `list_transcription_providers` without arguments for stable provider IDs and setup guidance.
 The helper cannot observe the app’s runtime, installed language assets, or admitted custom files;
 it reports unknown availability and requires an app session. This catalog does not enable transcription.

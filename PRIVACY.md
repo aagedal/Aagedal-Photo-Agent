@@ -31,6 +31,11 @@ network service are listed below.
 - Folder face scans use a hidden `.face_data` folder containing face positions, feature vectors, groups,
   and thumbnails. The separate Known People database stores names, face-only feature vectors, and
   reference thumbnails in the app's managed storage.
+- App-side automation face scan receipts retain operation/intent IDs, inventory hashes,
+  scan options, effect counts and thumbnail UUIDs in private local storage. They omit
+  photo paths, names, embeddings and consent tokens. Develop batch capture and recovery
+  evidence can include photo paths, original metadata, template settings, decoder facts
+  and writer requests. Restart inspection grants no consent or automatic replay.
 - Delivery receipts and exact retained delivery workflows use local Application Support. Activity
   summaries omit credentials and editorial metadata values; receipt details additionally omit filenames,
   source paths, and content hashes. Exact retained workflow state necessarily contains source identities,

@@ -279,4 +279,250 @@ struct DevelopTemplateBatchCaptureServiceTests {
         for photo in f.photos { let lease = try MCPProcessReservation.acquirePhoto(photo); lease.release() }
         let lease = try MCPProcessReservation.acquireFolder(f.templateURL.deletingLastPathComponent()); lease.release()
     }
+
+    @Test("Exact review evidence survives reopening and cancellation permanently consumes the capture")
+    func durableNativeReviewCancellation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: Array(f.photos.reversed()), mode: .writeToXMPSidecar)
+        let directory = f.root.appendingPathComponent("Admission", isDirectory: true)
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "writer-policy-v1;decoder-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let journal = try await DevelopTemplateBatchAdmissionStore(directory: directory).load(capture.intent.id)
+        let retained = try JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self, from: journal.evidenceData)
+        #expect(retained.photos.map(\.url) == capture.intent.requests.map(\.imageURL))
+        #expect(retained.photos.map(\.rootID) == capture.photos.map(\.rootID))
+        #expect(retained.photos.map(\.sourceRevision) == capture.photos.map(\.sourceRevision))
+        #expect(retained.template == capture.template && retained.templateRevision == f.revision)
+        #expect(retained.configurationRevision == "writer-policy-v1;decoder-v1")
+        #expect(journal.state == .awaitingReview)
+        try await service.cancel(review)
+        let cancelled = try await store.load(capture.intent.id)
+        #expect(cancelled.state == .cancelled && cancelled.evidenceData == journal.evidenceData)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) { try await service.cancel(review) }
+        let restarted = DevelopTemplateBatchAdmissionService(captureService: f.service,
+            store: DevelopTemplateBatchAdmissionStore(directory: directory), configurationRevision: { "writer-policy-v1;decoder-v1" }, validateSession: { _ in })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await restarted.review(capture) }
+    }
+
+    @Test("Reviewed carrier drift fails before consent or physical execution and refuses replay")
+    func nativeReviewCarrierDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        try Data("changed carrier".utf8).write(to: f.photos[0])
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        let writer = DevelopTemplateBatchExecutionService(write: { request, _, _ in
+            Issue.record("Drift must prevent physical execution")
+            return .init(requestID: request.id)
+        })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) {
+            try await service.execute(review, consent: { _ in Issue.record("Drift must precede consent") },
+                executionService: writer, checkpointStore: checkpoints)
+        }
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in }, executionService: writer, checkpointStore: checkpoints)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Checkpoints").path))
+    }
+
+    @Test("Admitted native review executes the retained requests once with managed physical checkpoints")
+    func nativeReviewedExecution() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        let result = try await service.execute(review, consent: { evidence in
+            #expect(evidence.batchID == capture.intent.id)
+            #expect(evidence.photos.map(\.requestID) == capture.intent.requests.map(\.id))
+        }, executionService: .init(engine: SwiftExifWriteEngine()), checkpointStore: checkpoints)
+        #expect(result.outcome == .completed && result.completedCount == 2)
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        #expect(try await checkpoints.load(capture.intent.id).outcome == .completed)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) { try await service.cancel(review) }
+    }
+
+    @Test("Writer or decoder configuration drift after review consumes admission without writes")
+    func nativeConfigurationDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let configuration = MCPServerCoreTests.DataBox()
+        configuration.write(Data("native-v1".utf8))
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { String(decoding: configuration.read() ?? Data(), as: UTF8.self) }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        configuration.write(Data("native-v2".utf8))
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) {
+            try await service.execute(review, consent: { _ in Issue.record("Changed configuration must precede consent") },
+                executionService: .init(engine: SwiftExifWriteEngine()),
+                checkpointStore: .init(directory: f.root.appendingPathComponent("Checkpoints")))
+        }
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Checkpoints").path))
+    }
+
+    @Test("Cancelled native consent cannot be retried with the old review")
+    func nativeConsentCancellation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let execution = DevelopTemplateBatchExecutionService(engine: SwiftExifWriteEngine())
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        await #expect(throws: CancellationError.self) {
+            try await service.execute(review, consent: { _ in throw CancellationError() },
+                executionService: execution, checkpointStore: checkpoints)
+        }
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in }, executionService: execution, checkpointStore: checkpoints)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Checkpoints").path))
+    }
+
+    @Test("A same-byte carrier replacement during consent is refused under the executor reservation")
+    func nativeConsentGenerationDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let target = f.photos[0], original = try Data(contentsOf: target)
+        let execution = DevelopTemplateBatchExecutionService(write: { request, _, _ in
+            Issue.record("Exact generation validation must prevent physical execution")
+            return .init(requestID: request.id)
+        })
+        let result = try await service.execute(review, consent: { _ in
+            try original.write(to: target, options: .atomic)
+        }, executionService: execution,
+            checkpointStore: .init(directory: f.root.appendingPathComponent("Checkpoints")))
+        #expect(result.outcome == .failed && result.completedCount == 0)
+        #expect(result.results.allSatisfy { $0 == nil })
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        #expect(try Data(contentsOf: target) == original)
+    }
+
+    @Test("Session withdrawal during physical writer admission prevents effects and retains a terminal checkpoint")
+    func nativeSessionWithdrawalAtWriter() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let original = try f.photos.map { try Data(contentsOf: $0) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let session = MCPServerCoreTests.DataBox(); session.write(Data("active".utf8))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service,
+            store: .init(directory: f.root.appendingPathComponent("Admission")),
+            configurationRevision: { "native-v1" }, validateSession: { _ in
+                guard session.read() == Data("active".utf8) else { throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
+            })
+        let review = try await service.review(capture)
+        var hooks = PrimaryDevelopWriteHooks()
+        hooks.beforeAdmission = { session.write(Data("withdrawn".utf8)) }
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        let result = try await service.execute(review, consent: { _ in },
+            executionService: .init(engine: SwiftExifWriteEngine(), hooks: hooks), checkpointStore: checkpoints)
+        #expect(result.outcome == .failed && result.completedCount == 0)
+        #expect(result.results[0]?.requiresRecovery == false)
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == original)
+        #expect(try await checkpoints.load(capture.intent.id).outcome == .failed)
+    }
+
+    @Test("A complete authorization configuration change after capture refuses review")
+    func nativeAuthorizationConfigurationDrift() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        // Re-saving the same enabled flag rotates authorization revision without changing root IDs.
+        try f.facade.authorizationStore.setEnabled(true)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service,
+            store: .init(directory: f.root.appendingPathComponent("Admission")),
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) { try await service.review(capture) }
+    }
+
+    @Test("Same-byte replacement of the current or later target during worker suspension refuses preeffect admission")
+    func nativeWorkerGenerationDrift() async throws {
+        for replaceCurrent in [true, false] {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+                photos: f.photos, mode: .writeToXMPSidecar)
+            let service = DevelopTemplateBatchAdmissionService(captureService: f.service,
+                store: .init(directory: f.root.appendingPathComponent("Admission")),
+                configurationRevision: { "native-v1" }, validateSession: { _ in })
+            let review = try await service.review(capture)
+            let target = capture.intent.requests[replaceCurrent ? 0 : 1].imageURL
+            let original = try Data(contentsOf: target)
+            let execution = DevelopTemplateBatchExecutionService(write: { request, _, validate in
+                do {
+                    try await validate()
+                    await Task.yield()
+                    try original.write(to: target, options: .atomic)
+                    try await validate()
+                    Issue.record("Changed exact generation must refuse worker preeffect admission")
+                    return .init(requestID: request.id)
+                } catch {
+                    return .init(requestID: request.id, failure: error.localizedDescription)
+                }
+            })
+            let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+            let result = try await service.execute(review, consent: { _ in }, executionService: execution,
+                checkpointStore: checkpoints)
+            #expect(result.outcome == .failed && result.completedCount == 0)
+            #expect(result.results[0]?.requiresRecovery == false && result.results[1] == nil)
+            #expect(try await checkpoints.load(capture.intent.id).outcome == .failed)
+        }
+    }
+
+    @Test("Admission registry rejects unknown envelope fields without rewriting retained evidence")
+    func nativeAdmissionStrictJournal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        _ = try await store.retain(.init(capture: capture, configurationRevision: "native-v1"))
+        let url = directory.appendingPathComponent("operations.json")
+        var object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["unrecognizedFutureAuthority"] = true
+        let changed = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try changed.write(to: url)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.corruptJournal) { try await store.load(capture.intent.id) }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.corruptJournal) {
+            try await store.finishReview(capture.intent.id, digest: "unused", cancelled: false)
+        }
+        #expect(try Data(contentsOf: url) == changed)
+    }
+
+    @Test("Native reviewed admission refuses embedded destinations until owned-effect stages are wired")
+    func nativeEmbeddedAdmissionRefusal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        for mode in [MetadataWriteMode.writeToFile, .writeToFileAndXMPSidecar] {
+            let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+                photos: f.photos, mode: mode)
+            let directory = f.root.appendingPathComponent("Admission")
+            let service = DevelopTemplateBatchAdmissionService(captureService: f.service,
+                store: .init(directory: directory), configurationRevision: { "native-v1" }, validateSession: { _ in })
+            await #expect(throws: DevelopTemplateBatchAdmissionFailure.unsupportedEmbeddedAdmission) {
+                try await service.review(capture)
+            }
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
+        }
+    }
 }

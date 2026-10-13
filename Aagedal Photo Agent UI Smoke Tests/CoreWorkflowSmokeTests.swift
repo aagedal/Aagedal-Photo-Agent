@@ -975,6 +975,78 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testFaceReceiptInspectionPreservesAbsentAndCorruptStorage() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let original = try Data(contentsOf: image)
+        let directory = fixtureRoot.appendingPathComponent("ManagedFaceReceipts").resolvingSymlinksInPath()
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        app.activate()
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 16)).click()
+        let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let managed = settings.buttons["automation.faceReceipts.managed"]
+        for _ in 0..<14 where !managed.exists {
+            let scrollViews = settings.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
+        }
+        XCTAssertTrue(managed.waitForExistence(timeout: 8))
+        managed.click()
+        let status = settings.staticTexts["automation.faceReceipts.status"]
+        expectation(for: NSPredicate { _, _ in
+            status.exists && (status.label.contains("No retained face scan receipts")
+                || (status.value as? String)?.contains("No retained face scan receipts") == true)
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let archive = directory.appendingPathComponent("operations.json")
+        let bytes = Data("corrupt retained physical evidence".utf8)
+        try bytes.write(to: archive)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
+        let lock = directory.appendingPathComponent("operations.lock")
+        try Data().write(to: lock)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lock.path)
+        settings.buttons["automation.faceReceipts.refresh"].click()
+        expectation(for: NSPredicate { _, _ in
+            status.exists && (status.label.contains("Cannot inspect")
+                || (status.value as? String)?.contains("Cannot inspect") == true)
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertEqual(try Data(contentsOf: archive), bytes)
+        XCTAssertEqual(try Data(contentsOf: image), original)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
+            ["operations.json", "operations.lock"])
+        let operationID = UUID().uuidString.lowercased()
+        let payload = try JSONSerialization.data(withJSONObject: ["version": 1, "receipts": [[
+            "intentID": UUID().uuidString, "operationID": operationID,
+            "snapshotRevision": "sha256:" + String(repeating: "a", count: 64),
+            "photoCount": 1, "forceFullScan": false, "includeJerseyNumbers": false,
+            "phase": "executionPossible"
+        ]]], options: [.sortedKeys])
+        let digest = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let retained = try JSONSerialization.data(withJSONObject: ["payload": payload.base64EncodedString(), "sha256": digest])
+        try retained.write(to: archive)
+        settings.buttons["automation.faceReceipts.refresh"].click()
+        let entry = settings.buttons["automation.faceReceipts.entry.\(operationID)"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+        XCTAssertTrue(entry.label.contains(operationID) && entry.label.contains("executionPossible"))
+        XCTAssertEqual(entry.value as? String, "Collapsed")
+        entry.click()
+        XCTAssertEqual(entry.value as? String, "Expanded")
+        XCTAssertTrue(settings.staticTexts["Execution was admitted; physical effects may have occurred without a completion receipt."].waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: archive), retained)
+        XCTAssertEqual(try Data(contentsOf: image), original)
+    }
+
+    @MainActor
     func testDevelopRecoveryInspectionPreservesUnreadableEvidence() throws {
         let photos = try makePhotoFolder(count: 1)
         let image = photos.appendingPathComponent("smoke-1.jpg")
@@ -3498,6 +3570,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
             "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
             "--ui-test-develop-checkpoint-root", fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").resolvingSymlinksInPath().path,
+            "--ui-test-face-receipt-root", fixtureRoot.appendingPathComponent("ManagedFaceReceipts").resolvingSymlinksInPath().path,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {

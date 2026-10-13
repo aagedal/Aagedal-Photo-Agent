@@ -78,6 +78,13 @@ These are material product and evidence boundaries, not a list of unfinished int
 - Template previews support filename, bounded request-order sequence variables and retained acyclic
   scalar/list `{field:key}` chains whose sources are unchanged by the template. Approved Keywords,
   other context variables and shared production template/face-scan/transcription executors remain open.
+- App-side face consent is tied to an exact native session and retained intent; it is
+  not a helper execution endpoint. Develop reviewed admission durably consumes a capture
+  once and currently permits sidecar destinations only. Embedded destinations refuse
+  until owned physical-effect stages are represented explicitly. Native execution UI,
+  descriptor-anchored publication and synchronous physical commit authority remain open.
+  Face receipt inspection reports historical effects; it does not verify current files
+  or authorize replay.
 
 ## Metadata and delivery interoperability
 
