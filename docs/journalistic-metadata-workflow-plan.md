@@ -1973,6 +1973,18 @@ Authenticated consent, durable face operations, production template capture/stor
 and descriptor-anchored mutation remain open. No whole Phase 5A checkbox closes; see
 the [continuation evidence](release/retained-face-effects-develop-recovery-2026-10-12.md).
 
+**2026-10-13 durable operation and independent capture continuation:** An app-side face
+bridge persists exact intent/operation linkage before scheduling, retains closed physical
+receipts and targets cancellation at the exact task, including direct durable registry
+requests. Caller-supplied native capability validation reaches retained scanner boundaries.
+Independent Develop capture resolves ordered target-specific requests from retained template,
+decoder and carrier evidence, and the production writer/checkpoint path is tested on disposable
+images. Settings can inspect the managed checkpoint location without creating absent storage.
+Authenticated native review/consent and production executor wiring, watermark admission,
+receipt presentation and anchored physical publication remain open. `start_face_scan` remains
+unavailable and neither application checkbox closes; see the
+[dated evidence](release/face-operations-develop-capture-2026-10-13.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.
