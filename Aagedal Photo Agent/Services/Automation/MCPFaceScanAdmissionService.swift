@@ -98,6 +98,15 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         return current
     }
 
+    /// Session consent checks use the frozen authorization independently of preview
+    /// expiry. The scanner's retained reservation separately checks inventory/effects.
+    func checkAuthority(_ prepared: PreparedFolder) throws {
+        guard try authorizationStore.load() == prepared.authorization else { throw Failure.authorizationChanged }
+        guard try authorizationStore.authorizeExistingPath(prepared.folderURL.path) == prepared.target else {
+            throw Failure.staleSnapshot
+        }
+    }
+
     /// Native admission foundation only: retains the original complete inventory and
     /// exclusive folder lease until explicit release or deinitialization. This is not
     /// consent, durable admission or an executor. Callers must separately establish

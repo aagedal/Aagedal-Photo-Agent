@@ -58,6 +58,28 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
         self.maximumReceipts = min(max(0, maximumReceipts), 256)
     }
 
+    /// Resolving the managed location does not create an archive. UI tests must
+    /// explicitly supply disposable storage rather than inspecting personal history.
+    static func defaultStorageDirectory(applicationSupportDirectory: URL? = nil,
+                                        arguments: [String] = ProcessInfo.processInfo.arguments) throws -> URL {
+        if arguments.contains("--ui-testing") {
+            guard let index = arguments.firstIndex(of: "--ui-test-face-receipt-root"),
+                  arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/"),
+                  !arguments[index + 1].contains("\0") else {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
+        guard let base = applicationSupportDirectory
+                ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+              base.isFileURL, base.path.hasPrefix("/") else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        return base.appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("FaceScanReceipts", isDirectory: true)
+    }
+
     func admit(intent: MCPFaceScanIntentStore.Intent, operationID: UUID) throws {
         try transaction { receipts in
             guard !receipts.contains(where: { $0.intentID == intent.id || $0.operationID == operationID }) else {

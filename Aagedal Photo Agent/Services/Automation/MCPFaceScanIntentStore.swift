@@ -77,6 +77,8 @@ nonisolated final class MCPFaceScanIntentStore: @unchecked Sendable {
         catch { retained.release(); throw error }
     }
 
+    func checkAuthority(_ intent: Intent) throws { try admission.checkAuthority(intent.prepared) }
+
     private func now() throws -> Date {
         let value = clock()
         guard value.timeIntervalSince1970.isFinite else { throw Failure.invalidClock }

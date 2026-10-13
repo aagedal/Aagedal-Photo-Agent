@@ -39,7 +39,8 @@ actor MCPFaceScanOperationService {
     /// This adapter cannot manufacture such a capability. Persistence finishes before
     /// the scheduler can run. An admitted intent is single use even after a refusal.
     func submit(intentID: UUID,
-                nativeAdmission: @escaping @Sendable (MCPFaceScanIntentStore.Intent) throws -> Void) async throws -> AutomationOperationRegistry.Record {
+                nativeAdmission: @escaping @Sendable (MCPFaceScanIntentStore.Intent) throws -> Void,
+                nativeCompletion: @escaping @Sendable () -> Void = {}) async throws -> AutomationOperationRegistry.Record {
         guard !stopping else { throw AutomationOperationExecutionCoordinator.Failure.stopped }
         let intent = try intents.inspect(id: intentID)
         try nativeAdmission(intent)
@@ -47,6 +48,7 @@ actor MCPFaceScanOperationService {
         let receipts = self.receipts, intents = self.intents, schedule = self.schedule, registry = self.registry
         return try await coordinator.submit(kind: .faceScan, operationID: operationID,
             admission: { try receipts.admit(intent: intent, operationID: operationID) }) { context in
+            defer { nativeCompletion() }
             // Both conservative execution evidence and coordination effects precede
             // scanner scheduling (which may immediately schedule a reset/write).
             try await context.checkCancellation()

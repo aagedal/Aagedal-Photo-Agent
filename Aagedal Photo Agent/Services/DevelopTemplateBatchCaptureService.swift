@@ -9,6 +9,7 @@ nonisolated struct DevelopTemplateBatchCapture: Sendable {
     struct PhotoEvidence: Sendable {
         let requestID: UUID
         let rootID: UUID
+        let targetIdentity: MCPFileIdentity
         let sourceRevision: String
         let xmpSidecarRevision: String
         let appSidecarRevision: String
@@ -17,6 +18,7 @@ nonisolated struct DevelopTemplateBatchCapture: Sendable {
     let intent: DevelopTemplateBatchIntent
     let template: DevelopTemplate
     let photos: [PhotoEvidence]
+    let authorizationConfiguration: MCPAuthorizationConfiguration
 }
 
 /// Pure app-side capture, with no persistence, native approval or physical writer. The
@@ -52,6 +54,7 @@ nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
             guard identities.insert(key).inserted else { throw DevelopTemplateBatchFailure.duplicatePhoto }
         }
         try Task.checkCancellation()
+        let authorizationConfiguration = try facade.authorizationStore.load()
         return try discovery.withDevelopTemplate(id: templateID, revision: templateRevision) { template in
             guard (template.settings.watermarkLayers ?? []).isEmpty else {
                 throw DevelopTemplateBatchFailure.unsupportedWatermarkDependencies
@@ -61,13 +64,17 @@ nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
             func collect(_ index: Int, requests: [PrimaryDevelopWriteRequest],
                          evidence: [DevelopTemplateBatchCapture.PhotoEvidence], bytes: Int) throws -> DevelopTemplateBatchCapture {
                 try Task.checkCancellation()
+                guard try facade.authorizationStore.load() == authorizationConfiguration else {
+                    throw DevelopTemplateBatchAdmissionFailure.changedEvidence
+                }
                 guard index < photos.count else {
                     let intent = try DevelopTemplateBatchIntent(templateID: templateID,
                         templateRevision: templateRevision, requests: requests)
                     guard try JSONEncoder().encode(DevelopTemplateBatchExecutionResult(intent: intent,
                         results: Array(repeating: nil, count: requests.count)).recoveryPayload).count
                             <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes else { throw Failure.byteLimit }
-                    return .init(intent: intent, template: template, photos: evidence)
+                    return .init(intent: intent, template: template, photos: evidence,
+                        authorizationConfiguration: authorizationConfiguration)
                 }
                 return try facade.withPhotoSnapshot(path: photos[index].path) { snapshot in
                     let total = bytes + snapshot.sourceBytes.count + (snapshot.xmpBytes?.count ?? 0)
@@ -116,10 +123,14 @@ nonisolated struct DevelopTemplateBatchCaptureService: Sendable {
                         sourceRevision: source, captureFailure: nil, history: record?.history ?? [], timestamp: timestamp,
                         predecessor: nil, watermarkDependencies: []))
                     let witness = DevelopTemplateBatchCapture.PhotoEvidence(requestID: request.id,
-                        rootID: snapshot.target.rootID, sourceRevision: snapshot.sourceRevision,
+                        rootID: snapshot.target.rootID, targetIdentity: snapshot.target.identity, sourceRevision: snapshot.sourceRevision,
                         xmpSidecarRevision: snapshot.xmpSidecarRevision, appSidecarRevision: snapshot.appSidecarRevision,
                         decoder: decoder)
-                    return try collect(index + 1, requests: requests + [request], evidence: evidence + [witness], bytes: total)
+                    let result = try collect(index + 1, requests: requests + [request], evidence: evidence + [witness], bytes: total)
+                    guard try facade.authorizationStore.load() == authorizationConfiguration else {
+                        throw DevelopTemplateBatchAdmissionFailure.changedEvidence
+                    }
+                    return result
                 }
             }
             return try collect(0, requests: [], evidence: [], bytes: 0)

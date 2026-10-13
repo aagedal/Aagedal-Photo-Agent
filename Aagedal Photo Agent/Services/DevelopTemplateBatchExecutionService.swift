@@ -95,6 +95,7 @@ nonisolated final class DevelopTemplateBatchRecoveryPayload: Encodable, Sendable
 nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
     typealias AuthorityValidation = @Sendable (DevelopTemplateBatchIntent) async throws -> Void
     typealias Retention = @Sendable (DevelopTemplateBatchExecutionResult) async throws -> Void
+    typealias CaptureValidation = @Sendable (DevelopTemplateBatchIntent, [UUID: MCPProcessReservationLease], Set<UUID>) throws -> Void
     typealias Writer = @Sendable (PrimaryDevelopWriteRequest, MCPProcessReservationLease,
         @escaping @Sendable () async throws -> Void) async -> PrimaryDevelopWriteResult
     static let maximumRecoveryBytes = 268_435_456
@@ -114,14 +115,16 @@ nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
     /// this entry point still requires independent native authority validation.
     func execute(_ intent: DevelopTemplateBatchIntent,
                  validateAuthority: @escaping AuthorityValidation,
-                 checkpointStore: DevelopTemplateBatchCheckpointStore) async -> DevelopTemplateBatchExecutionResult {
+                 checkpointStore: DevelopTemplateBatchCheckpointStore,
+                 validateCapture: @escaping CaptureValidation = { _, _, _ in }) async -> DevelopTemplateBatchExecutionResult {
         await execute(intent, validateAuthority: validateAuthority,
-                      retain: { try await checkpointStore.retain($0) })
+                      retain: { try await checkpointStore.retain($0) }, validateCapture: validateCapture)
     }
 
     func execute(_ intent: DevelopTemplateBatchIntent,
                  validateAuthority: @escaping AuthorityValidation,
-                 retain: @escaping Retention) async -> DevelopTemplateBatchExecutionResult {
+                 retain: @escaping Retention,
+                 validateCapture: @escaping CaptureValidation = { _, _, _ in }) async -> DevelopTemplateBatchExecutionResult {
         var result = DevelopTemplateBatchExecutionResult(intent: intent,
             results: Array(repeating: nil, count: intent.requests.count))
         var reservations: [UUID: MCPProcessReservationLease] = [:]
@@ -134,6 +137,7 @@ nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
             }
             // Check the complete original set before any photo can be changed.
             try await validateAuthority(intent)
+            try validateCapture(intent, reservations, Set(intent.requests.map(\.id)))
             for request in intent.requests { try await Self.validateCarriers(request) }
             // Retention is mandatory and must finish durably before the first possible effect.
             try await Self.retainBounded(result, retain: retain)
@@ -150,9 +154,20 @@ nonisolated struct DevelopTemplateBatchExecutionService: Sendable {
                 if index == 0 {
                     for captured in intent.requests { try await Self.validateCarriers(captured) }
                 }
+                let untouched = Set(intent.requests[index...].map(\.id))
+                try validateCapture(intent, reservations, untouched)
                 try Task.checkCancellation()
                 effectsPossible = true
-                let receipt = await write(request, reservations[request.id]!) { try await validateAuthority(intent) }
+                let heldReservations = reservations
+                let receipt = await write(request, reservations[request.id]!) {
+                    try await validateAuthority(intent)
+                    // Every callback can precede an effect, including a prepared embedded
+                    // writer's second callback. Current and later exact generations stay
+                    // protected until that worker returns its physical receipt. Admission
+                    // currently restricts capture validation to sidecar-only workers;
+                    // embedded writes need an explicit owned-effect stage signal.
+                    try validateCapture(intent, heldReservations, untouched)
+                }
                 guard receipt.requestID == request.id else {
                     result.unexpectedReceipt = .init(reportedRequestID: receipt.requestID,
                         evidence: PrimaryDevelopRecoveryPayload(request, result: receipt))
