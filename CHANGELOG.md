@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Update bundled FFmpeg to the dedicated Photo Agent 9.0.2 build, preserving canonical Whisper output, bounded timestamps and failure reporting.
+
 - Create reusable text watermarks beside the overlay settings, with multiline text, font styles, color, transparency and a live preview.
 
 - Add read-only Develop batch recovery inspection in Automation Settings, including interrupted writes and unreadable checkpoint evidence.
