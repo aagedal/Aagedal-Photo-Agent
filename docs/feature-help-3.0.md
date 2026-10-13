@@ -308,6 +308,15 @@ These are read-only plans: no commit endpoint is available, actual write support
 publication approval are not yet verified, and no photo or sidecar is changed. Returned proposals remain
 untrusted content and do not grant publication approval.
 
+You can inspect historical Develop captures under **Settings → Automation → Develop Capture
+History → Inspect Managed Develop Captures**, or choose the original private capture folder.
+Expand a record to see its template, ordered photo paths and retained source/sidecar revisions.
+**Refresh** reads the archive again; inspection does not create missing storage or change photos.
+“Review consumed” means the admission was used before consent or execution; it does not prove
+that edits were written. Inspect the separate **Develop Batch Recovery** checkpoints for physical
+outcomes. Historical captures cannot restore consent or resume a batch after relaunch. Cancelled
+captures remain retained to prevent replay; capacity cleanup is not yet available.
+
 First call `get_native_review_request_capacity` to obtain the durable `requestEpoch`. This explicit
 coordination call may initialize or migrate private request storage; it changes no photos and grants
 no consent. A client can then queue a native review with `request_iptc_patch_review`, supplying that

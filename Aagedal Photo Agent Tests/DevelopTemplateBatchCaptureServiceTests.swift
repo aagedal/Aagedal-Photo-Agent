@@ -307,6 +307,53 @@ struct DevelopTemplateBatchCaptureServiceTests {
         await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await restarted.review(capture) }
     }
 
+    @Test("Historical inspection preserves ordered captures and all review dispositions without writes")
+    func admissionInspection() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        var captures: [DevelopTemplateBatchCapture] = []
+        for _ in 0..<3 {
+            let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+                photos: Array(f.photos.reversed()), mode: .writeToXMPSidecar)
+            let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: capture, configurationRevision: "policy-v1")
+            let digest = try await store.retain(evidence)
+            if captures.count > 0 {
+                try await store.finishReview(capture.intent.id, digest: digest, cancelled: captures.count == 2)
+            }
+            captures.append(capture)
+        }
+        let archive = directory.appendingPathComponent("operations.json")
+        let before = try Data(contentsOf: archive)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        let photosBefore = try f.photos.map { try Data(contentsOf: $0) }
+        for _ in 0..<2 {
+            let reviews = try await DevelopTemplateBatchAdmissionStore(directory: directory).inspect()
+            #expect(reviews.map(\.id) == captures.map { $0.intent.id })
+            #expect(reviews.map(\.state) == [.awaitingReview, .consumed, .cancelled])
+            for (review, capture) in zip(reviews, captures) {
+                #expect(review.templateID == f.template.id && review.templateName == f.template.name)
+                #expect(review.templateRevision == f.revision)
+                #expect(review.photos.map(\.url) == capture.intent.requests.map(\.imageURL))
+                #expect(review.photos.map(\.sourceRevision) == capture.photos.map(\.sourceRevision))
+            }
+        }
+        #expect(try Data(contentsOf: archive) == before)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == names)
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == photosBefore)
+        let alias = f.root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        await #expect(throws: (any Error).self) { try await DevelopTemplateBatchAdmissionStore(directory: alias).inspect() }
+        var object = try #require(JSONSerialization.jsonObject(with: before) as? [String: Any])
+        var journals = try #require(object["journals"] as? [[String: Any]])
+        journals[0]["evidenceSHA256"] = "corrupt"
+        object["journals"] = journals
+        let corrupt = try JSONSerialization.data(withJSONObject: object)
+        try corrupt.write(to: archive)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.corruptJournal) { try await store.inspect() }
+        #expect(try Data(contentsOf: archive) == corrupt)
+    }
+
     @Test("Reviewed carrier drift fails before consent or physical execution and refuses replay")
     func nativeReviewCarrierDrift() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

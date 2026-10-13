@@ -65,6 +65,24 @@ nonisolated struct DevelopTemplateBatchAdmissionJournal: Codable, Sendable {
     let state: State
 }
 
+/// A read-only presentation record intentionally excludes serialized writer requests,
+/// authority configuration and live review capabilities.
+nonisolated struct DevelopTemplateBatchAdmissionInspection: Sendable, Identifiable {
+    struct Photo: Sendable, Identifiable {
+        let id: UUID
+        let url: URL
+        let sourceRevision: String
+        let xmpRevision: String
+        let appRevision: String
+    }
+    let id: UUID
+    let state: DevelopTemplateBatchAdmissionJournal.State
+    let templateName: String
+    let templateID: UUID
+    let templateRevision: String
+    let photos: [Photo]
+}
+
 /// Separate from physical checkpoints so a cancelled review can never be mistaken for
 /// an execution receipt. Anchored, locked transactions make consumption cross-instance.
 actor DevelopTemplateBatchAdmissionStore {
@@ -77,6 +95,45 @@ actor DevelopTemplateBatchAdmissionStore {
     }
     private let directory: URL
     init(directory: URL) { self.directory = directory }
+
+    static func defaultStorageDirectory(applicationSupportDirectory: URL? = nil,
+                                        arguments: [String] = ProcessInfo.processInfo.arguments) throws -> URL {
+        if arguments.contains("--ui-testing") {
+            guard let index = arguments.firstIndex(of: "--ui-test-develop-admission-root"),
+                  arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/"),
+                  !arguments[index + 1].contains("\0") else {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
+        guard let base = applicationSupportDirectory
+                ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+              base.isFileURL, base.path.hasPrefix("/") else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        return base.appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("DevelopAdmissions", isDirectory: true)
+    }
+
+    /// Historical evidence only. No token, executable request or consent can be
+    /// reconstructed from this projection. Missing storage is never created.
+    func inspect() throws -> [DevelopTemplateBatchAdmissionInspection] {
+        try persistence().transaction(readOnly: true) { existing in
+            let registry = try Self.registry(existing)
+            let reviews = try registry.journals.map { journal in
+                let evidence = try JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self,
+                                                       from: journal.evidenceData)
+                return DevelopTemplateBatchAdmissionInspection(id: journal.batchID, state: journal.state,
+                    templateName: evidence.template.name, templateID: evidence.template.id,
+                    templateRevision: evidence.templateRevision,
+                    photos: evidence.photos.map { .init(id: $0.requestID, url: $0.url,
+                        sourceRevision: $0.sourceRevision, xmpRevision: $0.xmpRevision,
+                        appRevision: $0.appRevision) })
+            }
+            return (reviews, existing ?? Data())
+        }
+    }
 
     func retain(_ evidence: DevelopTemplateBatchAdmissionEvidence) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

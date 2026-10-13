@@ -141,3 +141,129 @@ struct DevelopTemplateBatchRecoveryView: View {
         return "No writer receipt retained."
     }
 }
+
+/// Durable captures remain historical evidence after relaunch; this view never
+/// creates a native review capability or calls the writer.
+struct DevelopTemplateBatchAdmissionView: View {
+    @State private var directory: URL?
+    @State private var reviews: [DevelopTemplateBatchAdmissionInspection] = []
+    @State private var expanded: Set<UUID> = []
+    @State private var message: String?
+    @State private var inspection: Task<Void, Never>?
+    @State private var generation = UUID()
+    @State private var isLoading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Inspect retained Develop captures and their review disposition. These records cannot resume edits or restore consent. Saved photos and current authorization are not checked here. Cancelled records remain retained to prevent replay.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Inspect Managed Develop Captures", action: inspectManaged)
+                    .accessibilityIdentifier("develop.batchAdmission.managed")
+                if let directory {
+                    Button("Refresh") { inspect(directory) }
+                        .accessibilityIdentifier("develop.batchAdmission.refresh")
+                }
+            }.disabled(isLoading)
+            Button("Choose Develop Capture Folder…", action: choose)
+                .accessibilityIdentifier("develop.batchAdmission.chooseFolder")
+                .disabled(isLoading)
+            if let directory { Text(verbatim: directory.path).font(.caption).textSelection(.enabled) }
+            if isLoading { ProgressView().controlSize(.small) }
+            if let message { Text(verbatim: message).accessibilityIdentifier("develop.batchAdmission.status") }
+            ForEach(reviews) { review in
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        if !expanded.insert(review.id).inserted { expanded.remove(review.id) }
+                    } label: {
+                        Label("\(review.id.uuidString) — \(review.templateName) · \(stateLabel(review.state))",
+                              systemImage: expanded.contains(review.id) ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                    }
+                    .accessibilityIdentifier("develop.batchAdmission.entry.\(review.id.uuidString)")
+                    .accessibilityValue(expanded.contains(review.id) ? "Expanded" : "Collapsed")
+                    if expanded.contains(review.id) {
+                        Text(stateExplanation(review.state))
+                        Text("Template \(review.templateID.uuidString), revision \(review.templateRevision)")
+                            .font(.caption).textSelection(.enabled)
+                        Text("\(review.photos.count) ordered photos captured")
+                        ForEach(review.photos) { photo in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(verbatim: photo.url.path)
+                                Text("Source revision: \(photo.sourceRevision)")
+                                Text("XMP revision: \(photo.xmpRevision)")
+                                Text("App metadata revision: \(photo.appRevision)")
+                            }.font(.caption).textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            generation = UUID(); inspection?.cancel(); inspection = nil
+            isLoading = false; reviews = []; expanded = []; message = nil
+        }
+    }
+
+    private func stateLabel(_ state: DevelopTemplateBatchAdmissionJournal.State) -> String {
+        switch state {
+        case .awaitingReview: "Awaiting review at retention time"
+        case .consumed: "Review consumed"
+        case .cancelled: "Review cancelled"
+        }
+    }
+
+    private func stateExplanation(_ state: DevelopTemplateBatchAdmissionJournal.State) -> String {
+        switch state {
+        case .awaitingReview:
+            "A capture was retained for native review. This historical record does not establish a current review or grant permission to write."
+        case .consumed:
+            "The review was consumed before consent or execution. This does not prove edits were written; inspect the separate Develop batch recovery checkpoints for physical outcomes."
+        case .cancelled:
+            "The review was cancelled. Its retained record prevents this capture from being admitted again."
+        }
+    }
+
+    private func inspectManaged() {
+        do { inspect(try DevelopTemplateBatchAdmissionStore.defaultStorageDirectory()) }
+        catch { message = "The managed Develop capture location is unavailable. Choose the original private capture folder to inspect its evidence." }
+    }
+
+    private func choose() {
+        let expected = generation
+        let panel = NSOpenPanel()
+        panel.title = "Choose Retained Develop Captures"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false; panel.canCreateDirectories = false
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            guard generation == expected, response == .OK, let selected = panel.url else { return }
+            inspect(selected)
+        }
+        if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: completion) }
+        else { panel.begin(completionHandler: completion) }
+    }
+
+    private func inspect(_ selected: URL) {
+        guard !isLoading else { return }
+        directory = selected
+        let request = UUID(); generation = request; isLoading = true
+        reviews = []; expanded = []; message = nil
+        inspection = Task { @MainActor in
+            let scoped = selected.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { selected.stopAccessingSecurityScopedResource() }
+                if generation == request { isLoading = false; inspection = nil }
+            }
+            do {
+                let result = try await DevelopTemplateBatchAdmissionStore(directory: selected).inspect()
+                guard generation == request, !Task.isCancelled else { return }
+                reviews = result
+                message = result.isEmpty ? "No retained Develop captures found in this folder."
+                    : "Historical captures inspected. No current photo checks, consent or execution were performed."
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                message = "Cannot inspect this capture journal. It must be the original private folder, with readable evidence and no symbolic links. Retained evidence is unchanged."
+            }
+        }
+    }
+}

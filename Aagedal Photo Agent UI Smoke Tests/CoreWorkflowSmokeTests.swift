@@ -1047,6 +1047,115 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testDevelopCaptureInspectionPreservesHistoryAndPhotos() throws {
+        let photos = try makePhotoFolder(count: 1)
+        let image = photos.appendingPathComponent("smoke-1.jpg")
+        let photoBytes = try Data(contentsOf: image)
+        let directory = fixtureRoot.appendingPathComponent("ManagedDevelopAdmissions").resolvingSymlinksInPath()
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        app.activate()
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 16)).click()
+        let automation = settings.outlines["Sidebar"].staticTexts["Automation"].firstMatch
+        XCTAssertTrue(automation.waitForExistence(timeout: 8))
+        automation.click()
+        let managed = settings.buttons["develop.batchAdmission.managed"]
+        for _ in 0..<14 where !managed.exists {
+            let scrollViews = settings.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
+        }
+        XCTAssertTrue(managed.waitForExistence(timeout: 8))
+        managed.click()
+        let status = settings.staticTexts["develop.batchAdmission.status"]
+        let empty = NSPredicate { _, _ in
+            status.exists && (status.label.contains("No retained Develop captures")
+                || (status.value as? String)?.contains("No retained Develop captures") == true)
+        }
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        settings.buttons["develop.batchAdmission.refresh"].click()
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let archive = directory.appendingPathComponent("operations.json")
+        let lock = directory.appendingPathComponent("operations.lock")
+        try Data().write(to: lock)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lock.path)
+        let corrupt = Data("corrupt retained capture evidence".utf8)
+        try corrupt.write(to: archive)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archive.path)
+        settings.buttons["develop.batchAdmission.refresh"].click()
+        expectation(for: NSPredicate { _, _ in
+            status.exists && (status.label.contains("Cannot inspect")
+                || (status.value as? String)?.contains("Cannot inspect") == true)
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertEqual(try Data(contentsOf: archive), corrupt)
+
+        let batchID = UUID().uuidString
+        let evidence = try JSONSerialization.data(withJSONObject: [
+            "formatVersion": 1, "batchID": batchID,
+            "template": ["schemaVersion": 1, "id": UUID().uuidString,
+                "name": "Native retained capture", "settings": [:], "includesCrop": false],
+            "templateRevision": "sha256:template-fixture",
+            "authorizationConfiguration": ["schemaVersion": 1, "isEnabled": false, "roots": []],
+            "configurationRevision": "native-fixture-policy",
+            "photos": [["requestID": UUID().uuidString, "url": image.absoluteString,
+                "rootID": UUID().uuidString, "targetIdentity": ["device": 1, "inode": 2],
+                "sourceRevision": "sha256:photo-fixture", "xmpRevision": "absent",
+                "appRevision": "absent", "isRAW": false]],
+            "originalIntentData": Data("historical fixture".utf8).base64EncodedString()
+        ], options: [.sortedKeys])
+        let digest = SHA256.hash(data: evidence).map { String(format: "%02x", $0) }.joined()
+        let retained = try JSONSerialization.data(withJSONObject: ["formatVersion": 1, "journals": [[
+            "formatVersion": 1, "batchID": batchID, "evidenceData": evidence.base64EncodedString(),
+            "evidenceSHA256": digest, "state": "consumed"
+        ]]], options: [.sortedKeys])
+        try retained.write(to: archive)
+        settings.buttons["develop.batchAdmission.refresh"].click()
+        let entry = settings.buttons["develop.batchAdmission.entry.\(batchID)"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+        XCTAssertTrue(entry.label.contains("Review consumed") && entry.label.contains("Native retained capture"))
+        XCTAssertEqual(entry.value as? String, "Collapsed")
+        entry.click()
+        XCTAssertEqual(entry.value as? String, "Expanded")
+        XCTAssertTrue(settings.staticTexts["The review was consumed before consent or execution. This does not prove edits were written; inspect the separate Develop batch recovery checkpoints for physical outcomes."].waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: archive), retained)
+        XCTAssertEqual(try Data(contentsOf: image), photoBytes)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
+                       ["operations.json", "operations.lock"])
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos)
+        app.typeKey(",", modifierFlags: .command)
+        let reopened = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(reopened.waitForExistence(timeout: 8))
+        app.activate()
+        reopened.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 16)).click()
+        reopened.outlines["Sidebar"].staticTexts["Automation"].firstMatch.click()
+        let inspectAgain = reopened.buttons["develop.batchAdmission.managed"]
+        for _ in 0..<14 where !inspectAgain.exists {
+            let scrollViews = reopened.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
+        }
+        XCTAssertTrue(inspectAgain.waitForExistence(timeout: 8))
+        inspectAgain.click()
+        let retainedEntry = reopened.buttons["develop.batchAdmission.entry.\(batchID)"]
+        XCTAssertTrue(retainedEntry.waitForExistence(timeout: 8))
+        XCTAssertEqual(retainedEntry.value as? String, "Collapsed")
+        XCTAssertTrue(retainedEntry.label.contains("Review consumed"))
+        XCTAssertEqual(try Data(contentsOf: archive), retained)
+        XCTAssertEqual(try Data(contentsOf: image), photoBytes)
+    }
+
+    @MainActor
     func testDevelopRecoveryInspectionPreservesUnreadableEvidence() throws {
         let photos = try makePhotoFolder(count: 1)
         let image = photos.appendingPathComponent("smoke-1.jpg")
@@ -3570,6 +3679,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
             "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
             "--ui-test-develop-checkpoint-root", fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").resolvingSymlinksInPath().path,
+            "--ui-test-develop-admission-root", fixtureRoot.appendingPathComponent("ManagedDevelopAdmissions").resolvingSymlinksInPath().path,
             "--ui-test-face-receipt-root", fixtureRoot.appendingPathComponent("ManagedFaceReceipts").resolvingSymlinksInPath().path,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
