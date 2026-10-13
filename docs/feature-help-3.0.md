@@ -7,6 +7,16 @@ This guide covers the new 3.0 investigation, comparison, versioning, caption, an
 workflows. It supplements the control-level hover help and accessibility hints in the app. Commands and
 shortcuts shown in Settings → Keyboard Shortcuts are authoritative when they differ from examples here.
 
+## Find a setting
+
+Open Settings and type in **Search Settings**, or press **Command+F** while the Settings
+window is active. Search matches category names, control labels, and related terms such as
+Whisper, certificate, thumbnails, or place-name language. Matching categories remain in the
+sidebar with brief control hints; select a category to edit its settings. Search opens the
+category rather than jumping to an individual control. Clear the field with its clear button
+or **Escape** to restore all categories. Links from Caption and automation reviews still open
+their requested category and clear any active search.
+
 ## Open a focused workspace
 
 Use the **Workspace** menu in the toolbar to open one of these workspaces. The separate

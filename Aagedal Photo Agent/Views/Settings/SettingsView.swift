@@ -163,6 +163,61 @@ struct SettingsView: View {
             }
         }
 
+        /// Search only built-in labels; never inspect private libraries or saved credentials.
+        var searchTerms: [String] {
+            switch self {
+            case .general: ["External Editor", "Command+E", "Default Editor", "Browser", "File visibility", "Preview", "Always show original thumbnails"]
+            case .rawDecoding: ["Decode Profile", "Dynamic Range", "Render RAW images as HDR", "Apple RAW Decoder", "Decoder version"]
+            case .transcription: ["Transcription provider", "Voice memo", "Whisper model", "Download models", "Custom FFmpeg Whisper", "Transcription language", "Translate speech into English", "Request GPU acceleration"]
+            case .descriptionAssistant: ["AI caption", "Local language model", "Description generation", "Description Model", "Provider", "Installed model", "Description Presets", "Preset name", "Model setup", "GPU acceleration"]
+            case .descriptionModels: ["Download models", "Local language model", "GGUF", "Model storage", "Remove models"]
+            case .developControls: ["Develop Controls", "Exposure", "White balance", "Crop", "Show All", "Reset Order"] + DevelopPanelSection.allCases.map(\.title) + DevelopSlider.allCases.map(\.displayName)
+            case .metadata: ["Multi-Select Behavior", "Visible and required fields", "Write Behavior", "XMP sidecars", "C2PA-Protected Images", "Variable Processing", "Initials", "Reverse Geocoding", "Place-name language", "Work offline", "Metadata Fields", "Headline minimum length", "Description minimum length", "Reset Layout to Defaults"] + MetadataFieldID.userSelectable.map(\.displayName)
+            case .keywordLists: ["Approved Keywords", "Structured Keyword Lists", "IPTC Media Topics", "Automatically update IPTC Media Topics", "IPTC language", "My Keywords", "Structured Person Shown", "Add category names as keywords", "Import / Export"]
+            case .quickLists: ["Quick Lists", "Metadata autocomplete", "Import / Export", "Backup", "Restore"]
+            case .faceRecognition: ["AuraFace Model", "Download model", "Detection", "Scan Mode", "Sports Tagging", "Folder Face Data", "Auto-delete face data"]
+            case .knownPeople: ["Known People Database", "People Library", "Import / Export", "Clear Database", "Future Face Model Upgrades", "Keep reusable face crops", "Data Management", "Stored size", "Privacy"]
+            case .teams: ["Sports Tagging", "Team roster", "Players", "Jersey numbers", "Team colors", "Import / Export"]
+            case .locations: ["Export Location", "Save Exported Files", "Sub-folder Name", "RAW Archive Location", "Main Ingest Folder", "Separate Archive Root"]
+            case .format: ["SDR Format", "HDR Format", "Default Format", "JPEG", "HEIF", "TIFF", "PNG", "JPEG XL", "Quality", "Color Gamut", "Output Resolution", "Maximum Long Edge", "TIFF Options", "Compression"]
+            case .templates: ["Template Type", "Metadata templates", "Develop templates", "Import / Export", "Move to Trash"]
+            case .watermarks: ["Watermark image", "Export", "Opacity", "Position", "Size"]
+            case .ftp: ["FTP connections", "Server", "Upload", "Credentials", "Always render RAW files to JPEG before upload"]
+            case .signing: ["Signing Certificate", "C2PA", "Content Credentials", "Claim Defaults", "Default Author", "Signer Trust", "Identity"]
+            case .sync: ["Sync everything", "App preferences", "Keyword lists", "Templates", "Known People database", "Teams", "Watermarks", "iCloud Drive"]
+            case .updates: ["Current Version", "Automatic Updates", "Automatically check for updates", "Check frequency"]
+            case .webDownloads: ["Web Download Tools", "yt-dlp", "FFmpeg", "Browser media import"]
+            case .automation: ["Local MCP Server", "Allow team creation", "Authorized Folders", "Client Setup", "Proofreading Plan Review", "Transcription Intent Review", "Operation History", "Develop Capture History", "Develop Batch Recovery", "Face Scan Receipts", "Interrupted XMP Publication", "Privacy and activity", "Codex"]
+            case .shortcuts: ["Keyboard shortcuts", "Culling shortcut profile", "Rating & Label", "Caption Workspace", "Key bindings"]
+            case .licenses: ["Third-party licenses", "Open source", "Acknowledgments"]
+            }
+        }
+
+        private static func tokens(for query: String) -> [String] {
+            query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        }
+
+        func matches(_ query: String) -> Bool {
+            let searchableText = ([title] + searchTerms).joined(separator: " ")
+            return Self.tokens(for: query).allSatisfy {
+                searchableText.localizedStandardContains($0)
+            }
+        }
+
+        func matchingTerms(for query: String) -> [String] {
+            let tokens = Self.tokens(for: query)
+            guard !tokens.isEmpty,
+                  !tokens.allSatisfy({ title.localizedStandardContains($0) }) else { return [] }
+            return searchTerms.filter { term in
+                tokens.contains { term.localizedStandardContains($0) }
+            }
+        }
+
+        static func searchSelection(current: Self?, query: String) -> Self? {
+            if let current, current.matches(query) { return current }
+            return allCases.first { $0.matches(query) }
+        }
+
         var icon: String {
             switch self {
             case .general: return "gear"
@@ -194,56 +249,91 @@ struct SettingsView: View {
     }
 
     @State private var selection: SettingsSection? = .general
+    @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
+
+    private let sidebarGroups: [(title: String, sections: [SettingsSection])] = [
+        ("General", [.general, .rawDecoding, .transcription, .descriptionAssistant, .descriptionModels, .developControls]),
+        ("Library & Metadata", [.metadata, .keywordLists, .quickLists, .templates, .watermarks]),
+        ("People and Groups", [.faceRecognition, .knownPeople, .teams]),
+        ("Export & Publishing", [.locations, .format, .ftp, .webDownloads, .signing]),
+        ("Application", [.sync, .updates, .automation, .shortcuts, .licenses])
+    ]
+
+    private var sidebarSelection: Binding<SettingsSection?> {
+        Binding(
+            get: { selection },
+            set: { newSelection in
+                // List can clear selection as filtered rows are replaced. Query
+                // reconciliation owns the empty state; keep the chosen destination.
+                if let newSelection { selection = newSelection }
+            }
+        )
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
-            List(selection: $selection) {
-                Section("General") {
-                    row(.general)
-                    row(.rawDecoding)
-                    row(.transcription)
-                    row(.descriptionAssistant)
-                    row(.descriptionModels)
-                    row(.developControls)
+            VStack(spacing: 0) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search Settings", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .focused($isSearchFocused)
+                        .accessibilityIdentifier("settingsSearchField")
+                        .onExitCommand { searchText = "" }
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                            isSearchFocused = true
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Clear settings search")
+                    }
                 }
-                Section("Library & Metadata") {
-                    row(.metadata)
-                    row(.keywordLists)
-                    row(.quickLists)
-                    row(.templates)
-                    row(.watermarks)
+                .padding(8)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .padding(10)
+
+                List(selection: sidebarSelection) {
+                    ForEach(sidebarGroups, id: \.title) { group in
+                        let matches = group.sections.filter { $0.matches(searchText) }
+                        if !matches.isEmpty {
+                            Section(group.title) {
+                                ForEach(matches) { section in row(section) }
+                            }
+                        }
+                    }
                 }
-                Section("People and Groups") {
-                    row(.faceRecognition)
-                    row(.knownPeople)
-                    row(.teams)
-                }
-                Section("Export & Publishing") {
-                    row(.locations)
-                    row(.format)
-                    row(.ftp)
-                    row(.webDownloads)
-                    row(.signing)
-                }
-                Section("Application") {
-                    row(.sync)
-                    row(.updates)
-                    row(.automation)
-                    row(.shortcuts)
-                    row(.licenses)
-                }
+                .listStyle(.sidebar)
             }
-            .navigationSplitViewColumnWidth(210)
-            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 300)
             .toolbar(removing: .sidebarToggle)
         } detail: {
-            detailView(for: selection ?? .general)
+            if let section = SettingsSection.searchSelection(current: selection, query: searchText) {
+                detailView(for: section)
+            } else {
+                ContentUnavailableView.search(text: searchText)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("settingsSearchEmptyState")
+            }
+        }
+        .onChange(of: searchText) { _, query in
+            selection = SettingsSection.searchSelection(current: selection, query: query)
+        }
+        .background {
+            Button("Search Settings") { isSearchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 720, idealWidth: 760, minHeight: 560, idealHeight: 620)
         .onAppear {
             applyRequestedDestination()
-            if nativeInvocation.pendingReview != nil { selection = .automation }
+            if nativeInvocation.pendingReview != nil { showDestination(.automation) }
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
@@ -257,7 +347,7 @@ struct SettingsView: View {
             applyRequestedDestination()
         }
         .onChange(of: nativeInvocation.pendingReview?.id) { _, id in
-            if id != nil { selection = .automation }
+            if id != nil { showDestination(.automation) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .templatesStorageDidChange)) { _ in
             templateViewModel.loadTemplates()
@@ -282,16 +372,32 @@ struct SettingsView: View {
     private func applyRequestedDestination() {
         guard let destination = settingsViewModel.requestedDestination else { return }
         switch destination {
-        case .metadata: selection = .metadata
-        case .transcription: selection = .transcription
+        case .metadata: showDestination(.metadata)
+        case .transcription: showDestination(.transcription)
         }
         settingsViewModel.requestedDestination = nil
     }
 
+    private func showDestination(_ section: SettingsSection) {
+        searchText = ""
+        selection = section
+        isSearchFocused = false
+    }
+
     @ViewBuilder
     private func row(_ section: SettingsSection) -> some View {
-        Label(section.title, systemImage: section.icon)
-            .tag(section)
+        VStack(alignment: .leading, spacing: 3) {
+            Label(section.title, systemImage: section.icon)
+            let hints = section.matchingTerms(for: searchText)
+            if !hints.isEmpty {
+                Text(hints.prefix(2).joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .tag(section)
+        .accessibilityIdentifier("settingsCategory-\(section.rawValue)")
     }
 
     private func developSliderVisibilityBinding(_ slider: DevelopSlider) -> Binding<Bool> {

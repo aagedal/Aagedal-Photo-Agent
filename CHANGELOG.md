@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Search Settings by category, control label, or related term, with matching-control hints, Command+F focus, and clear and Escape actions.
+
 - Import selected images and videos from Instagram and X post URLs, preserving originals alongside attributed working copies and provenance records. Update gallery-dl and yt-dlp separately from the app in Web Downloads settings.
 
 - Update bundled FFmpeg to the dedicated Photo Agent 9.0.2 build, preserving canonical Whisper output, bounded timestamps and failure reporting.

@@ -577,6 +577,14 @@ termination modal and live AppKit responder behavior remain manual observations.
 - [x] Provide fit/bounded-preview 100% zoom, full-screen preview, and confirmed face rectangles
   without intentionally leaving caption focus.
 
+### Settings discovery follow-up — 2026-10-13
+
+Settings sidebar search finds category titles, built-in controls, and current metadata field
+names. Command+F focuses it; Escape or the clear button restores all categories. Caption's
+Metadata/Transcription settings links clear any active filter before opening their destination.
+Search navigates to the containing category. Automated evidence and remaining hands-on checks
+are recorded in [Settings search validation](plan-status-settings-search-continuation-2026-10-13.md).
+
 ### 3.0 hands-on usability follow-up
 
 The following items come from hands-on testing on 2026-08-23 and remain release work even though
