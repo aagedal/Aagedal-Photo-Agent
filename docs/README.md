@@ -1,7 +1,7 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-13
+**Last reviewed:** 2026-10-14
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
@@ -27,6 +27,15 @@ Release-facing 3.0 documentation lives outside the implementation plans:
 - [Known People companion interchange](release/known-people-companion-interchange-design.md) —
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
+
+**Native face consent / Develop cleanup acceptance (2026-10-14):**
+[Native acceptance continuation](release/native-face-cleanup-acceptance-2026-10-14.md)
+passes both previously activation-blocked workflows on current application source.
+Face consent requires explicit scan/reset approval, retains exact verified receipts
+across relaunch, and does not restore consent. Cancelled capture cleanup preserves
+Cancel, consumed evidence, permanent tombstones and photo bytes across relaunch.
+UI assertions now handle XCTest's long-identifier limit and macOS text values.
+Helper/rooted execution and broader release gates remain open.
 
 **Native face review / replay-safe Develop cleanup (2026-10-13):**
 [Review and cleanup continuation](release/native-face-review-develop-cleanup-2026-10-13.md)
