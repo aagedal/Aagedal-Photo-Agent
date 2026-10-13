@@ -2015,6 +2015,16 @@ initialization failures and an interrupted computer-use fallback. Native review/
 embedded/rooted commits and whole Phase 5A gates remain open; see the
 [dated evidence](release/develop-capture-history-2026-10-13.md).
 
+**2026-10-14 native face consent and capture cleanup acceptance:** Both previously
+activation-blocked native cases now pass. Exact full-scan/reset consent produces a
+verified physical receipt that survives relaunch without reconstructing consent.
+Develop cancelled-capture cleanup preserves Cancel, retires only the reviewed cancelled
+record, keeps consumed evidence and a permanent tombstone, and preserves photo bytes
+through relaunch. UI-test queries now support long text and macOS StaticText values.
+Application source is unchanged; helper face execution, descriptor-anchored effects,
+Develop native execution/embedded/rooted authority and whole Phase 5A gates remain open.
+See the [native acceptance evidence](release/native-face-cleanup-acceptance-2026-10-14.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.

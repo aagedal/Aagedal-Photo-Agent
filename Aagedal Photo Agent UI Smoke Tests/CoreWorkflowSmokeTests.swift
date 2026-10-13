@@ -166,6 +166,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(consent.waitForExistence(timeout: 45))
         consent.click()
         XCTAssertFalse(start.isEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: document.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: receiptRoot.path))
         let resetConsent = app.checkBoxes["automation.faceReview.resetConsent"]
         XCTAssertTrue(resetConsent.waitForExistence(timeout: 8))
         resetConsent.click()
@@ -182,12 +184,38 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receiptData) as? [String: Any])
         let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
         let receipts = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
-        XCTAssertEqual((receipts["receipts"] as? [[String: Any]])?.count, 1)
+        let records = try XCTUnwrap(receipts["receipts"] as? [[String: Any]])
+        XCTAssertEqual(records.count, 1)
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record["photoCount"] as? Int, 2)
+        XCTAssertEqual(record["forceFullScan"] as? Bool, true)
+        XCTAssertEqual(record["includeJerseyNumbers"] as? Bool, false)
+        XCTAssertEqual(record["phase"] as? String, "completed")
+        let completion = try XCTUnwrap(record["completion"] as? [String: Any])
+        XCTAssertEqual(completion["outcome"] as? String, "verified")
+        XCTAssertEqual(completion["processedCount"] as? Int, 2)
+        XCTAssertEqual(completion["failureCount"] as? Int, 0)
         XCTAssertFalse(start.exists)
         app.buttons["Close"].firstMatch.click()
         XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 15))
         XCTAssertEqual(try Data(contentsOf: receiptRoot.appendingPathComponent("operations.json")), receiptData)
         XCTAssertEqual(try Data(contentsOf: photos.appendingPathComponent("transcription-review-authorization.json")), authorization)
+        let faceData = try Data(contentsOf: document)
+        app.terminate()
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people,
+               faceBarExpanded: true, transcriptionHelperSocket: socket)
+        let completedScan = app.buttons["face.scanComplete"]
+        XCTAssertTrue(completedScan.waitForExistence(timeout: 15))
+        XCTAssertEqual(try Data(contentsOf: document), faceData)
+        XCTAssertEqual(try Data(contentsOf: receiptRoot.appendingPathComponent("operations.json")), receiptData)
+        // Historical completion does not reconstruct the process-only review or consent.
+        completedScan.rightClick()
+        app.menuItems["Review Authorized Face Scan…"].click()
+        XCTAssertTrue(app.buttons["automation.faceReview.prepare"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["automation.faceReview.start"].exists)
+        XCTAssertFalse(app.checkBoxes["automation.faceReview.consent"].exists)
+        XCTAssertEqual(try Data(contentsOf: document), faceData)
+        XCTAssertEqual(try Data(contentsOf: receiptRoot.appendingPathComponent("operations.json")), receiptData)
     }
 
     @MainActor
@@ -1221,7 +1249,16 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(entry.value as? String, "Collapsed")
         entry.click()
         XCTAssertEqual(entry.value as? String, "Expanded")
-        XCTAssertTrue(settings.staticTexts["The review was consumed before consent or execution. This does not prove edits were written; inspect the separate Develop batch recovery checkpoints for physical outcomes."].waitForExistence(timeout: 8))
+        let consumedExplanation = "The review was consumed before consent or execution. This does not prove edits were written; inspect the separate Develop batch recovery checkpoints for physical outcomes."
+        let explanation = settings.staticTexts.matching(NSPredicate(
+            format: "label == %@ OR value == %@", consumedExplanation, consumedExplanation)).firstMatch
+        // Settings can place expanded history below the visible viewport.
+        for _ in 0..<4 where !explanation.exists {
+            let scrollViews = settings.scrollViews
+            XCTAssertGreaterThan(scrollViews.count, 0)
+            scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -250)
+        }
+        XCTAssertTrue(explanation.waitForExistence(timeout: 8))
         XCTAssertEqual(try Data(contentsOf: archive), retained)
         XCTAssertEqual(try Data(contentsOf: image), photoBytes)
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
