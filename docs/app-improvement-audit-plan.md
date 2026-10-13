@@ -2003,6 +2003,13 @@ Normal one-time Core ML preparation of an `.mlpackage` is not model conversion a
 **Exit gate:** clean install/offline/update/rollback/corrupt-download scenarios are tested; app update size
 drops by the model payload without silently disabling face features.
 
+## Settings search continuation — 2026-10-13
+
+- [x] Search Settings category names, built-in control labels, metadata fields, and Develop
+  controls with matching hints, keyboard focus/clear actions, an empty state, and preserved
+  explicit destination routing. Search opens the containing category.
+  ([validation](plan-status-settings-search-continuation-2026-10-13.md))
+
 ## Deferred candidates
 
 These are worthwhile after the higher-risk phases unless user research promotes them:

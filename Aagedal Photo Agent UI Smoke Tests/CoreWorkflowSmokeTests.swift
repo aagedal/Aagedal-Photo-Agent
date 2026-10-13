@@ -86,6 +86,35 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsSearchFiltersCategoriesAndClearsWithEscape() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "open-folder", folder: photos)
+        XCTAssertTrue(app.descendants(matching: .any)["browser.workspace"].waitForExistence(timeout: 15))
+        app.typeKey(",", modifierFlags: .command)
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10))
+        let search = settings.textFields["settingsSearchField"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        app.typeKey("f", modifierFlags: .command)
+        search.typeText("place-name")
+        XCTAssertTrue(settings.staticTexts["Place-name language"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(settings.staticTexts["RAW Decoding"].exists)
+        search.typeKey("a", modifierFlags: .command)
+        search.typeText("no-such-setting")
+        XCTAssertTrue(settings.descendants(matching: .any)["settingsSearchEmptyState"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(settings.staticTexts["Place-name language"].firstMatch.exists)
+        search.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+        XCTAssertTrue(settings.staticTexts["RAW Decoding"].waitForExistence(timeout: 5))
+        XCTAssertEqual(search.value as? String, "")
+        search.click()
+        search.typeText("certificate")
+        XCTAssertTrue(settings.staticTexts["C2PA signing is experimental and may change in a future release."].firstMatch.waitForExistence(timeout: 5))
+        settings.buttons["Clear settings search"].click()
+        XCTAssertTrue(settings.staticTexts["RAW Decoding"].waitForExistence(timeout: 5))
+        XCTAssertTrue(settings.staticTexts["C2PA signing is experimental and may change in a future release."].firstMatch.exists)
+    }
+
+    @MainActor
     func testLaunchAndOpenFolder() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "open-folder", folder: photos)
