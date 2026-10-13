@@ -954,7 +954,8 @@ final class FaceRecognitionViewModel {
     ///     The caller must confirm that existing face groups/names will be reset.
     @discardableResult
     func scanFolder(imageURLs: [URL], folderURL: URL, forceFullScan: Bool = false, includeJerseyNumbers: Bool = false,
-                    retainedAuthority: MCPFaceScanAdmissionService.RetainedFolder? = nil) -> FaceFolderScanAdmission {
+                    retainedAuthority: MCPFaceScanAdmissionService.RetainedFolder? = nil,
+                    validateNativeAuthority: @escaping @Sendable () throws -> Void = {}) -> FaceFolderScanAdmission {
         let request = FaceFolderScanRequest(imageURLs: imageURLs, folderURL: folderURL,
             forceFullScan: forceFullScan, includeJerseyNumbers: includeJerseyNumbers)
         guard !isScanning else { return .refused(.scanAlreadyRunning) }
@@ -966,7 +967,11 @@ final class FaceRecognitionViewModel {
                   request.includeJerseyNumbers == prepared.includeJerseyNumbers else {
                 return .refused(.invalidInventory("the retained intent differs from the requested scan"))
             }
-            do { try retainedAuthority.validate() }
+            do {
+                try validateNativeAuthority()
+                try retainedAuthority.validate()
+                try validateNativeAuthority()
+            }
             catch { return .refused(.reservationFailed(error.localizedDescription)) }
         }
         let effectAuthority: FaceDataFolderLoadService.EffectAuthority?
@@ -975,7 +980,9 @@ final class FaceRecognitionViewModel {
                 guard folder.standardizedFileURL == retained.prepared.folderURL.standardizedFileURL else {
                     throw MCPFaceScanAdmissionService.Failure.staleSnapshot
                 }
+                try validateNativeAuthority()
                 try retained.validateForEffect(folderURL: folder)
+                try validateNativeAuthority()
             }
         } else {
             effectAuthority = nil
@@ -1026,7 +1033,9 @@ final class FaceRecognitionViewModel {
             let reservation: MCPProcessReservationLease?
             do {
                 if let retainedAuthority {
+                    try validateNativeAuthority()
                     try retainedAuthority.validate()
+                    try validateNativeAuthority()
                     reservation = nil
                 } else {
                     reservation = try await Task.detached(priority: .utility) {
@@ -1701,12 +1710,13 @@ final class FaceRecognitionViewModel {
 
     /// Internal native bridge only. The caller must separately establish consent and
     /// operation retention; this capability advertises no helper execution permission.
-    func scheduleRetainedFolderScan(intents: MCPFaceScanIntentStore, id: UUID) throws -> FaceFolderScanSubmission {
+    func scheduleRetainedFolderScan(intents: MCPFaceScanIntentStore, id: UUID,
+                                   validateNativeAuthority: @escaping @Sendable () throws -> Void = {}) throws -> FaceFolderScanSubmission {
         let retained = try intents.retain(id: id)
         let prepared = retained.prepared
         let admission = scanFolder(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL,
             forceFullScan: prepared.forceFullScan, includeJerseyNumbers: prepared.includeJerseyNumbers,
-            retainedAuthority: retained)
+            retainedAuthority: retained, validateNativeAuthority: validateNativeAuthority)
         if case .scheduled = admission {
             return FaceFolderScanSubmission(admission: admission, task: activeScanTask)
         }

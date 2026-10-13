@@ -1002,6 +1002,21 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             scrollViews.element(boundBy: scrollViews.count - 1).scroll(byDeltaX: 0, deltaY: -400)
         }
         XCTAssertTrue(choose.waitForExistence(timeout: 8))
+        let managed = settings.buttons["develop.batchRecovery.managed"]
+        XCTAssertTrue(managed.waitForExistence(timeout: 8))
+        managed.click()
+        let status = app.staticTexts["develop.batchRecovery.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8))
+        let empty = NSPredicate { _, _ in
+            status.label.contains("No retained Develop checkpoints")
+                || (status.value as? String)?.contains("No retained Develop checkpoints") == true
+        }
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        app.buttons["develop.batchRecovery.refresh"].click()
+        expectation(for: empty, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").path))
         choose.click()
         app.typeKey("g", modifierFlags: [.command, .shift])
         let goTo = app.sheets.textFields.firstMatch
@@ -1013,7 +1028,6 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         open.click()
         let entries = app.descendants(matching: .any)
             .matching(identifier: "develop.batchRecovery.entry.unreadable-evidence")
-        let status = app.staticTexts["develop.batchRecovery.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 8))
         XCTAssertTrue(status.label.contains("Evidence inspected")
             || (status.value as? String)?.contains("Evidence inspected") == true, status.debugDescription)
@@ -3477,6 +3491,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-workflow", workflow,
             "--ui-test-whisper-defaults-suite", fixtureRoot.lastPathComponent,
             "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
+            "--ui-test-develop-checkpoint-root", fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").resolvingSymlinksInPath().path,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {

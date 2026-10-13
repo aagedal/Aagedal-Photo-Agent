@@ -30,8 +30,8 @@ actor DevelopTemplateBatchRecoveryService {
 
     init(store: DevelopTemplateBatchCheckpointStore) { self.store = store }
 
-    func inspect() async throws -> [DevelopTemplateBatchRecoveryReview] {
-        try await store.recoveryInventory().map { entry in
+    func inspect(allowMissingDirectory: Bool = false) async throws -> [DevelopTemplateBatchRecoveryReview] {
+        try await store.recoveryInventory(allowMissingDirectory: allowMissingDirectory).map { entry in
             do { return try project(entry) }
             catch { return .init(id: entry.id, issue: .corrupt, outcome: nil, sequence: nil,
                 templateID: nil, templateRevision: nil, needsReview: true, photos: [],

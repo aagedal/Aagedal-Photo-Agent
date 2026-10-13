@@ -42,6 +42,28 @@ actor DevelopTemplateBatchCheckpointStore {
 
     init(directory: URL) { self.directory = directory }
 
+    /// Shared production location for future native execution and current recovery
+    /// inspection. Resolving it never initializes a journal or changes permissions.
+    static func defaultStorageDirectory(applicationSupportDirectory: URL? = nil,
+                                        arguments: [String] = ProcessInfo.processInfo.arguments) throws -> URL {
+        if arguments.contains("--ui-testing") {
+            guard let index = arguments.firstIndex(of: "--ui-test-develop-checkpoint-root"),
+                  arguments.indices.contains(index + 1), arguments[index + 1].hasPrefix("/"),
+                  !arguments[index + 1].contains("\0") else {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
+        guard let base = applicationSupportDirectory
+                ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+              base.isFileURL, base.path.hasPrefix("/") else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        return base.appendingPathComponent("Aagedal Photo Agent", isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("DevelopBatches", isDirectory: true)
+    }
+
     func retain(_ result: DevelopTemplateBatchExecutionResult) throws {
         guard result.results.count == result.intent.requests.count,
               zip(result.intent.requests, result.results).allSatisfy({ request, receipt in
@@ -122,8 +144,9 @@ actor DevelopTemplateBatchCheckpointStore {
     /// Read-only discovery keeps unreadable entries visible beside valid evidence.
     /// The selected directory and every ancestor must be real directories; no
     /// journal, lock, or permissions are created or repaired during inspection.
-    func recoveryInventory() throws -> [DevelopTemplateBatchCheckpointInventoryEntry] {
-        let root = try openInventoryDirectory()
+    func recoveryInventory(allowMissingDirectory: Bool = false) throws -> [DevelopTemplateBatchCheckpointInventoryEntry] {
+        let root = try openInventoryDirectory(allowMissing: allowMissingDirectory)
+        guard root >= 0 else { return [] }
         guard let stream = fdopendir(root) else {
             Darwin.close(root)
             throw AutomationOperationRegistry.Failure.storageUnavailable
@@ -174,7 +197,7 @@ actor DevelopTemplateBatchCheckpointStore {
         return entries
     }
 
-    private func openInventoryDirectory() throws -> Int32 {
+    private func openInventoryDirectory(allowMissing: Bool = false) throws -> Int32 {
         guard directory.isFileURL, directory.path.hasPrefix("/") else {
             throw AutomationOperationRegistry.Failure.storageUnavailable
         }
@@ -187,6 +210,10 @@ actor DevelopTemplateBatchCheckpointStore {
         do {
             for component in components {
                 let next = Darwin.openat(current, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                if next < 0, allowMissing, errno == ENOENT {
+                    Darwin.close(current)
+                    return -1
+                }
                 guard next >= 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
                 Darwin.close(current); current = next
             }
