@@ -28,6 +28,12 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Native face consent / durable Develop admission (2026-10-13):**
+[Consent, admission and receipt inspection continuation](release/native-face-consent-develop-admission-2026-10-13.md)
+adds revocable exact-intent face consent with monotonic expiry, durable single-use
+Develop review evidence and sidecar admission, and read-only face receipt inspection
+in Settings. Embedded/anchored physical execution and broader release gates remain open.
+
 **Dedicated Photo Agent FFmpeg 9.0.2 integration (2026-10-13):**
 [Integration evidence](release/ffmpeg-9.0.2-photo-agent-integration-2026-10-13.md)
 records the app-only patched variant, real production transcription checks on source

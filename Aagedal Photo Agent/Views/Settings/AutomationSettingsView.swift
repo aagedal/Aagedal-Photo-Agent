@@ -217,6 +217,10 @@ struct AutomationSettingsView: View {
                 DevelopTemplateBatchRecoveryView()
             }
 
+            Section("Face Scan Receipts") {
+                AutomationFaceScanRecoveryView()
+            }
+
             Section("Interrupted XMP Publication") {
                 AutomationRecoveryView()
                     .id(model.configuration.authorizationRevision)

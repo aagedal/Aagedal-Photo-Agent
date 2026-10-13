@@ -1985,6 +1985,18 @@ receipt presentation and anchored physical publication remain open. `start_face_
 unavailable and neither application checkbox closes; see the
 [dated evidence](release/face-operations-develop-capture-2026-10-13.md).
 
+**2026-10-13 native consent and durable admission continuation:** App-side face review
+now binds exact inventory/options/reset consequences to revocable single-use native
+session consent with a monotonic deadline and worker-drained release. Settings inspects
+historical physical receipts without replay. Independent Develop capture now freezes
+complete automation configuration and target identities, retains bounded durable
+review evidence, consumes native admission once, and rechecks session/configuration and
+current/later generations throughout sidecar worker admission. Embedded reviewed admission
+refuses until owned-effect stages are explicit. Native UI/session/readiness/executor
+construction and descriptor-anchored/synchronous physical commit authority remain open;
+these foundations do not close `start_face_scan` or Develop-template application. See the
+[dated record](release/native-face-consent-develop-admission-2026-10-13.md).
+
 - [ ] Implement metadata-template application for an explicit photo set, Append/Replace semantics,
   per-photo variable resolution, stable template identity, exact affected-field preview, and the
   existing all-or-nothing authority checks before any mutation.

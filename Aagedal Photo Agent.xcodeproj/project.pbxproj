@@ -260,6 +260,8 @@
 		D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */; };
 		D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */; };
 		D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */; };
+		D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */; };
+		D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -553,6 +555,8 @@
 		D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchCaptureServiceTests.swift; sourceTree = "<group>"; };
 		D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchStorageTests.swift; sourceTree = "<group>"; };
 		D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanOperationServiceTests.swift; sourceTree = "<group>"; };
+		D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewServiceTests.swift; sourceTree = "<group>"; };
+		D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanReceiptInspectionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -756,6 +760,8 @@
 				D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */,
 				D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */,
 				D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */,
+				D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */,
+				D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */,
 				D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
 				D3C008000000000000000001 /* DevelopWorkspaceInputCoordinatorTests.swift */,
@@ -1246,6 +1252,8 @@
 				D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */,
 				D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */,
 				D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */,
+				D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */,
+				D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */,
 				D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,
 				D3C008000000000000000002 /* DevelopWorkspaceInputCoordinatorTests.swift in Sources */,
