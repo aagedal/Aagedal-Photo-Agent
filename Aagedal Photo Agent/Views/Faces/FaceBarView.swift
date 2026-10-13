@@ -16,6 +16,9 @@ struct FaceBarView: View {
 
     @AppStorage(UserDefaultsKeys.browserFaceBarCollapsed) private var isCollapsed = false
     @State private var selectedGroup: FaceGroup?
+    @State private var nativeFaceReview: MCPNativeFaceScanReviewModel?
+    @State private var showsNativeFaceReview = false
+    @State private var nativeFaceReviewFolder: URL?
     @State private var multiSelectedGroupIDs: Set<UUID> = []
     @State private var isApplyingAllNames = false
     @State private var refinementCount = 0
@@ -65,6 +68,19 @@ struct FaceBarView: View {
                 collapsedBar
             } else {
                 expandedBar
+            }
+        }
+        .sheet(isPresented: $showsNativeFaceReview, onDismiss: { nativeFaceReview?.dismiss() }) {
+            if let nativeFaceReview {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Review Authorized Face Scan").font(.title2)
+                    ScrollView { AutomationNativeFaceScanReviewView(model: nativeFaceReview, fixedFolder: nativeFaceReviewFolder, scanner: viewModel) }
+                    HStack {
+                        Spacer()
+                        Button("Close") { showsNativeFaceReview = false }
+                            .keyboardShortcut(.cancelAction)
+                    }
+                }.padding(20).frame(width: 640, height: 600)
             }
         }
         // Keep operation notices active even when the browse bar is hidden.
@@ -542,6 +558,10 @@ struct FaceBarView: View {
 
     @ViewBuilder
     private var rescanMenuItems: some View {
+        Button("Review Authorized Face Scan…") { openNativeFaceReview() }
+            .disabled(viewModel.isScanning || nativeFaceReview?.isRunning == true)
+            .accessibilityIdentifier("face.reviewAuthorizedScan")
+        Divider()
         Button("Rescan Faces (Force Full)") {
             guard let folderURL else { return }
             viewModel.scanFolder(imageURLs: imageURLs.filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: true)
@@ -549,6 +569,26 @@ struct FaceBarView: View {
         Button("Delete Face Data", role: .destructive) {
             guard let folderURL else { return }
             viewModel.deleteFaceData(for: folderURL)
+        }
+    }
+
+    private func openNativeFaceReview() {
+        guard let folderURL else { return }
+        do {
+            if ProcessInfo.processInfo.arguments.contains("--ui-testing"), UITestNativeInvocationConfiguration.current == nil {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            let operationDirectory = try UITestNativeInvocationConfiguration.current?.rootURL
+                .appendingPathComponent("native-face-review-operations", isDirectory: true)
+                ?? AutomationOperationRegistry.defaultStorageDirectory()
+            nativeFaceReview = .native(scanner: viewModel,
+                authorizationStore: UITestNativeInvocationConfiguration.current?.authorizationStore ?? MCPAuthorizationStore(),
+                operationDirectory: operationDirectory,
+                receiptDirectory: try MCPFaceScanReceiptStore.defaultStorageDirectory())
+            nativeFaceReviewFolder = folderURL
+            showsNativeFaceReview = true
+        } catch {
+            OperationIssueDetailsPresenter.present(title: "Face Review Unavailable", message: error.localizedDescription)
         }
     }
 

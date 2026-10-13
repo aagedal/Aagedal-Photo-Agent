@@ -79,13 +79,18 @@ These are material product and evidence boundaries, not a list of unfinished int
   scalar/list `{field:key}` chains whose sources are unchanged by the template. Approved Keywords,
   other context variables and shared production template/face-scan/transcription executors remain open.
 - App-side face consent is tied to an exact native session and retained intent; it is
-  not a helper execution endpoint. Develop reviewed admission durably consumes a capture
+  not a helper execution endpoint. Browser-native review now verifies model loadability,
+  freezes the exact installed-model generation, collects scan/reset consent and presents retained
+  completion. Physical scanner publication still uses paths. Develop reviewed admission durably consumes a capture
   once and currently permits sidecar destinations only. Embedded destinations refuse
-  until owned physical-effect stages are represented explicitly. Native execution UI,
+  until owned physical-effect stages are represented explicitly. Develop native execution UI,
   descriptor-anchored publication and synchronous physical commit authority remain open.
   Develop Capture History inspects retained review dispositions and ordered photo revisions,
   without restoring executable requests or consent. Consumed admission is not proof of a write.
-  Cancelled journals remain retained; cleanup requires replay-preventing tombstones.
+  Explicit reviewed cleanup retires only cancelled capture details while retaining up to 4,096
+  permanent replay-preventing records. Those records are never evicted automatically; saturation
+  refuses cleanup. Consumed or awaiting-review evidence is not eligible. Older binaries refuse
+  the new admission archive after migration; migration occurs only on mutation.
   Face receipt inspection reports historical effects; it does not verify current files
   or authorize replay.
 

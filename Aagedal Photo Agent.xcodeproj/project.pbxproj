@@ -263,6 +263,7 @@
 		D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */; };
 		D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */; };
 		D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */; };
+		D13600000000000000000102 /* MCPNativeFaceScanReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13600000000000000000101 /* MCPNativeFaceScanReviewModelTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -559,6 +560,7 @@
 		D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanOperationServiceTests.swift; sourceTree = "<group>"; };
 		D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewServiceTests.swift; sourceTree = "<group>"; };
 		D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanReceiptInspectionTests.swift; sourceTree = "<group>"; };
+		D13600000000000000000101 /* MCPNativeFaceScanReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewModelTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -764,6 +766,7 @@
 				D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */,
 				D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */,
 				D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */,
+				D13600000000000000000101 /* MCPNativeFaceScanReviewModelTests.swift */,
 				D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */,
 				D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */,
 				D3C007000000000000000001 /* DevelopPersistenceSessionCoordinatorTests.swift */,
@@ -1257,6 +1260,7 @@
 				D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */,
 				D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */,
 				D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */,
+				D13600000000000000000102 /* MCPNativeFaceScanReviewModelTests.swift in Sources */,
 				D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */,
 				D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */,
 				D3C007000000000000000002 /* DevelopPersistenceSessionCoordinatorTests.swift in Sources */,

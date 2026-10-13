@@ -83,15 +83,31 @@ nonisolated struct DevelopTemplateBatchAdmissionInspection: Sendable, Identifiab
     let photos: [Photo]
 }
 
+/// Exact cancelled records reviewed for retirement. Digests are retained permanently;
+/// cleanup never grants authority or retires uncertain physical execution evidence.
+nonisolated struct DevelopTemplateBatchAdmissionCleanupPreview: Sendable {
+    fileprivate struct Record: Codable, Sendable, Equatable {
+        let batchID: UUID
+        let evidenceSHA256: String
+    }
+    fileprivate let records: [Record]
+    let cancelledCaptures: [DevelopTemplateBatchAdmissionInspection]
+    let tombstoneCount: Int
+    var cancelledCount: Int { records.count }
+    var availableTombstones: Int { DevelopTemplateBatchAdmissionStore.maximumTombstones - tombstoneCount }
+}
+
 /// Separate from physical checkpoints so a cancelled review can never be mistaken for
 /// an execution receipt. Anchored, locked transactions make consumption cross-instance.
 actor DevelopTemplateBatchAdmissionStore {
     static let maximumEvidenceBytes = 16_777_216
     static let maximumStorageBytes = 67_108_864
     static let maximumEntries = 128
+    static let maximumTombstones = 4_096
     private struct Registry: Codable {
         let formatVersion: Int
         var journals: [DevelopTemplateBatchAdmissionJournal]
+        var tombstones: [DevelopTemplateBatchAdmissionCleanupPreview.Record]
     }
     private let directory: URL
     init(directory: URL) { self.directory = directory }
@@ -121,17 +137,56 @@ actor DevelopTemplateBatchAdmissionStore {
     func inspect() throws -> [DevelopTemplateBatchAdmissionInspection] {
         try persistence().transaction(readOnly: true) { existing in
             let registry = try Self.registry(existing)
-            let reviews = try registry.journals.map { journal in
-                let evidence = try JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self,
-                                                       from: journal.evidenceData)
-                return DevelopTemplateBatchAdmissionInspection(id: journal.batchID, state: journal.state,
-                    templateName: evidence.template.name, templateID: evidence.template.id,
-                    templateRevision: evidence.templateRevision,
-                    photos: evidence.photos.map { .init(id: $0.requestID, url: $0.url,
-                        sourceRevision: $0.sourceRevision, xmpRevision: $0.xmpRevision,
-                        appRevision: $0.appRevision) })
-            }
+            let reviews = try registry.journals.map(Self.inspection)
             return (reviews, existing ?? Data())
+        }
+    }
+
+    func prepareCancelledCleanup() throws -> DevelopTemplateBatchAdmissionCleanupPreview {
+        try persistence().transaction(readOnly: true) { existing in
+            let registry = try Self.registry(existing)
+            let captures = try registry.journals.filter { $0.state == .cancelled }.map(Self.inspection)
+            return (.init(records: Self.cancelledRecords(registry), cancelledCaptures: captures,
+                          tombstoneCount: registry.tombstones.count),
+                    existing ?? Data())
+        }
+    }
+
+    /// Atomically retires exactly the cancelled evidence displayed in the preview.
+    /// New cancellations require a refreshed review; capacity never evicts tombstones.
+    @discardableResult
+    func cleanupCancelledReviews(_ preview: DevelopTemplateBatchAdmissionCleanupPreview) throws -> Int {
+        try Task.checkCancellation()
+        return try persistence().transaction(readOnly: preview.records.isEmpty) { existing in
+            var registry = try Self.registry(existing)
+            guard Self.cancelledRecords(registry) == preview.records,
+                  registry.tombstones.count == preview.tombstoneCount else {
+                throw DevelopTemplateBatchAdmissionFailure.changedEvidence
+            }
+            guard !preview.records.isEmpty else { return (0, existing ?? Data()) }
+            guard registry.tombstones.count + preview.records.count <= Self.maximumTombstones else {
+                throw DevelopTemplateBatchFailure.retentionLimit
+            }
+            try Task.checkCancellation()
+            registry.tombstones.append(contentsOf: preview.records)
+            registry.journals.removeAll { $0.state == .cancelled }
+            return (preview.records.count, try Self.encode(registry))
+        }
+    }
+
+    private static func inspection(_ journal: DevelopTemplateBatchAdmissionJournal) throws -> DevelopTemplateBatchAdmissionInspection {
+        let evidence = try JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self, from: journal.evidenceData)
+        return DevelopTemplateBatchAdmissionInspection(id: journal.batchID, state: journal.state,
+            templateName: evidence.template.name, templateID: evidence.template.id,
+            templateRevision: evidence.templateRevision,
+            photos: evidence.photos.map { .init(id: $0.requestID, url: $0.url,
+                sourceRevision: $0.sourceRevision, xmpRevision: $0.xmpRevision,
+                appRevision: $0.appRevision) })
+    }
+
+    private static func cancelledRecords(_ registry: Registry) -> [DevelopTemplateBatchAdmissionCleanupPreview.Record] {
+        registry.journals.filter { $0.state == .cancelled }.map {
+            .init(batchID: $0.batchID, evidenceSHA256: $0.evidenceSHA256)
         }
     }
 
@@ -144,6 +199,9 @@ actor DevelopTemplateBatchAdmissionStore {
         let digest = Self.hash(data)
         try persistence().transaction { existing in
             var registry = try Self.registry(existing)
+            guard !registry.tombstones.contains(where: { $0.batchID == evidence.batchID }) else {
+                throw DevelopTemplateBatchAdmissionFailure.alreadyConsumed
+            }
             if let journal = registry.journals.first(where: { $0.batchID == evidence.batchID }) {
                 guard journal.evidenceData == data else { throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
                 guard journal.state == .awaitingReview else { throw DevelopTemplateBatchAdmissionFailure.alreadyConsumed }
@@ -171,6 +229,9 @@ actor DevelopTemplateBatchAdmissionStore {
     func finishReview(_ id: UUID, digest: String, cancelled: Bool) throws {
         try persistence().transaction { existing in
             var registry = try Self.registry(existing)
+            guard !registry.tombstones.contains(where: { $0.batchID == id }) else {
+                throw DevelopTemplateBatchAdmissionFailure.alreadyConsumed
+            }
             guard let index = registry.journals.firstIndex(where: { $0.batchID == id }) else {
                 throw DevelopTemplateBatchAdmissionFailure.corruptJournal
             }
@@ -195,19 +256,40 @@ actor DevelopTemplateBatchAdmissionStore {
         return data
     }
     private static func registry(_ data: Data?) throws -> Registry {
-        guard let data else { return Registry(formatVersion: 1, journals: []) }
+        guard let data else { return Registry(formatVersion: 2, journals: [], tombstones: []) }
+        struct Header: Decodable { let formatVersion: Int }
         guard data.count <= maximumStorageBytes,
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys) == ["formatVersion", "journals"],
+              let version = try? JSONDecoder().decode(Header.self, from: data).formatVersion,
+              (version == 1 && Set(object.keys) == ["formatVersion", "journals"])
+                || (version == 2 && Set(object.keys) == ["formatVersion", "journals", "tombstones"]),
               let values = object["journals"] as? [[String: Any]],
+              values.count <= maximumEntries,
               values.allSatisfy({ Set($0.keys) == ["formatVersion", "batchID", "evidenceData", "evidenceSHA256", "state"] }),
-              let registry = try? JSONDecoder().decode(Registry.self, from: data),
-              registry.formatVersion == 1, registry.journals.count <= maximumEntries,
-              Set(registry.journals.map(\.batchID)).count == registry.journals.count else {
+              let journalData = try? JSONSerialization.data(withJSONObject: values),
+              let journals = try? JSONDecoder().decode([DevelopTemplateBatchAdmissionJournal].self, from: journalData),
+              Set(journals.map(\.batchID)).count == journals.count else {
             throw DevelopTemplateBatchAdmissionFailure.corruptJournal
         }
-        for journal in registry.journals { try validate(journal) }
-        return registry
+        var tombstones: [DevelopTemplateBatchAdmissionCleanupPreview.Record] = []
+        if version == 2 {
+            guard let values = object["tombstones"] as? [[String: Any]],
+                  values.count <= maximumTombstones,
+                  values.allSatisfy({ Set($0.keys) == ["batchID", "evidenceSHA256"] }),
+                  let encoded = try? JSONSerialization.data(withJSONObject: values),
+                  let decoded = try? JSONDecoder().decode([DevelopTemplateBatchAdmissionCleanupPreview.Record].self, from: encoded),
+                  decoded.allSatisfy({ $0.evidenceSHA256.utf8.count == 64 && $0.evidenceSHA256.utf8.allSatisfy {
+                      (48...57).contains($0) || (97...102).contains($0)
+                  } }),
+                  Set(decoded.map(\.batchID)).count == decoded.count,
+                  Set(decoded.map(\.batchID)).isDisjoint(with: journals.map(\.batchID)) else {
+                throw DevelopTemplateBatchAdmissionFailure.corruptJournal
+            }
+            tombstones = decoded
+        }
+        for journal in journals { try validate(journal) }
+        // V1 is projected in memory; inspection never silently migrates stored bytes.
+        return Registry(formatVersion: 2, journals: journals, tombstones: tombstones)
     }
     private static func hash(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

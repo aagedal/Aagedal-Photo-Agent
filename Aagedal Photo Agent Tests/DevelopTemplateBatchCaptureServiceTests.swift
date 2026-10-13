@@ -354,6 +354,195 @@ struct DevelopTemplateBatchCaptureServiceTests {
         #expect(try Data(contentsOf: archive) == corrupt)
     }
 
+    @Test("Cancelled cleanup migrates legacy evidence and permanently refuses replay after reopening")
+    func cancelledCleanupMigrationAndReplay() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        var captures: [DevelopTemplateBatchCapture] = []
+        for index in 0..<3 {
+            let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+                photos: f.photos, mode: .writeToXMPSidecar)
+            let digest = try await store.retain(.init(capture: capture, configurationRevision: "policy-v1"))
+            if index > 0 { try await store.finishReview(capture.intent.id, digest: digest, cancelled: index == 2) }
+            captures.append(capture)
+        }
+        let archive = directory.appendingPathComponent("operations.json")
+        var legacy = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: archive)) as? [String: Any])
+        legacy["formatVersion"] = 1; legacy.removeValue(forKey: "tombstones")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys])
+        try legacyData.write(to: archive)
+        let retained = try await store.load(captures[1].intent.id)
+        let photosBefore = try f.photos.map { try Data(contentsOf: $0) }
+        let preview = try await store.prepareCancelledCleanup()
+        #expect(preview.cancelledCount == 1 && preview.tombstoneCount == 0)
+        let cancelledPreview = try #require(preview.cancelledCaptures.first)
+        #expect(cancelledPreview.id == captures[2].intent.id && cancelledPreview.state == .cancelled)
+        #expect(cancelledPreview.templateID == f.template.id && cancelledPreview.templateName == f.template.name)
+        #expect(cancelledPreview.templateRevision == f.revision)
+        #expect(cancelledPreview.photos.map(\.url) == captures[2].intent.requests.map(\.imageURL))
+        #expect(try Data(contentsOf: archive) == legacyData)
+        #expect(try await store.cleanupCancelledReviews(preview) == 1)
+        let reopened = DevelopTemplateBatchAdmissionStore(directory: directory)
+        #expect(try await reopened.inspect().map(\.id) == captures.prefix(2).map { $0.intent.id })
+        #expect(try await reopened.load(captures[1].intent.id).evidenceData == retained.evidenceData)
+        let after = try Data(contentsOf: archive)
+        let migrated = try #require(JSONSerialization.jsonObject(with: after) as? [String: Any])
+        #expect(migrated["formatVersion"] as? Int == 2)
+        let tombstones = try #require(migrated["tombstones"] as? [[String: Any]])
+        #expect(tombstones.count == 1)
+        #expect(Set(try #require(tombstones.first).keys) == ["batchID", "evidenceSHA256"])
+        let replay = try DevelopTemplateBatchAdmissionEvidence(capture: captures[2], configurationRevision: "policy-v1")
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await reopened.retain(replay) }
+        // A different evidence digest cannot reuse a retired capture identity either.
+        let changed = try DevelopTemplateBatchAdmissionEvidence(capture: captures[2], configurationRevision: "policy-v2")
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await reopened.retain(changed) }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) {
+            try await reopened.finishReview(captures[2].intent.id, digest: "unused", cancelled: false)
+        }
+        let restarted = DevelopTemplateBatchAdmissionService(captureService: f.service, store: reopened,
+            configurationRevision: { "policy-v1" }, validateSession: { _ in })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await restarted.review(captures[2]) }
+        let empty = try await reopened.prepareCancelledCleanup()
+        #expect(empty.cancelledCount == 0 && empty.tombstoneCount == 1)
+        #expect(try await reopened.cleanupCancelledReviews(empty) == 0)
+        #expect(try Data(contentsOf: archive) == after)
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == photosBefore)
+    }
+
+    @Test("Cancelled cleanup refuses a stale preview without retiring newly cancelled evidence")
+    func cancelledCleanupExactPreview() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "policy-v1" }, validateSession: { _ in })
+        let first = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let firstReview = try await service.review(first)
+        try await service.cancel(firstReview)
+        let preview = try await store.prepareCancelledCleanup()
+        let second = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let secondReview = try await service.review(second)
+        try await service.cancel(secondReview)
+        let archive = directory.appendingPathComponent("operations.json")
+        let before = try Data(contentsOf: archive)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) { try await store.cleanupCancelledReviews(preview) }
+        #expect(try Data(contentsOf: archive) == before)
+        let refreshed = try await store.prepareCancelledCleanup()
+        #expect(try await store.cleanupCancelledReviews(refreshed) == 2)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) { try await service.cancel(firstReview) }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) { try await service.cancel(secondReview) }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await service.review(first) }
+    }
+
+    @Test("A pre-cancelled queued cleanup preserves exact journal bytes and cancelled evidence")
+    func cancelledCleanupHonorsTaskCancellation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let digest = try await store.retain(.init(capture: capture, configurationRevision: "policy-v1"))
+        try await store.finishReview(capture.intent.id, digest: digest, cancelled: true)
+        let preview = try await store.prepareCancelledCleanup()
+        let archive = directory.appendingPathComponent("operations.json")
+        let before = try Data(contentsOf: archive)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await store.cleanupCancelledReviews(preview)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: archive) == before)
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        #expect(try await store.prepareCancelledCleanup().tombstoneCount == 0)
+    }
+
+    @Test("Cancelled cleanup preserves corrupt, future and saturated tombstone evidence")
+    func cancelledCleanupStrictCapacity() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let digest = try await store.retain(.init(capture: capture, configurationRevision: "policy-v1"))
+        try await store.finishReview(capture.intent.id, digest: digest, cancelled: true)
+        let archive = directory.appendingPathComponent("operations.json")
+        let original = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: archive)) as? [String: Any])
+        let tombstone: [String: Any] = ["batchID": UUID().uuidString, "evidenceSHA256": digest]
+        var invalidArchives: [[String: Any]] = []
+        var unknown = original; unknown["futureAuthority"] = true; invalidArchives.append(unknown)
+        var future = original; future["formatVersion"] = 3; invalidArchives.append(future)
+        var booleanVersion = original; booleanVersion["formatVersion"] = true; invalidArchives.append(booleanVersion)
+        var invalidDigest = original; invalidDigest["tombstones"] = [["batchID": UUID().uuidString, "evidenceSHA256": "corrupt"]]; invalidArchives.append(invalidDigest)
+        var duplicate = original; duplicate["tombstones"] = [tombstone, tombstone]; invalidArchives.append(duplicate)
+        var collision = original; collision["tombstones"] = [["batchID": capture.intent.id.uuidString, "evidenceSHA256": digest]]; invalidArchives.append(collision)
+        var unknownTombstone = original; unknownTombstone["tombstones"] = [["batchID": UUID().uuidString, "evidenceSHA256": digest, "futureAuthority": true]]; invalidArchives.append(unknownTombstone)
+        let preview = try await store.prepareCancelledCleanup()
+        for invalid in invalidArchives {
+            let data = try JSONSerialization.data(withJSONObject: invalid, options: [.sortedKeys])
+            try data.write(to: archive)
+            await #expect(throws: DevelopTemplateBatchAdmissionFailure.corruptJournal) { try await store.prepareCancelledCleanup() }
+            await #expect(throws: DevelopTemplateBatchAdmissionFailure.corruptJournal) { try await store.cleanupCancelledReviews(preview) }
+            #expect(try Data(contentsOf: archive) == data)
+        }
+        var full = original
+        full["tombstones"] = (0..<DevelopTemplateBatchAdmissionStore.maximumTombstones).map { _ in
+            ["batchID": UUID().uuidString, "evidenceSHA256": digest]
+        }
+        let fullData = try JSONSerialization.data(withJSONObject: full, options: [.sortedKeys])
+        try fullData.write(to: archive)
+        let saturated = try await store.prepareCancelledCleanup()
+        #expect(saturated.cancelledCount == 1 && saturated.availableTombstones == 0)
+        await #expect(throws: DevelopTemplateBatchFailure.retentionLimit) { try await store.cleanupCancelledReviews(saturated) }
+        #expect(try Data(contentsOf: archive) == fullData)
+    }
+
+    @Test("Empty cancelled cleanup never creates missing storage and refuses symbolic roots")
+    func cancelledCleanupMissingAndUnsafeStorage() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("Missing/Admission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let before = try FileManager.default.contentsOfDirectory(atPath: f.root.path).sorted()
+        let preview = try await store.prepareCancelledCleanup()
+        #expect(preview.cancelledCount == 0 && preview.tombstoneCount == 0)
+        #expect(try await store.cleanupCancelledReviews(preview) == 0)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).sorted() == before)
+        let alias = f.root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        let unsafe = DevelopTemplateBatchAdmissionStore(directory: alias.appendingPathComponent("Missing"))
+        await #expect(throws: (any Error).self) { try await unsafe.prepareCancelledCleanup() }
+        await #expect(throws: (any Error).self) { try await unsafe.cleanupCancelledReviews(preview) }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Missing").path))
+    }
+
+    @Test("Cancelled cleanup restores journal capacity without evicting replay protection")
+    func cancelledCleanupRestoresCapacity() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: capture, configurationRevision: "policy-v1")
+        let original = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(evidence)) as? [String: Any])
+        var retired: DevelopTemplateBatchAdmissionEvidence?
+        for _ in 0..<DevelopTemplateBatchAdmissionStore.maximumEntries {
+            var object = original; object["batchID"] = UUID().uuidString
+            let next = try JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self,
+                from: JSONSerialization.data(withJSONObject: object))
+            let digest = try await store.retain(next)
+            try await store.finishReview(next.batchID, digest: digest, cancelled: true)
+            retired = next
+        }
+        await #expect(throws: DevelopTemplateBatchFailure.retentionLimit) { try await store.retain(evidence) }
+        let preview = try await store.prepareCancelledCleanup()
+        #expect(try await store.cleanupCancelledReviews(preview) == DevelopTemplateBatchAdmissionStore.maximumEntries)
+        _ = try await store.retain(evidence)
+        let replay = try #require(retired)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await store.retain(replay) }
+        #expect(try await store.inspect().count == 1)
+    }
+
     @Test("Reviewed carrier drift fails before consent or physical execution and refuses replay")
     func nativeReviewCarrierDrift() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

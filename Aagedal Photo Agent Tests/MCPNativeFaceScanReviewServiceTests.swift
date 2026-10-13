@@ -45,7 +45,7 @@ struct MCPNativeFaceScanReviewServiceTests {
         let operations: MCPFaceScanOperationService
         let service: MCPNativeFaceScanReviewService
     }
-    private func fixture(capacity: Int = 256, schedule: @escaping MCPFaceScanOperationService.Scheduler) throws -> Fixture {
+    private func fixture(capacity: Int = 256, validateSession: (@Sendable () throws -> Void)? = nil, schedule: @escaping MCPFaceScanOperationService.Scheduler) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/native-face-consent-\(UUID())", isDirectory: true)
         let photos = root.appendingPathComponent("photos", isDirectory: true)
         try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
@@ -58,7 +58,7 @@ struct MCPNativeFaceScanReviewServiceTests {
             registry: .init(storageDirectory: root.appendingPathComponent("operations")),
             receipts: .init(storageDirectory: root.appendingPathComponent("receipts"), maximumReceipts: capacity), schedule: schedule)
         let service = MCPNativeFaceScanReviewService(intents: intents, operations: operations,
-            validateSession: { try state.validate() }, clock: { state.now() },
+            validateSession: validateSession ?? { try state.validate() }, clock: { state.now() },
             monotonicClock: { state.monotonicNow() })
         return .init(root: root, photos: photos, state: state, authority: authority, operations: operations, service: service)
     }
@@ -66,6 +66,31 @@ struct MCPNativeFaceScanReviewServiceTests {
         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unconsented scan was scheduled")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+    }
+
+    @Test("Withdrawal does not wait for preparation I/O and in-flight preparation cannot restore review")
+    func withdrawalDuringPreparation() async throws {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        nonisolated final class Once: @unchecked Sendable {
+            private let lock = NSLock()
+            private var first = true
+            func take() -> Bool { lock.withLock { let result = first; first = false; return result } }
+            func wait(_ semaphore: DispatchSemaphore) { semaphore.wait() }
+        }
+        let once = Once()
+        let f = try fixture(validateSession: {
+            if once.take() { entered.signal(); release.wait() }
+        }, schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = f.service, path = f.photos.path
+        let preparation = Task.detached { try service.prepare(arguments: ["path": .string(path)]) }
+        await Task.detached { once.wait(entered) }.value
+        // With inventory/validation inside the capability lock this would deadlock.
+        service.revokeAll()
+        release.signal()
+        await #expect(throws: MCPNativeFaceScanReviewService.Failure.changedReview) { try await preparation.value }
+        let fresh = try service.prepare(arguments: ["path": .string(path)])
+        _ = try service.approve(fresh, acknowledgesScan: true, acknowledgesReset: false)
     }
 
     @Test("Explicit native review consent survives real scanner checks and retains exact document evidence") @MainActor

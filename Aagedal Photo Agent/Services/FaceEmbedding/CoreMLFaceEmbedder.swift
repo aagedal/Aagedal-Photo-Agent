@@ -98,15 +98,18 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private static let inputIsRGB = true
 
     private let lock = NSLock()
+    private let modelLoadLock = NSLock()
     private var modelURL: URL?
     private let allowsDynamicResolution: Bool
     private var isResolutionPending: Bool
     private var loadedModel: MLModel?
     private var loadError: Error?
+    private var installationGeneration = UUID()
+    private let instanceID = UUID()
 
     nonisolated var availability: FaceRecognitionModelAvailability {
         lock.lock(); defer { lock.unlock() }
-        if modelURL != nil { return .available }
+        if modelURL != nil { return loadError == nil ? .available : .verificationFailed }
         return isResolutionPending ? .checking : .unavailable
     }
 
@@ -138,10 +141,35 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     nonisolated func publishResolvedModelURL(_ resolvedURL: URL?) {
         lock.lock(); defer { lock.unlock() }
         guard allowsDynamicResolution else { return }
+        installationGeneration = UUID()
         loadedModel = nil
         loadError = nil
         modelURL = resolvedURL
         isResolutionPending = false
+    }
+
+    /// Process-only proof that this exact installation loaded successfully. A
+    /// same-version reinstallation also invalidates it; it grants no file effects.
+    struct NativeScanModelCapability: Sendable {
+        fileprivate let instanceID: UUID
+        fileprivate let generation: UUID
+    }
+
+    /// Call on an I/O executor before presenting native consent, never on MainActor.
+    func prepareNativeScanModel() throws -> NativeScanModelCapability {
+        _ = try model()
+        return try lock.withLock {
+            guard loadedModel != nil, loadError == nil, modelURL != nil else { throw EmbedError.modelNotFound }
+            return .init(instanceID: instanceID, generation: installationGeneration)
+        }
+    }
+
+    /// Lock-only validation at retained scanner boundaries. It never loads a model.
+    func validateNativeScanModel(_ capability: NativeScanModelCapability) throws {
+        try lock.withLock {
+            guard capability.instanceID == instanceID, capability.generation == installationGeneration,
+                  loadedModel != nil, loadError == nil, modelURL != nil else { throw EmbedError.modelNotFound }
+        }
     }
 
     enum EmbedError: LocalizedError {
@@ -160,20 +188,29 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     /// Lazily load + cache the compiled model (thread-safe). A load failure is cached
     /// so we don't retry a missing/broken model on every face.
     private func model() throws -> MLModel {
-        lock.lock(); defer { lock.unlock() }
-        if let m = loadedModel { return m }
-        if let e = loadError { throw e }
+        // Serialize expensive loads independently: availability and capability
+        // withdrawal remain lock-only while CoreML reads/loads an installation.
+        modelLoadLock.lock(); defer { modelLoadLock.unlock() }
+        let captured = try lock.withLock { () throws -> (MLModel?, URL?, UUID) in
+            if let loadedModel { return (loadedModel, modelURL, installationGeneration) }
+            if let loadError { throw loadError }
+            return (nil, modelURL, installationGeneration)
+        }
+        if let loaded = captured.0 { return loaded }
         do {
-            guard let url = modelURL else {
-                throw EmbedError.modelNotFound
-            }
+            guard let url = captured.1 else { throw EmbedError.modelNotFound }
             let config = MLModelConfiguration()
             config.computeUnits = .all
-            let m = try MLModel(contentsOf: url, configuration: config)
-            loadedModel = m
-            return m
+            let loaded = try MLModel(contentsOf: url, configuration: config)
+            return try lock.withLock {
+                guard installationGeneration == captured.2 else { throw EmbedError.modelNotFound }
+                loadedModel = loaded
+                return loaded
+            }
         } catch {
-            loadError = error
+            lock.withLock {
+                if installationGeneration == captured.2 { loadError = error }
+            }
             throw error
         }
     }

@@ -842,6 +842,32 @@ struct FaceEmbeddingTests {
 
     // MARK: - CoreMLFaceEmbedder (bundled model smoke test)
 
+    @Test func nativeScanPreflightRefusesAndCachesBrokenInstallation() throws {
+        let missing = URL(fileURLWithPath: "/private/tmp/broken-face-model-\(UUID()).mlmodelc")
+        let embedder = CoreMLFaceEmbedder(modelURL: missing, allowsDynamicResolution: true)
+        #expect(embedder.availability.isAvailable)
+        #expect(throws: (any Error).self) { try embedder.prepareNativeScanModel() }
+        #expect(embedder.availability == .verificationFailed)
+        #expect(throws: (any Error).self) { try embedder.prepareNativeScanModel() }
+        embedder.publishResolvedModelURL(missing)
+        #expect(embedder.availability.isAvailable)
+        #expect(throws: (any Error).self) { try embedder.prepareNativeScanModel() }
+        #expect(embedder.availability == .verificationFailed)
+    }
+
+    @Test func nativeModelCapabilityEndsOnSameVersionPublication() throws {
+        // Matches the bundled-model smoke-test availability contract below.
+        guard let url = CoreMLFaceEmbedder.bundledModelURL() else { return }
+        let embedder = CoreMLFaceEmbedder(modelURL: url, allowsDynamicResolution: true)
+        let capability = try embedder.prepareNativeScanModel()
+        try embedder.validateNativeScanModel(capability)
+        embedder.publishResolvedModelURL(url)
+        #expect(throws: CoreMLFaceEmbedder.EmbedError.self) { try embedder.validateNativeScanModel(capability) }
+        let replacement = try embedder.prepareNativeScanModel()
+        try embedder.validateNativeScanModel(replacement)
+        #expect(throws: CoreMLFaceEmbedder.EmbedError.self) { try embedder.validateNativeScanModel(capability) }
+    }
+
     @Test func omittedModelHasExplicitUnavailableState() async {
         let embedder = CoreMLFaceEmbedder(modelURL: nil)
 
