@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Import selected images and videos from Instagram and X post URLs, preserving originals alongside attributed working copies and provenance records. Update gallery-dl and yt-dlp separately from the app in Web Downloads settings.
+
 - Update bundled FFmpeg to the dedicated Photo Agent 9.0.2 build, preserving canonical Whisper output, bounded timestamps and failure reporting.
 
 - Create reusable text watermarks beside the overlay settings, with multiline text, font styles, color, transparency and a live preview.

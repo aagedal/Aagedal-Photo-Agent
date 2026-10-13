@@ -11,6 +11,7 @@ network service are listed below.
 
 ## Data stored on the Mac
 
+- Web imports retain original downloaded media, working copies, and per-item provenance records in the chosen destination. Provenance includes source post/media URLs, account attribution, original post text, publication/download times, original hashes and downloader versions. A selected cookies file is passed to the private downloader for authentication; cookies are not copied into provenance.
 - Photo Agent sidecars and XMP sidecars store edits and metadata near the photographs where supported.
 - Voice-memo review records store generated and edited text, approval state, audio identity and
   provider information in the photo's app sidecar. The managed and custom FFmpeg Whisper providers additionally
@@ -174,6 +175,11 @@ Stop the app and connected helpers before removing this directory to erase local
 Photo Agent accesses a network only for a feature that needs it, including:
 
 - Sparkle update checks against the published Photo Agent appcast;
+- explicit Instagram/X post inspection and media downloads, including the cookies from a file
+  the user chooses for authentication; the platform and its media hosts receive the requested
+  URLs and ordinary connection information;
+- explicit gallery-dl and yt-dlp update checks and pure Python package downloads from PyPI
+  and its package delivery hosts; these requests do not upload photographs or provenance records;
 - Apple MapKit place search, reverse geocoding, map imagery, and Look Around links;
 - OpenStreetMap tiles when that map style is selected;
 - C2PA trust-list refreshes;

@@ -1,0 +1,37 @@
+{
+  "versions": {
+    "gallery-dl": "1.32.16",
+    "yt-dlp": "2026.8.19"
+  },
+  "artifacts": [
+    {
+      "filename": "certifi-2026.7.22-py3-none-any.whl",
+      "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+    },
+    {
+      "filename": "charset_normalizer-3.5.2-py3-none-any.whl",
+      "sha256": "b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685"
+    },
+    {
+      "filename": "gallery_dl-1.32.16-py3-none-any.whl",
+      "sha256": "2b7f548a9643bd78441a702efccea9165b81837c9be03494ba7f41051bcbb40f"
+    },
+    {
+      "filename": "idna-3.20-py3-none-any.whl",
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+    },
+    {
+      "filename": "requests-2.34.2-py3-none-any.whl",
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"
+    },
+    {
+      "filename": "urllib3-2.8.0-py3-none-any.whl",
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
+    },
+    {
+      "filename": "yt_dlp-2026.8.19-py3-none-any.whl",
+      "sha256": "1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf"
+    }
+  ],
+  "pythonVersion": "3.13.13"
+}

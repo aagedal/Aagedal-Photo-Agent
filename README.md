@@ -45,6 +45,7 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 
 ### Ingest & Import
 
+- Import selected images and videos from individual Instagram or X post URLs. Preserve downloaded originals alongside working copies with source attribution and caption metadata, plus JSON provenance records. Settings → Web Downloads updates gallery-dl and yt-dlp independently of the app. This first version uses the extractor's preferred quality; video and non-JPEG metadata use adjacent XMP. See the [runtime setup and current limits](scripts/web_downloads/README.md).
 - Import from memory cards or folders with a non-blocking progress bar
 - Copy verification (SHA-256) so files are checksummed before the source is released
 - Dual-destination backup — primary and backup copies written and verified in one pass

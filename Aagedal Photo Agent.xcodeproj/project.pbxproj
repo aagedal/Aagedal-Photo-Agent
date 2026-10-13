@@ -125,6 +125,7 @@
 		BA7C03030000000000000002 /* BatchRenameRecipeRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03030000000000000001 /* BatchRenameRecipeRepositoryTests.swift */; };
 		C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */; };
 		C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */; };
+		CF0EB0010000000000000002 /* WebMediaImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF0EB0010000000000000001 /* WebMediaImportTests.swift */; };
 		C0DE21000000000000000002 /* CodeReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE21000000000000000001 /* CodeReplacementTests.swift */; };
 		C0DE22000000000000000002 /* CaptionCodeReplacementCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */; };
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
@@ -416,6 +417,7 @@
 		BEBFB8FFE3CACE58A7D2CE1A /* Aagedal Photo Agent/Services/XMPMetadataReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/XMPMetadataReader.swift"; sourceTree = SOURCE_ROOT; };
 		C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataVerificationTests.swift; sourceTree = "<group>"; };
 		C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DescriptiveMetadataWriteBoundaryTests.swift; sourceTree = "<group>"; };
+		CF0EB0010000000000000001 /* WebMediaImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMediaImportTests.swift; sourceTree = "<group>"; };
 		C0DE21000000000000000001 /* CodeReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodeReplacementTests.swift; sourceTree = "<group>"; };
 		C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCodeReplacementCoordinatorTests.swift; sourceTree = "<group>"; };
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
@@ -798,6 +800,7 @@
 				C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */,
 				C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */,
 				C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */,
+				CF0EB0010000000000000001 /* WebMediaImportTests.swift */,
 				D34D11000000000000000001 /* DeadlineProfileTests.swift */,
 				D34D12000000000000000001 /* DeadlineProfileRepositoryTests.swift */,
 				D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */,
@@ -1079,6 +1082,8 @@
 			inputPaths = (
 				"$(SRCROOT)/scripts/write_whisper_runtime_descriptor.py",
 				"$(SRCROOT)/scripts/llama/bundle_runtime.py",
+				"$(SRCROOT)/scripts/web_downloads/bundle_runtime.py",
+				"$(SRCROOT)/Vendor/web-download-runtime",
 				"$(SRCROOT)/Vendor/llama.cpp",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/c2patool",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/ffmpeg",
@@ -1089,10 +1094,11 @@
 				"$(DERIVED_FILE_DIR)/c2patool.signed",
 				"$(DERIVED_FILE_DIR)/ffmpeg.signed",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/llama-runtime",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/web-download-runtime",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n[ -d \"$SRCROOT/Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage\" ] || { echo \"error: Required bundled AuraFace source package is missing; provision the reviewed local model before building.\"; exit 1; }\n/usr/bin/python3 \"$SRCROOT/scripts/ci/validate_model_bundle.py\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\n/usr/bin/python3 \"$SRCROOT/scripts/llama/bundle_runtime.py\" \"$SRCROOT/Vendor/llama.cpp\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/llama-runtime\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
+			shellScript = "set -e\n[ -d \"$SRCROOT/Aagedal Photo Agent/Resources/Models/AuraFaceR100.mlpackage\" ] || { echo \"error: Required bundled AuraFace source package is missing; provision the reviewed local model before building.\"; exit 1; }\n/usr/bin/python3 \"$SRCROOT/scripts/ci/validate_model_bundle.py\" \"$BUILT_PRODUCTS_DIR/$WRAPPER_NAME\"\n# Sign bundled helper binaries with Hardened Runtime for notarization\nif [ \"$CODE_SIGNING_ALLOWED\" != \"NO\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/c2patool\"\n    /usr/bin/codesign --force --options runtime --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\"\nfi\n/usr/bin/python3 \"$SRCROOT/scripts/write_whisper_runtime_descriptor.py\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/ffmpeg\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/whisper-runtime.json\"\n/usr/bin/python3 \"$SRCROOT/scripts/llama/bundle_runtime.py\" \"$SRCROOT/Vendor/llama.cpp\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/llama-runtime\"\n/usr/bin/python3 \"$SRCROOT/scripts/web_downloads/bundle_runtime.py\" \"$SRCROOT/Vendor/web-download-runtime\" \"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/web-download-runtime\"\ntouch \"$DERIVED_FILE_DIR/c2patool.signed\" \"$DERIVED_FILE_DIR/ffmpeg.signed\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1284,6 +1290,7 @@
 				C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */,
 				C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */,
 				C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */,
+				CF0EB0010000000000000002 /* WebMediaImportTests.swift in Sources */,
 				D34D11000000000000000002 /* DeadlineProfileTests.swift in Sources */,
 				D34D12000000000000000002 /* DeadlineProfileRepositoryTests.swift in Sources */,
 				D34DF1000000000000000002 /* DeadlinePreflightServiceTests.swift in Sources */,
