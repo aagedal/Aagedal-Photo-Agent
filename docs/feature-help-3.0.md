@@ -325,7 +325,11 @@ Expand a record to see its template, ordered photo paths and retained source/sid
 “Review consumed” means the admission was used before consent or execution; it does not prove
 that edits were written. Inspect the separate **Develop Batch Recovery** checkpoints for physical
 outcomes. Historical captures cannot restore consent or resume a batch after relaunch. Cancelled
-captures remain retained to prevent replay; capacity cleanup is not yet available.
+captures can be retired with **Review Cancelled Capture Cleanup…**. Review the exact batch IDs,
+templates and ordered photos, then choose **Retire Cancelled Captures**. This removes detailed
+cancelled evidence while keeping compact permanent replay protection. Consumed and awaiting-review
+captures, photos and physical recovery checkpoints remain. Changed evidence requires a new cleanup
+review; capacity limits preserve retained records.
 
 First call `get_native_review_request_capacity` to obtain the durable `requestEpoch`. This explicit
 coordination call may initialize or migrate private request storage; it changes no photos and grants
@@ -436,6 +440,17 @@ Folder…** for an original private checkpoint folder. Refresh preserves the evi
 and reports an empty managed location without creating storage. Expand an entry to
 review ordered photos, physical write receipts and unresolved effects. This inspection
 does not check current photo bytes or authorize applying edits again.
+
+The browser face-scan button's context menu offers **Review Authorized Face Scan…**. Enable
+local automation and authorize the current folder in Settings first. **Prepare Current Folder
+Face Scan** checks the installed model and lists the exact immediate photos without starting work.
+Choose incremental or full scanning and optional jersey recognition before preparing. Explicitly
+approve scanning; full/jersey scans also require approval to reset saved face results and thumbnails.
+**Start Reviewed Face Scan** consumes that review once. Changed inventory, access or model installation
+requires another review. **Cancel Retained Face Scan** stops that exact operation; committed effects
+remain in its durable receipt. Closing the review withdraws permission for further effects while
+already running work finishes. Completed results use the browser's existing scanner and face groups.
+This local review does not expose a helper execution endpoint.
 
 Settings → Automation → **Face Scan Receipts** provides **Review Managed Face Scan
 Receipts** and **Choose Face Scan Receipt Folder…**. Refresh reads the original private

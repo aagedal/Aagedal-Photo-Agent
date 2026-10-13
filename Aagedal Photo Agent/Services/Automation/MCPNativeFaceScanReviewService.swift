@@ -56,24 +56,28 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
     /// Replacing the visible review revokes all prior session capabilities, including
     /// active effect permission. Preparation does not grant consent or schedule work.
     func prepare(arguments: [String: MCPJSONValue]) throws -> Review {
-        try lock.withLock {
-            revokeLocked()
+        let preparationGeneration = lock.withLock { revokeLocked(); return generation }
+        // Inventory I/O must not hold the capability lock: dismissal and withdrawal
+        // remain immediate while the caller prepares on its background executor.
+        try validateSession()
+        let preparedAt = monotonicClock()
+        let deadline = preparedAt.advanced(by: .seconds(MCPFaceScanIntentStore.lifetime))
+        let intent = try intents.prepare(arguments: arguments)
+        _ = try intents.inspect(id: intent.id)
+        try validateSession()
+        let checkedAt = monotonicClock()
+        guard checkedAt >= preparedAt, checkedAt < deadline else { throw Failure.expiredApproval }
+        var consequences = [
+            "Scans every listed immediate photo locally for faces; optional jersey recognition uses the exact reviewed options.",
+            "Execution can create face thumbnails, embeddings and folder face data. Cancellation does not undo committed effects.",
+            "Physical scanner writes currently use paths. This consent does not establish descriptor-anchored publication."
+        ]
+        if intent.prepared.forceFullScan {
+            consequences.append("A full scan resets existing folder face results and may delete their thumbnails before replacing results.")
+        }
+        return try lock.withLock {
+            guard generation == preparationGeneration else { throw Failure.changedReview }
             try validateSession()
-            let preparedAt = monotonicClock()
-            let deadline = preparedAt.advanced(by: .seconds(MCPFaceScanIntentStore.lifetime))
-            let intent = try intents.prepare(arguments: arguments)
-            _ = try intents.inspect(id: intent.id)
-            try validateSession()
-            let checkedAt = monotonicClock()
-            guard checkedAt >= preparedAt, checkedAt < deadline else { throw Failure.expiredApproval }
-            var consequences = [
-                "Scans every listed immediate photo locally for faces; optional jersey recognition uses the exact reviewed options.",
-                "Execution can create face thumbnails, embeddings and folder face data. Cancellation does not undo committed effects.",
-                "Physical scanner writes currently use paths. This consent does not establish descriptor-anchored publication."
-            ]
-            if intent.prepared.forceFullScan {
-                consequences.append("A full scan resets existing folder face results and may delete their thumbnails before replacing results.")
-            }
             currentReview = intent.id
             return Review(intent: intent, consequences: consequences, generation: generation,
                           preparedAt: preparedAt, deadline: deadline)
@@ -91,55 +95,83 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
                 entry = nil
                 throw Failure.acknowledgementRequired
             }
-            do {
-                try validateSession()
-                let current = try intents.inspect(id: review.intent.id)
-                guard current.prepared.snapshotRevision == review.intent.prepared.snapshotRevision else {
-                    throw Failure.changedReview
-                }
-                let now = try checkedNow()
-                guard now >= current.createdAt, now < current.expiresAt else { throw Failure.expiredApproval }
-                let monotonicNow = monotonicClock()
-                guard monotonicNow >= review.preparedAt, monotonicNow < review.deadline else {
-                    throw Failure.expiredApproval
-                }
+        }
+        do {
+            try validateSession()
+            let current = try intents.inspect(id: review.intent.id)
+            guard current.prepared.snapshotRevision == review.intent.prepared.snapshotRevision else {
+                throw Failure.changedReview
+            }
+            let now = try checkedNow()
+            guard now >= current.createdAt, now < current.expiresAt else { throw Failure.expiredApproval }
+            let monotonicNow = monotonicClock()
+            guard monotonicNow >= review.preparedAt, monotonicNow < review.deadline else {
+                throw Failure.expiredApproval
+            }
+            return try lock.withLock {
+                guard review.generation == generation, currentReview == review.intent.id,
+                      entry?.consumed != true else { throw Failure.changedReview }
                 try validateSession()
                 let approval = Approval(id: UUID(), intentID: current.id, expiresAt: current.expiresAt,
                                         generation: generation, approvedAt: now)
                 entry = Entry(approval: approval, intent: current, approvedAt: monotonicNow,
                               deadline: review.deadline, consumed: false)
                 return approval
-            } catch { revokeLocked(); throw error }
+            }
+        } catch {
+            lock.withLock { if generation == review.generation { revokeLocked() } }
+            throw error
         }
     }
 
     /// Admission consumes exactly once, even if durable admission later fails. The
     /// retained capability remains checked through scanner read/effect boundaries until
     /// its actual task drains. Preview expiry no longer interrupts admitted work.
+    @concurrent
     func submit(_ approval: Approval) async throws -> AutomationOperationRegistry.Record {
+        // Consume atomically before inventory I/O or any suspension. Neither a
+        // competing submit nor failed recapture can replay this approval.
         let intent = try lock.withLock {
             guard let current = entry, current.approval == approval, !current.consumed else {
                 throw Failure.unavailableApproval
             }
-            do {
-                try requireCurrent(current, admission: true)
-                _ = try intents.inspect(id: approval.intentID)
-                entry?.consumed = true
-                return current.intent
-            } catch { revokeLocked(); throw error }
+            entry?.consumed = true
+            return current.intent
         }
         do {
+            _ = try validateApproval(approval, admission: true)
+            _ = try intents.inspect(id: approval.intentID)
+            _ = try validateApproval(approval, admission: true)
             return try await operations.submit(intentID: intent.id, nativeAdmission: { [self] candidate in
-                try lock.withLock {
-                    guard let current = entry, current.approval == approval, current.consumed,
-                          candidate.id == intent.id,
-                          candidate.prepared.snapshotRevision == intent.prepared.snapshotRevision else {
-                        throw Failure.unavailableApproval
-                    }
-                    do { try requireCurrent(current, admission: false) }
-                    catch { revokeLocked(); throw error }
+                let current = try validateApproval(approval, admission: false)
+                guard candidate.id == current.id,
+                      candidate.prepared.snapshotRevision == current.prepared.snapshotRevision else {
+                    throw Failure.unavailableApproval
                 }
             }, nativeCompletion: { [self] in revoke(approval) })
+        } catch { revoke(approval); throw error }
+    }
+
+    /// Filesystem/configuration checks happen outside the capability lock. Check
+    /// process-session state on both sides so withdrawal never waits for path I/O
+    /// and stale checks cannot restore authority.
+    private func validateApproval(_ approval: Approval, admission: Bool) throws -> MCPFaceScanIntentStore.Intent {
+        do {
+            let intent = try lock.withLock {
+                guard let current = entry, current.approval == approval, current.consumed else {
+                    throw Failure.unavailableApproval
+                }
+                try requireCurrent(current, admission: admission)
+                return current.intent
+            }
+            try intents.checkAuthority(intent)
+            return try lock.withLock {
+                guard let current = entry, current.approval == approval, current.consumed else {
+                    throw Failure.unavailableApproval
+                }
+                try requireCurrent(current, admission: admission)
+                return current.intent
+            }
         } catch { revoke(approval); throw error }
     }
 
@@ -160,7 +192,6 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
                   monotonicNow < current.deadline else { throw Failure.expiredApproval }
         }
         try validateSession()
-        try intents.checkAuthority(current.intent)
     }
 
     private func checkedNow() throws -> Date {

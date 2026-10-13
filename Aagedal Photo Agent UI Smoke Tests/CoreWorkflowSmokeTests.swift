@@ -124,6 +124,73 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testReviewedFaceScanRequiresConsentAndRetainsReceipt() throws {
+        let photos = try makePhotoFolder(count: 2)
+        let people = fixtureRoot.appendingPathComponent("ReviewedFacePeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: people, withIntermediateDirectories: true)
+        let resolved = try XCTUnwrap(Darwin.realpath(photos.path, nil))
+        let canonical = String(cString: resolved); free(resolved)
+        var identity = stat()
+        XCTAssertEqual(Darwin.stat(canonical, &identity), 0)
+        let authorization = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 1, "authorizationRevision": UUID().uuidString, "isEnabled": true,
+            "roots": [["id": UUID().uuidString, "displayName": "Disposable reviewed face folder",
+                "canonicalPath": canonical, "identity": ["device": UInt64(identity.st_dev), "inode": UInt64(identity.st_ino)]]]
+        ], options: [.sortedKeys])
+        try authorization.write(to: photos.appendingPathComponent("transcription-review-authorization.json"))
+        let socket = URL(fileURLWithPath: "/private/tmp/apa-integration-\(UUID().uuidString.lowercased())", isDirectory: true)
+        launch(workflow: "open-folder", folder: photos, knownPeopleRoot: people,
+               faceBarExpanded: true, transcriptionHelperSocket: socket)
+        let scan = app.buttons["scanFaces"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: scan)
+        waitForExpectations(timeout: 15)
+        scan.rightClick()
+        let reviewAction = app.menuItems["Review Authorized Face Scan…"]
+        XCTAssertTrue(reviewAction.waitForExistence(timeout: 8))
+        reviewAction.click()
+        let prepare = app.buttons["automation.faceReview.prepare"]
+        XCTAssertTrue(prepare.waitForExistence(timeout: 8))
+        prepare.click()
+        let consent = app.checkBoxes["automation.faceReview.consent"]
+        XCTAssertTrue(consent.waitForExistence(timeout: 45))
+        let start = app.buttons["automation.faceReview.start"]
+        XCTAssertFalse(start.isEnabled)
+        let document = photos.appendingPathComponent(".face_data/face_data.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: document.path))
+        let receiptRoot = fixtureRoot.appendingPathComponent("ManagedFaceReceipts")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: receiptRoot.path))
+        app.checkBoxes["automation.faceReview.fullScan"].click()
+        XCTAssertFalse(start.exists)
+        prepare.click()
+        XCTAssertTrue(consent.waitForExistence(timeout: 45))
+        consent.click()
+        XCTAssertFalse(start.isEnabled)
+        let resetConsent = app.checkBoxes["automation.faceReview.resetConsent"]
+        XCTAssertTrue(resetConsent.waitForExistence(timeout: 8))
+        resetConsent.click()
+        XCTAssertTrue(start.isEnabled)
+        start.click()
+        let status = app.staticTexts["automation.faceReview.status"]
+        expectation(for: NSPredicate { _, _ in
+            status.exists && (status.label.contains("Face scan completed")
+                || (status.value as? String)?.contains("Face scan completed") == true)
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 60)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: document.path))
+        let receiptData = try Data(contentsOf: receiptRoot.appendingPathComponent("operations.json"))
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: receiptData) as? [String: Any])
+        let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+        let receipts = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        XCTAssertEqual((receipts["receipts"] as? [[String: Any]])?.count, 1)
+        XCTAssertFalse(start.exists)
+        app.buttons["Close"].firstMatch.click()
+        XCTAssertTrue(app.buttons["face.scanComplete"].waitForExistence(timeout: 15))
+        XCTAssertEqual(try Data(contentsOf: receiptRoot.appendingPathComponent("operations.json")), receiptData)
+        XCTAssertEqual(try Data(contentsOf: photos.appendingPathComponent("transcription-review-authorization.json")), authorization)
+    }
+
+    @MainActor
     func testCompleteFolderFaceScanPersistsAcrossRelaunch() throws {
         let photos = try makePhotoFolder(count: 2)
         let people = fixtureRoot.appendingPathComponent("FaceScanPeople", isDirectory: true)
@@ -1159,6 +1226,46 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: image), photoBytes)
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: directory.path)),
                        ["operations.json", "operations.lock"])
+        // Cleanup reviews exact cancelled evidence, preserves Cancel, and retains replay protection.
+        let cancelledID = UUID().uuidString
+        var cancelledEvidenceObject = try XCTUnwrap(JSONSerialization.jsonObject(with: evidence) as? [String: Any])
+        cancelledEvidenceObject["batchID"] = cancelledID
+        let cancelledEvidence = try JSONSerialization.data(withJSONObject: cancelledEvidenceObject, options: [.sortedKeys])
+        let cancelledDigest = SHA256.hash(data: cancelledEvidence).map { String(format: "%02x", $0) }.joined()
+        var registryObject = try XCTUnwrap(JSONSerialization.jsonObject(with: retained) as? [String: Any])
+        var journals = try XCTUnwrap(registryObject["journals"] as? [[String: Any]])
+        journals.append(["formatVersion": 1, "batchID": cancelledID,
+            "evidenceData": cancelledEvidence.base64EncodedString(),
+            "evidenceSHA256": cancelledDigest, "state": "cancelled"])
+        registryObject["journals"] = journals
+        let beforeCleanup = try JSONSerialization.data(withJSONObject: registryObject, options: [.sortedKeys])
+        try beforeCleanup.write(to: archive)
+        settings.buttons["develop.batchAdmission.refresh"].click()
+        let cancelledEntry = settings.buttons["develop.batchAdmission.entry.\(cancelledID)"]
+        XCTAssertTrue(cancelledEntry.waitForExistence(timeout: 8))
+        let cleanup = settings.buttons["develop.batchAdmission.reviewCleanup"]
+        XCTAssertTrue(cleanup.waitForExistence(timeout: 8))
+        cleanup.click()
+        let cancelCleanup = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelCleanup.waitForExistence(timeout: 8))
+        cancelCleanup.click()
+        XCTAssertEqual(try Data(contentsOf: archive), beforeCleanup)
+        cleanup.click()
+        let confirmCleanup = app.buttons["Retire Cancelled Captures"].firstMatch
+        XCTAssertTrue(confirmCleanup.waitForExistence(timeout: 8))
+        confirmCleanup.click()
+        expectation(for: NSPredicate { _, _ in
+            status.exists && (status.label.contains("Retired 1 cancelled captures")
+                || (status.value as? String)?.contains("Retired 1 cancelled captures") == true)
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(cancelledEntry.exists)
+        XCTAssertTrue(entry.exists)
+        let afterCleanup = try Data(contentsOf: archive)
+        let cleaned = try XCTUnwrap(JSONSerialization.jsonObject(with: afterCleanup) as? [String: Any])
+        XCTAssertEqual((cleaned["journals"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual((cleaned["tombstones"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(try Data(contentsOf: image), photoBytes)
         app.terminate()
         launch(workflow: "open-folder", folder: photos)
         app.typeKey(",", modifierFlags: .command)
@@ -1180,7 +1287,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertTrue(retainedEntry.waitForExistence(timeout: 8))
         XCTAssertEqual(retainedEntry.value as? String, "Collapsed")
         XCTAssertTrue(retainedEntry.label.contains("Review consumed"))
-        XCTAssertEqual(try Data(contentsOf: archive), retained)
+        XCTAssertEqual(try Data(contentsOf: archive), afterCleanup)
         XCTAssertEqual(try Data(contentsOf: image), photoBytes)
     }
 

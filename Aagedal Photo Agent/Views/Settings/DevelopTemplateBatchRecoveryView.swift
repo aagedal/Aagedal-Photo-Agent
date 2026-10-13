@@ -152,10 +152,12 @@ struct DevelopTemplateBatchAdmissionView: View {
     @State private var inspection: Task<Void, Never>?
     @State private var generation = UUID()
     @State private var isLoading = false
+    @State private var cleanupPreview: DevelopTemplateBatchAdmissionCleanupPreview?
+    @State private var showsCleanupConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Inspect retained Develop captures and their review disposition. These records cannot resume edits or restore consent. Saved photos and current authorization are not checked here. Cancelled records remain retained to prevent replay.")
+            Text("Inspect retained Develop captures and their review disposition. These records cannot resume edits or restore consent. Saved photos and current authorization are not checked here. Cancelled captures can be retired after review; a permanent compact record prevents replay. Consumed and awaiting-review captures are kept.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Inspect Managed Develop Captures", action: inspectManaged)
@@ -168,7 +170,12 @@ struct DevelopTemplateBatchAdmissionView: View {
             Button("Choose Develop Capture Folder…", action: choose)
                 .accessibilityIdentifier("develop.batchAdmission.chooseFolder")
                 .disabled(isLoading)
-            if let directory { Text(verbatim: directory.path).font(.caption).textSelection(.enabled) }
+            if let directory {
+                Button("Review Cancelled Capture Cleanup…") { prepareCleanup(directory) }
+                    .accessibilityIdentifier("develop.batchAdmission.reviewCleanup")
+                    .disabled(isLoading || !reviews.contains(where: { $0.state == .cancelled }))
+                Text(verbatim: directory.path).font(.caption).textSelection(.enabled)
+            }
             if isLoading { ProgressView().controlSize(.small) }
             if let message { Text(verbatim: message).accessibilityIdentifier("develop.batchAdmission.status") }
             ForEach(reviews) { review in
@@ -199,9 +206,39 @@ struct DevelopTemplateBatchAdmissionView: View {
                 }
             }
         }
+        .sheet(isPresented: $showsCleanupConfirmation, onDismiss: { cleanupPreview = nil }) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Retire cancelled Develop captures?").font(.headline)
+                Text("Retire \(cleanupPreview?.cancelledCount ?? 0) cancelled captures from this folder. Their template, photo paths and revision details will be removed. Compact permanent records prevent replay. Saved photos, physical recovery checkpoints and consumed or awaiting-review captures are kept.")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(cleanupPreview?.cancelledCaptures ?? []) { capture in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: "\(capture.id.uuidString) — \(capture.templateName)")
+                                Text("\(capture.photos.count) ordered photos captured")
+                                ForEach(capture.photos) { photo in
+                                    Text(verbatim: photo.url.path).font(.caption)
+                                }
+                            }.textSelection(.enabled)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showsCleanupConfirmation = false; cleanupPreview = nil }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Retire Cancelled Captures", role: .destructive) {
+                        guard let directory, let cleanupPreview else { return }
+                        showsCleanupConfirmation = false
+                        retireCancelled(directory, preview: cleanupPreview)
+                    }
+                }
+            }.padding(20).frame(width: 600, height: 420)
+        }
         .onDisappear {
             generation = UUID(); inspection?.cancel(); inspection = nil
             isLoading = false; reviews = []; expanded = []; message = nil
+            cleanupPreview = nil; showsCleanupConfirmation = false
         }
     }
 
@@ -243,11 +280,67 @@ struct DevelopTemplateBatchAdmissionView: View {
         else { panel.begin(completionHandler: completion) }
     }
 
+    private func prepareCleanup(_ selected: URL) {
+        guard !isLoading else { return }
+        let request = UUID(); generation = request; isLoading = true; message = nil
+        inspection = Task { @MainActor in
+            let scoped = selected.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { selected.stopAccessingSecurityScopedResource() }
+                if generation == request { isLoading = false; inspection = nil }
+            }
+            do {
+                let preview = try await DevelopTemplateBatchAdmissionStore(directory: selected).prepareCancelledCleanup()
+                guard generation == request, !Task.isCancelled else { return }
+                guard preview.cancelledCount > 0 else {
+                    message = "No cancelled captures remain to retire. Refresh to inspect current history."
+                    return
+                }
+                guard preview.cancelledCount <= preview.availableTombstones else {
+                    message = "Permanent replay protection is at capacity. Cancelled capture evidence is unchanged."
+                    return
+                }
+                cleanupPreview = preview; showsCleanupConfirmation = true
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                message = "Cannot prepare cleanup for this capture journal. Retained evidence is unchanged."
+            }
+        }
+    }
+
+    private func retireCancelled(_ selected: URL, preview: DevelopTemplateBatchAdmissionCleanupPreview) {
+        guard !isLoading else { return }
+        let request = UUID(); generation = request; isLoading = true; cleanupPreview = nil
+        inspection = Task { @MainActor in
+            let scoped = selected.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { selected.stopAccessingSecurityScopedResource() }
+                if generation == request { isLoading = false; inspection = nil }
+            }
+            do {
+                try Task.checkCancellation()
+                let store = DevelopTemplateBatchAdmissionStore(directory: selected)
+                let count = try await store.cleanupCancelledReviews(preview)
+                guard generation == request, !Task.isCancelled else { return }
+                let result = try await store.inspect()
+                guard generation == request, !Task.isCancelled else { return }
+                reviews = result; expanded = []
+                message = "Retired \(count) cancelled captures. Permanent replay protection remains; saved photos and recovery checkpoints are unchanged."
+            } catch DevelopTemplateBatchAdmissionFailure.changedEvidence {
+                guard generation == request, !Task.isCancelled else { return }
+                message = "Cancelled captures changed after review. Refresh and review cleanup again. No cleanup was performed."
+            } catch {
+                guard generation == request, !Task.isCancelled else { return }
+                message = "Cleanup could not be verified. Refresh to inspect retained history before trying again."
+            }
+        }
+    }
+
     private func inspect(_ selected: URL) {
         guard !isLoading else { return }
         directory = selected
         let request = UUID(); generation = request; isLoading = true
-        reviews = []; expanded = []; message = nil
+        reviews = []; expanded = []; message = nil; cleanupPreview = nil
         inspection = Task { @MainActor in
             let scoped = selected.startAccessingSecurityScopedResource()
             defer {
