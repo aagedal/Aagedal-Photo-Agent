@@ -1,5 +1,12 @@
 # App improvement audit plan
 
+**Core workflow performance continuation (2026-10-14):** Loupe preparation is bounded
+to neighboring images; speculative sidecar reads and source verification retain Dispatch
+workers. Structured tagging reuses revision-bound indexes; field completion avoids needless
+whole-folder sorting. Sidebar discovery has shared deduplication, explicit-expansion priority
+and bounded scan admission. Actual-volume timing and memory evidence remain open; the broad
+audit remains 66 of 75. See [implementation and validation](plan-status-core-workflow-performance-2026-10-14.md).
+
 **Cycle 107 continuation (2026-09-30):** Cooperative managed keyword/list writers
 reserve their mutation baselines across app/helper processes. Native keyword publication retains
 settings/list authority through verification; failed preference transitions preserve the previous

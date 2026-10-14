@@ -114,6 +114,43 @@ struct StructuredKeywordServiceTests {
         }
     }
 
+    @Test("Indexed lookup preserves tree order, search limits and invalidates after replacement")
+    func indexedLookupReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService()
+            try await service.saveTree([
+                StructuredKeyword(name: "Category", kind: .container, children: [
+                    StructuredKeyword(name: "First", kind: .keyword, synonyms: ["Alias"]),
+                    StructuredKeyword(name: "Alias", kind: .keyword, synonyms: ["Other"]),
+                ]),
+            ])
+            for _ in 0..<3 {
+                #expect(service.keywordCount == 2)
+                #expect(service.allNodeNames() == ["First", "Alias"])
+                #expect(service.allSearchableNames() == ["First", "Alias", "Other"])
+                #expect(service.allKeywordNames() == ["First", "Alias", "Alias", "Other"])
+                #expect(service.canonicalName(forNameOrSynonym: " ALIAS ") == "First")
+                #expect(service.search("alias", limit: 1).map(\.node.name) == ["First"])
+                #expect(service.search("alias").map(\.node.name) == ["First", "Alias"])
+                #expect(service.search("alias", limit: 0).isEmpty)
+                #expect(service.search("Category").isEmpty)
+                #expect(service.activation(forName: "alias")?.categoryKeywords == ["Category"])
+            }
+            try await service.saveTree([StructuredKeyword(name: "Replacement", kind: .keyword)])
+            #expect(service.keywordCount == 1)
+            #expect(service.canonicalName(forNameOrSynonym: "Alias") == nil)
+            #expect(service.search("First").isEmpty)
+            #expect(service.allNodeNames() == ["Replacement"])
+            #expect(service.allSearchableNames() == ["Replacement"])
+            #expect(service.allKeywordNames() == ["Replacement"])
+            try await service.clearList()
+            #expect(service.keywordCount == 0)
+            #expect(service.allSearchableNames().isEmpty)
+        }
+    }
+
     @Test("Settings import reads and commits away from MainActor with balanced source access")
     func settingsImportUsesSerializedBoundaries() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -731,6 +768,12 @@ struct StructuredKeywordLibraryTests {
             #expect(try String(contentsOf: root.appendingPathComponent("structured/keywords.txt"), encoding: .utf8).contains("Legacy Term"))
             _ = try await library.update { $0.setActive(customID, active: false) }
             #expect(service.roots.isEmpty)
+            #expect(service.keywordCount == 0)
+            #expect(service.allNodeNames().isEmpty)
+            #expect(service.allSearchableNames().isEmpty)
+            #expect(service.allKeywordNames().isEmpty)
+            #expect(service.canonicalName(forNameOrSynonym: "Alias") == nil)
+            #expect(service.search("Child").isEmpty)
             let candidates = KeywordListsArchive.inventoryCandidates(for: [.structuredLibrary], rootURL: root)
             #expect(candidates.first?.format == .library)
             #expect(KeywordListsArchive.enumerateKeys().contains(.structuredLibrary))

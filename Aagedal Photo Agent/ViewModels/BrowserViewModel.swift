@@ -294,6 +294,7 @@ final class BrowserViewModel {
     }
 
     @ObservationIgnored private(set) var selectedImagesCache: [ImageFile] = []
+    @ObservationIgnored private var urlToSelectedIndex: [URL: Int] = [:]
     /// Scene-owned handoff used when this pane adds a root that the primary pane's
     /// shared sidebar must also register.
     @ObservationIgnored var onDidOpenRootFolder: ((URL) -> Void)?
@@ -315,6 +316,7 @@ final class BrowserViewModel {
          },
          metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)? = nil,
          metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator = .shared,
+         subfolderLoader: (@Sendable (URL) async throws -> [URL])? = nil,
          refreshSidecarLoader: @escaping @Sendable (URL) async -> [URL: MetadataSidecar] = {
              await MetadataSidecarService().loadAllSidecars(in: $0)
          }) {
@@ -322,6 +324,7 @@ final class BrowserViewModel {
         self.metadataReviewCoordinator = metadataReviewCoordinator
         self.injectedFieldMutationWriter = fieldMutationWriter
         self.fieldMutationModeResolver = fieldMutationModeResolver
+        self.subfolderLoader = subfolderLoader ?? { try await fileSystemService.listSubfolders(at: $0) }
         self.refreshSidecarLoader = refreshSidecarLoader
         self.thumbnailService = thumbnailService
         self.fullScreenImageCache = fullScreenImageCache
@@ -360,6 +363,8 @@ final class BrowserViewModel {
         batchReadTask?.cancel()
         renamePlanningTask?.cancel()
         favoriteLoadTask?.cancel()
+        subfolderLoadTask?.cancel()
+        subfolderRefreshTask?.cancel()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
@@ -529,6 +534,7 @@ final class BrowserViewModel {
             }
         } else {
             selectedImagesCache = []
+            urlToSelectedIndex = [:]
         }
         if let anchor = lastClickedImageURL, !visibleSet.contains(anchor) {
             lastClickedImageURL = nil
@@ -546,12 +552,14 @@ final class BrowserViewModel {
     private func rebuildSelectedCache() {
         guard !selectedImageIDs.isEmpty else {
             selectedImagesCache = []
+            urlToSelectedIndex = [:]
             return
         }
         selectedImagesCache = selectedImageIDs.compactMap { url in
             guard let index = urlToImageIndex[url] else { return nil }
             return images[index]
         }
+        urlToSelectedIndex = Dictionary(uniqueKeysWithValues: selectedImagesCache.enumerated().map { ($1.url, $0) })
         preCacheSelectedRetinaImage()
     }
 
@@ -881,20 +889,17 @@ final class BrowserViewModel {
                     self.suppressImagesCascade = false
                 }
 
-                // Phase 2: Discover subfolders after the grid is visible. `listSubfolders` is
-                // synchronous; calling it directly from this main-actor task can block SwiftUI
-                // while iCloud resolves directory placeholders. Force the enumeration onto a
-                // utility task just as the initial image scan is forced off the main actor.
-                let service = fileSystemService
-                let discoveredSubfolders = await Task.detached(priority: .utility) {
-                    (try? await service.listSubfolders(at: url)) ?? []
-                }.value
+                // Phase 2: The filesystem actor retains a Dispatch worker for directory I/O.
+                // Await it directly so replacing the folder propagates cancellation to the scan.
+                let discoveredSubfolders = try? await subfolderLoader(url)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                self.subfoldersByOpenFolder[url] = discoveredSubfolders
-                if !discoveredSubfolders.isEmpty {
-                    self.expandedOpenFolders.insert(url)
+                if let discoveredSubfolders {
+                    self.subfoldersByOpenFolder[url] = discoveredSubfolders
+                    if !discoveredSubfolders.isEmpty {
+                        self.expandedOpenFolders.insert(url)
+                    }
+                    self.prefetchGrandchildren(of: url)
                 }
-                self.prefetchGrandchildren(of: url)
 
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = await sidecarService.loadAllSidecars(in: url)
@@ -1992,6 +1997,8 @@ final class BrowserViewModel {
                 if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
                 suppressImagesCascade = true
                 let oldOrientation = images[index].exifOrientation
+                let oldRating = images[index].starRating
+                let oldLabel = images[index].colorLabel
                 if recordIsCurrent, let record = result.installedSidecar {
                     applyVerifiedFieldResult(result, record: record, request: request, field: field, to: &images[index])
                     images[index].hasPendingMetadataChanges = record.pendingChanges || !unresolved.isEmpty || !(fieldMutationRequestIDs[request.imageURL]?.isEmpty ?? true)
@@ -2019,12 +2026,39 @@ final class BrowserViewModel {
                     fullScreenImageCache.invalidateImage(for: request.imageURL)
                 }
                 suppressImagesCascade = false
-                rebuildSortedCache()
+                publishMetadataFieldCompletion(for: request.imageURL,
+                    sortKeyChanged: (sortOrder == .rating && oldRating != images[index].starRating)
+                        || (sortOrder == .label && oldLabel != images[index].colorLabel))
+                if oldOrientation != images[index].exifOrientation,
+                   selectedImageIDs == [request.imageURL] {
+                    preCacheSelectedRetinaImage()
+                }
             }
             guard currentFolderURL == folder, fieldMutationDisplayID == displayID else { return }
             fieldMutationResults = currentResults.isEmpty ? results : currentResults
             if let failure = MetadataFieldMutationFeedback.failureSummary(currentResults) { errorMessage = failure }
         }
+    }
+
+    /// Most completions only replace badges/metadata on one row. Keep the existing order and
+    /// update URL-indexed snapshots directly instead of sorting/filtering the whole folder for
+    /// every photo in a batch. Reconcile the full list only when order or membership changes.
+    private func publishMetadataFieldCompletion(for url: URL, sortKeyChanged: Bool) {
+        guard let imageIndex = urlToImageIndex[url] else { return }
+        if sortKeyChanged {
+            rebuildSortedCache()
+            return
+        }
+        let image = images[imageIndex]
+        if let index = urlToSortedIndex[url] { sortedImages[index] = image }
+        let wasVisible = urlToVisibleIndex[url] != nil
+        let isVisible = imagePassesFilter(image, context: makeImageFilterContext())
+        if wasVisible != isVisible {
+            rebuildVisibleCache()
+            return
+        }
+        if let index = urlToVisibleIndex[url] { visibleImages[index] = image }
+        if let index = urlToSelectedIndex[url] { selectedImagesCache[index] = image }
     }
 
     private func applyVerifiedFieldResult(_ result: MetadataFieldMutationWriteResult, record: MetadataSidecar,
@@ -2461,87 +2495,89 @@ final class BrowserViewModel {
     }
 
     func loadFavoriteTopLevelSubfolders() {
-        let toLoad = favoriteFolders.map(\.url).filter { subfoldersByOpenFolder[$0] == nil }
-        guard !toLoad.isEmpty else { return }
-        let service = fileSystemService
-        Task.detached(priority: .utility) {
-            let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
-                for url in toLoad {
-                    group.addTask {
-                        let subs = (try? await service.listSubfolders(at: url)) ?? []
-                        return (url, subs)
-                    }
-                }
-                var out: [(URL, [URL])] = []
-                for await pair in group { out.append(pair) }
-                return out
-            }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                for (url, subs) in results where self.subfoldersByOpenFolder[url] == nil {
-                    self.subfoldersByOpenFolder[url] = subs
-                    self.prefetchGrandchildren(of: url)
+        enqueueSubfolderLoads(favoriteFolders.map(\.url), prefetchChildren: true)
+    }
+
+    private struct SubfolderLoadRequest {
+        let id: UUID
+        let url: URL
+        let prefetchChildren: Bool
+    }
+
+    @ObservationIgnored private let subfolderLoader: @Sendable (URL) async throws -> [URL]
+    @ObservationIgnored private var pendingSubfolderLoads: [URL: UUID] = [:]
+    @ObservationIgnored private var subfolderLoadQueue: [SubfolderLoadRequest] = []
+    @ObservationIgnored private var subfolderLoadQueueIndex = 0
+    @ObservationIgnored private var subfolderLoadTask: Task<Void, Never>?
+
+    /// Only one speculative sidebar scan is admitted at a time. A wide directory must not
+    /// enqueue hundreds of actor jobs ahead of the next image-folder scan. All sidebar trees
+    /// share pending identities so overlapping favorites and repeated expansion reuse work.
+    private func enqueueSubfolderLoads(_ urls: [URL], prefetchChildren: Bool, prioritize: Bool = false) {
+        // User expansion overtakes speculative siblings, including an already queued request.
+        if prioritize {
+            for url in urls {
+                if let index = subfolderLoadQueue.indices.dropFirst(subfolderLoadQueueIndex).first(where: {
+                    subfolderLoadQueue[$0].url == url && pendingSubfolderLoads[url] == subfolderLoadQueue[$0].id
+                }) {
+                    let request = subfolderLoadQueue.remove(at: index)
+                    subfolderLoadQueue.insert(
+                        SubfolderLoadRequest(id: request.id, url: url, prefetchChildren: true),
+                        at: subfolderLoadQueueIndex
+                    )
                 }
             }
         }
+        for url in urls where subfoldersByOpenFolder[url] == nil && pendingSubfolderLoads[url] == nil {
+            let request = SubfolderLoadRequest(id: UUID(), url: url, prefetchChildren: prefetchChildren)
+            pendingSubfolderLoads[url] = request.id
+            if prioritize {
+                subfolderLoadQueue.insert(request, at: subfolderLoadQueueIndex)
+            } else {
+                subfolderLoadQueue.append(request)
+            }
+        }
+        guard subfolderLoadTask == nil, subfolderLoadQueueIndex < subfolderLoadQueue.count else { return }
+        subfolderLoadTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.subfolderLoadQueueIndex < self.subfolderLoadQueue.count {
+                let request = self.subfolderLoadQueue[self.subfolderLoadQueueIndex]
+                self.subfolderLoadQueueIndex += 1
+                guard self.pendingSubfolderLoads[request.url] == request.id else { continue }
+                let discovered = try? await self.subfolderLoader(request.url)
+                guard !Task.isCancelled else { break }
+                guard self.pendingSubfolderLoads[request.url] == request.id else { continue }
+                self.pendingSubfolderLoads.removeValue(forKey: request.url)
+                // Failed reads remain retryable; they cannot turn an inaccessible folder into
+                // a cached empty folder. An invalidated/removed tree cannot republish old work.
+                if let discovered, self.subfoldersByOpenFolder[request.url] == nil {
+                    self.subfoldersByOpenFolder[request.url] = discovered
+                }
+                if request.prefetchChildren || self.expandedOpenFolders.contains(request.url)
+                    || self.expandedFavoriteFolders.contains(where: { $0.url == request.url }) {
+                    self.prefetchGrandchildren(of: request.url)
+                }
+            }
+            guard let self else { return }
+            self.subfolderLoadQueue.removeAll(keepingCapacity: true)
+            self.subfolderLoadQueueIndex = 0
+            self.subfolderLoadTask = nil
+        }
     }
 
-    @ObservationIgnored private var pendingSubfolderLoads: Set<URL> = []
-
-    /// Lazily loads direct subfolders for a URL if not already cached. The
-    /// directory scan runs off MainActor so expanding a folder on a slow or
-    /// large volume can't stall the UI; the row shows a spinner until the
-    /// cache fills in.
+    /// Lazily loads direct subfolders without blocking MainActor. Cached expansions request
+    /// only the newly visible descendants; failed scans may be retried by expanding again.
     func ensureSubfoldersLoaded(for url: URL) {
         if subfoldersByOpenFolder[url] != nil {
-            // A previous parent's prefetch already loaded this folder, but not the
-            // children now becoming visible when it expands.
             prefetchGrandchildren(of: url)
-            return
-        }
-        guard !pendingSubfolderLoads.contains(url) else { return }
-        pendingSubfolderLoads.insert(url)
-        let service = fileSystemService
-        Task.detached(priority: .userInitiated) {
-            let discovered = (try? await service.listSubfolders(at: url)) ?? []
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.pendingSubfolderLoads.remove(url)
-                if self.subfoldersByOpenFolder[url] == nil {
-                    self.subfoldersByOpenFolder[url] = discovered
-                }
-                self.prefetchGrandchildren(of: url)
-            }
+        } else {
+            enqueueSubfolderLoads([url], prefetchChildren: true, prioritize: true)
         }
     }
 
-    /// For each child of `parentURL` not yet cached, scan its direct subfolders off
-    /// MainActor and write the result back, so sidebar chevrons reflect reality at
-    /// first render instead of optimistically showing for empty folders.
+    /// Prime disclosure state for direct children only, through the shared bounded queue.
     private func prefetchGrandchildren(of parentURL: URL) {
         guard let children = subfoldersByOpenFolder[parentURL] else { return }
-        let toScan = children.filter { subfoldersByOpenFolder[$0] == nil }
-        guard !toScan.isEmpty else { return }
-        let service = fileSystemService
-        Task.detached(priority: .utility) {
-            let results: [(URL, [URL])] = await withTaskGroup(of: (URL, [URL]).self) { group in
-                for url in toScan {
-                    group.addTask {
-                        let subs = (try? await service.listSubfolders(at: url)) ?? []
-                        return (url, subs)
-                    }
-                }
-                var out: [(URL, [URL])] = []
-                for await pair in group { out.append(pair) }
-                return out
-            }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                for (url, subs) in results where self.subfoldersByOpenFolder[url] == nil {
-                    self.subfoldersByOpenFolder[url] = subs
-                }
-            }
-        }
+        enqueueSubfolderLoads(children, prefetchChildren: false)
     }
 
     func isExpanded(_ url: URL, in tree: SidebarTree) -> Bool {
@@ -2626,31 +2662,29 @@ final class BrowserViewModel {
     /// blank out a folder that's really still there. When `force` is false the
     /// cache is only reassigned if the contents actually changed, avoiding needless
     /// view churn on the 10s tick.
+    @ObservationIgnored private var subfolderRefreshTask: Task<Void, Never>?
+
     private func rescanSubfolders(_ urls: Set<URL>, force: Bool) {
         guard !urls.isEmpty else { return }
-        let service = fileSystemService
-        Task.detached(priority: .utility) {
-            let results: [(URL, [URL]?)] = await withTaskGroup(of: (URL, [URL]?).self) { group in
-                for url in urls {
-                    group.addTask {
-                        let subs = try? await service.listSubfolders(at: url)
-                        return (url, subs)
-                    }
-                }
-                var out: [(URL, [URL]?)] = []
-                for await pair in group { out.append(pair) }
-                return out
-            }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                for (url, subs) in results {
-                    guard let subs else { continue }
-                    if force || self.subfoldersByOpenFolder[url] != subs {
-                        self.subfoldersByOpenFolder[url] = subs
-                        self.prefetchGrandchildren(of: url)
-                    }
+        // A slow volume can take longer than the timer interval. Avoid accumulating sweeps;
+        // an explicit refresh replaces the old pass and propagates cancellation to its read.
+        if subfolderRefreshTask != nil {
+            guard force else { return }
+            subfolderRefreshTask?.cancel()
+        }
+        subfolderRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            for url in urls {
+                guard !Task.isCancelled else { return }
+                let subs = try? await self.subfolderLoader(url)
+                guard !Task.isCancelled else { return }
+                guard let subs else { continue }
+                if force || self.subfoldersByOpenFolder[url] != subs {
+                    self.subfoldersByOpenFolder[url] = subs
+                    self.prefetchGrandchildren(of: url)
                 }
             }
+            self.subfolderRefreshTask = nil
         }
     }
 
@@ -2686,6 +2720,10 @@ final class BrowserViewModel {
 
     /// Recursively removes all cached subfolder entries rooted at a URL.
     private func removeSubfolderCacheRecursively(for url: URL) {
+        // A suspended refresh must not resurrect a removed/renamed sidebar tree.
+        subfolderRefreshTask?.cancel()
+        subfolderRefreshTask = nil
+        pendingSubfolderLoads.removeValue(forKey: url)
         guard let children = subfoldersByOpenFolder.removeValue(forKey: url) else { return }
         expandedFavoriteFolders = Set(
             expandedFavoriteFolders.filter { $0.url != url }

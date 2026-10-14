@@ -562,6 +562,60 @@ struct FieldMutationCallerTests {
         #expect(XMPSidecarService().loadSidecar(for: photo)?.exifOrientation == 3)
     }
 
+    @Test("Batch rating completion publishes every row and selection without disturbing name order")
+    @MainActor
+    func batchCompletionUpdatesPresentationSnapshots() async {
+        let recorder = FieldMutationCallerRecorder(failingNames: ["photo-20.jpg"])
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/batch-presentation")
+        let urls = (0..<64).map { folder.appendingPathComponent("photo-\($0).jpg") }
+        model.currentFolderURL = folder
+        model.sortOrder = .name
+        model.images = urls.map { url in
+            var image = ImageFile(url: url)
+            image.starRating = .two
+            return image
+        }
+        model.selectedImageIDs = Set(urls)
+        model.batchUpdate {} // Flush the initial folder's coalesced presentation rebuild.
+        model.setRating(.five)
+        let order = model.sortedImages.map(\.url)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.sortedImages.map(\.url) == order)
+        #expect(model.visibleImages.map(\.url) == order)
+        #expect(model.selectedImages.count == urls.count)
+        for snapshots in [model.images, model.sortedImages, model.visibleImages, model.selectedImages] {
+            for image in snapshots {
+                #expect(image.starRating == (image.filename == "photo-20.jpg" ? .two : .five))
+                if image.filename != "photo-20.jpg" {
+                    #expect(image.hasPendingMetadataChanges)
+                    #expect(image.pendingFieldNames.contains("Headline"))
+                }
+            }
+        }
+        #expect(model.fieldMutationResults.count == urls.count)
+    }
+
+    @Test("Rating rollback restores filter membership after an optimistic removal")
+    @MainActor
+    func ratingRollbackReconcilesMembership() async {
+        let recorder = FieldMutationCallerRecorder(failingNames: ["photo.jpg"])
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/rating-filter")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        var image = ImageFile(url: photo)
+        image.starRating = .five
+        model.currentFolderURL = folder
+        model.images = [image]
+        model.minimumStarRating = .four
+        model.selectedImageIDs = [photo]
+        model.setRating(.one)
+        #expect(model.visibleImages.isEmpty)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.visibleImages.map(\.url) == [photo])
+        #expect(model.visibleImages.first?.starRating == .five)
+    }
+
     @Test("Browser preparation failure restores only its optimistic field and reports the photo")
     @MainActor
     func browserFailedFieldIsVisible() async {

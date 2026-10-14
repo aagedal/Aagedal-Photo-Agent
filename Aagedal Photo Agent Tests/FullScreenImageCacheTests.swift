@@ -159,6 +159,30 @@ private extension FullScreenImagePresentationFactsAccess.Snapshot {
     )
 }
 
+private nonisolated final class PrefetchPreparationProbe: @unchecked Sendable {
+    let entered = AsyncStream<Void>.makeStream()
+    let release = DispatchSemaphore(value: 0)
+    private let blockedURL: URL
+    private let lock = NSLock()
+    private var observedMainThread = false
+    private var decoded: [URL] = []
+
+    init(blockedURL: URL) { self.blockedURL = blockedURL }
+
+    func read(url: URL, settings: CameraRawSettings?, orientation: Int?, isEdited: Bool) -> FullScreenPrefetchPreparationService.Snapshot {
+        lock.withLock { observedMainThread = observedMainThread || Thread.isMainThread }
+        if url == blockedURL {
+            entered.continuation.yield(())
+            #expect(release.wait(timeout: .now() + 10) == .success)
+        }
+        return .init(settings: settings, cacheOrientation: orientation, decodeOrientation: orientation ?? 1)
+    }
+
+    func recordDecode(_ url: URL) { lock.withLock { decoded.append(url) } }
+    var decodedURLs: [URL] { lock.withLock { decoded } }
+    var readOnMainThread: Bool { lock.withLock { observedMainThread } }
+}
+
 private nonisolated final class FullScreenImagePresentationFactsAccessProbe: @unchecked Sendable {
     private let lock = NSLock()
     private let snapshot: FullScreenImagePresentationFactsAccess.Snapshot
@@ -184,6 +208,159 @@ private nonisolated final class FullScreenImagePresentationFactsAccessProbe: @un
 
 @Suite("FullScreenImageCache")
 struct FullScreenImageCacheTests {
+    @Test("Slow speculative sidecar reads leave MainActor free and cannot publish after revocation",
+          arguments: ["clear", "suppress", "invalidate", "invalidateEdited"])
+    @MainActor
+    func revokedPrefetchPreparation(action: String) async throws {
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pixels = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 256))
+        let probe = PrefetchPreparationProbe(blockedURL: url)
+        defer { probe.release.signal() }
+        let service = FullScreenPrefetchPreparationService(read: probe.read)
+        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+            probe.recordDecode(url)
+            return pixels
+        }, prefetchPreparationService: service)
+        let placeholder = URL(fileURLWithPath: "/virtual/prefetch-placeholder.jpg")
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward,
+                            screenMaxPx: 256, isEdited: true, orientationForURL: { _ in 1 })
+        for await _ in probe.entered.stream { break }
+        MainActor.assertIsolated()
+        #expect(!probe.readOnMainThread)
+        switch action {
+        case "clear": cache.clearAll()
+        case "suppress": cache.setPrefetchSuppressed(true)
+        case "invalidate": cache.invalidateImage(for: url)
+        default: cache.invalidateEditedImage(for: url)
+        }
+        probe.release.signal()
+        // The serial filesystem boundary drains the blocked read before assertions.
+        _ = await service.prepare(url: placeholder, settings: nil, orientation: nil, isEdited: false)
+        #expect(await cache.awaitPrefetchedImage(for: url, orientation: 1, renderToken: "none", isEdited: true) == nil)
+        #expect(probe.decodedURLs.isEmpty)
+        #expect(cache.cachedImage(for: url, orientation: 1, renderToken: "none", isEdited: true) == nil)
+    }
+
+    @Test("New navigation revokes an old blocked preparation and keeps its own decode")
+    @MainActor
+    func newerPrefetchPreparationWins() async throws {
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pixels = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 256))
+        let oldURL = URL(fileURLWithPath: "/virtual/old-prefetch.jpg")
+        let probe = PrefetchPreparationProbe(blockedURL: oldURL)
+        defer { probe.release.signal() }
+        let service = FullScreenPrefetchPreparationService(read: probe.read)
+        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+            probe.recordDecode(url)
+            return pixels
+        }, prefetchPreparationService: service)
+        let placeholder = URL(fileURLWithPath: "/virtual/prefetch-placeholder.jpg")
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, oldURL], direction: .forward, screenMaxPx: 256)
+        for await _ in probe.entered.stream { break }
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        probe.release.signal()
+        #expect(await cache.awaitPrefetchedImage(for: url) != nil)
+        #expect(probe.decodedURLs == [url])
+        #expect(await cache.awaitPrefetchedImage(for: oldURL) == nil)
+    }
+
+    @Test("Concurrent foreground readers reuse prefetch across fast publication and task retirement")
+    func concurrentPrefetchPublicationReaders() async throws {
+        let url = try makeTempPNG()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let pixels = try #require(FullScreenImageCache.loadDownsampled(from: url, maxPixelSize: 256))
+        let probe = PrefetchPreparationProbe(blockedURL: URL(fileURLWithPath: "/virtual/unused-block.jpg"))
+        let entered = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let readerStarted = AsyncStream<Void>.makeStream()
+        let cache = FullScreenImageCache(previewDecoder: { url, _, _, _ in
+            probe.recordDecode(url)
+            entered.continuation.yield(())
+            for await _ in release.stream { break }
+            return pixels
+        }, prefetchPreparationService: FullScreenPrefetchPreparationService(read: probe.read))
+        let placeholder = URL(fileURLWithPath: "/virtual/prefetch-placeholder.jpg")
+        cache.startPrefetch(currentIndex: 0, images: [placeholder, url], direction: .forward, screenMaxPx: 256)
+        for await _ in entered.stream { break }
+        let readerCount = 12
+        await withTaskGroup(of: CGImage?.self) { group in
+            for _ in 0..<readerCount {
+                group.addTask {
+                    readerStarted.continuation.yield(())
+                    return await cache.awaitPrefetchedImage(for: url)
+                }
+            }
+            var started = 0
+            for await _ in readerStarted.stream {
+                started += 1
+                if started == readerCount { break }
+            }
+            release.continuation.yield(())
+            release.continuation.finish()
+            var received = 0
+            for await image in group {
+                #expect(image?.width == pixels.width)
+                #expect(image?.height == pixels.height)
+                received += 1
+            }
+            #expect(received == readerCount)
+        }
+        // Exercise reuse after the decode task has already retired as well.
+        #expect(await cache.awaitPrefetchedImage(for: url) != nil)
+        #expect(probe.decodedURLs == [url])
+        entered.continuation.finish()
+        readerStarted.continuation.finish()
+    }
+
+    @Test("Bounded prefetch windows preserve whole-folder targets and their priority")
+    func boundedPrefetchWindowTargets() throws {
+        let directions: [FullScreenImageCache.NavigationDirection] = [.forward, .backward, .none]
+        for imageCount in [1, 2, 5, 9, 50_000] {
+            let indices = Set([0, min(1, imageCount - 1), imageCount / 2, max(0, imageCount - 2), imageCount - 1])
+            for currentIndex in indices {
+                let window = try #require(FullScreenImageCache.prefetchWindow(
+                    currentIndex: currentIndex, imageCount: imageCount
+                ))
+                #expect(window.count <= 9)
+                #expect(window.contains(currentIndex))
+                for direction in directions {
+                    for itemLimit in 0...6 {
+                        let fullTargets = FullScreenImageCache.prefetchTargetIndices(
+                            currentIndex: currentIndex, imageCount: imageCount,
+                            direction: direction, itemLimit: itemLimit
+                        )
+                        let windowTargets = FullScreenImageCache.prefetchTargetIndices(
+                            currentIndex: currentIndex - window.lowerBound, imageCount: window.count,
+                            direction: direction, itemLimit: itemLimit
+                        ).map { $0 + window.lowerBound }
+                        #expect(windowTargets == fullTargets)
+                    }
+                }
+            }
+        }
+        #expect(FullScreenImageCache.prefetchWindow(currentIndex: 0, imageCount: 0) == nil)
+        #expect(FullScreenImageCache.prefetchWindow(currentIndex: -1, imageCount: 10) == nil)
+        #expect(FullScreenImageCache.prefetchWindow(currentIndex: 10, imageCount: 10) == nil)
+    }
+
+    @Test("Prefetch priorities retain navigation direction and memory admission limits")
+    func prefetchPriorities() {
+        #expect(FullScreenImageCache.prefetchTargetIndices(
+            currentIndex: 4, imageCount: 9, direction: .forward, itemLimit: 6
+        ) == [5, 6, 7, 8, 3, 2])
+        #expect(FullScreenImageCache.prefetchTargetIndices(
+            currentIndex: 4, imageCount: 9, direction: .backward, itemLimit: 6
+        ) == [3, 2, 1, 0, 5, 6])
+        #expect(FullScreenImageCache.prefetchTargetIndices(
+            currentIndex: 4, imageCount: 9, direction: .none, itemLimit: 6
+        ) == [5, 3, 6, 2, 7, 1])
+        #expect(FullScreenImageCache.prefetchTargetIndices(
+            currentIndex: 4, imageCount: 9, direction: .forward, itemLimit: 2
+        ) == [5, 6])
+    }
+
 
     @Test("Auto explicitly opts into the newest supported Apple RAW decoder")
     func automaticRAWDecoderSelection() {

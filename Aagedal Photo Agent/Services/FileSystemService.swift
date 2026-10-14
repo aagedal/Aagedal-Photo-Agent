@@ -241,15 +241,14 @@ actor FileSystemService {
                 // Camera voice memos are companions, never browser photos. Keep this boundary even
                 // when the user asks to show otherwise-unsupported files.
                 if item.pathExtension.lowercased() == "wav" { continue }
+                // Reject unsupported entries before asking a file provider for availability or
+                // resource values. Large mixed folders should not probe/download unrelated files.
+                guard includeAllFiles || SupportedImageFormats.isSupported(url: item)
+                    || (includeVideos && BrowserFileVisibility.isVideo(item)) else { continue }
                 guard (try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 if locallyAvailableForEnumeration(item) {
-                    let isSupported = includeAllFiles
-                        ? ((try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
-                        : (SupportedImageFormats.isSupported(url: item) || (includeVideos && BrowserFileVisibility.isVideo(item)))
-                    guard isSupported else { continue }
                     files.append(ImageFile(url: item))
                 } else {
-                    guard includeAllFiles || SupportedImageFormats.isSupported(url: item) || (includeVideos && BrowserFileVisibility.isVideo(item)) else { continue }
                     deferredICloudItemCount += 1
                     files.append(ImageFile(url: item, isICloudDownloadPending: true))
                 }

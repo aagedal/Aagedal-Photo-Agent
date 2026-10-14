@@ -140,6 +140,34 @@ struct SourceImageRevisionTests {
         #expect(!probe.ranOnMainThread)
     }
 
+    @Test("revision captures retain task context on the Dispatch filesystem worker")
+    @MainActor
+    func captureUsesDispatchExecutor() async throws {
+        let queue = DispatchSerialQueue(label: "test.source-revision.filesystem")
+        let source = URL(fileURLWithPath: "/virtual/worker.jpg")
+        let check: @Sendable () -> Void = {
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(SourceRevisionExecutorContext.marker == source)
+        }
+        let io = SourceImageRevisionCaptureIO(
+            canonicalURL: { check(); return $0 },
+            snapshot: { _ in
+                check()
+                return .init(isRegularFile: true, byteCount: 12,
+                             contentModificationDate: Date(timeIntervalSince1970: 0),
+                             fileResourceIdentifier: nil)
+            },
+            hash: { _ in check(); return Data(repeating: 0xab, count: 32) },
+            now: { check(); return Date() }
+        )
+        let service = SourceImageRevisionCaptureService(io: io, filesystemQueue: queue)
+        let revision = try await SourceRevisionExecutorContext.$marker.withValue(source) {
+            try await service.capture(at: source)
+        }
+        #expect(revision.sha256 == String(repeating: "ab", count: 32))
+    }
+
     @Test("capture cancellation after a non-preemptible stat stops before hashing")
     func captureCancellationAfterStat() async throws {
         let probe = SourceRevisionCaptureProbe(blockFirstSnapshot: true)
@@ -180,6 +208,27 @@ struct SourceImageRevisionTests {
 
 @Suite("File system offline availability")
 struct FileSystemOfflineAvailabilityTests {
+    @Test("photo-only scans never probe or request downloads for unrelated entries")
+    func skipsUnrelatedAvailabilityProbes() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let photo = try fixture.write("photo.jpg", contents: "photo")
+        _ = try fixture.write("notes.txt", contents: "notes")
+        _ = try fixture.write("video.mov", contents: "video")
+        _ = try fixture.write("memo.wav", contents: "memo")
+        let probes = DownloadRequestProbe()
+        let downloads = DownloadRequestProbe()
+        let service = FileSystemService(isLocallyAvailable: { url in
+            probes.record(url)
+            return url == fixture.directoryURL
+        }, requestDownload: { downloads.record($0) })
+        let result = try await service.scanFolderWithStatus(at: fixture.directoryURL)
+        #expect(Set(probes.urls.map(\.standardizedFileURL)) == Set([fixture.directoryURL, photo].map(\.standardizedFileURL)))
+        #expect(downloads.urls.map(\.standardizedFileURL) == [photo.standardizedFileURL])
+        #expect(result.deferredICloudItemCount == 1)
+        #expect(result.files.map(\.filename) == ["photo.jpg"])
+    }
+
     @Test("an offline iCloud item is deferred and its download is requested")
     func defersOfflineItem() async throws {
         let fixture = try OfflineFileFixture()
@@ -1354,4 +1403,8 @@ struct VideoTimecodeTests {
         #expect(VideoTimecode.format(frame: 107892, nominalRate: 30, dropFrame: true) == "01:00:00;00")
         #expect(VideoTimecode.format(frame: 3600, nominalRate: 60, dropFrame: true) == "00:01:00;04")
     }
+}
+
+private nonisolated enum SourceRevisionExecutorContext {
+    @TaskLocal static var marker: URL?
 }
