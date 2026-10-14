@@ -535,6 +535,9 @@ final class MetadataViewModel {
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil) {
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
+        // The replacement request owns both flags, including single/batch transitions.
+        isLoading = false
+        isLoadingBatchMetadata = false
         if images.count == 1,
            let image = images.first,
            let phase = captionCleanupOwners[MetadataIOKey.key(for: image.url)] {
@@ -626,6 +629,9 @@ final class MetadataViewModel {
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
                     let sourceBefore = try? await SourceImageRevision.capture(at: imageURL)
+                    // A cancelled capture is intentionally optional evidence, but must not
+                    // enqueue an obsolete metadata read ahead of the next selected photo.
+                    guard !Task.isCancelled, self.metadataLoadRequestID == requestID else { return }
                     let (embedded, conflict) = try await readService.readFullMetadataWithConflictCheck(url: imageURL)
                     let exifMs = loadStart.elapsedMilliseconds()
                     self.perfLog.info("[MetadataVM] metadata read returned — \(exifMs)ms for \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")

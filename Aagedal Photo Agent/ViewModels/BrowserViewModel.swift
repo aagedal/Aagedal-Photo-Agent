@@ -249,6 +249,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationDisplayID = UUID()
+    @ObservationIgnored private var tagReadRevisions: [URL: UUID] = [:]
     @ObservationIgnored private var fieldMutationRequestIDs: [URL: [String: UUID]] = [:]
     @ObservationIgnored private var fieldMutationFallbacks: [URL: [String: (displayID: UUID, image: ImageFile, unresolved: [MetadataFieldMutationWriteResult])]] = [:]
     @ObservationIgnored private let injectedFieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)?
@@ -777,6 +778,7 @@ final class BrowserViewModel {
 
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
+        tagReadRevisions.removeAll()
         cancelRenamePlanning()
         pendingMetadataDrainTask?.cancel()
         autoRefreshTask?.cancel()
@@ -1287,6 +1289,7 @@ final class BrowserViewModel {
             guard !Task.isCancelled, currentFolderURL == folderURL else { return }
             let batchEnd = min(batchStart + batchSize, urls.count)
             let batchURLs = Array(urls[batchStart..<batchEnd])
+            let tagRevisions = captureTagReadRevisions(for: batchURLs)
             let batchIndex = batchStart / batchSize
             let batchTimer = ContinuousClock.now
 
@@ -1327,16 +1330,25 @@ final class BrowserViewModel {
                 else { return }
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
+                let previousSortValues = batchURLs.compactMap { url -> (URL, StarRating, ColorLabel)? in
+                    guard let index = urlToImageIndex[url] else { return nil }
+                    return (url, images[index].starRating, images[index].colorLabel)
+                }
                 applyBatchMetadataResults(
                     results,
                     to: &images,
                     localIndex: urlToImageIndex,
                     cachedSidecars: cachedSidecars,
                     xmpMetadataMap: xmpMetadataMap,
-                    nativeHDRByURL: hdrSnapshot.isHDRByImageURL
+                    nativeHDRByURL: hdrSnapshot.isHDRByImageURL,
+                    tagRevisionsAtRead: tagRevisions
                 )
-                // Publish badges as each batch completes, rather than waiting for the whole folder.
-                rebuildSortedCache()
+                let sortKeyChanged = previousSortValues.contains { url, rating, label in
+                    guard let index = urlToImageIndex[url] else { return false }
+                    return (sortOrder == .rating && rating != images[index].starRating)
+                        || (sortOrder == .label && label != images[index].colorLabel)
+                }
+                publishMetadataBatch(for: batchURLs, sortKeyChanged: sortKeyChanged)
             } catch {
                 logger.warning("Batch metadata load failed (batch at offset \(batchStart)): \(error.localizedDescription)")
             }
@@ -1353,7 +1365,6 @@ final class BrowserViewModel {
         else { return }
         let totalMs = totalBatchStart.elapsedMilliseconds()
         perfLog.info("[BrowserVM] loadBasicMetadata DONE — \(urls.count) images in \(totalMs)ms")
-        rebuildSortedCache()
     }
 
     /// Parses already-read sidecars outside the main actor. The embedded metadata aspect
@@ -1398,13 +1409,14 @@ final class BrowserViewModel {
 
     /// Apply parsed batch metadata results to the local ImageFile array.
     /// Shared by full-folder reload and incremental (pending URL) reload paths.
-    private func applyBatchMetadataResults(
+    func applyBatchMetadataResults(
         _ results: [[String: Any]],
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
         xmpMetadataMap: [URL: IPTCMetadata] = [:],
-        nativeHDRByURL: [URL: Bool]
+        nativeHDRByURL: [URL: Bool],
+        tagRevisionsAtRead: [URL: UUID]? = nil
     ) {
         for dict in results {
             guard let sourcePath = dict[MetadataDictKey.sourceFile] as? String else { continue }
@@ -1413,6 +1425,9 @@ final class BrowserViewModel {
             // Bounds-check: localIndex can become stale when images are modified during
             // an async metadata await (e.g. user switches folder while batch is in-flight).
             if let index = localIndex[sourceURL], index < updated.count {
+                let changedDuringRead = tagRevisionsAtRead.map { $0[sourceURL] != tagReadRevisions[sourceURL] } ?? false
+                let pendingRating = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["rating"] != nil ? updated[index].starRating : nil
+                let pendingLabel = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["label"] != nil ? updated[index].colorLabel : nil
                 if let rating = dict[MetadataDictKey.rating] as? Int,
                    let starRating = StarRating(rawValue: rating) {
                     updated[index].starRating = starRating
@@ -1533,6 +1548,10 @@ final class BrowserViewModel {
                 updated[index].metadata = descriptive
 
                 applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
+                // Background reads can finish while a field write is suspended. Keep the
+                // accepted optimistic value until its own verified completion or rollback.
+                if let pendingRating { updated[index].starRating = pendingRating }
+                if let pendingLabel { updated[index].colorLabel = pendingLabel }
             }
         }
     }
@@ -1950,6 +1969,7 @@ final class BrowserViewModel {
                 || fieldMutationFallbacks[request.imageURL]?[field]?.displayID != displayID {
                 fieldMutationFallbacks[request.imageURL, default: [:]][field] = (displayID, original, [])
             }
+            tagReadRevisions[request.imageURL] = UUID()
             fieldMutationRequestIDs[request.imageURL, default: [:]][field] = request.id
         }
         let previous = fieldMutationTask
@@ -1993,6 +2013,7 @@ final class BrowserViewModel {
                 }
                 guard ownsField, currentFolderURL == folder, fieldMutationDisplayID == displayID,
                       let index = urlToImageIndex[request.imageURL] else { continue }
+                tagReadRevisions[request.imageURL] = UUID()
                 currentResults.append(contentsOf: unresolved)
                 if !unresolved.contains(where: { $0.requestID == result.requestID }) { currentResults.append(result) }
                 suppressImagesCascade = true
@@ -2059,6 +2080,44 @@ final class BrowserViewModel {
         }
         if let index = urlToVisibleIndex[url] { visibleImages[index] = image }
         if let index = urlToSelectedIndex[url] { selectedImagesCache[index] = image }
+    }
+
+    func captureTagReadRevisions(for urls: [URL]) -> [URL: UUID] {
+        var revisions: [URL: UUID] = [:]
+        for url in urls { revisions[url] = tagReadRevisions[url] }
+        return revisions
+    }
+
+    /// A metadata read changes properties, not the folder inventory. Refresh only the
+    /// affected sorted rows; reconcile filters once per batch. Sorting by filename/type/date
+    /// stays untouched, and rating/label order is rebuilt only when its values change.
+    func publishMetadataBatch(for urls: [URL], sortKeyChanged: Bool) {
+        if sortKeyChanged {
+            rebuildSortedCache()
+            return
+        }
+        var selectedRenderChanged = false
+        for url in urls {
+            guard let imageIndex = urlToImageIndex[url] else { continue }
+            let image = images[imageIndex]
+            if let index = urlToSortedIndex[url] { sortedImages[index] = image }
+            if !isFilteringActive {
+                if let index = urlToVisibleIndex[url] { visibleImages[index] = image }
+                if let index = urlToSelectedIndex[url] {
+                    let previous = selectedImagesCache[index]
+                    selectedRenderChanged = selectedRenderChanged
+                        || previous.exifOrientation != image.exifOrientation
+                        || previous.cameraRawSettings != image.cameraRawSettings
+                        || previous.cropRegion != image.cropRegion
+                        || previous.isNativeHDR != image.isNativeHDR
+                    selectedImagesCache[index] = image
+                }
+            }
+        }
+        // Metadata-dependent membership can change. Without filters the URL inventory is
+        // unchanged, so there is no need to walk the folder or restart selected-image warming.
+        if isFilteringActive { rebuildVisibleCache() }
+        else if selectedRenderChanged { preCacheSelectedRetinaImage() }
     }
 
     private func applyVerifiedFieldResult(_ result: MetadataFieldMutationWriteResult, record: MetadataSidecar,

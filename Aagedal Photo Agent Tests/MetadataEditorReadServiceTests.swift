@@ -47,6 +47,30 @@ private actor HistoryRestoreSuspensionGate {
 
 @Suite("Metadata editor sidecar read boundary", .serialized)
 struct MetadataEditorReadServiceTests {
+    @Test("Selection replacement owns both metadata loading flags")
+    @MainActor
+    func replacementLoadingFlags() async throws {
+        let fixture = try makePendingCaptionFixture(hasMirroredXMP: false)
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let first = ImageFile(url: fixture.image)
+        let second = ImageFile(url: fixture.folder.appendingPathComponent("second.jpg"))
+        fixture.model.loadMetadata(for: [first, second], folderURL: fixture.folder)
+        #expect(fixture.model.isLoadingBatchMetadata)
+        #expect(!fixture.model.isLoading)
+        fixture.model.loadMetadata(for: [first], folderURL: fixture.folder)
+        #expect(fixture.model.isLoading)
+        #expect(!fixture.model.isLoadingBatchMetadata)
+        fixture.model.loadMetadata(for: [first, second], folderURL: fixture.folder)
+        #expect(fixture.model.isLoadingBatchMetadata)
+        #expect(!fixture.model.isLoading)
+        fixture.model.loadMetadata(for: [], folderURL: fixture.folder)
+        #expect(!fixture.model.isLoading)
+        #expect(!fixture.model.isLoadingBatchMetadata)
+        await Task.yield()
+        #expect(fixture.model.selectedURLs.isEmpty)
+        #expect(fixture.model.metadata == nil)
+    }
+
     @Test("Copy Previous refuses inconsistent XMP without changing the editor")
     @MainActor
     func copyPreviousRefusesIncompleteXMP() async throws {
