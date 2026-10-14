@@ -14,33 +14,33 @@ nonisolated struct CaptionDraftPersistence: Sendable {
 
     @discardableResult
     func persist() throws -> MetadataSidecar {
-        // DispatchQueue.sync may run a durable retry inline on the caller's MainActor task.
-        // Give this synchronous-to-async bridge an independent task context so the semaphore
-        // cannot block the executor needed by its own persistence work.
+        // Compatibility for callers that require a synchronous durability barrier. Normal
+        // queued writes and async barriers use persistAsync() without blocking a thread.
         let completion = DispatchSemaphore(value: 0)
         let result = CaptionPersistenceResult()
-        Task.detached {
-            do {
-                let persistence = await MetadataSidecarService().replayHistoryAndMirrorXMP(request)
-                guard persistence.completed else {
-                    if persistence.failure?.kind == .replayConflict {
-                        throw CaptionWorkspaceFlushError.replayConflict(persistence.failure!.message)
-                    }
-                    throw CaptionWorkspaceFlushError.persistenceFailed(
-                        persistence.failure?.message ?? "The captured Caption draft did not finish saving."
-                    )
-                }
-                guard let installed = persistence.installedSidecar else {
-                    throw CaptionWorkspaceFlushError.persistenceFailed("The captured metadata draft has no verified save receipt.")
-                }
-                result.set(.success(installed))
-            } catch {
-                result.set(.failure(error))
-            }
+        Task.detached(priority: .userInitiated) {
+            do { result.set(.success(try await persistAsync())) }
+            catch { result.set(.failure(error)) }
             completion.signal()
         }
         completion.wait()
         return try result.get().get()
+    }
+
+    func persistAsync() async throws -> MetadataSidecar {
+        let persistence = await MetadataSidecarService().replayHistoryAndMirrorXMP(request)
+        guard persistence.completed else {
+            if persistence.failure?.kind == .replayConflict {
+                throw CaptionWorkspaceFlushError.replayConflict(persistence.failure!.message)
+            }
+            throw CaptionWorkspaceFlushError.persistenceFailed(
+                persistence.failure?.message ?? "The captured Caption draft did not finish saving."
+            )
+        }
+        guard let installed = persistence.installedSidecar else {
+            throw CaptionWorkspaceFlushError.persistenceFailed("The captured metadata draft has no verified save receipt.")
+        }
+        return installed
     }
 }
 
@@ -55,6 +55,20 @@ nonisolated private final class CaptionPersistenceResult: @unchecked Sendable {
     nonisolated func get() -> Result<MetadataSidecar, any Error> {
         lock.withLock { value! }
     }
+}
+
+nonisolated private final class CaptionDrainResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<Void, any Error>?
+    func set(_ result: Result<Void, any Error>) { lock.withLock { value = result } }
+    func get() -> Result<Void, any Error> { lock.withLock { value! } }
+}
+
+nonisolated private final class CaptionPendingCountResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func set(_ count: Int) { lock.withLock { value = count } }
+    func get() -> Int { lock.withLock { value } }
 }
 
 nonisolated struct CaptionQueueFailure: Identifiable, Sendable, Equatable {
@@ -189,13 +203,16 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     private struct Item: @unchecked Sendable {
         let id: UUID
         let persistence: CaptionDraftPersistence?
-        let operation: @Sendable () throws -> MetadataSidecar?
+        let operation: @Sendable () async throws -> MetadataSidecar?
         let onSuccess: @MainActor @Sendable (UUID, MetadataSidecar) -> Void
         let onFailure: @MainActor @Sendable (String) -> Void
         let photoURL: URL?
     }
     private let queue: DispatchQueue
     private let failureDelivery: CaptionQueueFailureDelivery
+    private let operationQueue = DispatchQueue(label: "com.aagedal.photo-agent.caption-injected-operation", qos: .userInitiated)
+    private var isProcessing = false
+    private var idleActions: [@Sendable () -> Void] = []
     private var items: [Item] = []
     private var failure: (any Error)?
     private var failureID: UUID?
@@ -222,7 +239,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     func enqueue(_ persistence: CaptionDraftPersistence,
                  onFailure: @escaping @MainActor @Sendable (String) -> Void,
                  onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void = { _, _ in }) -> UUID {
-        enqueueItem(persistence: persistence, operation: { try persistence.persist() },
+        enqueueItem(persistence: persistence, operation: { try await persistence.persistAsync() },
             onFailure: onFailure, onSuccess: onSuccess)
     }
 
@@ -231,12 +248,23 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     func enqueue(persistence: CaptionDraftPersistence? = nil,
                  operation: @escaping @Sendable () throws -> Void,
                  onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in }) -> UUID {
-        enqueueItem(persistence: persistence, operation: { try operation(); return nil },
-            onFailure: onFailure, onSuccess: { _, _ in })
+        enqueueItem(persistence: persistence, operation: { [operationQueue] in
+            try await withCheckedThrowingContinuation { continuation in
+                operationQueue.async { continuation.resume(with: Result { try operation(); return nil }) }
+            }
+        }, onFailure: onFailure, onSuccess: { _, _ in })
+    }
+
+    /// Async operation injection also verifies that a suspended write retains FIFO ownership.
+    @discardableResult
+    func enqueueAsync(operation: @escaping @Sendable () async throws -> Void,
+                      onFailure: @escaping @MainActor @Sendable (String) -> Void = { _ in }) -> UUID {
+        enqueueItem(persistence: nil, operation: { try await operation(); return nil },
+                    onFailure: onFailure, onSuccess: { _, _ in })
     }
 
     private func enqueueItem(persistence: CaptionDraftPersistence?,
-                 operation: @escaping @Sendable () throws -> MetadataSidecar?,
+                 operation: @escaping @Sendable () async throws -> MetadataSidecar?,
                  onFailure: @escaping @MainActor @Sendable (String) -> Void,
                  onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void) -> UUID {
         let item = Item(id: UUID(), persistence: persistence, operation: operation, onSuccess: onSuccess, onFailure: onFailure,
@@ -254,24 +282,44 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
         return item.id
     }
 
+    /// Compatibility barrier for synchronous mutation callers. Replay itself runs at the
+    /// same user-initiated priority as this serial state queue, without a default-priority bridge.
     func drain() throws {
-        let result: Result<Void, any Error> = queue.sync { [self] in
-            guard review == nil else { return .failure(CaptionConflictRecoveryError.reviewInProgress) }
-            process(retryingFailure: true)
-            return failure.map(Result.failure) ?? .success(())
+        let completion = DispatchSemaphore(value: 0)
+        let result = CaptionDrainResult()
+        queue.async { [self] in
+            whenIdle { [self] in
+                beginDrain { outcome in result.set(outcome); completion.signal() }
+            }
         }
-        try result.get()
+        completion.wait()
+        try result.get().get()
     }
 
+    /// Cancellation abandons the caller's transition, never an admitted durable write. Awaiting
+    /// completion keeps retries/recovery serialized; the cancelled caller then receives cancellation.
     func drainAsync() async throws {
-        try await perform { [self] in
-            guard review == nil else { throw CaptionConflictRecoveryError.reviewInProgress }
-            process(retryingFailure: true)
-            if let failure { throw failure }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            queue.async { [self] in
+                whenIdle { [self] in beginDrain { continuation.resume(with: $0) } }
+            }
         }
+        try Task.checkCancellation()
     }
 
-    var pendingCount: Int { queue.sync { items.count } }
+    private func beginDrain(_ completion: @escaping @Sendable (Result<Void, any Error>) -> Void) {
+        guard review == nil else { completion(.failure(CaptionConflictRecoveryError.reviewInProgress)); return }
+        process(retryingFailure: true)
+        completeAfterProcessing { [self] in completion(failure.map(Result.failure) ?? .success(())) }
+    }
+
+    var pendingCount: Int {
+        let completion = DispatchSemaphore(value: 0)
+        let result = CaptionPendingCountResult()
+        queue.async { [self] in whenIdle { [self] in result.set(items.count); completion.signal() } }
+        completion.wait()
+        return result.get()
+    }
     /// Includes work admitted before its queue block starts and the in-flight head, without waiting for I/O.
     var hasPendingWork: Bool { publicationLock.withLock { admittedPendingCount > 0 } }
     var currentFailure: CaptionQueueFailure? { publicationLock.withLock { publishedFailure } }
@@ -319,26 +367,35 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
 
     func discardExported(_ snapshot: CaptionConflictSnapshot,
                          receipt: CaptionConflictExportReceipt) async throws -> CaptionConflictDiscardResult {
-        try await perform { [self] in
-            try validate(snapshot)
-            guard receipt.reviewID == snapshot.id, receipt.requestIDs == snapshot.requestIDs,
-                  receipt.queueGeneration == snapshot.queueGeneration else { throw CaptionConflictRecoveryError.obsoleteReview }
-            try validateExportDestination(receipt.exportURL)
-            let exported = try Data(contentsOf: receipt.exportURL)
-            guard Self.hash(exported) == receipt.sha256, exported == snapshot.exportData else {
-                throw CaptionConflictRecoveryError.exportVerificationFailed
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                whenIdle { [self] in
+                    do {
+                        try validate(snapshot)
+                        guard receipt.reviewID == snapshot.id, receipt.requestIDs == snapshot.requestIDs,
+                              receipt.queueGeneration == snapshot.queueGeneration else { throw CaptionConflictRecoveryError.obsoleteReview }
+                        try validateExportDestination(receipt.exportURL)
+                        let exported = try Data(contentsOf: receipt.exportURL)
+                        guard Self.hash(exported) == receipt.sha256, exported == snapshot.exportData else {
+                            throw CaptionConflictRecoveryError.exportVerificationFailed
+                        }
+                        let ids = Set(snapshot.requestIDs)
+                        items.removeAll { ids.contains($0.id) }
+                        publicationLock.withLock { admittedPendingCount -= ids.count }
+                        generation &+= 1
+                        photoGenerations[snapshot.photoURL, default: 0] &+= 1
+                        failure = nil
+                        failureID = nil
+                        review = nil
+                        publish()
+                        process(retryingFailure: false)
+                        completeAfterProcessing { [self] in
+                            continuation.resume(returning: CaptionConflictDiscardResult(
+                                discardedCount: ids.count, remainingFailure: failureRecord()))
+                        }
+                    } catch { continuation.resume(throwing: error) }
+                }
             }
-            let ids = Set(snapshot.requestIDs)
-            items.removeAll { ids.contains($0.id) }
-            publicationLock.withLock { admittedPendingCount -= ids.count }
-            generation &+= 1
-            photoGenerations[snapshot.photoURL, default: 0] &+= 1
-            failure = nil
-            failureID = nil
-            review = nil
-            publish()
-            process(retryingFailure: false)
-            return CaptionConflictDiscardResult(discardedCount: ids.count, remainingFailure: failureRecord())
         }
     }
 
@@ -380,7 +437,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
 
     private func perform<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
-            queue.async { continuation.resume(with: Result { try body() }) }
+            queue.async { [self] in whenIdle { continuation.resume(with: Result { try body() }) } }
         }
     }
 
@@ -403,40 +460,67 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
         }
     }
 
+    /// State and recovery stay on the serial queue, but no queue thread waits on async I/O.
+    private func whenIdle(_ action: @escaping @Sendable () -> Void) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if isProcessing { idleActions.append(action) }
+        else { action() }
+    }
+
+    /// A barrier's result belongs ahead of later barriers/recovery commands, even when its
+    /// retry suspends. Later commands must not change the result of this durability attempt.
+    private func completeAfterProcessing(_ action: @escaping @Sendable () -> Void) {
+        if isProcessing { idleActions.insert(action, at: 0) }
+        else { action() }
+    }
+
+    private func finishIdleActions() {
+        while !isProcessing, !idleActions.isEmpty {
+            idleActions.removeFirst()()
+        }
+    }
+
     private func process(retryingFailure: Bool) {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard review == nil else { return }
+        guard !isProcessing, review == nil else { return }
         if retryingFailure { failure = nil; failureID = nil }
         else if failure != nil { return }
-        while let item = items.first {
-            do {
-                let installed = try item.operation()
-                items.removeFirst()
-                publicationLock.withLock { admittedPendingCount -= 1 }
-                generation &+= 1
-                if let photo = item.photoURL { photoGenerations[photo, default: 0] &+= 1 }
-                if let installed {
-                    // The callback carries the exact verified transaction receipt. A newer write
-                    // may already exist when delivered; callers must gate UI publication by ID.
-                    failureDelivery.schedule { @MainActor in item.onSuccess(item.id, installed) }
+        guard let item = items.first else { publish(); return }
+        isProcessing = true
+        // This independent task owns the admitted request. Cancelling a navigation/termination
+        // waiter cannot interrupt a transaction between JSON and XMP or lose its replay receipt.
+        Task.detached(priority: .userInitiated) { [self] in
+            let result: Result<MetadataSidecar?, any Error>
+            do { result = .success(try await item.operation()) }
+            catch { result = .failure(error) }
+            queue.async { [self] in
+                isProcessing = false
+                switch result {
+                case .success(let installed):
+                    items.removeFirst()
+                    publicationLock.withLock { admittedPendingCount -= 1 }
+                    generation &+= 1
+                    if let photo = item.photoURL { photoGenerations[photo, default: 0] &+= 1 }
+                    if let installed {
+                        failureDelivery.schedule { @MainActor in item.onSuccess(item.id, installed) }
+                    }
+                    process(retryingFailure: false)
+                case .failure(let error):
+                    failure = error
+                    failureID = item.id
+                    generation &+= 1
+                    publish()
+                    let state = failureRecord()
+                    failureDelivery.schedule { @MainActor [weak self] in
+                        guard self?.currentFailure == state else { return }
+                        item.onFailure(error.localizedDescription)
+                    }
                 }
-            } catch {
-                failure = error
-                failureID = item.id
-                generation &+= 1
-                publish()
-                let state = failureRecord()
-                failureDelivery.schedule { @MainActor [weak self] in
-                    guard self?.currentFailure == state else { return }
-                    item.onFailure(error.localizedDescription)
-                }
-                return
+                finishIdleActions()
             }
         }
-        failure = nil
-        failureID = nil
-        publish()
     }
+
 }
 
 /// Readiness shown by the Caption Workspace for one image.
@@ -803,6 +887,18 @@ final class CaptionWorkspaceFlushCoordinator {
         try requireVariableDraftsPersisted()
         try enqueueFlush()
         try persistenceQueue.drain()
+    }
+
+    /// Async durable barrier for transitions that can suspend while JSON/XMP is verified.
+    func flushAsync() async throws {
+        try requireVariableDraftsPersisted()
+        try enqueueFlush()
+        try await persistenceQueue.drainAsync()
+    }
+
+    func flushQueuedPersistenceAsync() async throws {
+        try requireVariableDraftsPersisted()
+        try await persistenceQueue.drainAsync()
     }
 
     /// Navigation flush: commits AppKit's buffered text and snapshots persistence without waiting

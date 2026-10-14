@@ -127,6 +127,7 @@
 		C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */; };
 		C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */; };
 		CF0EB0010000000000000002 /* WebMediaImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF0EB0010000000000000001 /* WebMediaImportTests.swift */; };
+		CF0EB0020000000000000002 /* WebImportFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF0EB0020000000000000001 /* WebImportFilesystemExecutorTests.swift */; };
 		C0DE21000000000000000002 /* CodeReplacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE21000000000000000001 /* CodeReplacementTests.swift */; };
 		C0DE22000000000000000002 /* CaptionCodeReplacementCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */; };
 		C0DEA1000000000000000002 /* CaptionAutocompleteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */; };
@@ -423,6 +424,7 @@
 		C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IPTCMetadataVerificationTests.swift; sourceTree = "<group>"; };
 		C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DescriptiveMetadataWriteBoundaryTests.swift; sourceTree = "<group>"; };
 		CF0EB0010000000000000001 /* WebMediaImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMediaImportTests.swift; sourceTree = "<group>"; };
+		CF0EB0020000000000000001 /* WebImportFilesystemExecutorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebImportFilesystemExecutorTests.swift; sourceTree = "<group>"; };
 		C0DE21000000000000000001 /* CodeReplacementTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CodeReplacementTests.swift; sourceTree = "<group>"; };
 		C0DE22000000000000000001 /* CaptionCodeReplacementCoordinatorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionCodeReplacementCoordinatorTests.swift; sourceTree = "<group>"; };
 		C0DEA1000000000000000001 /* CaptionAutocompleteServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptionAutocompleteServiceTests.swift; sourceTree = "<group>"; };
@@ -813,6 +815,7 @@
 				C0D3A1000000000000000001 /* IPTCMetadataVerificationTests.swift */,
 				C0D3A2000000000000000001 /* DescriptiveMetadataWriteBoundaryTests.swift */,
 				CF0EB0010000000000000001 /* WebMediaImportTests.swift */,
+				CF0EB0020000000000000001 /* WebImportFilesystemExecutorTests.swift */,
 				D34D11000000000000000001 /* DeadlineProfileTests.swift */,
 				D34D12000000000000000001 /* DeadlineProfileRepositoryTests.swift */,
 				D34DF1000000000000000001 /* DeadlinePreflightServiceTests.swift */,
@@ -1307,6 +1310,7 @@
 				C0D3A1000000000000000002 /* IPTCMetadataVerificationTests.swift in Sources */,
 				C0D3A2000000000000000002 /* DescriptiveMetadataWriteBoundaryTests.swift in Sources */,
 				CF0EB0010000000000000002 /* WebMediaImportTests.swift in Sources */,
+				CF0EB0020000000000000002 /* WebImportFilesystemExecutorTests.swift in Sources */,
 				D34D11000000000000000002 /* DeadlineProfileTests.swift in Sources */,
 				D34D12000000000000000002 /* DeadlineProfileRepositoryTests.swift in Sources */,
 				D34DF1000000000000000002 /* DeadlinePreflightServiceTests.swift in Sources */,
