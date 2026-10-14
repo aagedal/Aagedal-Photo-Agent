@@ -1,12 +1,18 @@
 # Project planning overview
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-14
+**Last reviewed:** 2026-10-15
 
 The [metadata transition continuation](plan-status-metadata-transition-async-continuation-2026-10-14.md)
 moves shared workspace/action barriers to async persistence with editor admission guards,
 and drains retained drafts during Deadline preparation. Compatibility callers and release
 qualification remain open.
+
+**Metadata file-action async continuation (2026-10-15):** Export, signing,
+IPTC copy/paste and RAW archive actions await the shared guarded durability barrier
+and reject changed folder/selection context. Activity resume, rename preparation
+and broader qualification remain open; see the
+[dated continuation](plan-status-file-action-async-continuation-2026-10-15.md).
 
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing

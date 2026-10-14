@@ -1310,14 +1310,15 @@ struct ContentView: View {
         }
     }
 
-    private func flushMetadataForFileOperation() -> Bool {
-        do {
-            try flushMetadataForTransition()
-            return true
-        } catch {
-            if mainViewMode == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
-            else { metadataViewModel.saveError = error.localizedDescription }
-            return false
+    /// Capture the command's target context before suspending for durable metadata. Folder or
+    /// selection replacement abandons the command rather than applying it to a new target set.
+    private func performAfterMetadataFileOperation(_ operation: @escaping @MainActor () -> Void) {
+        let folder = browserViewModel.currentFolderURL
+        let selection = browserViewModel.selectedImageIDs
+        performAfterCaptionFlush {
+            guard browserViewModel.currentFolderURL == folder,
+                  browserViewModel.selectedImageIDs == selection else { return }
+            operation()
         }
     }
 
@@ -2970,7 +2971,10 @@ struct ContentView: View {
     }
 
     private func showAdvancedExportSelected() {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { showAdvancedExportSelectedAfterMetadataFlush() }
+    }
+
+    private func showAdvancedExportSelectedAfterMetadataFlush() {
         guard !isRenderingEditedFolder else { return }
 
         // A Set backs selection, so derive the queue from visibleImages to preserve
@@ -3053,7 +3057,10 @@ struct ContentView: View {
     }
 
     private func renderAndSignSelected() {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { renderAndSignSelectedAfterMetadataFlush() }
+    }
+
+    private func renderAndSignSelectedAfterMetadataFlush() {
         guard C2PASigningService.isAvailable else {
             browserViewModel.errorMessage = "c2patool not found in app bundle"
             return
@@ -3228,7 +3235,10 @@ struct ContentView: View {
     // MARK: - Copy & Paste IPTC
 
     private func copyIPTCMetadata() {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { copyIPTCMetadataAfterMetadataFlush() }
+    }
+
+    private func copyIPTCMetadataAfterMetadataFlush() {
         guard browserViewModel.selectedImages.count == 1 else {
             browserViewModel.errorMessage = "Select a single image to copy IPTC metadata from."
             return
@@ -3274,7 +3284,10 @@ struct ContentView: View {
     }
 
     private func pasteIPTCMetadata() {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { pasteIPTCMetadataAfterMetadataFlush() }
+    }
+
+    private func pasteIPTCMetadataAfterMetadataFlush() {
         guard let copied = browserViewModel.copiedIPTCMetadata else {
             browserViewModel.errorMessage = "No IPTC metadata copied."
             return
@@ -3671,7 +3684,10 @@ struct ContentView: View {
     }
 
     private func saveSelectedAs(format: EditedImageRenderer.SaveAsFormat) {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { saveSelectedAsAfterMetadataFlush(format: format) }
+    }
+
+    private func saveSelectedAsAfterMetadataFlush(format: EditedImageRenderer.SaveAsFormat) {
         guard !isRenderingEditedFolder else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
         guard !urls.isEmpty else { return }
@@ -3781,7 +3797,10 @@ struct ContentView: View {
     }
 
     private func archiveSelectedRAW(as format: RAWArchiveFormat) {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation { archiveSelectedRAWAfterMetadataFlush(as: format) }
+    }
+
+    private func archiveSelectedRAWAfterMetadataFlush(as format: RAWArchiveFormat) {
         guard !isRenderingEditedFolder else { return }
         let selectedRAW = browserViewModel.selectedImages
             .filter { SupportedImageFormats.isRaw(url: $0.url) }
@@ -4064,7 +4083,15 @@ struct ContentView: View {
         urls: [URL]? = nil,
         configurations: [AdvancedExportConfiguration]? = nil
     ) {
-        guard flushMetadataForFileOperation() else { return }
+        performAfterMetadataFileOperation {
+            renderAndSaveEditedFolderAfterMetadataFlush(urls: urls, configurations: configurations)
+        }
+    }
+
+    private func renderAndSaveEditedFolderAfterMetadataFlush(
+        urls: [URL]?,
+        configurations: [AdvancedExportConfiguration]?
+    ) {
         guard !isRenderingEditedFolder,
               let folderURL = browserViewModel.currentFolderURL else { return }
         let urls = urls ?? browserViewModel.images.map(\.url)
