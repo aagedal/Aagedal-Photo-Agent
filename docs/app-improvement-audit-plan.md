@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**Web empty-download continuation (2026-10-14):** Web import rejects downloader
+responses with no completed media before creating Working files. Empty batches are
+removed; partial originals and post inspection evidence remain available for recovery.
+Cancellation retains precedence. The broad audit remains 66 of 75; see
+[implementation and validation](plan-status-web-empty-download-continuation-2026-10-14.md).
+
 **Caption and web import async continuation (2026-10-14):** Ordinary Caption
 draft replay and session-gated durable transitions await persistence while retaining
 FIFO retries and conflict recovery. Editing and shortcut actions freeze during durable

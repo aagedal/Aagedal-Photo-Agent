@@ -94,6 +94,60 @@ struct WebMediaImportTests {
         #expect(XMPSidecarService().loadSidecar(for: working.appendingPathComponent("002.mp4"))?.description == "Video caption")
     }
 
+    @Test("An empty download fails and preserves partial originals", arguments: [false, true])
+    func emptyDownloadFails(retainPartial: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data("incomplete download".utf8)
+        let media = item(1, kind: "image", extension: "jpg")
+        let inspection = WebPostInspection(url: "fixture", items: [media], versions: [:])
+        let filesystem = WebImportFilesystemService(beforeOperation: { operation in
+            #expect(operation != .workingDirectory)
+            #expect(operation != .copy)
+            #expect(operation != .provenanceWrite)
+        })
+        let service = WebMediaImportService(download: { _, _, _, destination in
+            if retainPartial { try bytes.write(to: destination.appendingPathComponent("001.jpg.part")) }
+            return WebDownloadResult(files: [], versions: [:])
+        }, filesystem: filesystem)
+        do {
+            _ = try await service.importMedia(inspection: inspection, selected: [media.id], cookies: nil,
+                destination: root, caption: "caption", progress: { _ in })
+            Issue.record("An empty download must not return a working folder")
+        } catch let error as WebDownloadRuntimeService.RuntimeError {
+            #expect(error.localizedDescription.contains("No media was downloaded"))
+        }
+        let batches = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        if retainPartial {
+            #expect(batches.count == 1)
+            let batch = try #require(batches.first)
+            #expect(try Data(contentsOf: batch.appendingPathComponent("Originals/001.jpg.part")) == bytes)
+            #expect(FileManager.default.fileExists(atPath: batch.appendingPathComponent("Provenance/post.json").path))
+            #expect(!FileManager.default.fileExists(atPath: batch.appendingPathComponent("Working").path))
+        } else {
+            #expect(batches.isEmpty)
+        }
+    }
+
+    @Test("Cancellation takes precedence over an empty download response")
+    func cancelledEmptyDownload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = WebMediaImportService(download: { _, _, _, _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return WebDownloadResult(files: [], versions: [:])
+        })
+        let task = Task {
+            try await service.importMedia(inspection: .init(url: "fixture", items: [], versions: [:]),
+                selected: [], cookies: nil, destination: root, caption: "", progress: { _ in })
+        }
+        do { _ = try await task.value; Issue.record("Expected cancellation") }
+        catch is CancellationError {}
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
     @Test("A failed download retains already received originals")
     func failureRetainsOriginals() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -29,6 +29,9 @@ final class WebMediaImportService {
             progress("Downloading selected media…")
             let result = try await download(inspection, selected, cookies, originals)
             try Task.checkCancellation()
+            guard !result.files.isEmpty else {
+                throw WebDownloadRuntimeService.RuntimeError.failed("No media was downloaded. Try finding the media again before importing.")
+            }
             try await filesystem.createWorkingDirectory(working)
             for (index, file) in result.files.enumerated() {
                 try Task.checkCancellation()

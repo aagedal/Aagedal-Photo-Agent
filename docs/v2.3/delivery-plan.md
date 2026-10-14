@@ -1,5 +1,10 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Web empty-download continuation (2026-10-14):** An empty downloader response
+reports failure instead of returning a missing Working folder. Cleanup preserves partial
+originals and post inspection evidence, and cancellation retains precedence. No release
+gate is closed; see [implementation and validation](../plan-status-web-empty-download-continuation-2026-10-14.md).
+
 **Caption and web import async continuation (2026-10-14):** Caption draft replay
 and session-gated durable transitions await persistence with retained FIFO/recovery
 ownership and frozen editing during transitions. Web import volume-facing work uses
