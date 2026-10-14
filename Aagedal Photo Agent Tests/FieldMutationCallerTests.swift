@@ -105,6 +105,63 @@ private actor ReviewCallerBaselineSequence {
 
 @Suite("Browser and Face field mutation callers", .serialized)
 struct FieldMutationCallerTests {
+    @Test("Metadata batches retain existing order and refresh filters and selection", arguments: [false, true])
+    @MainActor
+    func metadataBatchPresentation(sortChanged: Bool) {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/metadata-batches")
+        let urls = ["c.jpg", "a.jpg", "b.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.sortOrder = sortChanged ? .rating : .name
+        model.selectedImageIDs = [urls[0]]
+        model.batchUpdate {}
+        let existingOrder = model.sortedImages.map(\.url)
+        var updated = model.images
+        updated[0].starRating = .five
+        updated[0].metadata = IPTCMetadata(title: "Searchable caption")
+        model.images = updated
+        model.publishMetadataBatch(for: [urls[0]], sortKeyChanged: sortChanged)
+        #expect(model.sortedImages.map(\.url) == (sortChanged ? [urls[0], urls[1], urls[2]] : existingOrder))
+        #expect(model.selectedImages.first?.starRating == .five)
+        model.minimumStarRating = .four
+        model.batchUpdate {}
+        #expect(model.visibleImages.map(\.url) == [urls[0]])
+        #expect(model.visibleImages.first?.metadata?.title == "Searchable caption")
+    }
+
+    @Test("Older background metadata cannot overwrite accepted ratings or labels", arguments: [false, true], ["pending", "accepted during read", "completed during read"])
+    @MainActor
+    func backgroundReadPreservesPendingTag(isLabel: Bool, phase: String) async throws {
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/background-tag")
+        let url = folder.appendingPathComponent("photo.jpg")
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: url)]
+        model.selectedImageIDs = [url]
+        model.batchUpdate {}
+        var readRevisions = model.captureTagReadRevisions(for: [url])
+        if isLabel { model.setLabel(.red) } else { model.setRating(.five) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await recorder.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await recorder.isPaused)
+        if phase != "accepted during read" { readRevisions = model.captureTagReadRevisions(for: [url]) }
+        if phase == "completed during read" {
+            await recorder.resume()
+            await model.waitForPendingFieldMutationWrites()
+        }
+        var images = model.images
+        model.applyBatchMetadataResults([[MetadataDictKey.sourceFile: url.path, MetadataDictKey.rating: 0]],
+            to: &images, localIndex: [url: 0], nativeHDRByURL: [:], tagRevisionsAtRead: readRevisions)
+        #expect(images[0].starRating == (isLabel ? .none : .five))
+        #expect(images[0].colorLabel == (isLabel ? .red : .none))
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.images[0].starRating == (isLabel ? .none : .five))
+        #expect(model.images[0].colorLabel == (isLabel ? .red : .none))
+    }
+
     @Test("Review commit reads the current central buffer and rejects obsolete row owners")
     @MainActor
     func reviewCaptureOnlyAndOwnerGuards() async throws {

@@ -291,7 +291,7 @@ struct BrowserHDRClassificationServiceTests {
             range: functionStart.lowerBound..<source.endIndex
         ))
         let functionSource = String(source[functionStart.lowerBound..<functionEnd.lowerBound])
-        let mergeStart = try #require(source.range(of: "private func applyBatchMetadataResults("))
+        let mergeStart = try #require(source.range(of: "func applyBatchMetadataResults("))
         let mergeSource = String(source[mergeStart.lowerBound..<source.endIndex])
 
         #expect(functionSource.contains("async let hdrClassification = hdrClassificationService.classify("))
