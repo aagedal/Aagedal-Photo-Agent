@@ -2206,6 +2206,46 @@ nonisolated struct IPTCMetadata: Codable, Sendable, Equatable {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
+    /// Familiar semicolon-separated editor presentation, separate from writer transport.
+    /// Quote delimiter-bearing names so switching between text and individual rows is lossless.
+    nonisolated static func creatorEditorValue(_ values: [String]) -> String {
+        values.map { value in
+            if value.contains(";") || value.contains("\"") {
+                return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            }
+            return value
+        }.joined(separator: "; ")
+    }
+
+    nonisolated static func creators(fromEditorValue text: String) -> [String] {
+        var values: [String] = []
+        var value = ""
+        var quoted = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            let next = text.index(after: index)
+            if character == "\"", quoted {
+                if next < text.endIndex, text[next] == "\"" {
+                    value.append("\"")
+                    index = text.index(after: next)
+                    continue
+                }
+                quoted = false
+            } else if character == "\"", value.trimmingCharacters(in: .whitespaces).isEmpty {
+                quoted = true
+            } else if character == ";", !quoted {
+                values.append(value)
+                value = ""
+            } else {
+                value.append(character)
+            }
+            index = next
+        }
+        values.append(value)
+        return normalizedCreators(values)
+    }
+
     /// Validated typed view of the shipped lexical Date Created string. Invalid legacy values
     /// remain preservable through `dateCreated`; new typed writes are always valid and exact.
     var editorialDateCreated: EditorialDateCreated? {

@@ -1073,7 +1073,7 @@ struct MetadataPanel: View {
         case .title: return viewModel.editingMetadata.title ?? ""
         case .description: return viewModel.editingMetadata.description ?? ""
         case .extendedDescription: return viewModel.editingMetadata.extendedDescription ?? ""
-        case .creator: return viewModel.editingMetadata.creator ?? ""
+        case .creator: return IPTCMetadata.creatorEditorValue(viewModel.editingMetadata.creators)
         case .creatorJobTitle: return viewModel.editingMetadata.creatorJobTitle ?? ""
         case .descriptionWriter: return viewModel.editingMetadata.descriptionWriter ?? ""
         case .credit: return viewModel.editingMetadata.credit ?? ""
@@ -1100,7 +1100,7 @@ struct MetadataPanel: View {
         case .title: viewModel.editingMetadata.title = normalized
         case .description: viewModel.editingMetadata.description = normalized
         case .extendedDescription: viewModel.editingMetadata.extendedDescription = normalized
-        case .creator: viewModel.editingMetadata.creator = normalized
+        case .creator: viewModel.editingMetadata.creators = IPTCMetadata.creators(fromEditorValue: value)
         case .creatorJobTitle: viewModel.editingMetadata.creatorJobTitle = normalized
         case .descriptionWriter: viewModel.editingMetadata.descriptionWriter = normalized
         case .credit: viewModel.editingMetadata.credit = normalized
@@ -1874,19 +1874,24 @@ struct MetadataPanel: View {
         if field == .creator {
             OrderedCreatorsEditor(
                 creators: $viewModel.editingMetadata.creators,
-                differs: viewModel.fieldDiffers(\.creator),
+                differs: viewModel.fieldDiffers(\.creators),
                 hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("creator"),
                 onChange: {
                     viewModel.markChanged()
                     guard viewModel.isBatchEdit else { return }
+                    let draft = viewModel.editingMetadata.creators
                     try? viewModel.setBatchMutation(
                         viewModel.editingMetadata.creators.isEmpty
                             ? .clear
                             : .overwrite(.repeatable(viewModel.editingMetadata.creators)),
                         for: .creator
                     )
+                    // The batch preview normalizes lists. Keep blank editor rows available
+                    // while its explicit write intent contains only completed names.
+                    viewModel.editingMetadata.creators = draft
                 },
-                onCommit: { commitEdits() }
+                onCommit: { commitEdits() },
+                focusedField: $focusedField
             )
             .metadataField(.creator)
         }
@@ -3826,33 +3831,47 @@ private struct OrderedCreatorsEditor: View {
     let onChange: () -> Void
     let onCommit: () -> Void
 
+    let focusedField: FocusState<String?>.Binding
+    @State private var isListExpanded = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 4) {
-                Text("Creators (ordered)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                DifferenceIndicator(differs: differs, fieldName: "Creators")
-                if hasMultipleValues { MultipleValuesIndicator() }
-                Spacer()
-                Button {
-                    creators.append("")
-                    onChange()
-                } label: {
-                    Label("Add Creator", systemImage: "plus")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("metadata.creator.add")
+            EditableTextField(
+                label: "Creator",
+                text: Binding(
+                    get: { IPTCMetadata.creatorEditorValue(creators) },
+                    set: {
+                        creators = IPTCMetadata.creators(fromEditorValue: $0)
+                        onChange()
+                    }
+                ),
+                placeholder: hasMultipleValues ? "Multiple values" : "Enter creator",
+                onCommit: onCommit,
+                showsDifference: differs,
+                hasMultipleValues: hasMultipleValues,
+                focusKey: "creator",
+                focusedField: focusedField
+            )
+            Text("Separate multiple creators with semicolons.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            DisclosureGroup("Edit creators individually", isExpanded: $isListExpanded) {
+                creatorRows
+                    .padding(.top, 5)
             }
+            .accessibilityIdentifier("metadata.creator.list")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("metadata.creator.editor")
+    }
 
-            if creators.isEmpty {
-                Button("Add creator") {
-                    creators.append("")
-                    onChange()
-                }
-                .buttonStyle(.borderless)
+    private var creatorRows: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button("Add Creator") {
+                creators.append("")
             }
+            .buttonStyle(.borderless)
+            .accessibilityIdentifier("metadata.creator.add")
 
             ForEach(creators.indices, id: \.self) { index in
                 HStack(spacing: 5) {
@@ -3861,8 +3880,9 @@ private struct OrderedCreatorsEditor: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 20, alignment: .trailing)
                     TextField("Creator name", text: Binding(
-                        get: { creators[index] },
+                        get: { creators.indices.contains(index) ? creators[index] : "" },
                         set: {
+                            guard creators.indices.contains(index) else { return }
                             creators[index] = $0
                             onChange()
                         }
@@ -3875,7 +3895,7 @@ private struct OrderedCreatorsEditor: View {
                     .accessibilityLabel("Creator \(index + 1)")
 
                     Button {
-                        guard index > 0 else { return }
+                        guard creators.indices.contains(index), index > 0 else { return }
                         creators.swapAt(index, index - 1)
                         onChange()
                         onCommit()
@@ -3895,6 +3915,7 @@ private struct OrderedCreatorsEditor: View {
                     .accessibilityLabel("Move creator \(index + 1) later")
 
                     Button(role: .destructive) {
+                        guard creators.indices.contains(index) else { return }
                         creators.remove(at: index)
                         onChange()
                         onCommit()

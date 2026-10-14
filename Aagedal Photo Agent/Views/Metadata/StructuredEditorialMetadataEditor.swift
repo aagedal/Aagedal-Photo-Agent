@@ -36,11 +36,15 @@ struct StructuredEditorialMetadataEditor: View {
         }
     }
 
-    private var contact: Binding<CreatorContactInfo> {
+    var contact: Binding<CreatorContactInfo> {
         Binding(
             get: { creatorContactInfo ?? CreatorContactInfo() },
             set: { updated in
-                creatorContactInfo = updated.isEmpty ? nil : updated
+                // Empty rows are editor state: retain them until the user types or removes
+                // them. isEmpty deliberately ignores blank values for metadata writes.
+                let hasRows = !updated.addressLines.isEmpty || !updated.emails.isEmpty
+                    || !updated.phoneNumbers.isEmpty || !updated.webURLs.isEmpty
+                creatorContactInfo = updated.isEmpty && !hasRows ? nil : updated
                 onChange()
             }
         )
@@ -180,6 +184,7 @@ private struct RepeatableStructuredTextEditor: View {
             ForEach(values.indices, id: \.self) { index in
                 HStack {
                     TextField(title, text: value(at: index))
+                        .accessibilityIdentifier("metadata.structured.\(title).\(index)")
                     Button {
                         guard values.indices.contains(index) else { return }
                         values.remove(at: index)
@@ -194,6 +199,7 @@ private struct RepeatableStructuredTextEditor: View {
                 values.append("")
             }
             .buttonStyle(.borderless)
+            .accessibilityIdentifier("metadata.structured.add.\(title)")
         }
     }
 

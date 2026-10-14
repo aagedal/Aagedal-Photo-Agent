@@ -6,10 +6,57 @@ import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 import SwiftMediaMetadata
+import SwiftUI
 @testable import Aagedal_Photo_Agent
 
 @Suite("Ordered creators and typed Date Created")
 struct OrderedCreatorDateIntegrationTests {
+    @Test("Creator change marker includes names after the first creator")
+    @MainActor
+    func creatorChangeMarker() {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.originalImageMetadata = IPTCMetadata(creators: ["Alice", "Bob"])
+        model.editingMetadata = IPTCMetadata(creators: ["Alice", "Carol"])
+        #expect(model.fieldDiffers(\.creators))
+        model.editingMetadata.creators = ["Alice", "Bob"]
+        #expect(!model.fieldDiffers(\.creators))
+    }
+
+    @Test("Contact editor retains every blank row until it is filled or removed")
+    @MainActor
+    func contactEditorBlankRows() {
+        var stored: CreatorContactInfo?
+        var changes = 0
+        let editor = StructuredEditorialMetadataEditor(
+            creatorContactInfo: Binding(get: { stored }, set: { stored = $0 }),
+            locationsCreated: .constant([]), locationsShown: .constant([]),
+            onChange: { changes += 1 }
+        )
+        let binding = editor.contact
+        for key in [\CreatorContactInfo.addressLines, \.emails, \.phoneNumbers, \.webURLs] {
+            binding[dynamicMember: key].wrappedValue.append("")
+            #expect(stored?[keyPath: key] == [""])
+        }
+        #expect(stored?.isEmpty == true)
+        binding.emails.wrappedValue[0] = "creator@example.com"
+        #expect(stored?.emails == ["creator@example.com"])
+        #expect(stored?.addressLines == [""])
+        #expect(stored?.phoneNumbers == [""])
+        #expect(stored?.webURLs == [""])
+        #expect(changes == 5)
+        binding.wrappedValue = CreatorContactInfo()
+        #expect(stored == nil)
+    }
+
+    @Test("Creator text preserves ordered names, commas, and quoted delimiters")
+    func creatorEditorPresentation() {
+        #expect(IPTCMetadata.creators(fromEditorValue: " Alice ; Bob; Alice; ") == ["Alice", "Bob"])
+        #expect(IPTCMetadata.creators(fromEditorValue: "Smith, Jane; Lee, Sam") == ["Smith, Jane", "Lee, Sam"])
+        let names = ["Smith, Jane", "Agency; Team", "A \"quoted\" name"]
+        #expect(IPTCMetadata.creators(fromEditorValue: IPTCMetadata.creatorEditorValue(names)) == names)
+        #expect(IPTCMetadata.creators(fromEditorValue: "") == [])
+    }
+
     @Test("legacy scalar creator migrates and the writable alias remains compatible")
     func creatorCodableMigration() throws {
         let legacy = Data(#"{"creator":"Legacy Reporter","dateCreated":"2026-08-21T10:15:30-00:00"}"#.utf8)
