@@ -4425,7 +4425,7 @@ final class MetadataViewModel {
         return originalImageMetadata
     }
 
-    func fieldDiffers(_ keyPath: KeyPath<IPTCMetadata, String?>) -> Bool {
+    func fieldDiffers<Value: Equatable>(_ keyPath: KeyPath<IPTCMetadata, Value>) -> Bool {
         guard let original = fieldComparisonMetadata else { return false }
         return editingMetadata[keyPath: keyPath] != original[keyPath: keyPath]
     }

@@ -2792,6 +2792,78 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testCreatorContactAddButtonsRetainBlankRows() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "caption", folder: photos)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
+        let scroll = app.descendants(matching: .any)["metadata.panel"].scrollViews.firstMatch
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<20 {
+                if element.isHittable { return }
+                scroll.scroll(byDeltaX: 0, deltaY: -250)
+            }
+        }
+        let contact = app.disclosureTriangles["metadata.creatorContactInfo"]
+        XCTAssertTrue(contact.waitForExistence(timeout: 10))
+        reveal(contact)
+        contact.click()
+
+        // Add every kind before entering any text: the first blank contact record used
+        // to be discarded immediately, making all four buttons appear inert.
+        for title in ["Address line", "Email", "Phone", "Web URL"] {
+            let add = app.buttons["metadata.structured.add.\(title)"]
+            XCTAssertTrue(add.waitForExistence(timeout: 5))
+            reveal(add)
+            add.click()
+            XCTAssertTrue(app.textFields["metadata.structured.\(title).0"].waitForExistence(timeout: 5))
+        }
+        let entries = ["Address line": "Test Street 1", "Email": "creator@example.com",
+                       "Phone": "+47 12345678", "Web URL": "https://example.com"]
+        for title in ["Address line", "Email", "Phone", "Web URL"] {
+            let field = app.textFields["metadata.structured.\(title).0"]
+            XCTAssertTrue(field.exists)
+            // Return to the start of the contact editor before moving down its rows.
+            scroll.scroll(byDeltaX: 0, deltaY: 1000)
+            reveal(field)
+            field.click()
+            field.typeText(try XCTUnwrap(entries[title]))
+        }
+        for (title, value) in entries {
+            XCTAssertEqual(app.textFields["metadata.structured.\(title).0"].value as? String, value)
+        }
+        let emailAdd = app.buttons["metadata.structured.add.Email"]
+        scroll.scroll(byDeltaX: 0, deltaY: 1000)
+        reveal(emailAdd)
+        emailAdd.click()
+        XCTAssertTrue(app.textFields["metadata.structured.Email.1"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields["metadata.structured.Email.0"].value as? String, entries["Email"])
+    }
+
+    @MainActor
+    func testCreatorTextAndIndividualRowsStayInSync() throws {
+        let photos = try makePhotoFolder(count: 1)
+        launch(workflow: "caption", folder: photos)
+        XCTAssertTrue(app.descendants(matching: .any)["caption.workspace"].waitForExistence(timeout: 15))
+        let scroll = app.descendants(matching: .any)["metadata.panel"].scrollViews.firstMatch
+        let creator = app.textFields["metadata.input.creator"]
+        XCTAssertTrue(creator.waitForExistence(timeout: 10))
+        for _ in 0..<20 {
+            if creator.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -250)
+        }
+        creator.click()
+        creator.typeText("Smith, Jane; Lee, Sam")
+        creator.typeKey(.return, modifierFlags: [])
+        let list = app.disclosureTriangles["metadata.creator.list"]
+        XCTAssertTrue(list.exists)
+        list.click()
+        XCTAssertEqual(app.textFields["Creator 1"].value as? String, "Smith, Jane")
+        XCTAssertEqual(app.textFields["Creator 2"].value as? String, "Lee, Sam")
+        app.buttons["Move creator 2 earlier"].click()
+        XCTAssertEqual(creator.value as? String, "Lee, Sam; Smith, Jane")
+    }
+
+    @MainActor
     func testCaptionEditSavesBeforeAdvancing() throws {
         let photos = try makePhotoFolder(count: 2)
         launch(workflow: "caption", folder: photos)
