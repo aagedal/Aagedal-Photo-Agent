@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**Metadata file-action async continuation (2026-10-15):** Export, signing,
+IPTC copy/paste and RAW archive actions await the shared guarded durability barrier
+and reject changed folder/selection context. Activity resume, rename preparation
+and broader qualification remain open; see the
+[dated continuation](plan-status-file-action-async-continuation-2026-10-15.md).
+
 **Metadata transition async continuation (2026-10-14):** Shared workspace/action
 transitions await durable drafts under a token-owned editor/command guard. Deadline
 preparation drains retained drafts after editor unmount. Synchronous compatibility
