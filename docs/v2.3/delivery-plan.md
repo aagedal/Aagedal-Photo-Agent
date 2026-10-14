@@ -1,5 +1,12 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Caption and web import async continuation (2026-10-14):** Caption draft replay
+and session-gated durable transitions await persistence with retained FIFO/recovery
+ownership and frozen editing during transitions. Web import volume-facing work uses
+a retained Dispatch actor and preserves original/partial recovery material. Synchronous
+compatibility barriers and native/real-volume performance evidence remain open; no
+release gate is closed. See [implementation and validation](../plan-status-caption-web-import-async-continuation-2026-10-14.md).
+
 **Cycle 100 continuation (2026-09-23):** Existing XMP and app-history restoration
 passes a native relaunch case; retained GPS coordinates resolve in read-only template
 previews; complete staged Whisper bytes can be recovered under signed, matching

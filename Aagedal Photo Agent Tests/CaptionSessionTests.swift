@@ -135,6 +135,70 @@ struct CaptionSessionTests {
         #expect(queue.pendingCount == 0)
     }
 
+    @Test("Async durable barriers suspend while writes retain FIFO ownership")
+    func asyncPersistenceBarrierPreservesFIFO() async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption-session-test.async-fifo")
+        let started = AsyncSignal()
+        let release = AsyncSignal()
+        let order = LockedStrings()
+        queue.enqueueAsync {
+            order.append("first-start")
+            started.signal()
+            await release.wait()
+            order.append("first-end")
+        }
+        queue.enqueueAsync { order.append("second") }
+        await started.wait()
+        let barrier = Task { try await queue.drainAsync() }
+        await Task.yield()
+        #expect(queue.hasPendingWork)
+        #expect(order.values == ["first-start"])
+        release.signal()
+        try await barrier.value
+        #expect(order.values == ["first-start", "first-end", "second"])
+        #expect(!queue.hasPendingWork)
+    }
+
+    @Test("Async failure blocks dependent writes until a durable retry succeeds")
+    func asyncPersistenceFailureRetainsFIFO() async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption-session-test.async-retry")
+        let gate = PersistenceFailureGate()
+        let order = LockedStrings()
+        queue.enqueueAsync { try gate.attempt(); order.append("first") }
+        queue.enqueueAsync { order.append("second") }
+        await #expect(throws: PersistenceFailure.self) { try await queue.drainAsync() }
+        #expect(queue.pendingCount == 2)
+        #expect(gate.attempts == 2)
+        #expect(order.values.isEmpty)
+        gate.shouldFail = false
+        try await queue.drainAsync()
+        #expect(gate.attempts == 3)
+        #expect(order.values == ["first", "second"])
+        #expect(!queue.hasPendingWork)
+    }
+
+    @Test("Cancelling a barrier retains and completes already admitted persistence")
+    func cancelledAsyncBarrierRetainsDurability() async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption-session-test.async-cancel")
+        let started = AsyncSignal()
+        let release = AsyncSignal()
+        let completed = LockedStrings()
+        queue.enqueueAsync {
+            started.signal()
+            await release.wait()
+            completed.append("saved")
+        }
+        await started.wait()
+        let barrier = Task { try await queue.drainAsync() }
+        barrier.cancel()
+        #expect(queue.hasPendingWork)
+        release.signal()
+        await #expect(throws: CancellationError.self) { try await barrier.value }
+        try await queue.drainAsync()
+        #expect(completed.values == ["saved"])
+        #expect(!queue.hasPendingWork)
+    }
+
     @Test("Navigation invalidates but never awaits an in-flight image decode")
     func navigationDoesNotAwaitDecode() async throws {
         let session = CaptionSession(imageURLs: urls)

@@ -1,5 +1,13 @@
 # App improvement audit plan
 
+**Caption and web import async continuation (2026-10-14):** Ordinary Caption
+draft replay and session-gated durable transitions await persistence while retaining
+FIFO retries and conflict recovery. Editing and shortcut actions freeze during durable
+transitions. Web import filesystem preparation, verification, provenance and cleanup
+use a retained Dispatch actor, preserving partial originals and cancellation evidence.
+Synchronous compatibility callers and real-volume qualification remain open; the broad
+audit remains 66 of 75. See [implementation and validation](plan-status-caption-web-import-async-continuation-2026-10-14.md).
+
 **Core workflow performance continuation (2026-10-14):** Loupe preparation is bounded
 to neighboring images; speculative sidecar reads and source verification retain Dispatch
 workers. Structured tagging reuses revision-bound indexes; field completion avoids needless

@@ -203,12 +203,13 @@ struct CaptionWorkspaceView: View {
                         .frame(minHeight: 34)
                     }
                     .frame(minWidth: 340, idealWidth: 430, maxWidth: 560)
-                    .disabled(isCurrentPhotoUnderReview)
+                    .disabled(isCurrentPhotoUnderReview || session.isTransitioning)
                 }
             }
 
             Divider()
             actionBar
+                .disabled(session.isTransitioning)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("caption.workspace")
@@ -274,7 +275,7 @@ struct CaptionWorkspaceView: View {
             }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
-            guard let delivery, conflictReview == nil, pendingReviewPhoto == nil else { return }
+            guard let delivery, !session.isTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }
             switch delivery.command {
             case .selectPreviousImage:
                 navigate(previous: true)
@@ -809,8 +810,8 @@ struct CaptionWorkspaceView: View {
         }
     }
 
-    private func flushCurrentDraftDurably() throws {
-        try CaptionWorkspaceFlushCoordinator.shared.flush()
+    private func flushCurrentDraftDurably() async throws {
+        try await CaptionWorkspaceFlushCoordinator.shared.flushAsync()
         session.markCommitted()
     }
 
@@ -866,7 +867,7 @@ struct CaptionWorkspaceView: View {
     private func applyTemplateAfterFlush(append: Bool?) {
         Task { @MainActor in
             do {
-                try await session.prepare(for: .applyTemplate) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .applyTemplate) { try await flushCurrentDraftDurably() }
                 isAwaitingTemplatePalette = true
                 onApplyTemplate(append)
             } catch {
@@ -882,7 +883,7 @@ struct CaptionWorkspaceView: View {
             defer { isCopyingPrevious = false }
 
             do {
-                try await session.prepare(for: .copyPrevious) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .copyPrevious) { try await flushCurrentDraftDurably() }
                 guard let previousURL = session.previousURL else {
                     errorMessage = "There is no previous photo in the current order."
                     return
@@ -933,7 +934,7 @@ struct CaptionWorkspaceView: View {
                     return
                 }
 
-                try await session.prepare(for: .codeReplacement) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .codeReplacement) { try await flushCurrentDraftDurably() }
                 guard let previewURL = session.currentURL else {
                     errorMessage = "The current photo is no longer available."
                     return
@@ -996,7 +997,7 @@ struct CaptionWorkspaceView: View {
     private func writeCurrent() {
         Task { @MainActor in
             do {
-                try await session.prepare(for: .write) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .write) { try await flushCurrentDraftDurably() }
                 metadataViewModel.writeMetadataAndClearSidecar()
             } catch {
                 errorMessage = error.localizedDescription
@@ -1007,7 +1008,7 @@ struct CaptionWorkspaceView: View {
     private func writeAndNext() {
         Task { @MainActor in
             do {
-                try await session.prepare(for: .write) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .write) { try await flushCurrentDraftDurably() }
                 guard let currentURL = session.currentURL else { return }
                 pendingWriteAndNextURL = currentURL
                 metadataViewModel.writeMetadataAndClearSidecar()
@@ -1052,6 +1053,7 @@ struct CaptionWorkspaceView: View {
     }
 
     private func requestFocus(_ field: MetadataFieldID) {
+        guard !session.isTransitioning else { return }
         focusedAction = nil
         requestedFocusedField = nil
         DispatchQueue.main.async {
@@ -1082,7 +1084,7 @@ struct CaptionWorkspaceView: View {
     private func installCaptionShortcutMonitor() {
         guard captionShortcutMonitor == nil else { return }
         captionShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard conflictReview == nil, pendingReviewPhoto == nil else { return event }
+            guard !session.isTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }
             let inputState = keyboardTextInputState(in: event.window)
             let modifiers = KeyboardShortcutModifiers(event.modifierFlags)
             if event.keyCode == 48,
@@ -1166,7 +1168,7 @@ struct CaptionWorkspaceView: View {
     private func closeAfterFlush() {
         Task { @MainActor in
             do {
-                try await session.prepare(for: .workspaceExit) { try flushCurrentDraftDurably() }
+                try await session.prepare(for: .workspaceExit) { try await flushCurrentDraftDurably() }
                 onClose()
             } catch {
                 errorMessage = error.localizedDescription
