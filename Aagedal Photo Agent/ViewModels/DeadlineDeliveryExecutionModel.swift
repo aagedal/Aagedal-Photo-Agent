@@ -614,6 +614,7 @@ final class DeadlineDeliveryExecutionModel {
 final class DeadlineDeliveryProductionSession {
     private var activeCoordinator: DeliveryWorkflowCoordinator?
     private let registry: DeliveryWorkflowRegistry
+    private let captionFlushCoordinator: CaptionWorkspaceFlushCoordinator
     private var workflowsBeingRemoved: Set<UUID> = []
     private(set) var activeWorkflowIdentifier: UUID?
     private var reservedResumeWorkflowIdentifier: UUID?
@@ -626,9 +627,11 @@ final class DeadlineDeliveryProductionSession {
         registryRootURL: URL = AppPaths.applicationSupport.appendingPathComponent(
             "Delivery Workflows",
             isDirectory: true
-        )
+        ),
+        captionFlushCoordinator: CaptionWorkspaceFlushCoordinator = .shared
     ) {
         registry = DeliveryWorkflowRegistry(rootURL: registryRootURL)
+        self.captionFlushCoordinator = captionFlushCoordinator
     }
 
     func prepare(
@@ -637,7 +640,8 @@ final class DeadlineDeliveryProductionSession {
         profileLibrary: DeadlineProfileLibraryModel,
         liveSnapshot: DeadlinePreflightLiveSnapshotModel
     ) async throws -> DeadlinePreparedDeliveryBatch {
-        try CaptionWorkspaceFlushCoordinator.shared.flush()
+        try await captionFlushCoordinator.flushForTransitionAsync()
+        try Task.checkCancellation()
         let flush = await DevelopVersionFlushCoordinator.shared.flush(.workspaceExit)
         guard flush == .succeeded,
               let liveInput = liveSnapshot.workspaceInput,

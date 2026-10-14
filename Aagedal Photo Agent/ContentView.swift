@@ -90,7 +90,7 @@ private struct SafetyAndCullingHandlers: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
                 switch delivery.command {
                 case .backupEditedFiles:
                     if let folder = browserViewModel.currentFolderURL {
@@ -304,6 +304,7 @@ struct ContentView: View {
 
     var body: some View {
         contentWithStateHandlers
+            .disabled(CaptionWorkspaceFlushCoordinator.shared.isTransitioning)
             .task {
                 _ = await settingsViewModel.refreshC2PACertificateStatus(requestID: UUID())
                 if MainViewMode.isDeadlineAvailable {
@@ -831,7 +832,7 @@ struct ContentView: View {
     private var contentWithFileOperationHandlers: some View {
         contentWithOverlay
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
                 switch delivery.command {
                 case .renderSelected:
                     let urls = browserViewModel.selectedImages.map(\.url)
@@ -913,7 +914,7 @@ struct ContentView: View {
                 developTemplateViewModel.loadTemplates()
             }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
                 switch delivery.command {
                 case .processVariablesSelected:
                     if metadataViewModel.hasRetainedVariableWrites {
@@ -1300,6 +1301,7 @@ struct ContentView: View {
     }
 
     private func flushMetadataForTransition() throws {
+        guard !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { throw CaptionSessionError.transitionInProgress }
         let coordinator = CaptionWorkspaceFlushCoordinator.shared
         if mainViewMode == .caption || mainViewMode == .metadataReview {
             try coordinator.flush()
@@ -1336,14 +1338,24 @@ struct ContentView: View {
 
     private func performAfterCaptionFlush(_ operation: @escaping @MainActor () -> Void) {
         let coordinator = CaptionWorkspaceFlushCoordinator.shared
+        guard !coordinator.isTransitioning else { return }
         let workspace = mainViewMode
         let hasLiveEditor = workspace == .caption || workspace == .metadataReview
         guard hasLiveEditor || coordinator.hasPendingPersistence else { operation(); return }
+        let token: UUID
+        do { token = try coordinator.reserveTransition() }
+        catch { return }
         Task { @MainActor in
             do {
-                try flushMetadataForTransition()
-                guard mainViewMode == workspace else { return }
-                operation()
+                try await coordinator.performReservedTransition(token, flush: {
+                    if hasLiveEditor { try await coordinator.flushAsync() }
+                    else { try await coordinator.flushQueuedPersistenceAsync() }
+                }, operation: {
+                    guard mainViewMode == workspace else { return }
+                    operation()
+                })
+            } catch is CancellationError {
+                // Admitted writes finish; cancellation abandons the requested transition.
             } catch {
                 if workspace == .metadataReview {
                     browserViewModel.errorMessage = error.localizedDescription
@@ -2753,7 +2765,7 @@ struct ContentView: View {
                     }
                 }
                 .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                    guard let delivery else { return }
+                    guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
                     switch delivery.command {
                     case .setScopeMode(let mode):
                         scopeViewModel.scopeMode = mode
@@ -4295,7 +4307,7 @@ struct ContentViewModifiers: ViewModifier {
                 handleDrop(providers: providers)
             }
             .onChange(of: commandRouter.latestDelivery) { _, delivery in
-                guard let delivery else { return }
+                guard let delivery, !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { return }
                 switch delivery.command {
                 case .openFolder:
                     performAfterMetadataFlush { browserViewModel.openFolder() }

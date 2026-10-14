@@ -61,7 +61,7 @@ struct MetadataReviewView: View {
                                     image: image, thumbnailService: viewModel.thumbnailService,
                                     levels: levels, minimumLengths: minimumLengths,
                                     isSelected: viewModel.selectedImageIDs.contains(image.url),
-                                    isEditable: viewModel.metadataReviewEditor(for: image.url) != nil && !viewModel.isMetadataReviewFrozen(for: image.url),
+                                    isEditable: !coordinator.isTransitioning && viewModel.metadataReviewEditor(for: image.url) != nil && !viewModel.isMetadataReviewFrozen(for: image.url),
                                     draft: viewModel.metadataReviewEditor(for: image.url)?.draft ?? image.metadata ?? IPTCMetadata(),
                                     text: { viewModel.metadataReviewText(for: $0, imageURL: image.url) },
                                     onTextChange: { field, text in
@@ -96,6 +96,7 @@ struct MetadataReviewView: View {
                             }
                             .contentShape(Rectangle())
                             .onTapGesture {
+                                guard !coordinator.isTransitioning else { return }
                                 viewModel.selectedImageIDs = [image.url]
                                 viewModel.lastClickedImageURL = image.url
                             }
@@ -104,6 +105,7 @@ struct MetadataReviewView: View {
                 }
             }
         }
+        .disabled(coordinator.isTransitioning)
         .onAppear {
             lifetime = UUID()
             discardInFlight = false

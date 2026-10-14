@@ -1,5 +1,11 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Metadata transition async continuation (2026-10-14):** Shared workspace/action
+transitions await durable drafts under a token-owned editor/command guard. Deadline
+preparation drains retained drafts after editor unmount. Synchronous compatibility
+callers and real-volume qualification remain open; no release gate is closed. See
+[implementation and validation](../plan-status-metadata-transition-async-continuation-2026-10-14.md).
+
 **Web empty-download continuation (2026-10-14):** An empty downloader response
 reports failure instead of returning a missing Working folder. Cleanup preserves partial
 originals and post inspection evidence, and cancellation retains precedence. No release

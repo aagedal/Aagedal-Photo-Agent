@@ -12,6 +12,76 @@ struct CaptionSessionTests {
         URL(fileURLWithPath: "/tmp/caption-c.jpg"),
     ]
 
+    @Test("Shared transition reservation excludes commands before the task starts and while flushing")
+    func sharedTransitionReservation() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        let token = try coordinator.reserveTransition()
+        #expect(coordinator.isTransitioning)
+        #expect(throws: CaptionSessionError.transitionInProgress) { try coordinator.reserveTransition() }
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        var operationRan = false
+        let transition = Task { @MainActor in
+            try await coordinator.performReservedTransition(token, flush: {
+                entered.signal()
+                await release.wait()
+            }, operation: {
+                #expect(!coordinator.isTransitioning)
+                operationRan = true
+            })
+        }
+        await entered.wait()
+        #expect(!operationRan)
+        #expect(coordinator.isTransitioning)
+        #expect(throws: CaptionSessionError.transitionInProgress) { try coordinator.reserveTransition() }
+        release.signal()
+        try await transition.value
+        #expect(operationRan)
+        #expect(!coordinator.isTransitioning)
+    }
+
+    @Test("Shared transition failure preserves the editor and releases admission")
+    func sharedTransitionFailure() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        let token = try coordinator.reserveTransition()
+        var operationRan = false
+        await #expect(throws: FlushFailure.self) {
+            try await coordinator.performReservedTransition(token,
+                flush: { throw FlushFailure() }, operation: { operationRan = true })
+        }
+        #expect(!operationRan)
+        #expect(!coordinator.isTransitioning)
+        let retry = try coordinator.reserveTransition()
+        try await coordinator.performReservedTransition(retry, flush: {}, operation: { operationRan = true })
+        #expect(operationRan)
+    }
+
+    @Test("Cancelled shared transition waits for admitted durability and abandons its action")
+    func sharedTransitionCancellation() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        let token = try coordinator.reserveTransition()
+        let entered = AsyncSignal()
+        let release = AsyncSignal()
+        var durable = false
+        var operationRan = false
+        let transition = Task { @MainActor in
+            try await coordinator.performReservedTransition(token, flush: {
+                entered.signal()
+                await release.wait()
+                durable = true
+            }, operation: { operationRan = true })
+        }
+        await entered.wait()
+        transition.cancel()
+        #expect(coordinator.isTransitioning)
+        #expect(!durable)
+        release.signal()
+        await #expect(throws: CancellationError.self) { try await transition.value }
+        #expect(durable)
+        #expect(!operationRan)
+        #expect(!coordinator.isTransitioning)
+    }
+
     @Test("Session owns a stable ordered, deduplicated image list")
     func initialization() {
         let session = CaptionSession(

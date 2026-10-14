@@ -783,6 +783,32 @@ final class CaptionWorkspaceFlushCoordinator {
     private(set) var failure: CaptionQueueFailure?
     private(set) var activeConflictReview: CaptionConflictSnapshot?
     private var pendingReviewPhoto: URL?
+    private var transitionOwner: UUID?
+
+    var isTransitioning: Bool { transitionOwner != nil }
+
+    /// Reserve before scheduling a task so rapid commands cannot admit overlapping transitions.
+    func reserveTransition() throws -> UUID {
+        guard transitionOwner == nil else { throw CaptionSessionError.transitionInProgress }
+        let token = UUID()
+        transitionOwner = token
+        return token
+    }
+
+    func performReservedTransition(
+        _ token: UUID,
+        flush: @MainActor () async throws -> Void,
+        operation: @MainActor () -> Void
+    ) async throws {
+        guard transitionOwner == token else { throw CaptionSessionError.transitionInProgress }
+        defer { if transitionOwner == token { transitionOwner = nil } }
+        try Task.checkCancellation()
+        try await flush()
+        try Task.checkCancellation()
+        // The action runs in this actor turn; release admission for its nested authorized calls.
+        transitionOwner = nil
+        operation()
+    }
     @ObservationIgnored private var currentImageURLHandler: (() -> URL?)?
     private var owner: UUID?
     private var handler: (() throws -> Void)?
@@ -894,6 +920,12 @@ final class CaptionWorkspaceFlushCoordinator {
         try requireVariableDraftsPersisted()
         try enqueueFlush()
         try await persistenceQueue.drainAsync()
+    }
+
+    /// Cross the mounted buffered editor barrier, or drain retained drafts after it unmounts.
+    func flushForTransitionAsync() async throws {
+        if hasRegisteredHandler { try await flushAsync() }
+        else { try await flushQueuedPersistenceAsync() }
     }
 
     func flushQueuedPersistenceAsync() async throws {

@@ -203,13 +203,13 @@ struct CaptionWorkspaceView: View {
                         .frame(minHeight: 34)
                     }
                     .frame(minWidth: 340, idealWidth: 430, maxWidth: 560)
-                    .disabled(isCurrentPhotoUnderReview || session.isTransitioning)
+                    .disabled(isCurrentPhotoUnderReview || isEditorTransitioning)
                 }
             }
 
             Divider()
             actionBar
-                .disabled(session.isTransitioning)
+                .disabled(isEditorTransitioning)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("caption.workspace")
@@ -275,7 +275,7 @@ struct CaptionWorkspaceView: View {
             }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
-            guard let delivery, !session.isTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }
+            guard let delivery, !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }
             switch delivery.command {
             case .selectPreviousImage:
                 navigate(previous: true)
@@ -681,7 +681,7 @@ struct CaptionWorkspaceView: View {
             CaptionVoiceMemoPlayerView(
                 imageURL: session.currentURL,
                 isMetadataReviewOrSaveBusy: metadataViewModel.isSaving
-                    || session.isTransitioning || isCurrentPhotoUnderReview
+                    || isEditorTransitioning || isCurrentPhotoUnderReview
                     || conflictReview != nil || pendingReviewPhoto != nil
                     || isConflictRecoveryBusy,
                 onVoiceMemoChange: { voiceMemoBadgeRefreshToken &+= 1 }
@@ -717,14 +717,14 @@ struct CaptionWorkspaceView: View {
                     navigate(previous: true)
                 }
                 .keyboardShortcut("b", modifiers: .command)
-                .disabled(!session.canGoPrevious || session.isTransitioning)
+                .disabled(!session.canGoPrevious || isEditorTransitioning)
                 .focused($focusedAction, equals: .previous)
 
                 Button("Save & Next", systemImage: "chevron.right") {
                     navigate(previous: false, announcesAdvance: true)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!session.canGoNext || session.isTransitioning)
+                .disabled(!session.canGoNext || isEditorTransitioning)
                 .help(shortcutHelp(for: .saveAndNext))
                 .focused($focusedAction, equals: .saveAndNext)
 
@@ -734,7 +734,7 @@ struct CaptionWorkspaceView: View {
                 .disabled(
                     !session.canGoNext
                         || metadataViewModel.isSaving
-                        || session.isTransitioning
+                        || isEditorTransitioning
                 )
                 .help("Durably flush, write the current photo, then advance only after the write succeeds. \(shortcutHelp(for: .writeAndNext))")
                 .focused($focusedAction, equals: .writeAndNext)
@@ -746,7 +746,7 @@ struct CaptionWorkspaceView: View {
                     Button("Append…") { applyTemplateAfterFlush(append: true) }
                 }
                 .accessibilityIdentifier("caption.applyTemplate")
-                .disabled(session.currentURL == nil || session.isTransitioning)
+                .disabled(session.currentURL == nil || isEditorTransitioning)
                 .focused($focusedAction, equals: .applyTemplate)
 
                 Menu("Copy Previous", systemImage: "doc.on.doc") {
@@ -755,7 +755,7 @@ struct CaptionWorkspaceView: View {
                 }
                 .disabled(
                     session.previousURL == nil
-                        || session.isTransitioning
+                        || isEditorTransitioning
                         || isCopyingPrevious
                         || metadataViewModel.isLoading
                 )
@@ -765,7 +765,7 @@ struct CaptionWorkspaceView: View {
                 Button("Fix Next", systemImage: "wrench.and.screwdriver") {
                     focusNextValidationIssue()
                 }
-                .disabled(validationReport.issues.isEmpty || session.isTransitioning)
+                .disabled(validationReport.issues.isEmpty || isEditorTransitioning)
                 .focused($focusedAction, equals: .fixNext)
 
                 Menu("More", systemImage: "ellipsis.circle") {
@@ -790,7 +790,7 @@ struct CaptionWorkspaceView: View {
                     closeAfterFlush()
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(session.isTransitioning)
+                .disabled(isEditorTransitioning)
                 .focused($focusedAction, equals: .close)
             }
             .padding(.horizontal, 14)
@@ -799,6 +799,8 @@ struct CaptionWorkspaceView: View {
         .frame(minHeight: 50)
         .scrollIndicators(.hidden)
     }
+
+    private var isEditorTransitioning: Bool { session.isTransitioning || flushCoordinator.isTransitioning }
 
     private func synchronizeSessionWithBrowser() {
         session.replaceImages(visibleURLs)
@@ -810,18 +812,28 @@ struct CaptionWorkspaceView: View {
         }
     }
 
-    private func flushCurrentDraftDurably() async throws {
-        try await CaptionWorkspaceFlushCoordinator.shared.flushAsync()
-        session.markCommitted()
+    private func prepareAndPerform(
+        _ action: CaptionSessionAction,
+        operation: @MainActor () -> Void
+    ) async throws {
+        let token = try flushCoordinator.reserveTransition()
+        try await flushCoordinator.performReservedTransition(token, flush: {
+            try await session.prepare(for: action) { try await flushCoordinator.flushAsync() }
+        }, operation: {
+            session.markCommitted()
+            operation()
+        })
     }
 
     private func enqueueCurrentDraftPersistence() throws {
+        guard !flushCoordinator.isTransitioning else { throw CaptionSessionError.transitionInProgress }
         try CaptionWorkspaceFlushCoordinator.shared.enqueueFlush()
         session.markCommitted()
     }
 
     private func navigate(previous: Bool, announcesAdvance: Bool = false) {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
                 let moved = if previous {
                     try await session.goPrevious { try enqueueCurrentDraftPersistence() }
@@ -842,6 +854,7 @@ struct CaptionWorkspaceView: View {
 
     private func select(_ url: URL) {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
                 let changed = try await session.select([url], focusedURL: url) {
                     try enqueueCurrentDraftPersistence()
@@ -866,10 +879,12 @@ struct CaptionWorkspaceView: View {
 
     private func applyTemplateAfterFlush(append: Bool?) {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
-                try await session.prepare(for: .applyTemplate) { try await flushCurrentDraftDurably() }
-                isAwaitingTemplatePalette = true
-                onApplyTemplate(append)
+                try await prepareAndPerform(.applyTemplate) {
+                    isAwaitingTemplatePalette = true
+                    onApplyTemplate(append)
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -878,39 +893,44 @@ struct CaptionWorkspaceView: View {
 
     private func copyPrevious(mode: CaptionCopyPreviousMergeMode) {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             guard !isCopyingPrevious else { return }
             isCopyingPrevious = true
             defer { isCopyingPrevious = false }
 
             do {
-                try await session.prepare(for: .copyPrevious) { try await flushCurrentDraftDurably() }
-                guard let previousURL = session.previousURL else {
-                    errorMessage = "There is no previous photo in the current order."
-                    return
-                }
-                guard let loadToken = session.beginLoad() else { return }
-                let sourceURL = originalBrowserURL(for: previousURL)
-                let previous = try await metadataViewModel.loadCaptionCopyPreviousMetadata(for: sourceURL)
-                guard !Task.isCancelled, session.accepts(load: loadToken) else { return }
-
-                let configuration = CaptionCopyPreviousConfiguration(defaultMode: mode)
-                let result = CaptionCopyPreviousService().copy(
-                    previous: previous,
-                    current: metadataViewModel.editingMetadata,
-                    configuration: configuration
-                )
-                guard result.status == .completed, let updated = result.metadata else {
-                    errorMessage = "The previous photo's metadata could not be copied."
-                    return
-                }
-                guard result.changed else { return }
-
-                // Keep the same session focus. The next save/navigation crosses the usual
-                // sidecar-first flush path, which records this draft and its history normally.
-                metadataViewModel.editingMetadata = updated
-                metadataViewModel.hasChanges = true
-                session.markCurrentDirty()
-                updateReadiness()
+                let token = try flushCoordinator.reserveTransition()
+                var previousMetadata: IPTCMetadata?
+                var loadToken: CaptionLoadToken?
+                try await flushCoordinator.performReservedTransition(token, flush: {
+                    try await session.prepare(for: .copyPrevious) { try await flushCoordinator.flushAsync() }
+                    session.markCommitted()
+                    guard let previousURL = session.previousURL else {
+                        errorMessage = "There is no previous photo in the current order."
+                        return
+                    }
+                    guard let currentLoad = session.beginLoad() else { return }
+                    loadToken = currentLoad
+                    previousMetadata = try await metadataViewModel.loadCaptionCopyPreviousMetadata(
+                        for: originalBrowserURL(for: previousURL))
+                }, operation: {
+                    guard let previous = previousMetadata, let loadToken, session.accepts(load: loadToken) else { return }
+                    let configuration = CaptionCopyPreviousConfiguration(defaultMode: mode)
+                    let result = CaptionCopyPreviousService().copy(
+                        previous: previous,
+                        current: metadataViewModel.editingMetadata,
+                        configuration: configuration
+                    )
+                    guard result.status == .completed, let updated = result.metadata else {
+                        errorMessage = "The previous photo's metadata could not be copied."
+                        return
+                    }
+                    guard result.changed else { return }
+                    metadataViewModel.editingMetadata = updated
+                    metadataViewModel.hasChanges = true
+                    session.markCurrentDirty()
+                    updateReadiness()
+                })
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -919,6 +939,7 @@ struct CaptionWorkspaceView: View {
 
     private func prepareCodeReplacementPreview() {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
                 guard codeReplacementStore.sourceLoadError == nil else {
                     errorMessage = codeReplacementStore.sourceLoadError
@@ -934,40 +955,41 @@ struct CaptionWorkspaceView: View {
                     return
                 }
 
-                try await session.prepare(for: .codeReplacement) { try await flushCurrentDraftDurably() }
-                guard let previewURL = session.currentURL else {
-                    errorMessage = "The current photo is no longer available."
-                    return
-                }
-                let inputMetadata = metadataViewModel.editingMetadata
-                let result = CaptionCodeReplacementCoordinator().plan(
-                    metadata: inputMetadata,
-                    list: codeReplacementStore.list,
-                    configuration: codeReplacementStore.configuration,
-                    compositionState: composition
-                )
-                switch result.status {
-                case .completed:
-                    pendingCodeReplacement = CaptionCodeReplacementPendingPreview(
-                        imageURL: previewURL,
-                        inputMetadata: inputMetadata,
-                        result: result
+                try await prepareAndPerform(.codeReplacement) {
+                    guard let previewURL = session.currentURL else {
+                        errorMessage = "The current photo is no longer available."
+                        return
+                    }
+                    let inputMetadata = metadataViewModel.editingMetadata
+                    let result = CaptionCodeReplacementCoordinator().plan(
+                        metadata: inputMetadata,
+                        list: codeReplacementStore.list,
+                        configuration: codeReplacementStore.configuration,
+                        compositionState: composition
                     )
-                    showingCodeReplacementPreview = true
-                case .unchanged:
-                    errorMessage = "No matching code-replacement tokens were found in the caption fields."
-                case .disabled:
-                    errorMessage = "Code replacement is disabled."
-                case .activeComposition:
-                    errorMessage = "Finish the active text composition before applying code replacement."
-                case .invalidConfiguration:
-                    errorMessage = "Both code-replacement delimiters must be nonempty."
-                case .invalidSource:
-                    errorMessage = "Resolve the code-replacement source errors before applying."
-                case .ambiguousOccurrence:
-                    errorMessage = "An ambiguous code occurs in the caption fields. Resolve the conflicting source definitions first."
-                case .unrepresentableCode:
-                    errorMessage = "A code containing a configured delimiter occurs in the caption fields and cannot be expanded safely."
+                    switch result.status {
+                    case .completed:
+                        pendingCodeReplacement = CaptionCodeReplacementPendingPreview(
+                            imageURL: previewURL,
+                            inputMetadata: inputMetadata,
+                            result: result
+                        )
+                        showingCodeReplacementPreview = true
+                    case .unchanged:
+                        errorMessage = "No matching code-replacement tokens were found in the caption fields."
+                    case .disabled:
+                        errorMessage = "Code replacement is disabled."
+                    case .activeComposition:
+                        errorMessage = "Finish the active text composition before applying code replacement."
+                    case .invalidConfiguration:
+                        errorMessage = "Both code-replacement delimiters must be nonempty."
+                    case .invalidSource:
+                        errorMessage = "Resolve the code-replacement source errors before applying."
+                    case .ambiguousOccurrence:
+                        errorMessage = "An ambiguous code occurs in the caption fields. Resolve the conflicting source definitions first."
+                    case .unrepresentableCode:
+                        errorMessage = "A code containing a configured delimiter occurs in the caption fields and cannot be expanded safely."
+                    }
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -976,6 +998,7 @@ struct CaptionWorkspaceView: View {
     }
 
     private func applyPendingCodeReplacement() {
+        guard !isEditorTransitioning else { return }
         guard let pendingCodeReplacement else { return }
         guard let updated = pendingCodeReplacement.validatedMetadata(
             currentURL: session.currentURL,
@@ -996,9 +1019,11 @@ struct CaptionWorkspaceView: View {
 
     private func writeCurrent() {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
-                try await session.prepare(for: .write) { try await flushCurrentDraftDurably() }
-                metadataViewModel.writeMetadataAndClearSidecar()
+                try await prepareAndPerform(.write) {
+                    metadataViewModel.writeMetadataAndClearSidecar()
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1007,11 +1032,13 @@ struct CaptionWorkspaceView: View {
 
     private func writeAndNext() {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
-                try await session.prepare(for: .write) { try await flushCurrentDraftDurably() }
-                guard let currentURL = session.currentURL else { return }
-                pendingWriteAndNextURL = currentURL
-                metadataViewModel.writeMetadataAndClearSidecar()
+                try await prepareAndPerform(.write) {
+                    guard let currentURL = session.currentURL else { return }
+                    pendingWriteAndNextURL = currentURL
+                    metadataViewModel.writeMetadataAndClearSidecar()
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1022,6 +1049,7 @@ struct CaptionWorkspaceView: View {
         guard let pendingURL = pendingWriteAndNextURL else { return }
         pendingWriteAndNextURL = nil
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             guard metadataViewModel.saveError == nil,
                   pendingURL.standardizedFileURL == session.currentURL?.standardizedFileURL else { return }
             do {
@@ -1053,10 +1081,11 @@ struct CaptionWorkspaceView: View {
     }
 
     private func requestFocus(_ field: MetadataFieldID) {
-        guard !session.isTransitioning else { return }
+        guard !isEditorTransitioning else { return }
         focusedAction = nil
         requestedFocusedField = nil
         DispatchQueue.main.async {
+            guard !isEditorTransitioning else { return }
             requestedFocusedField = field
         }
     }
@@ -1084,7 +1113,7 @@ struct CaptionWorkspaceView: View {
     private func installCaptionShortcutMonitor() {
         guard captionShortcutMonitor == nil else { return }
         captionShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard !session.isTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }
+            guard !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }
             let inputState = keyboardTextInputState(in: event.window)
             let modifiers = KeyboardShortcutModifiers(event.modifierFlags)
             if event.keyCode == 48,
@@ -1110,11 +1139,11 @@ struct CaptionWorkspaceView: View {
                   ) else { return event }
             switch command {
             case .saveAndNext:
-                guard session.canGoNext, !session.isTransitioning else { return nil }
+                guard session.canGoNext, !isEditorTransitioning else { return nil }
                 navigate(previous: false, announcesAdvance: true)
             case .writeAndNext:
                 guard session.canGoNext,
-                      !session.isTransitioning,
+                      !isEditorTransitioning,
                       !metadataViewModel.isSaving else { return nil }
                 writeAndNext()
             }
@@ -1147,15 +1176,15 @@ struct CaptionWorkspaceView: View {
 
     private func isActionAvailable(_ action: CaptionActionFocus) -> Bool {
         switch action {
-        case .previous: session.canGoPrevious && !session.isTransitioning
-        case .saveAndNext: session.canGoNext && !session.isTransitioning
+        case .previous: session.canGoPrevious && !isEditorTransitioning
+        case .saveAndNext: session.canGoNext && !isEditorTransitioning
         case .writeAndNext:
-            session.canGoNext && !session.isTransitioning && !metadataViewModel.isSaving
-        case .applyTemplate: session.currentURL != nil && !session.isTransitioning
+            session.canGoNext && !isEditorTransitioning && !metadataViewModel.isSaving
+        case .applyTemplate: session.currentURL != nil && !isEditorTransitioning
         case .copyPrevious:
-            session.previousURL != nil && !session.isTransitioning && !isCopyingPrevious
-        case .fixNext: !validationReport.issues.isEmpty && !session.isTransitioning
-        case .more, .close: !session.isTransitioning
+            session.previousURL != nil && !isEditorTransitioning && !isCopyingPrevious
+        case .fixNext: !validationReport.issues.isEmpty && !isEditorTransitioning
+        case .more, .close: !isEditorTransitioning
         }
     }
 
@@ -1167,9 +1196,9 @@ struct CaptionWorkspaceView: View {
 
     private func closeAfterFlush() {
         Task { @MainActor in
+            guard !flushCoordinator.isTransitioning else { return }
             do {
-                try await session.prepare(for: .workspaceExit) { try await flushCurrentDraftDurably() }
-                onClose()
+                try await prepareAndPerform(.workspaceExit) { onClose() }
             } catch {
                 errorMessage = error.localizedDescription
             }
