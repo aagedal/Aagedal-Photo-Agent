@@ -489,6 +489,59 @@ struct DeadlinePreflightCoordinatorTests {
         #expect(locations.stagingRootURL.lastPathComponent == "staging")
     }
 
+    @Test("Production preparation awaits metadata with or without a mounted editor", arguments: [false, true], [false, true])
+    @MainActor
+    func productionPreparationAwaitsMetadata(cancelled: Bool, mountedEditor: Bool) async throws {
+        let fixture = try await makeDeadlineExecutionFixture()
+        let queue = CaptionDraftPersistenceQueue(label: "deadline-test.retained-metadata")
+        let gate = DeadlineMetadataPersistenceGate()
+        queue.enqueueAsync { await gate.persist() }
+        await gate.waitUntilStarted()
+        let coordinator = CaptionWorkspaceFlushCoordinator(
+            persistenceQueue: queue, variableLifecycle: VariableDraftLifecycleCoordinator()
+        )
+        var captures = 0
+        if mountedEditor {
+            coordinator.register(owner: UUID(), handler: { captures += 1 })
+        }
+        #expect(coordinator.hasRegisteredHandler == mountedEditor)
+        let session = DeadlineDeliveryProductionSession(captionFlushCoordinator: coordinator)
+        let browser = BrowserViewModel(metadataReviewCoordinator: coordinator)
+        let profiles = DeadlineProfileLibraryModel()
+        let live = DeadlinePreflightLiveSnapshotModel()
+        var finished = false
+        let preparation = Task { @MainActor in
+            defer { finished = true }
+            return try await session.prepare(
+                DeadlineDeliveryPreparation(
+                    preflightRequest: fixture.input.request,
+                    publication: fixture.publication,
+                    preflightDevelopSnapshots: fixture.input.developSnapshots,
+                    preflightSourceRevisions: fixture.input.sourceRevisions,
+                    acceptedWarningIDs: []
+                ), browser: browser, profileLibrary: profiles, liveSnapshot: live
+            )
+        }
+        await Task.yield()
+        #expect(!finished)
+        #expect(queue.hasPendingWork)
+        if cancelled { preparation.cancel() }
+        await gate.release()
+        if cancelled {
+            await #expect(throws: CancellationError.self) { try await preparation.value }
+        } else {
+            // With no live preflight, the post-persistence validity check must fail closed.
+            await #expect(throws: DeadlineDeliveryExecutionError.stalePreflight) {
+                try await preparation.value
+            }
+        }
+        #expect(finished)
+        #expect(captures == (mountedEditor ? 1 : 0))
+        #expect(!queue.hasPendingWork)
+        #expect(await gate.didPersist)
+        #expect(session.activeWorkflowIdentifier == nil)
+    }
+
     @Test("Sent lifecycle reloads Activity receipts exactly once")
     @MainActor
     func sentReloadsReceipts() async throws {
@@ -1212,5 +1265,32 @@ private actor ControlledProgressiveEvaluation {
             },
             renamePlan: nil
         )
+    }
+}
+
+private actor DeadlineMetadataPersistenceGate {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private(set) var didPersist = false
+
+    func persist() async {
+        await withCheckedContinuation { continuation in
+            releaseWaiter = continuation
+            started = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+        }
+        didPersist = true
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }

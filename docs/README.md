@@ -3,6 +3,11 @@
 **Status:** living planning index  
 **Last reviewed:** 2026-10-14
 
+The [metadata transition continuation](plan-status-metadata-transition-async-continuation-2026-10-14.md)
+moves shared workspace/action barriers to async persistence with editor admission guards,
+and drains retained drafts during Deadline preparation. Compatibility callers and release
+qualification remain open.
+
 **Next release label:** 3.0. The combined investigation workspace, journalistic metadata workflow,
 and solar-position overlay form a major product expansion rather than a 2.3 point release. Existing
 `v2.3/` paths retain their historical working name so links and implementation history stay stable.

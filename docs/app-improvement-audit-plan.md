@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**Metadata transition async continuation (2026-10-14):** Shared workspace/action
+transitions await durable drafts under a token-owned editor/command guard. Deadline
+preparation drains retained drafts after editor unmount. Synchronous compatibility
+callers and real-volume qualification remain open; no release gate is closed. See
+[implementation and validation](plan-status-metadata-transition-async-continuation-2026-10-14.md).
+
 **Web empty-download continuation (2026-10-14):** Web import rejects downloader
 responses with no completed media before creating Working files. Empty batches are
 removed; partial originals and post inspection evidence remain available for recovery.

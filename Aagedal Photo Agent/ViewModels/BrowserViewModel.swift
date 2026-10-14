@@ -3307,6 +3307,7 @@ final class BrowserViewModel {
     }
 
     func updateMetadataReviewDraft(_ edited: IPTCMetadata, for url: URL) {
+        guard !metadataReviewCoordinator.isTransitioning else { return }
         let key = Self.metadataReviewKey(url)
         guard metadataReviewEditors[key] != nil, !isMetadataReviewFrozen(for: url) else { return }
         metadataReviewEditors[key]?.draft = edited
@@ -3329,6 +3330,7 @@ final class BrowserViewModel {
     /// Stage a reviewed suggestion locally until capture and queue admission both succeed.
     /// This synchronous operation cannot replace newer edits while persistence is pending.
     func queueReviewedDescription(_ proposal: DescriptionAssistantProposal, text: String) throws -> Bool {
+        guard !metadataReviewCoordinator.isTransitioning else { return false }
         let url = proposal.request.imageURL
         guard var editor = metadataReviewEditor(for: url), !isMetadataReviewFrozen(for: url),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
@@ -3392,6 +3394,7 @@ final class BrowserViewModel {
     }
 
     func saveMetadataReviewEdit(_ edited: IPTCMetadata, for url: URL) {
+        guard !metadataReviewCoordinator.isTransitioning else { return }
         updateMetadataReviewDraft(edited, for: url)
         do { try captureMetadataReviewDrafts(for: url) }
         catch { metadataReviewEditors[Self.metadataReviewKey(url)]?.error = error.localizedDescription }
