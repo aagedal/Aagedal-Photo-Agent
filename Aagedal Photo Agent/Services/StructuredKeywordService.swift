@@ -60,6 +60,24 @@ final class StructuredKeywordService {
     var version: Int { snapshotVersion &+ (library?.version ?? 0) }
     private let library: StructuredKeywordLibrary?
 
+    /// Built once per tree/library revision. Tagging and autocomplete repeatedly resolve
+    /// names against vocabularies with thousands of nodes; retain paths and normalized names
+    /// instead of walking and allocating ancestor arrays on every keystroke or applied tag.
+    @ObservationIgnored private var cachedLookup: LookupIndex?
+    private struct LookupEntry {
+        let path: StructuredKeywordPath
+        let normalizedNames: [String]
+    }
+    private struct LookupIndex {
+        let snapshotVersion: Int
+        let libraryVersion: Int?
+        var entries: [LookupEntry] = []
+        var firstEntryByName: [String: Int] = [:]
+        var nodeNames: [String] = []
+        var searchableNames: [String] = []
+        var keywordNames: [String] = []
+    }
+
     /// Surfaced to Settings if the loaded file failed to parse. nil = no error.
     private(set) var loadError: String?
     /// A failed read cannot safely seed an editor; an empty readable tree remains editable.
@@ -135,10 +153,7 @@ final class StructuredKeywordService {
 
     /// Total number of keyword (non-container) nodes in the tree.
     var keywordCount: Int {
-        _ = version
-        var count = 0
-        for r in roots { count += countKeywords(in: r) }
-        return count
+        lookupIndex().entries.count
     }
 
     /// Imports a user-picked tab-indented file into the managed store. The
@@ -291,68 +306,35 @@ final class StructuredKeywordService {
     /// Returns the activation payload for the keyword node whose canonical name
     /// or synonym matches `name` case-insensitively.
     func activation(forName name: String) -> StructuredKeywordActivation? {
-        _ = version
         let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return nil }
-
-        var result: StructuredKeywordActivation?
-        for root in roots {
-            walk(root, ancestors: []) { node, ancestors in
-                guard node.isKeyword else { return true }
-                let matchesName = node.name.lowercased() == needle
-                let matchesSynonym = node.synonyms.contains { $0.lowercased() == needle }
-                guard matchesName || matchesSynonym else { return true }
-                result = activation(StructuredKeywordPath(ancestors: ancestors, node: node))
-                return false
-            }
-            if result != nil { break }
-        }
-        return result
+        let index = lookupIndex()
+        guard let entry = index.firstEntryByName[needle] else { return nil }
+        return activation(index.entries[entry].path)
     }
 
     /// Returns the canonical node name for an exact node-name or synonym match.
     /// Useful for fields that need one resolved display value rather than the
     /// full `expand(_:)` payload.
     func canonicalName(forNameOrSynonym name: String) -> String? {
-        _ = version
         let needle = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !needle.isEmpty else { return nil }
-
-        var result: String?
-        for root in roots {
-            walk(root, ancestors: []) { node, _ in
-                guard node.isKeyword else { return true }
-                let matchesName = node.name.lowercased() == needle
-                let matchesSynonym = node.synonyms.contains { $0.lowercased() == needle }
-                guard matchesName || matchesSynonym else { return true }
-                result = node.name
-                return false
-            }
-            if result != nil { break }
-        }
-        return result
+        let index = lookupIndex()
+        guard let entry = index.firstEntryByName[needle] else { return nil }
+        return index.entries[entry].path.node.name
     }
 
     /// Case-insensitive substring search returning up to `limit` matching keyword (not
     /// container) nodes along with their ancestor paths.
     func search(_ query: String, limit: Int = 200) -> [StructuredKeywordPath] {
-        _ = version
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-
+        guard !needle.isEmpty, limit > 0 else { return [] }
         var results: [StructuredKeywordPath] = []
-        for root in roots {
-            walk(root, ancestors: []) { node, ancestors in
-                if results.count >= limit { return false }
-                guard node.isKeyword else { return true }
-                if node.name.lowercased().contains(needle) ||
-                    node.synonyms.contains(where: { $0.lowercased().contains(needle) })
-                {
-                    results.append(StructuredKeywordPath(ancestors: ancestors, node: node))
-                }
-                return true
+        for entry in lookupIndex().entries {
+            if entry.normalizedNames.contains(where: { $0.contains(needle) }) {
+                results.append(entry.path)
+                if results.count >= limit { break }
             }
-            if results.count >= limit { break }
         }
         return results
     }
@@ -361,65 +343,66 @@ final class StructuredKeywordService {
     /// de-duplicated case-insensitively, in tree order. Used to populate name
     /// pickers / autocomplete where only the canonical names are wanted.
     func allNodeNames() -> [String] {
-        _ = version
-        var seen = Set<String>()
-        var out: [String] = []
-        for root in roots {
-            walk(root, ancestors: []) { node, _ in
-                if node.isKeyword, !node.name.isEmpty,
-                   seen.insert(node.name.lowercased()).inserted {
-                    out.append(node.name)
-                }
-                return true
-            }
-        }
-        return out
+        lookupIndex().nodeNames
     }
 
     /// All searchable names for keyword nodes, including synonyms. Canonical
     /// node names are emitted before their synonyms so autocomplete keeps the
     /// primary spelling first while still allowing alias searches.
     func allSearchableNames() -> [String] {
-        _ = version
-        var seen = Set<String>()
-        var out: [String] = []
-        for root in roots {
-            walk(root, ancestors: []) { node, _ in
-                guard node.isKeyword else { return true }
-                for value in [node.name] + node.synonyms {
-                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { continue }
-                    if seen.insert(trimmed.lowercased()).inserted {
-                        out.append(trimmed)
-                    }
-                }
-                return true
-            }
-        }
-        return out
+        lookupIndex().searchableNames
     }
 
     /// Flattens the tree into a list of (node, ancestors) pairs whose nodes are
     /// keyword-kind only. Used by the bypass-toggle flow to enumerate every
     /// keyword the user could pick via the structured tree.
     func allKeywordNames() -> [String] {
-        _ = version
-        var names: [String] = []
-        for root in roots {
-            walk(root, ancestors: []) { node, _ in
-                if node.isKeyword {
-                    names.append(node.name)
-                    names.append(contentsOf: node.synonyms)
-                }
-                return true
-            }
-        }
-        return names
+        lookupIndex().keywordNames
     }
 
     // MARK: - Internals
 
-    private func bumpVersion() { snapshotVersion &+= 1 }
+    private func lookupIndex() -> LookupIndex {
+        // Read both observable revisions even on a cache hit so SwiftUI retains invalidation.
+        let currentSnapshot = snapshotVersion
+        let currentLibrary = library?.version
+        if let cachedLookup, cachedLookup.snapshotVersion == currentSnapshot,
+           cachedLookup.libraryVersion == currentLibrary { return cachedLookup }
+        var index = LookupIndex(snapshotVersion: currentSnapshot, libraryVersion: currentLibrary)
+        var seenNodes = Set<String>()
+        var seenSearchable = Set<String>()
+        for root in roots {
+            walk(root, ancestors: []) { node, ancestors in
+                guard node.isKeyword else { return true }
+                let names = [node.name] + node.synonyms
+                let normalized = names.map { $0.lowercased() }
+                let position = index.entries.count
+                index.entries.append(.init(path: .init(ancestors: ancestors, node: node),
+                                           normalizedNames: normalized))
+                for name in normalized where index.firstEntryByName[name] == nil {
+                    index.firstEntryByName[name] = position
+                }
+                if !node.name.isEmpty, seenNodes.insert(node.name.lowercased()).inserted {
+                    index.nodeNames.append(node.name)
+                }
+                for name in names {
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty, seenSearchable.insert(trimmed.lowercased()).inserted {
+                        index.searchableNames.append(trimmed)
+                    }
+                }
+                index.keywordNames.append(contentsOf: names)
+                return true
+            }
+        }
+        cachedLookup = index
+        return index
+    }
+
+    private func bumpVersion() {
+        snapshotVersion &+= 1
+        cachedLookup = nil
+    }
 
     private func invalidateLoad() {
         loadTask?.cancel()
@@ -498,14 +481,6 @@ final class StructuredKeywordService {
         sourcePath = storageURL(key).path
         loadError = parsed.isEmpty ? "File contained no keywords." : nil
         bumpVersion()
-    }
-
-    private func countKeywords(in node: StructuredKeyword) -> Int {
-        var n = node.isKeyword ? 1 : 0
-        for child in node.children {
-            n += countKeywords(in: child)
-        }
-        return n
     }
 
     /// Depth-first walk. The visitor returns `false` to stop the walk early.

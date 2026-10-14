@@ -177,13 +177,23 @@ nonisolated struct SourceImageRevisionCaptureIO: Sendable {
 /// Owns the complete stat-hash-stat transaction. Keeping every synchronous filesystem primitive
 /// in one non-reentrant actor method prevents MainActor callers from performing the two resource
 /// probes and prevents overlapping captures from observing one another's partial transaction.
+/// The Dispatch executor keeps full-file hashing and slow-volume reads off Swift's cooperative
+/// pool, leaving its threads available for image navigation and metadata transaction orchestration.
 actor SourceImageRevisionCaptureService {
     static let shared = SourceImageRevisionCaptureService()
 
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
     private let io: SourceImageRevisionCaptureIO
 
-    init(io: SourceImageRevisionCaptureIO = .system) {
+    init(io: SourceImageRevisionCaptureIO = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.source-revision.filesystem", qos: .utility
+         )) {
         self.io = io
+        self.filesystemQueue = filesystemQueue
     }
 
     func capture(

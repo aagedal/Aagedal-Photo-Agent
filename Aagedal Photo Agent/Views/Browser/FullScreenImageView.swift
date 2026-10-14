@@ -1659,11 +1659,14 @@ struct FullScreenImageView: View {
         let screenScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let screenMaxPx = max(NSScreen.main?.frame.width ?? 3840, NSScreen.main?.frame.height ?? 2160) * screenScale
         let visibleImages = viewModel.visibleImages
-        guard visibleImages.indices.contains(currentIndex) else { return }
-        let imageURLs = visibleImages.map(\.url)
+        guard let window = FullScreenImageCache.prefetchWindow(
+            currentIndex: currentIndex, imageCount: visibleImages.count
+        ) else { return }
         // Only neighbours can be prefetched. Avoid rebuilding settings dictionaries
         // for an entire large folder on every arrow-key press.
-        let neighbours = visibleImages[max(0, currentIndex - 4)..<min(visibleImages.count, currentIndex + 5)]
+        let neighbours = visibleImages[window]
+        let imageURLs = neighbours.map(\.url)
+        let windowIndex = currentIndex - window.lowerBound
 
         // Build lookups of CameraRaw settings and orientation for prefetch processing
         let settingsLookup: [URL: CameraRawSettings] = {
@@ -1687,7 +1690,7 @@ struct FullScreenImageView: View {
 
         if renderEdits {
             imageCache.startPrefetch(
-                currentIndex: currentIndex,
+                currentIndex: windowIndex,
                 images: imageURLs,
                 direction: direction,
                 screenMaxPx: screenMaxPx,
@@ -1697,7 +1700,7 @@ struct FullScreenImageView: View {
             )
         } else {
             imageCache.startPrefetch(
-                currentIndex: currentIndex,
+                currentIndex: windowIndex,
                 images: imageURLs,
                 direction: direction,
                 screenMaxPx: screenMaxPx,

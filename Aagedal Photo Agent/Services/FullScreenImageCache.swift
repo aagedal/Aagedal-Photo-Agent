@@ -108,6 +108,42 @@ actor FullScreenImagePresentationFactsService {
     }
 }
 
+/// Speculative XMP reads run on a retained Dispatch executor, away from both
+/// MainActor navigation and the cooperative thread pool.
+actor FullScreenPrefetchPreparationService {
+    nonisolated struct Snapshot: Sendable {
+        let settings: CameraRawSettings?
+        let cacheOrientation: Int?
+        let decodeOrientation: Int
+    }
+
+    typealias Read = @Sendable (URL, CameraRawSettings?, Int?, Bool) -> Snapshot
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+    private let read: Read
+
+    init(read: @escaping Read = { url, suppliedSettings, requestedOrientation, isEdited in
+        let settings = suppliedSettings
+            ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
+        let orientation = FullScreenImageCache.displayOrientation(for: url, fallback: requestedOrientation ?? 1)
+        return Snapshot(settings: settings,
+                        cacheOrientation: requestedOrientation == nil ? nil : orientation,
+                        decodeOrientation: orientation)
+    }) {
+        self.read = read
+        filesystemQueue = DispatchSerialQueue(label: "com.aagedal.photo-agent.prefetch-preparation", qos: .utility)
+    }
+
+    func prepare(url: URL, settings: CameraRawSettings?, orientation: Int?, isEdited: Bool) -> Snapshot? {
+        guard !Task.isCancelled else { return nil }
+        let snapshot = read(url, settings, orientation, isEdited)
+        guard !Task.isCancelled else { return nil }
+        return snapshot
+    }
+}
+
 /// LRU image cache with directional prefetching for full-screen image navigation.
 /// Maintains separate caches for unedited and edited (CameraRaw) versions so toggling
 /// edit rendering doesn't require re-decoding previously viewed images.
@@ -124,6 +160,9 @@ final class FullScreenImageCache: @unchecked Sendable {
     nonisolated(unsafe) private let editedDisplayPreviewCache = NSCache<NSString, CGImage>()
 
     nonisolated(unsafe) private var prefetchTasks: [PrefetchKey: PrefetchRequest] = [:]
+    nonisolated(unsafe) private var prefetchPreparationTasks: [PrefetchKey: PrefetchRequest] = [:]
+    nonisolated(unsafe) private var prefetchNavigationID: UUID?
+    nonisolated(unsafe) private var revokedPrefetchURLs: Set<URL> = []
     /// When true, `startPrefetch` is a no-op and in-flight prefetch is cancelled. Set while the
     /// develop editor is active: speculative prefetch decodes call ImageIO's XMP parsing
     /// (`CGImageSourceCopyPropertiesAtIndex`), which races the editor's concurrent NSXML sidecar
@@ -134,6 +173,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     private let lock = NSLock()
     private let memoryCoordinator: ImageMemoryCoordinator
     private let previewDecoder: @Sendable (URL, CameraRawSettings?, Int, CGFloat) async -> CGImage?
+    private let prefetchPreparationService: FullScreenPrefetchPreparationService
     nonisolated(unsafe) private var memoryRegistrations: [ImageMemoryCoordinator.Registration] = []
     /// NSCache cannot enumerate or remove keys by URL. Track the exact variants written
     /// to each cache so invalidating one image does not flush every edited preview.
@@ -160,9 +200,11 @@ final class FullScreenImageCache: @unchecked Sendable {
             await FullScreenImageCache.decodedEditedPreview(
                 for: $0, settings: $1, orientation: $2, screenMaxPx: $3
             )
-        }
+        },
+        prefetchPreparationService: FullScreenPrefetchPreparationService = FullScreenPrefetchPreparationService()
     ) {
         self.previewDecoder = previewDecoder
+        self.prefetchPreparationService = prefetchPreparationService
         self.memoryCoordinator = memoryCoordinator
         memoryRegistrations = [
             memoryCoordinator.register(
@@ -358,7 +400,7 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// Clear all cached images and cancel in-flight tasks.
     /// Call on folder switch to avoid stale cache hits.
     nonisolated func clearAll() {
-        lock.withLock {
+        let tasks = lock.withLock {
             cache.removeAllObjects()
             displayPreviewCache.removeAllObjects()
             editedCache.removeAllObjects()
@@ -367,8 +409,9 @@ final class FullScreenImageCache: @unchecked Sendable {
             displayPreviewKeysByURL.removeAll()
             editedImageKeysByURL.removeAll()
             editedDisplayPreviewKeysByURL.removeAll()
+            return removeAllPrefetchTasksLocked()
         }
-        cancelAllPrefetch()
+        for task in tasks { task.cancel() }
     }
 
     // MARK: - Prefetch Suppression (develop editor)
@@ -381,8 +424,11 @@ final class FullScreenImageCache: @unchecked Sendable {
     /// so its ImageIO XMP parsing can't race the editor's concurrent NSXML sidecar write — see
     /// `_prefetchSuppressed`. Idempotent.
     nonisolated func setPrefetchSuppressed(_ suppressed: Bool) {
-        lock.withLock { _prefetchSuppressed = suppressed }
-        if suppressed { cancelAllPrefetch() }
+        let tasks = lock.withLock {
+            _prefetchSuppressed = suppressed
+            return suppressed ? removeAllPrefetchTasksLocked() : []
+        }
+        for task in tasks { task.cancel() }
     }
 
     /// Tighten the edited-image cache limits while editing, then restore them on exit. Prefetch is
@@ -400,6 +446,27 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     // MARK: - Prefetching
+
+    /// The largest navigation offset is four images in either direction. Passing
+    /// just this window keeps per-navigation preparation independent of folder size.
+    nonisolated static func prefetchWindow(currentIndex: Int, imageCount: Int) -> Range<Int>? {
+        guard currentIndex >= 0, currentIndex < imageCount else { return nil }
+        return max(0, currentIndex - 4)..<min(imageCount, currentIndex + 5)
+    }
+
+    nonisolated static func prefetchTargetIndices(
+        currentIndex: Int, imageCount: Int, direction: NavigationDirection, itemLimit: Int
+    ) -> [Int] {
+        guard currentIndex >= 0, currentIndex < imageCount, itemLimit > 0 else { return [] }
+        let offsets: [Int]
+        switch direction {
+        case .forward: offsets = [1, 2, 3, 4, -1, -2]
+        case .backward: offsets = [-1, -2, -3, -4, 1, 2]
+        case .none: offsets = [1, -1, 2, -2, 3, -3]
+        }
+        return offsets.prefix(itemLimit).map { currentIndex + $0 }
+            .filter { $0 >= 0 && $0 < imageCount }
+    }
 
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
@@ -430,90 +497,109 @@ final class FullScreenImageCache: @unchecked Sendable {
             return
         }
 
-        let candidates: [Int]
-        switch direction {
-        case .forward:
-            candidates = [1, 2, 3, 4, -1, -2]
-        case .backward:
-            candidates = [-1, -2, -3, -4, 1, 2]
-        case .none:
-            candidates = [1, -1, 2, -2, 3, -3]
-        }
-
-        let targetIndices = candidates.prefix(itemLimit)
-            .map { currentIndex + $0 }
-            .filter { $0 >= 0 && $0 < images.count }
+        let targetIndices = Self.prefetchTargetIndices(
+            currentIndex: currentIndex, imageCount: images.count,
+            direction: direction, itemLimit: itemLimit
+        )
         let orderedTargetURLs = targetIndices.map { images[$0] }
         let targetURLs = Set(orderedTargetURLs)
         let currentURL = images.indices.contains(currentIndex) ? images[currentIndex] : nil
 
+        let navigationID = UUID()
         let tasksToCancel = lock.withLock { () -> [Task<Void, Never>] in
+            guard !_prefetchSuppressed else { return [] }
+            prefetchNavigationID = navigationID
+            revokedPrefetchURLs.removeAll()
             var toCancel: [Task<Void, Never>] = []
             let keysToCancel = prefetchTasks.keys.filter { !targetURLs.contains($0.url) && $0.url != currentURL }
             for key in keysToCancel {
                 guard let task = prefetchTasks.removeValue(forKey: key) else { continue }
                 toCancel.append(task.task)
             }
+            let preparationKeys = prefetchPreparationTasks.keys.filter { !targetURLs.contains($0.url) && $0.url != currentURL }
+            for key in preparationKeys {
+                if let task = prefetchPreparationTasks.removeValue(forKey: key) { toCancel.append(task.task) }
+            }
             return toCancel
         }
         for task in tasksToCancel { task.cancel() }
 
         for url in orderedTargetURLs {
+            // Caller-provided closures are immutable in-memory lookups. Filesystem
+            // fallbacks and sidecar orientation correction belong to preparation.
             let settings = settingsForURL?(url)
-                ?? (isEdited ? XMPSidecarService().loadSidecar(for: url)?.cameraRaw : nil)
             let requestedOrientation = orientationForURL?(url)
-            let cacheOrientation = requestedOrientation.map {
-                Self.displayOrientation(for: url, fallback: $0)
-            }
             let renderToken = Self.renderToken(settings: settings, isEdited: isEdited)
-            let prefetchKey = PrefetchKey(
+            let preparationKey = PrefetchKey(
                 url: url,
-                orientation: cacheOrientation,
+                orientation: requestedOrientation,
                 renderToken: renderToken,
                 isEdited: isEdited
             )
 
-            // Atomically check cache/prefetch state AND register the task to prevent
-            // a race where two concurrent callers both pass the guard and create duplicates.
-            let alreadyHandled = lock.withLock { () -> Bool in
-                if cachedImage(
-                    for: url,
-                    orientation: cacheOrientation,
-                    renderToken: renderToken,
-                    isEdited: isEdited
-                ) != nil { return true }
-                if prefetchTasks[prefetchKey] != nil { return true }
-
+            lock.withLock {
+                guard !_prefetchSuppressed, prefetchNavigationID == navigationID,
+                      !revokedPrefetchURLs.contains(url),
+                      prefetchPreparationTasks[preparationKey] == nil else { return }
                 let requestID = UUID()
                 let task = Task.detached(priority: .medium) { [weak self] in
                     guard let self else { return }
-                    defer { self.removePrefetchTask(for: prefetchKey, requestID: requestID) }
+                    defer { self.removePrefetchPreparationTask(for: preparationKey, requestID: requestID) }
                     guard !Task.isCancelled else { return }
-                    let filename = url.lastPathComponent
-                    cacheLogger.info("Prefetching \(filename) (edited=\(isEdited))")
-
-                    let orientation = cacheOrientation ?? Self.displayOrientation(for: url)
-                    guard let image = await self.previewDecoder(
-                        url, settings, orientation, screenMaxPx
-                    ), !Task.isCancelled else {
-                        cacheLogger.info("Prefetch failed/cancelled: \(filename)")
-                        return
-                    }
-
-                    self.store(
-                        image,
-                        for: url,
-                        orientation: cacheOrientation,
-                        renderToken: renderToken,
-                        isEdited: isEdited
-                    )
-                    cacheLogger.info("Prefetched \(filename) (\(image.width)x\(image.height), edited=\(isEdited))")
+                    guard let prepared = await self.prefetchPreparationService.prepare(
+                        url: url, settings: settings, orientation: requestedOrientation, isEdited: isEdited
+                    ), !Task.isCancelled else { return }
+                    self.registerPreparedPrefetch(prepared, for: preparationKey,
+                                                  requestID: requestID, screenMaxPx: screenMaxPx)
                 }
-
-                prefetchTasks[prefetchKey] = PrefetchRequest(id: requestID, task: task)
-                return false
+                prefetchPreparationTasks[preparationKey] = PrefetchRequest(id: requestID, task: task)
             }
-            if alreadyHandled { continue }
+        }
+    }
+
+    nonisolated private func registerPreparedPrefetch(
+        _ prepared: FullScreenPrefetchPreparationService.Snapshot, for preparationKey: PrefetchKey,
+        requestID: UUID, screenMaxPx: CGFloat
+    ) {
+        let key = PrefetchKey(url: preparationKey.url, orientation: prepared.cacheOrientation,
+                             renderToken: Self.renderToken(settings: prepared.settings, isEdited: preparationKey.isEdited),
+                             isEdited: preparationKey.isEdited)
+        lock.withLock {
+            // Removal on clear, invalidation, suppression or newer navigation revokes
+            // admission even when a synchronous provider read could not be cancelled.
+            guard !_prefetchSuppressed, prefetchPreparationTasks[preparationKey]?.id == requestID,
+                  prefetchTasks[key] == nil,
+                  cachedImage(for: key.url, orientation: key.orientation,
+                              renderToken: key.renderToken, isEdited: key.isEdited) == nil else { return }
+            let decodeID = UUID()
+            let task = Task.detached(priority: .medium) { [weak self] in
+                guard let self else { return }
+                defer { self.removePrefetchTask(for: key, requestID: decodeID) }
+                guard !Task.isCancelled,
+                      let image = await self.previewDecoder(key.url, prepared.settings,
+                                                           prepared.decodeOrientation, screenMaxPx),
+                      !Task.isCancelled else { return }
+                self.storePrefetchedImage(image, for: key, requestID: decodeID)
+            }
+            prefetchTasks[key] = PrefetchRequest(id: decodeID, task: task)
+        }
+    }
+
+    nonisolated private func storePrefetchedImage(_ image: CGImage, for key: PrefetchKey, requestID: UUID) {
+        lock.withLock {
+            guard prefetchTasks[key]?.id == requestID else { return }
+            let cacheKey = Self.cacheKey(for: key.url, orientation: key.orientation, renderToken: key.renderToken)
+            let target = key.isEdited ? editedCache : cache
+            target.setObject(image, forKey: cacheKey, cost: Self.byteSize(of: image))
+            if key.isEdited { editedImageKeysByURL[key.url, default: []].insert(cacheKey) }
+            else { imageKeysByURL[key.url, default: []].insert(cacheKey) }
+        }
+    }
+
+    nonisolated private func removePrefetchPreparationTask(for key: PrefetchKey, requestID: UUID) {
+        lock.withLock {
+            guard prefetchPreparationTasks[key]?.id == requestID else { return }
+            prefetchPreparationTasks.removeValue(forKey: key)
         }
     }
 
@@ -525,12 +611,17 @@ final class FullScreenImageCache: @unchecked Sendable {
     }
 
     nonisolated private func removePrefetchTasksLocked(for url: URL) -> [Task<Void, Never>] {
+        revokedPrefetchURLs.insert(url)
         var removed: [Task<Void, Never>] = []
         let keysToRemove = prefetchTasks.keys.filter { $0.url == url }
         for key in keysToRemove {
             if let task = prefetchTasks.removeValue(forKey: key) {
                 removed.append(task.task)
             }
+        }
+        let preparationKeys = prefetchPreparationTasks.keys.filter { $0.url == url }
+        for key in preparationKeys {
+            if let task = prefetchPreparationTasks.removeValue(forKey: key) { removed.append(task.task) }
         }
         return removed
     }
@@ -556,7 +647,18 @@ final class FullScreenImageCache: @unchecked Sendable {
         if let cached = cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited, minimumPixelSize: minimumPixelSize) {
             return cached
         }
-        guard let task = lock.withLock({ prefetchTasks[key] }) else { return nil }
+        let preparations = lock.withLock {
+            prefetchPreparationTasks.filter { $0.key.url == url && $0.key.isEdited == isEdited }.values.map(\.task)
+        }
+        for preparation in preparations { await preparation.value }
+        // A fast decode may publish and remove its task between independent cache and task
+        // reads. Snapshot both under the publication lock so foreground reuse cannot miss it.
+        let ready = lock.withLock {
+            (cachedImage(for: url, orientation: orientation, renderToken: renderToken,
+                         isEdited: isEdited, minimumPixelSize: minimumPixelSize), prefetchTasks[key])
+        }
+        if let cached = ready.0 { return cached }
+        guard let task = ready.1 else { return nil }
         await task.task.value
         return cachedImage(for: url, orientation: orientation, renderToken: renderToken, isEdited: isEdited, minimumPixelSize: minimumPixelSize)
     }
@@ -599,12 +701,19 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     nonisolated func cancelAllPrefetch() {
         let tasksToCancel = lock.withLock {
-            let tasks = prefetchTasks.values.map(\.task)
-            prefetchTasks.removeAll()
-            return tasks
+            removeAllPrefetchTasksLocked()
         }
         for task in tasksToCancel { task.cancel() }
         cacheLogger.info("All prefetch tasks cancelled")
+    }
+
+    nonisolated private func removeAllPrefetchTasksLocked() -> [Task<Void, Never>] {
+        let tasks = prefetchTasks.values.map(\.task) + prefetchPreparationTasks.values.map(\.task)
+        prefetchTasks.removeAll()
+        prefetchPreparationTasks.removeAll()
+        prefetchNavigationID = nil
+        revokedPrefetchURLs.removeAll()
+        return tasks
     }
 
     // MARK: - CameraRaw Processing

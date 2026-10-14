@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Improve image and folder navigation responsiveness with bounded prefetch preparation, background sidecar reads and deduplicated sidebar scans. Reuse structured tagging indexes and avoid whole-folder sorting after unchanged rating and label write completions.
+
 - Search Settings by category, control label, or related term, with matching-control hints, Command+F focus, and clear and Escape actions.
 
 - Import selected images and videos from Instagram and X post URLs, preserving originals alongside attributed working copies and provenance records. Update gallery-dl and yt-dlp separately from the app in Web Downloads settings.

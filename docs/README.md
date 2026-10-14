@@ -28,6 +28,14 @@ Release-facing 3.0 documentation lives outside the implementation plans:
   the versioned manual package and later opt-in local snapshot channel shared with FTP Sync.
 - [README](../README.md) and [CHANGELOG](../CHANGELOG.md) — public overview and release draft.
 
+**Core workflow performance continuation (2026-10-14):**
+[Navigation, tagging and metadata performance](plan-status-core-workflow-performance-2026-10-14.md)
+bounds loupe URL preparation, moves speculative sidecar reads and revision hashing to
+Dispatch workers, reuses structured tagging indexes and updates field-completion snapshots
+without unnecessary whole-folder sorting. Sidebar discovery deduplicates and prioritizes
+expansion, admits one speculative scan at a time and rejects removed-tree publication.
+Real-volume latency, memory and broader release gates remain open.
+
 **Native face consent / Develop cleanup acceptance (2026-10-14):**
 [Native acceptance continuation](release/native-face-cleanup-acceptance-2026-10-14.md)
 passes both previously activation-blocked workflows on current application source.
