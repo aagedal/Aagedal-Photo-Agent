@@ -348,7 +348,8 @@ struct AccessibilityKeyboardAuditTests {
     @Test("ordered Creator and typed Date Created expose semantic accessible editors")
     func orderedCreatorAndDateEditorAudit() throws {
         let metadataPanel = try source("Aagedal Photo Agent/Views/Metadata/MetadataPanel.swift")
-        #expect(metadataPanel.contains("Creators (ordered)"))
+        #expect(metadataPanel.contains("OrderedCreatorsEditor("))
+        #expect(metadataPanel.contains("label: \"Creator\""))
         #expect(metadataPanel.contains("metadata.creator.orderedEditor"))
         #expect(metadataPanel.contains("Move creator \\(index + 1) earlier"))
         #expect(metadataPanel.contains("EditorialDateCreatedEditor("))
