@@ -303,6 +303,60 @@ struct MCPNativeFaceScanReviewModelTests {
         #expect(!f.model.canStart)
     }
 
+    @Test("Mismatched or incomplete receipts never publish completion or permit replay", arguments: [
+        "intentID", "operationID", "snapshotRevision", "photoCount", "forceFullScan",
+        "includeJerseyNumbers", "phase", "outcome", "missing"
+    ]) @MainActor
+    func mismatchedReceipt(field: String) async throws {
+        let f = try fixture(schedule: { intents, id, validate in
+            let intent = try intents.inspect(id: id)
+            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+            try validate()
+            return .init(admission: .scheduled(request), task: Task {
+                .init(folderURL: request.folderURL, outcome: .completed)
+            })
+        }, readReceipt: { receipts, id in
+            let original = try #require(receipts.receipts().first { $0.operationID == id })
+            if field == "missing" { return nil }
+            // Substitute evidence from another request or phase.
+            // Leave the durable archive untouched for recovery inspection.
+            let data = try JSONEncoder().encode(original)
+            var value = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            switch field {
+            case "intentID", "operationID": value[field] = UUID().uuidString
+            case "snapshotRevision": value[field] = "sha256:" + String(repeating: "0", count: 64)
+            case "photoCount": value[field] = original.photoCount + 1
+            case "forceFullScan", "includeJerseyNumbers": value[field] = true
+            case "phase": value[field] = "executionPossible"; value.removeValue(forKey: "completion")
+            case "outcome":
+                var completion = try #require(value["completion"] as? [String: Any])
+                completion["outcome"] = "failed"
+                value["completion"] = completion
+            default: Issue.record("Unknown receipt substitution")
+            }
+            return try JSONDecoder().decode(MCPFaceScanReceiptStore.Receipt.self,
+                from: JSONSerialization.data(withJSONObject: value))
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let originalBytes = try Data(contentsOf: f.photos.appendingPathComponent("photo.jpg"))
+        await f.model.prepare(folder: f.photos, forceFullScan: false, includeJerseyNumbers: false)
+        let intent = try #require(f.model.review?.intent)
+        f.model.acknowledgesScan = true
+        await f.model.start()
+        let operation = try #require(f.model.operation)
+        #expect(operation.isTerminal)
+        #expect(operation.outcome == .verified)
+        #expect(f.model.receipt == nil)
+        #expect(f.model.message?.contains("receipt could not be loaded") == true)
+        #expect(!f.model.canStart)
+        #expect(!f.model.canCancel)
+        let durable = try #require(f.receipts.receipts().first)
+        try durable.requireCompletion(intent: intent, operation: operation)
+        await f.model.start()
+        #expect(try f.receipts.receipts().count == 1)
+        #expect(try Data(contentsOf: f.photos.appendingPathComponent("photo.jpg")) == originalBytes)
+    }
+
     @Test("Successful retained work presents its exact durable terminal receipt and cannot replay") @MainActor
     func terminalReceipt() async throws {
         let f = try fixture(schedule: { intents, id, validate in
@@ -322,6 +376,20 @@ struct MCPNativeFaceScanReviewModelTests {
         #expect(f.model.receipt?.operationID == f.model.operation?.id)
         #expect(f.model.receipt?.intentID == intentID)
         #expect(f.model.message?.contains("completed") == true)
+        let operation = try #require(f.model.operation)
+        let receipt = try #require(f.model.receipt)
+        let intent = try f.intents.inspect(id: intentID)
+        for field in ["kind", "state"] {
+            let data = try JSONEncoder().encode(operation)
+            var value = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            if field == "kind" { value[field] = "voice_transcription" }
+            else { value[field] = "running"; value.removeValue(forKey: "outcome") }
+            let substituted = try JSONDecoder().decode(AutomationOperationRegistry.Record.self,
+                from: JSONSerialization.data(withJSONObject: value))
+            #expect(throws: MCPFaceScanReceiptStore.Failure.mismatchedCompletion) {
+                try receipt.requireCompletion(intent: intent, operation: substituted)
+            }
+        }
         await f.model.start()
         #expect(try f.receipts.receipts().count == 1)
     }

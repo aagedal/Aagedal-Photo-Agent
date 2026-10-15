@@ -174,11 +174,16 @@ final class MCPNativeFaceScanReviewModel {
             operation = completed
             message = "Loading the completed face scan receipt…"
             let readReceipt = self.readReceipt
-            let retainedReceipt = try await worker.run { try readReceipt(completed.id) }
+            let retainedReceipt = try await worker.run {
+                guard let retainedReceipt = try readReceipt(completed.id) else {
+                    throw MCPFaceScanOperationService.Failure.missingCompletion
+                }
+                try retainedReceipt.requireCompletion(intent: review.intent, operation: completed)
+                return retainedReceipt
+            }
             guard current == generation else { return }
             try Task.checkCancellation()
             receipt = retainedReceipt
-            guard receipt != nil else { throw MCPFaceScanOperationService.Failure.missingCompletion }
             message = Self.completionMessage(completed.outcome)
         } catch {
             guard current == generation else { return }

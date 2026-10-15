@@ -1,5 +1,12 @@
 # App improvement audit plan
 
+**Exact face completion linkage (2026-10-15):** Native receipt publication now
+matches the original intent, inventory revision, photo count and scan/reset options
+to the exact completed face operation and its outcome. Missing, incomplete or
+substituted evidence preserves the terminal operation without displaying a receipt
+or restoring consent. Helper request retention/handoff and descriptor-anchored effects
+remain open; see the [dated continuation](release/face-completion-linkage-2026-10-15.md).
+
 **Native face review worker (2026-10-15):** Model preflight, inventory/approval checks
 and terminal receipt reads use a retained serial Dispatch actor. Cancellation preserves
 task context; dismissed reviews reject delayed receipt publication. Failed receipt

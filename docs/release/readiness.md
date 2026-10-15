@@ -1,5 +1,13 @@
 # 3.0 coordinator state
 
+**Exact face completion linkage (2026-10-15):** Native receipt publication checks
+the original intent, inventory revision, count and options against the exact terminal
+face operation and outcome. Mismatched evidence retains the operation and durable
+archive for inspection without restoring consent. This strengthens native completion
+evidence; authenticated helper request retention/handoff and descriptor-anchored
+execution remain the next implementation work. See the
+[dated continuation](face-completion-linkage-2026-10-15.md).
+
 **Native face review worker (2026-10-15):** Model preflight, inventory/approval checks
 and terminal receipt reads use a retained serial Dispatch actor. Cancellation preserves
 task context; dismissed reviews reject delayed receipt publication. Failed receipt
