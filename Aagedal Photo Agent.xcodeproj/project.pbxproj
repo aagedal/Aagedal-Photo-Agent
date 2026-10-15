@@ -265,6 +265,7 @@
 		D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */; };
 		D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */; };
 		D13600000000000000000102 /* MCPNativeFaceScanReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13600000000000000000101 /* MCPNativeFaceScanReviewModelTests.swift */; };
+		D14000000000000000000102 /* VideoStillFilesystemExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D14000000000000000000101 /* VideoStillFilesystemExecutorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -563,6 +564,7 @@
 		D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewServiceTests.swift; sourceTree = "<group>"; };
 		D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanReceiptInspectionTests.swift; sourceTree = "<group>"; };
 		D13600000000000000000101 /* MCPNativeFaceScanReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewModelTests.swift; sourceTree = "<group>"; };
+		D14000000000000000000101 /* VideoStillFilesystemExecutorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoStillFilesystemExecutorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -803,6 +805,7 @@
 				44DB9A574351475E9494B2BF /* VariableConflictRecoveryTests.swift */,
 				25CA63E52BF84A05ABC260A7 /* VariableMetadataWriteServiceTests.swift */,
 				A770F1000000000000000001 /* ApplicationTerminationFlushCoordinatorTests.swift */,
+				D14000000000000000000101 /* VideoStillFilesystemExecutorTests.swift */,
 				A770F2000000000000000001 /* CaptionWorkspaceSpeedToolsTests.swift */,
 				A770F5000000000000000001 /* DescriptionAssistantBatchApplyTests.swift */,
 				A770F3000000000000000001 /* AccessibilityKeyboardAuditTests.swift */,
@@ -1298,6 +1301,7 @@
 				1B9FF71903054DC7BE54A5E5 /* VariableConflictRecoveryTests.swift in Sources */,
 				FE9F2E70E93747F4B57B62A8 /* VariableMetadataWriteServiceTests.swift in Sources */,
 				A770F1000000000000000002 /* ApplicationTerminationFlushCoordinatorTests.swift in Sources */,
+				D14000000000000000000102 /* VideoStillFilesystemExecutorTests.swift in Sources */,
 				A770F2000000000000000002 /* CaptionWorkspaceSpeedToolsTests.swift in Sources */,
 				A770F5000000000000000002 /* DescriptionAssistantBatchApplyTests.swift in Sources */,
 				A770F3000000000000000002 /* AccessibilityKeyboardAuditTests.swift in Sources */,

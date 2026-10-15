@@ -978,6 +978,8 @@ result is announced once; CI runs the smoke suite; dated manual evidence covers 
 
 ### 3.1 Move blocking file work off the main actor
 
+**2026-10-16 continuation:** [Video still/dictation workers](plan-status-video-dictation-filesystem-continuation-2026-10-16.md) move collision probes, image encoding/publication, private audio creation/streaming hash and teardown to retained Dispatch actors. Cancellation preserves committed markers and drains owned audio cleanup. Real-volume and native qualification remain open.
+
 **Priority:** P1  
 **Evidence:** default isolation is MainActor (`project.pbxproj:647`); synchronous sidecar work occurs at
 `MetadataViewModel.swift:1533-1552`; folder listing/trash/rename/create operations occur at

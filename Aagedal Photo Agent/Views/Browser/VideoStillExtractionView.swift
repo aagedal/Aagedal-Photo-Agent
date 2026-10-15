@@ -1,8 +1,6 @@
 import SwiftUI
 import Combine
 import AVKit
-import ImageIO
-import UniformTypeIdentifiers
 
 struct ExtractionVideo: Identifiable {
     let id = UUID()
@@ -27,6 +25,7 @@ struct VideoStillExtractionView: View {
     @State private var saving = false
     @State private var message: String?
     @State private var loadFailed = false
+    @State private var filesystem = VideoStillFilesystemService()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -174,36 +173,23 @@ struct VideoStillExtractionView: View {
                 // SDR output gives HDR footage a display-referred still suitable for the photo workflow.
                 generator.dynamicRangePolicy = .forceSDR
                 for time in selectedFrames {
+                    try Task.checkCancellation()
                     let result = try await generator.image(at: time)
                     let stem = url.deletingPathExtension().lastPathComponent
                     let frameTimecode = timecode.label(at: result.actualTime)
                     let timestamp = frameTimecode.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ";", with: "-")
-                    var output = destination.appendingPathComponent("\(stem)_\(timestamp).\(selectedFormat)")
-                    var suffix = 2
-                    while FileManager.default.fileExists(atPath: output.path) {
-                        output = destination.appendingPathComponent("\(stem)_\(timestamp)_\(suffix).\(selectedFormat)")
-                        suffix += 1
-                    }
+                    let outputURL = try await filesystem.destination(
+                        directory: destination, stem: stem, timestamp: timestamp, format: selectedFormat
+                    )
                     let sourceName = url.lastPathComponent
-                    let outputURL = output
                     let description = "Still from \(sourceName) at timecode \(frameTimecode) (\(timecode.hasSourceTimecode ? "source" : "relative"))"
                     if selectedFormat == "jxl" {
                         try await VideoJXLStillExporter.export(source: url, seconds: result.actualTime.seconds,
-                                                               destination: outputURL, description: description)
+                                                               destination: outputURL, description: description,
+                                                               filesystem: filesystem)
                     } else {
-                        try await Task.detached(priority: .userInitiated) {
-                            let type = selectedFormat == "jpg" ? UTType.jpeg : UTType.tiff
-                            let data = NSMutableData()
-                            guard let writer = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-                            let properties: [CFString: Any] = [
-                                kCGImageDestinationLossyCompressionQuality: 0.95,
-                                kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFImageDescription: description],
-                                kCGImagePropertyIPTCDictionary: [kCGImagePropertyIPTCCaptionAbstract: description]
-                            ]
-                            CGImageDestinationAddImage(writer, result.image, properties as CFDictionary)
-                            guard CGImageDestinationFinalize(writer) else { throw CocoaError(.fileWriteUnknown) }
-                            try (data as Data).write(to: outputURL, options: .withoutOverwriting)
-                        }.value
+                        try await filesystem.write(image: result.image, format: selectedFormat,
+                                                   destination: outputURL, description: description)
                     }
                     saved += 1
                 }

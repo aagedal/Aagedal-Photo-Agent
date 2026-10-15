@@ -1,5 +1,11 @@
 # Project planning overview
 
+**Video still and dictation filesystem continuation (2026-10-16):** Video destination
+probes, encoding/publication and JXL teardown use a retained Dispatch actor. Dictation
+workspace creation, streaming hashing and cleanup use another worker and retain busy
+ownership through cancelled teardown. Native/provider and real-volume qualification
+remain open; see the [dated continuation](plan-status-video-dictation-filesystem-continuation-2026-10-16.md).
+
 **Native face review worker (2026-10-15):** Model preflight, inventory/approval checks
 and terminal receipt reads use a retained serial Dispatch actor. Cancellation preserves
 task context; dismissed reviews reject delayed receipt publication. Failed receipt
@@ -7,7 +13,7 @@ inspection preserves terminal operation evidence. Authenticated helper handoff a
 broader qualification remain open; see the [dated continuation](release/native-face-review-worker-2026-10-15.md).
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-15
+**Last reviewed:** 2026-10-16
 
 **Exact retained face-intent review (2026-10-15):** Native review can inspect the
 original retained intent by ID without replacing its inventory/options or renewing
