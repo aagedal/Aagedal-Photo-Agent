@@ -1123,6 +1123,79 @@ struct MetadataEditorReadServiceTests {
         #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == "Original")
     }
 
+    @Test("History preparation awaits retained writes and rejects cancellation or replacement", arguments: [0, 1, 2])
+    @MainActor
+    func historyPreparation(mode: Int) async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let queue = CaptionDraftPersistenceQueue(label: "history.preparation")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let gate = HistoryRestoreSuspensionGate()
+        queue.enqueueAsync { await gate.pause() }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isPaused), ContinuousClock.now < deadline { await Task.yield() }
+        #expect(await gate.isPaused)
+        var captured = false
+        let admitted = fixture.model.prepareHistoryRestore(.original, coordinator: coordinator,
+            hasLiveCaptionEditor: false, captureEditor: { captured = true })
+        let task = try #require(admitted)
+        #expect(coordinator.isTransitioning)
+        let duplicate = fixture.model.prepareHistoryRestore(.original, coordinator: coordinator,
+            hasLiveCaptionEditor: false, captureEditor: {})
+        #expect(duplicate == nil)
+        while !captured, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(captured)
+        #expect(fixture.model.editingMetadata.title == "Pending")
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Pending")
+        if mode == 1 { task.cancel() }
+        if mode == 2 { fixture.model.clear() }
+        await gate.resume()
+        await task.value
+        #expect(!coordinator.isTransitioning)
+        #expect(!queue.hasPendingWork)
+        let expected = mode == 0 ? "Original" : "Pending"
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == expected)
+        #expect(XMPSidecarService().loadSidecar(for: fixture.image)?.title == expected)
+    }
+
+    @Test("History preparation preserves bytes after capture failure and permits retry")
+    @MainActor
+    func historyPreparationFailure() async throws {
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"))
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        await fixture.model.prepareHistoryRestore(.original, coordinator: coordinator,
+            hasLiveCaptionEditor: false, captureEditor: { throw CocoaError(.fileWriteUnknown) })?.value
+        #expect(!coordinator.isTransitioning)
+        #expect(fixture.model.saveError?.contains("before restoring history") == true)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Pending")
+        await fixture.model.prepareHistoryRestore(.original, coordinator: coordinator,
+            hasLiveCaptionEditor: false, captureEditor: {})?.value
+        #expect(fixture.model.editingMetadata.title == "Original")
+        #expect(fixture.model.saveError == nil)
+    }
+
+    @Test("History preparation refuses a removed history point instead of using its old index")
+    @MainActor
+    func historyPreparationRetainsPoint() async throws {
+        let point = MetadataHistoryEntry(timestamp: Date(), fieldID: .headline,
+            oldValue: "Original", newValue: "Pending")
+        let fixture = try makeHistoryRestoreFixture(original: IPTCMetadata(title: "Original"),
+            pending: IPTCMetadata(title: "Pending"), history: [point])
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        await fixture.model.prepareHistoryRestore(.point(point), coordinator: coordinator,
+            hasLiveCaptionEditor: false, captureEditor: { fixture.model.sidecarHistory = [] })?.value
+        #expect(fixture.model.saveError?.contains("no longer available") == true)
+        #expect(!coordinator.isTransitioning)
+        #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Pending")
+    }
+
     @MainActor
     private func makeHistoryRestoreFixture(
         original: IPTCMetadata?, pending: IPTCMetadata, history: [MetadataHistoryEntry] = [],

@@ -3,6 +3,12 @@
 **Status:** living planning index  
 **Last reviewed:** 2026-10-15
 
+**History and direct Browser async continuation (2026-10-15):** History restore
+and direct Browser mutations await retained metadata durability, reject obsolete targets,
+and exclude repeated commands. Production synchronous Caption flush callers are eliminated;
+compatibility APIs and broad qualification remain open. See the
+[dated continuation](plan-status-history-browser-async-continuation-2026-10-15.md).
+
 The [metadata transition continuation](plan-status-metadata-transition-async-continuation-2026-10-14.md)
 moves shared workspace/action barriers to async persistence with editor admission guards,
 and drains retained drafts during Deadline preparation. Compatibility callers and release

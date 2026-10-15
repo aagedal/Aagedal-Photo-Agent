@@ -1,5 +1,12 @@
 # App improvement audit plan
 
+**History and direct Browser async continuation (2026-10-15):** History restore
+and direct Browser mutations await retained metadata durability with duplicate exclusion,
+editor freezing and target-context checks. History retains the chosen point by value.
+Production synchronous Caption flush callers are eliminated; compatibility APIs and broad
+qualification remain open. See the
+[dated continuation](plan-status-history-browser-async-continuation-2026-10-15.md).
+
 **Activity and Rename async continuation (2026-10-15):** Activity resume and
 Batch Rename preparation await guarded metadata durability. Cancellation and changed
 target context abandon delayed actions; Activity transfers or releases exact workflow

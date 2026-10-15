@@ -103,6 +103,24 @@ private actor ReviewCallerBaselineSequence {
     }
 }
 
+private actor ReviewDirectMutationGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    var isWaiting: Bool { continuation != nil }
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func resume() { released = true; continuation?.resume(); continuation = nil }
+}
+
+private nonisolated final class ReviewDirectMutationTrash: ImageTrashHandling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: [URL] = []
+    var urls: [URL] { lock.withLock { captured } }
+    func trashItem(at url: URL) throws { lock.withLock { captured.append(url) } }
+}
+
 @Suite("Browser and Face field mutation callers", .serialized)
 struct FieldMutationCallerTests {
     @Test("Metadata batches retain existing order and refresh filters and selection", arguments: [false, true])
@@ -370,10 +388,102 @@ struct FieldMutationCallerTests {
         await model.prepareMetadataReviewEditor(for: photo)
         model.updateMetadataReviewText("Buffered before deletion", field: .headline, for: photo)
         model.deleteSelectedImages()
+        await model.waitForPendingImageMutation()
         #expect(queue.pendingCount == 2)
         #expect(model.images.first?.url == photo)
         #expect(model.errorMessage?.contains("Earlier queued failure") == true)
         #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Buffered before deletion")
+    }
+
+    @Test("Direct deletion suspends for retained writes, freezes Review, and refuses duplicate or obsolete commands", arguments: [false, true])
+    @MainActor
+    func directDeletionWaitsForRetainedDurability(changesContext: Bool) async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-direct-async/photo.jpg")
+        let sequence = ReviewCallerBaselineSequence()
+        let gate = ReviewDirectMutationGate()
+        let trash = ReviewDirectMutationTrash()
+        let queue = CaptionDraftPersistenceQueue(label: "review.direct.async")
+        queue.enqueueAsync(operation: { await gate.wait() })
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let model = BrowserViewModel(imageTrashHandler: trash,
+            metadataReviewBaselineLoader: { await sequence.load($0, $1) }, metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        await model.prepareMetadataReviewEditor(for: photo)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isWaiting), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await gate.isWaiting)
+        model.deleteSelectedImages()
+        #expect(coordinator.isTransitioning)
+        #expect(trash.urls.isEmpty)
+        model.deleteSelectedImages()
+        model.updateMetadataReviewText("Blocked late edit", field: .headline, for: photo)
+        #expect(model.metadataReviewText(for: .headline, imageURL: photo) == "Saved revision 1")
+        if changesContext { model.selectedImageIDs = [] }
+        await gate.resume()
+        await model.waitForPendingImageMutation()
+        #expect(!coordinator.isTransitioning)
+        #expect(trash.urls == (changesContext ? [] : [photo]))
+        #expect(model.images.count == (changesContext ? 1 : 0))
+    }
+
+    @Test("A failed retained write preserves newer Browser context feedback", arguments: [false, true])
+    @MainActor
+    func obsoleteDirectDeletionFailureDoesNotPublish(changesFolder: Bool) async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-direct-failure/photo.jpg")
+        let gate = ReviewDirectMutationGate()
+        let trash = ReviewDirectMutationTrash()
+        let queue = CaptionDraftPersistenceQueue(label: "review.direct.failure")
+        queue.enqueueAsync(operation: {
+            await gate.wait()
+            throw CaptionWorkspaceFlushError.persistenceFailed("Old context failure")
+        })
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let model = BrowserViewModel(imageTrashHandler: trash, metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        model.deleteSelectedImages()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isWaiting), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await gate.isWaiting)
+        if changesFolder {
+            model.currentFolderURL = URL(fileURLWithPath: "/virtual/replacement-folder")
+        } else {
+            model.selectedImageIDs = []
+        }
+        model.errorMessage = "Current context feedback"
+        await gate.resume()
+        await model.waitForPendingImageMutation()
+        #expect(!coordinator.isTransitioning)
+        #expect(queue.hasPendingWork)
+        #expect(model.errorMessage == "Current context feedback")
+        #expect(trash.urls.isEmpty)
+    }
+
+    @Test("A retained FIFO is drained before direct deletion even with no mounted Review editors")
+    @MainActor
+    func directDeletionDrainsWithoutEditors() async throws {
+        let photo = URL(fileURLWithPath: "/virtual/review-direct-unmounted/photo.jpg")
+        let gate = ReviewDirectMutationGate()
+        let trash = ReviewDirectMutationTrash()
+        let queue = CaptionDraftPersistenceQueue(label: "review.direct.unmounted")
+        queue.enqueueAsync(operation: { await gate.wait() })
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let model = BrowserViewModel(imageTrashHandler: trash, metadataReviewCoordinator: coordinator)
+        model.currentFolderURL = photo.deletingLastPathComponent()
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        model.deleteSelectedImages()
+        #expect(coordinator.isTransitioning)
+        #expect(trash.urls.isEmpty)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(await gate.isWaiting), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await gate.isWaiting)
+        await gate.resume()
+        await model.waitForPendingImageMutation()
+        #expect(trash.urls == [photo])
     }
 
     @Test("Browser folder reload distinguishes absent and explicitly cleared XMP labels", arguments: [false, true])

@@ -4776,6 +4776,61 @@ final class MetadataViewModel {
 
     var canRestoreOriginalHistory: Bool { currentHistoryRecord?.imageMetadataSnapshot != nil }
 
+    enum HistoryRestoreTarget {
+        case original
+        case point(MetadataHistoryEntry)
+    }
+
+    /// Reserve before scheduling, then await captured drafts without blocking the editor actor.
+    /// A history point is retained by value because replay can trim or replace history while waiting.
+    func prepareHistoryRestore(
+        _ target: HistoryRestoreTarget,
+        coordinator: CaptionWorkspaceFlushCoordinator,
+        hasLiveCaptionEditor: Bool,
+        captureEditor: @escaping @MainActor () throws -> Void
+    ) -> Task<Void, Never>? {
+        let token: UUID
+        do { token = try coordinator.reserveTransition() }
+        catch { return nil }
+        let loadID = metadataLoadRequestID
+        let urls = selectedURLs
+        let folder = currentFolderURL
+        return Task { @MainActor in
+            let isCurrent = {
+                self.metadataLoadRequestID == loadID && self.selectedURLs == urls && self.currentFolderURL == folder
+            }
+            var restore: Task<Void, Never>?
+            do {
+                try await coordinator.performReservedTransition(token, flush: {
+                    guard isCurrent() else { throw CancellationError() }
+                    try captureEditor()
+                    if hasLiveCaptionEditor { try await coordinator.flushAsync() }
+                    else { try await coordinator.flushQueuedPersistenceAsync() }
+                }, operation: {
+                    guard isCurrent() else { return }
+                    switch target {
+                    case .original:
+                        restore = self.restoreToOriginal()
+                    case .point(let point):
+                        guard let index = self.sidecarHistory.firstIndex(of: point) else {
+                            self.saveError = "This history point is no longer available. Reload the photo and choose a retained point."
+                            return
+                        }
+                        restore = self.restoreToHistoryPoint(at: index)
+                    }
+                })
+                // Once admitted, the model's transactional restore owns its durable completion.
+                await restore?.value
+            } catch is CancellationError {
+                // Captured writes retain their completion; the delayed restore is abandoned.
+            } catch {
+                if isCurrent() {
+                    self.saveError = "Finish saving the Caption draft before restoring history: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     @discardableResult
     func restoreToOriginal() -> Task<Void, Never>? {
         guard let original = currentHistoryRecord?.imageMetadataSnapshot else {

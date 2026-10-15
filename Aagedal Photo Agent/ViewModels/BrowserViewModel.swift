@@ -219,6 +219,8 @@ final class BrowserViewModel {
 
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var imageMutationTask: Task<Void, Never>?
+    @ObservationIgnored private var metadataReviewMutationPreparationTask: Task<Void, Never>?
+    @ObservationIgnored private var isApplyingPreparedReviewMutation = false
     @ObservationIgnored private var needsSortRebuild = false
     @ObservationIgnored private var needsVisibleRebuild = false
     @ObservationIgnored private var needsForceSortOnRebuild = false
@@ -369,6 +371,7 @@ final class BrowserViewModel {
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
+        metadataReviewMutationPreparationTask?.cancel()
     }
 
     var selectedImages: [ImageFile] { selectedImagesCache }
@@ -2142,7 +2145,7 @@ final class BrowserViewModel {
     /// subfolder, along with their JSON and XMP sidecars. The blocking bundle moves cross the
     /// browser's serialized filesystem actor before the current folder is reloaded.
     func moveRejectedToFolder() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.moveRejectedToFolder() }) else { return }
         guard let folderURL = currentFolderURL else { return }
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
         guard !rejectedURLs.isEmpty else { return }
@@ -2917,7 +2920,7 @@ final class BrowserViewModel {
     }
 
     func renamePendingSubfolder() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.renamePendingSubfolder() }) else { return }
         guard let oldURL = pendingRenameSubfolderURL else { return }
         pendingRenameSubfolderURL = nil
         let trimmed: String
@@ -3056,7 +3059,7 @@ final class BrowserViewModel {
     // MARK: - Move Folder
 
     func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.moveFolder(sourceURL, into: destinationURL) }) else { return }
         let sourcePath = sourceURL.path(percentEncoded: false)
         let destPath = destinationURL.path(percentEncoded: false)
 
@@ -3415,7 +3418,8 @@ final class BrowserViewModel {
     }
 
     func isMetadataReviewFrozen(for url: URL) -> Bool {
-        metadataReviewFreezeOwners[Self.metadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
+        metadataReviewCoordinator.isTransitioning
+            || metadataReviewFreezeOwners[Self.metadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
     }
 
     /// Freeze synchronously before capturing the final live buffer, with an owner token that
@@ -3541,17 +3545,50 @@ final class BrowserViewModel {
         }
     }
 
-    /// Direct context-menu and full-screen mutations also cross the retained Review barrier.
-    private func flushMetadataReviewBeforeMutation() -> Bool {
-        guard !metadataReviewEditors.isEmpty else { return true }
+    /// Admit direct commands synchronously, then suspend while retained Review drafts become
+    /// durable. The prepared command runs in the same actor turn as the final context check.
+    private func prepareMetadataReviewBeforeMutation(_ operation: @escaping @MainActor () -> Void) -> Bool {
+        if isApplyingPreparedReviewMutation { return true }
+        guard !metadataReviewCoordinator.isTransitioning else { return false }
+        guard !metadataReviewEditors.isEmpty || metadataReviewCoordinator.hasPendingPersistence else { return true }
         do {
             try captureMetadataReviewDrafts()
-            try metadataReviewCoordinator.flushQueuedPersistence()
-            return true
+            let token = try metadataReviewCoordinator.reserveTransition()
+            let folder = currentFolderURL
+            let displayID = fieldMutationDisplayID
+            let selection = selectedImageIDs
+            let renameURL = pendingRenameSubfolderURL
+            let renameName = renameSubfolderNewName
+            let removalURLs = removeIPTCSelectedURLs
+            metadataReviewMutationPreparationTask = Task {
+                let isCurrent = {
+                    self.currentFolderURL == folder
+                        && self.fieldMutationDisplayID == displayID
+                        && self.selectedImageIDs == selection
+                        && self.pendingRenameSubfolderURL == renameURL
+                        && self.renameSubfolderNewName == renameName
+                        && self.removeIPTCSelectedURLs == removalURLs
+                }
+                do {
+                    try await metadataReviewCoordinator.performReservedTransition(token, flush: {
+                        try await self.metadataReviewCoordinator.flushQueuedPersistenceAsync()
+                        guard isCurrent() else { throw CancellationError() }
+                    }, operation: {
+                        self.isApplyingPreparedReviewMutation = true
+                        defer { self.isApplyingPreparedReviewMutation = false }
+                        operation()
+                    })
+                } catch is CancellationError {
+                    // An admitted draft still finishes; obsolete commands never reach the files.
+                } catch {
+                    guard isCurrent() else { return }
+                    errorMessage = "Queued Metadata Review edits must be saved or reviewed before changing these files. \(error.localizedDescription)"
+                }
+            }
         } catch {
             errorMessage = "Queued Metadata Review edits must be saved or reviewed before changing these files. \(error.localizedDescription)"
-            return false
         }
+        return false
     }
 
     func updatePendingStatus(for url: URL, hasPending: Bool) {
@@ -3600,7 +3637,7 @@ final class BrowserViewModel {
     }
 
     func deleteSelectedImages() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.deleteSelectedImages() }) else { return }
         let urlsToDelete = selectedImageIDs
         guard !urlsToDelete.isEmpty else { return }
         let orderedURLs = visibleImages.map(\.url)
@@ -3656,6 +3693,7 @@ final class BrowserViewModel {
     /// Test/UI coordination seam that waits for the current batch mutation without exposing its
     /// mutable task or moving any result application away from the main actor.
     func waitForPendingImageMutation() async {
+        await metadataReviewMutationPreparationTask?.value
         await imageMutationTask?.value
     }
 
@@ -3693,7 +3731,7 @@ final class BrowserViewModel {
     }
 
     private func moveSelectedImages(toSubfolderNamed name: String, in folderURL: URL) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.moveSelectedImages(toSubfolderNamed: name, in: folderURL) }) else { return }
         let destinationFolder = folderURL.appendingPathComponent(name)
         let urlsToMove = Array(selectedImageIDs)
         let xmpService = xmpSidecarService
@@ -3773,7 +3811,7 @@ final class BrowserViewModel {
     /// Moves image files to a destination folder along with their XMP and metadata sidecars.
     /// Silently skips files already in the destination (drag-drop onto own folder is a no-op).
     func moveImages(_ urls: [URL], into destinationFolder: URL) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.moveImages(urls, into: destinationFolder) }) else { return }
         guard !urls.isEmpty else { return }
 
         let destStd = destinationFolder.standardizedFileURL
@@ -3850,7 +3888,7 @@ final class BrowserViewModel {
     // MARK: - Rename
 
     func renameSelected() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.renameSelected() }) else { return }
         guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
         let selectedInVisibleOrder = sortedImages.filter { selectedImageIDs.contains($0.url) }
         guard !selectedInVisibleOrder.isEmpty else { return }
@@ -4013,7 +4051,7 @@ final class BrowserViewModel {
     // MARK: - Duplicate
 
     func duplicateSelectedImages() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.duplicateSelectedImages() }) else { return }
         guard let folderURL = currentFolderURL, !selectedImageIDs.isEmpty else { return }
 
         let sorted = sortedImages.filter { selectedImageIDs.contains($0.url) }
@@ -4086,7 +4124,7 @@ final class BrowserViewModel {
     }
 
     func resetAllEditsOnSelected() {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.resetAllEditsOnSelected() }) else { return }
         let urls = Array(selectedImageIDs)
         guard !urls.isEmpty else { return }
 
@@ -4219,7 +4257,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromImageFiles(onComplete: (() -> Void)? = nil) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.removeIPTCFromImageFiles(onComplete: onComplete) }) else { return }
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
@@ -4231,7 +4269,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromXMPSidecars(onComplete: (() -> Void)? = nil) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.removeIPTCFromXMPSidecars(onComplete: onComplete) }) else { return }
         let urls = removeIPTCSelectedURLs
 
         batchReadTask?.cancel()
@@ -4249,7 +4287,7 @@ final class BrowserViewModel {
     }
 
     func removeIPTCFromBoth(onComplete: (() -> Void)? = nil) {
-        guard flushMetadataReviewBeforeMutation() else { return }
+        guard prepareMetadataReviewBeforeMutation({ self.removeIPTCFromBoth(onComplete: onComplete) }) else { return }
         guard let folderURL = currentFolderURL else { return }
         let urls = removeIPTCSelectedURLs
 
