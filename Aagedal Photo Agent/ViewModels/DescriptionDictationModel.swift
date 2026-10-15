@@ -17,14 +17,20 @@ final class DescriptionDictationModel {
     @ObservationIgnored private var folder: URL?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private let speech = VoiceMemoTranscriptionService()
+    @ObservationIgnored private let storage: DescriptionDictationStorage
+    @ObservationIgnored private let requestMicrophoneAccess: @Sendable () async -> Bool
     @ObservationIgnored private var availabilityRequest = UUID()
     @ObservationIgnored private let checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)?
     @ObservationIgnored private let installLanguage: (@Sendable (Locale) async throws -> VoiceMemoTranscriptionAvailability)?
 
     init(checkAvailability: (@Sendable (Locale) async -> VoiceMemoTranscriptionAvailability)? = nil,
-         installLanguage: (@Sendable (Locale) async throws -> VoiceMemoTranscriptionAvailability)? = nil) {
+         installLanguage: (@Sendable (Locale) async throws -> VoiceMemoTranscriptionAvailability)? = nil,
+         storage: DescriptionDictationStorage = DescriptionDictationStorage(),
+         requestMicrophoneAccess: @escaping @Sendable () async -> Bool = { await AVCaptureDevice.requestAccess(for: .audio) }) {
         self.checkAvailability = checkAvailability
         self.installLanguage = installLanguage
+        self.storage = storage
+        self.requestMicrophoneAccess = requestMicrophoneAccess
     }
 
     func refresh() async {
@@ -75,15 +81,14 @@ final class DescriptionDictationModel {
         task = Task {
             defer { isWorking = false; task = nil }
             do {
-                guard await AVCaptureDevice.requestAccess(for: .audio) else {
+                guard await requestMicrophoneAccess() else {
                     throw CocoaError(.userCancelled, userInfo: [NSLocalizedDescriptionKey:
                         "Microphone access is disabled. Enable it for Photo Agent in System Settings → Privacy & Security → Microphone."])
                 }
                 try Task.checkCancellation()
-                let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700])
+                let directory = try await storage.createWorkspace()
                 folder = directory
+                try Task.checkCancellation()
                 let recording = try AVAudioRecorder(url: directory.appendingPathComponent("dictation.wav"), settings: [
                     AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16_000,
                     AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
@@ -94,8 +99,8 @@ final class DescriptionDictationModel {
                 }
                 recorder = recording
                 isRecording = true
-            } catch is CancellationError { cleanup() }
-            catch { errorMessage = error.localizedDescription; cleanup() }
+            } catch is CancellationError { await cleanup() }
+            catch { errorMessage = error.localizedDescription; await cleanup() }
         }
     }
 
@@ -114,7 +119,7 @@ final class DescriptionDictationModel {
             : setup.provider()
         let locale = Locale(identifier: localeIdentifier)
         task = Task {
-            defer { cleanup(); isWorking = false; task = nil }
+            defer { isWorking = false; task = nil }
             do {
                 if choice == .appleSpeech {
                     let runtime = VoiceMemoTranscriptionRuntime.appleOnDevice
@@ -129,16 +134,13 @@ final class DescriptionDictationModel {
                     }
                     guard setup.beginTranscription() else { throw DescriptionAssistantError.busy }
                     defer { setup.finishTranscription() }
-                    let input = try await Task.detached {
-                        let data = try Data(contentsOf: audioURL)
-                        return FFmpegWhisperJobInput(url: audioURL, byteCount: Int64(data.count),
-                            sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
-                    }.value
+                    let input = try await storage.makeInput(audioURL)
                     transcript = try await provider.transcribe(audio: input).text
                 }
                 try Task.checkCancellation()
             } catch is CancellationError { transcript = "" }
             catch { errorMessage = error.localizedDescription }
+            await cleanup()
         }
     }
 
@@ -149,15 +151,81 @@ final class DescriptionDictationModel {
         recorder = nil
         isRecording = false
         // A transcription may still be reading the file. Its task removes it after teardown.
-        if !isWorking { cleanup() }
+        if !isWorking, folder != nil {
+            isWorking = true
+            task = Task {
+                await cleanup()
+                isWorking = false
+                task = nil
+            }
+        }
         transcript = ""
     }
 
-    private func cleanup() {
+    func waitForCurrentWork() async { await task?.value }
+
+    private func cleanup() async {
         recorder?.stop()
         recorder = nil
         isRecording = false
-        if let folder { try? FileManager.default.removeItem(at: folder) }
+        let directory = folder
         folder = nil
+        if let directory { await storage.removeWorkspace(directory) }
+    }
+}
+
+/// Temporary microphone bytes stay alive until recording/recognition has drained.
+/// Blocking creation, streaming hashing and teardown use the original task on a
+/// retained Dispatch executor, preserving cancellation without blocking the UI.
+actor DescriptionDictationStorage {
+    nonisolated let queue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+    enum Operation: Sendable { case create, created, read, remove }
+    private let beforeOperation: @Sendable (Operation) -> Void
+    private let temporaryRoot: URL
+
+    init(temporaryRoot: URL = FileManager.default.temporaryDirectory,
+         queue: DispatchSerialQueue = DispatchSerialQueue(label: "com.aagedal.photo-agent.dictation-storage", qos: .userInitiated),
+         beforeOperation: @escaping @Sendable (Operation) -> Void = { _ in }) {
+        self.temporaryRoot = temporaryRoot
+        self.queue = queue
+        self.beforeOperation = beforeOperation
+    }
+
+    func createWorkspace() throws -> URL {
+        try Task.checkCancellation()
+        beforeOperation(.create)
+        try Task.checkCancellation()
+        let directory = temporaryRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        beforeOperation(.created)
+        // Return ownership even if cancelled during creation. The model installs
+        // it before checking cancellation and drains cleanup before releasing busy.
+        return directory
+    }
+
+    func makeInput(_ audioURL: URL) throws -> FFmpegWhisperJobInput {
+        try Task.checkCancellation()
+        beforeOperation(.read)
+        try Task.checkCancellation()
+        let handle = try FileHandle(forReadingFrom: audioURL)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        var count: Int64 = 0
+        while let bytes = try handle.read(upToCount: 1_048_576), !bytes.isEmpty {
+            try Task.checkCancellation()
+            hash.update(data: bytes)
+            count += Int64(bytes.count)
+        }
+        try Task.checkCancellation()
+        return .init(url: audioURL, byteCount: count,
+            sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// Teardown deliberately runs even when its owning task was cancelled.
+    func removeWorkspace(_ directory: URL) {
+        beforeOperation(.remove)
+        try? FileManager.default.removeItem(at: directory)
     }
 }

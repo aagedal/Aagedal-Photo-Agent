@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CryptoKit
 import ImageIO
 import Metal
 import Foundation
@@ -2755,4 +2756,113 @@ struct DescriptionDictationLanguageTests {
         #expect(model.availability?.status == .installed)
         #expect(model.errorMessage == nil)
     }
+}
+
+
+@Suite("Description dictation temporary storage")
+struct DescriptionDictationStorageTests {
+    @Test("Private workspace, streaming hash and cancelled teardown stay on the retained executor")
+    @MainActor func workspaceLifecycle() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let queue = DispatchSerialQueue(label: "test.dictation-storage")
+        let storage = DescriptionDictationStorage(temporaryRoot: root, queue: queue, beforeOperation: { _ in
+            #expect(queue.isIsolatingCurrentContext() == true)
+            #expect(!Thread.isMainThread)
+            #expect(DictationStorageContext.marker == root)
+        })
+        try await DictationStorageContext.$marker.withValue(root) {
+            let folder = try await storage.createWorkspace()
+            #expect(folder.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL)
+            let attributes = try FileManager.default.attributesOfItem(atPath: folder.path)
+            #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+            // More than two chunks, with a nonuniform tail, detects truncation and chunk reset errors.
+            let bytes = Data(repeating: 0xA5, count: 2_097_152) + Data("dictation tail".utf8)
+            let audio = folder.appendingPathComponent("dictation.wav")
+            try bytes.write(to: audio)
+            let input = try await storage.makeInput(audio)
+            #expect(input.url == audio && input.byteCount == Int64(bytes.count))
+            #expect(input.sha256 == SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+            await Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                await storage.removeWorkspace(folder)
+            }.value
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+        }
+    }
+
+    @Test("Cancelled recording preparation owns its workspace and busy slot until cleanup drains")
+    @MainActor func cancelledCreationDrainsCleanup() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let created = DictationStorageGate(), removing = DictationStorageGate()
+        defer { created.release(); removing.release() }
+        let storage = DescriptionDictationStorage(temporaryRoot: root, beforeOperation: { operation in
+            if case .created = operation { created.block() }
+            if case .remove = operation { removing.block() }
+        })
+        let model = DescriptionDictationModel(storage: storage, requestMicrophoneAccess: { true })
+        model.start()
+        try await created.waitForEntry()
+        #expect(model.isWorking && !model.isRecording)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 1)
+        model.cancel()
+        // Neither recording nor language installation may replace the retained task.
+        model.start(); model.downloadLanguage()
+        #expect(model.isWorking)
+        created.release()
+        try await removing.waitForEntry()
+        #expect(model.isWorking && !model.isRecording && model.transcript.isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 1)
+        model.cancel(); model.start(); model.downloadLanguage()
+        #expect(model.isWorking)
+        removing.release()
+        await model.waitForCurrentWork()
+        #expect(!model.isWorking && !model.isRecording && model.errorMessage == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test("Cancellation before creation or reading prevents filesystem work", arguments: [false, true])
+    @MainActor func cancelledOperation(read: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DescriptionDictationStorage(temporaryRoot: root, beforeOperation: { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+        })
+        await Task {
+            await #expect(throws: CancellationError.self) {
+                if read { _ = try await storage.makeInput(root.appendingPathComponent("absent.wav")) }
+                else { _ = try await storage.createWorkspace() }
+            }
+        }.value
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+}
+
+private nonisolated enum DictationStorageContext {
+    @TaskLocal static var marker: URL?
+}
+
+
+private nonisolated final class DictationStorageGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var entered = false
+    func block() {
+        lock.withLock { entered = true }
+        #expect(semaphore.wait(timeout: .now() + 10) == .success)
+    }
+
+    func waitForEntry() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !lock.withLock({ entered }) {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.coderValueNotFound) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func release() { semaphore.signal() }
 }
