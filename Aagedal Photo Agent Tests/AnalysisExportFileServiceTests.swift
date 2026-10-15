@@ -1311,7 +1311,8 @@ struct QuickListFileCreationServiceTests {
         #expect(functionSource.contains("cancelQuickListCreation()"))
         #expect(functionSource.contains("try await QuickListFileCreationService.shared.createIfNeeded("))
         #expect(functionSource.contains("guard quickListCreationRequestID == requestID else { return }"))
-        #expect(source.contains(".onDisappear {\n            cancelQuickListCreation()"))
+        #expect(source.range(of: #"\.onDisappear\s*\{[^}]*\bcancelQuickListCreation\(\)"#,
+            options: .regularExpression) != nil)
         #expect(source.contains("private func cancelQuickListCreation()"))
         #expect(source.contains("quickListCreationTask?.cancel()"))
         #expect(!promptSource.contains("FileManager.default.fileExists"))

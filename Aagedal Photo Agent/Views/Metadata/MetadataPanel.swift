@@ -139,6 +139,7 @@ struct MetadataPanel: View {
     @State private var listFilePickerTarget: ListFileTarget = .keywords
     @FocusState private var focusedField: String?
     @State private var commitDebounceTask: Task<Void, Never>?
+    @State private var historyRestoreTask: Task<Void, Never>?
     @State private var showingRawMetadata = false
     @State private var descriptionAssistantSource: DescriptionAssistantRequest?
     @State private var descriptionTranscriptionSource: DescriptionTranscriptionSource?
@@ -1343,6 +1344,7 @@ struct MetadataPanel: View {
             }
         }
         .onDisappear {
+            historyRestoreTask?.cancel()
             cancelQuickListCreation()
             viewModel.unregisterVariableRecoveryEditorBarrier(owner: captionFlushOwner)
             StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
@@ -1461,23 +1463,16 @@ struct MetadataPanel: View {
         return persistence
     }
 
-    private func performHistoryRestore(_ action: () -> Task<Void, Never>?) {
+    private func performHistoryRestore(_ target: MetadataViewModel.HistoryRestoreTarget) {
         commitDebounceTask?.cancel()
-        flushBufferedFields()
-        do {
-            // A previously captured Caption draft must finish before restore is admitted, or
-            // it could later replace the restored record. New unsaved edits may make the CAS
-            // stale; the model then asks for reload rather than overwriting either version.
-            try captionFlushCoordinator?.flush()
-        } catch {
-            viewModel.saveError = "Finish saving the Caption draft before restoring history: \(error.localizedDescription)"
-            showingHistoryPopover = false
-            return
-        }
-        let task = action()
         showingHistoryPopover = false
-        Task {
-            await task?.value
+        guard let task = viewModel.prepareHistoryRestore(target,
+            coordinator: captionFlushCoordinator ?? .shared,
+            hasLiveCaptionEditor: captionFlushCoordinator != nil,
+            captureEditor: { try flushCaptionEditorBuffer() }) else { return }
+        historyRestoreTask = task
+        Task { @MainActor in
+            await task.value
             onPendingStatusChanged?()
         }
     }
@@ -1599,10 +1594,11 @@ struct MetadataPanel: View {
                     MetadataHistoryView(
                         history: viewModel.sidecarHistory,
                         onRestoreToPoint: { index in
-                            performHistoryRestore { viewModel.restoreToHistoryPoint(at: index) }
+                            guard viewModel.sidecarHistory.indices.contains(index) else { return }
+                            performHistoryRestore(.point(viewModel.sidecarHistory[index]))
                         },
                         onRestoreOriginal: {
-                            performHistoryRestore { viewModel.restoreToOriginal() }
+                            performHistoryRestore(.original)
                         },
                         onClearHistory: {
                             viewModel.clearHistory()
