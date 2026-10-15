@@ -9,6 +9,90 @@ struct BatchRenameSheetStateTests {
     private let root = URL(fileURLWithPath: "/rename-sheet", isDirectory: true)
 
     @MainActor
+    @Test("Cancellation after writer quiescence reopens writers without moving files")
+    func cancelledAfterQuiescence() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("old.jpg")
+        let destination = folder.appendingPathComponent("new.jpg")
+        try Data("image".utf8).write(to: source)
+        var aborted = false
+        let session = BatchRenameSheetSession(
+            request: .init(folderURL: folder, items: [.init(sourceImageURL: source)]),
+            environment: .init(caseSensitivity: .caseSensitive, existingURLs: [source]),
+            executionQuiescence: .init(prepare: {
+                withUnsafeCurrentTask { $0?.cancel() }
+            }, complete: { completion in
+                if case .abortedBeforeExecution = completion { aborted = true }
+            }),
+            planningDebounce: .zero
+        )
+        session.editor.components[0].literal = destination.lastPathComponent
+        await session.waitForPlanning()
+        let result = await Task { await session.execute() }.value
+        #expect(result == nil)
+        #expect(aborted)
+        #expect(!session.isExecuting)
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @MainActor
+    @Test("Metadata preparation awaits durability and cancellation prevents every rename", arguments: [false, true])
+    func metadataDurabilityBeforeMoves(cancel: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("old.jpg")
+        let destination = folder.appendingPathComponent("new.jpg")
+        let original = Data("image".utf8)
+        try original.write(to: source)
+        let queue = CaptionDraftPersistenceQueue(label: "rename.metadata-durability")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let entered = RenamePreparationSignal()
+        let release = RenamePreparationSignal()
+        queue.enqueueAsync { await release.wait() }
+        var completions = 0
+        let session = BatchRenameSheetSession(
+            request: .init(folderURL: folder, items: [.init(sourceImageURL: source)]),
+            environment: .init(caseSensitivity: .caseSensitive, existingURLs: [source]),
+            executionQuiescence: .init(prepare: {
+                try await coordinator.prepareForTransition(hasLiveEditor: false, isCurrent: {
+                    entered.signal()
+                    return true
+                })
+            }, complete: { _ in completions += 1 }),
+            planningDebounce: .zero
+        )
+        session.editor.components[0].literal = destination.lastPathComponent
+        await session.waitForPlanning()
+        let task = Task { await session.execute() }
+        await entered.wait()
+        #expect(session.isExecuting)
+        #expect(!session.canExecute)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(await session.execute() == nil)
+        if cancel { task.cancel() }
+        release.signal()
+        let result = await task.value
+        #expect(!coordinator.isTransitioning)
+        #expect(!queue.hasPendingWork)
+        #expect(!session.isExecuting)
+        if cancel {
+            #expect(result == nil)
+            #expect(completions == 0)
+            #expect(try Data(contentsOf: source) == original)
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+        } else {
+            #expect(result?.succeeded == true)
+            #expect(completions == 1)
+            #expect(try Data(contentsOf: destination) == original)
+        }
+    }
+
+    @MainActor
     @Test("Moving recipe components preserves values and rebuilds the filename preview")
     func reorderComponentsUpdatesPreview() async {
         let source = root.appendingPathComponent("old.jpg")
@@ -729,6 +813,22 @@ struct BatchRenameSheetStateTests {
             return
         }
         #expect(reopenedCatalogAtB.versions.first?.name == "A named version")
+    }
+}
+
+private actor RenamePreparationSignal {
+    private var signaled = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    nonisolated func signal() { Task { await publish() } }
+    func wait() async {
+        if signaled { return }
+        await withCheckedContinuation { continuations.append($0) }
+    }
+    private func publish() {
+        signaled = true
+        let waiting = continuations
+        continuations.removeAll()
+        waiting.forEach { $0.resume() }
     }
 }
 

@@ -1,5 +1,12 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Activity and Rename async continuation (2026-10-15):** Activity resume and
+Batch Rename preparation await guarded metadata durability and reject replaced target
+context. Cancellation preserves admitted writes and releases preparation ownership;
+successful Activity navigation transfers its workflow reservation to Deadline.
+Native/real-volume and release qualification remain open; no release gate is closed.
+See [implementation and validation](../plan-status-activity-rename-async-continuation-2026-10-15.md).
+
 **Metadata transition async continuation (2026-10-14):** Shared workspace/action
 transitions await durable drafts under a token-owned editor/command guard. Deadline
 preparation drains retained drafts after editor unmount. Synchronous compatibility

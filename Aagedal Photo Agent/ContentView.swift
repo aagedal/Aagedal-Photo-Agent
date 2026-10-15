@@ -498,7 +498,7 @@ struct ContentView: View {
                     receiptLibrary: deliveryReceiptLibrary,
                     workflowActivity: deliveryWorkflowActivity,
                     onResumeWorkflow: { workflowIdentifier in
-                        resumeDeadlineWorkflow(workflowIdentifier)
+                        await resumeDeadlineWorkflow(workflowIdentifier)
                     }
                 )
             }
@@ -533,14 +533,29 @@ struct ContentView: View {
                     request: request,
                     executionQuiescence: BatchRenameExecutionQuiescence(
                         prepare: {
-                            try flushMetadataForTransition()
+                            let workspace = mainViewMode
+                            let selection = browserViewModel.selectedImageIDs
+                            let isCurrent: @MainActor @Sendable () -> Bool = {
+                                mainViewMode == workspace
+                                    && browserViewModel.currentFolderURL == request.folderURL
+                                    && browserViewModel.selectedImageIDs == selection
+                                    && browserViewModel.batchRenameSheetRequest?.id == request.id
+                            }
+                            try await CaptionWorkspaceFlushCoordinator.shared.prepareForTransition(
+                                hasLiveEditor: workspace == .caption || workspace == .metadataReview,
+                                isCurrent: isCurrent
+                            )
                             browserViewModel.beginRenameQuiescence()
                             do {
                                 try await faceRecognitionViewModel.quiesceScanForRename(
                                     in: request.folderURL
                                 )
+                                try Task.checkCancellation()
+                                guard isCurrent() else { throw CancellationError() }
                             } catch {
                                 browserViewModel.endRenameQuiescence()
+                                faceRecognitionViewModel.endRenameQuiescence(in: request.folderURL)
+                                if error is CancellationError { throw error }
                                 throw BatchRenameExecutionQuiescenceError.faceScan(
                                     error.localizedDescription
                                 )
@@ -557,6 +572,14 @@ struct ContentView: View {
                                 throw BatchRenameExecutionQuiescenceError.analysis(
                                     error.localizedDescription
                                 )
+                            }
+                            if Task.isCancelled || !isCurrent() {
+                                defer {
+                                    browserViewModel.endRenameQuiescence()
+                                    faceRecognitionViewModel.endRenameQuiescence(in: request.folderURL)
+                                }
+                                try await analysisWorkspaceModel.cancelRenameQuiescenceBeforeExecution()
+                                throw CancellationError()
                             }
                         },
                         complete: { completion in
@@ -1300,16 +1323,6 @@ struct ContentView: View {
         }
     }
 
-    private func flushMetadataForTransition() throws {
-        guard !CaptionWorkspaceFlushCoordinator.shared.isTransitioning else { throw CaptionSessionError.transitionInProgress }
-        let coordinator = CaptionWorkspaceFlushCoordinator.shared
-        if mainViewMode == .caption || mainViewMode == .metadataReview {
-            try coordinator.flush()
-        } else if coordinator.hasPendingPersistence {
-            try coordinator.flushQueuedPersistence()
-        }
-    }
-
     /// Capture the command's target context before suspending for durable metadata. Folder or
     /// selection replacement abandons the command rather than applying it to a new target set.
     private func performAfterMetadataFileOperation(_ operation: @escaping @MainActor () -> Void) {
@@ -1322,16 +1335,28 @@ struct ContentView: View {
         }
     }
 
-    private func resumeDeadlineWorkflow(_ identifier: UUID) -> Bool {
+    private func resumeDeadlineWorkflow(_ identifier: UUID) async -> Bool {
         guard MainViewMode.isDeadlineAvailable else { return false }
+        let workspace = mainViewMode
+        let folder = browserViewModel.currentFolderURL
+        let selection = browserViewModel.selectedImageIDs
         do {
-            try flushMetadataForTransition()
+            try await CaptionWorkspaceFlushCoordinator.shared.prepareForTransition(
+                hasLiveEditor: workspace == .caption || workspace == .metadataReview,
+                isCurrent: {
+                    mainViewMode == workspace
+                        && browserViewModel.currentFolderURL == folder
+                        && browserViewModel.selectedImageIDs == selection
+                }
+            )
             pendingDeadlineResumeWorkflowIdentifier = identifier
             isShowingDeadlineStagingActivity = false
             mainViewMode = .deadline
             return true
+        } catch is CancellationError {
+            return false
         } catch {
-            if mainViewMode == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
+            if workspace == .metadataReview { browserViewModel.errorMessage = error.localizedDescription }
             else { metadataViewModel.saveError = error.localizedDescription }
             return false
         }
@@ -2679,7 +2704,7 @@ struct ContentView: View {
                         receiptLibrary: deliveryReceiptLibrary,
                         workflowActivity: deliveryWorkflowActivity,
                         onResumeWorkflow: { workflowIdentifier in
-                            resumeDeadlineWorkflow(workflowIdentifier)
+                            await resumeDeadlineWorkflow(workflowIdentifier)
                         },
                         isWorking: hasActiveSidebarWork,
                         overallProgress: sidebarOverallProgress

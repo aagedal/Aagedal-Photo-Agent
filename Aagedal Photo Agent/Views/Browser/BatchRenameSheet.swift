@@ -259,8 +259,12 @@ final class BatchRenameSheetSession {
         }
 
         let flushOutcome = await DevelopVersionFlushCoordinator.shared.flush(.imageNavigation)
-        if case .failed(let message) = flushOutcome {
-            executionGuardError = "Named Develop changes could not be saved before rename: \(message)"
+        if Task.isCancelled || flushOutcome != .succeeded {
+            if case .failed(let message) = flushOutcome {
+                executionGuardError = "Named Develop changes could not be saved before rename: \(message)"
+            } else {
+                executionGuardError = "Rename was cancelled before any files were moved."
+            }
             do {
                 try await executionQuiescence.complete(.abortedBeforeExecution)
             } catch {

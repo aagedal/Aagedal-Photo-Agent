@@ -22,6 +22,124 @@ struct DeliveryWorkflowActivityModelTests {
         #expect(model.error == nil)
     }
 
+    @Test("Activity holds the exact resume reservation while navigation waits and rejects repeated requests")
+    func awaitedNavigationAndRepeatGuard() async throws {
+        let identifier = UUID()
+        let stub = WorkflowActivityStub(workflows: [
+            summary(identifier, stage: .failed, completed: 0, total: 1, retained: true),
+        ])
+        let model = DeliveryWorkflowActivityModel(dependencies: stub.dependencies)
+        await model.reload()
+        let request = ActivityWorkflowResumeRequest()
+        let gate = ActivityResumeGate()
+        var navigated: [UUID] = []
+        let task = try #require(request.begin(identifier, model: model) { selected in
+            await gate.wait()
+            navigated.append(selected)
+            return true
+        })
+        await gate.waitUntilEntered()
+        #expect(request.pendingIdentifier == identifier)
+        #expect(stub.reservedIdentifier == identifier)
+        #expect(navigated.isEmpty)
+        let repeated = request.begin(identifier, model: model, resume: { _ in true })
+        #expect(repeated == nil)
+        gate.release()
+        await task.value
+        #expect(navigated == [identifier])
+        #expect(stub.validatedResumeIdentifiers == [identifier])
+        #expect(stub.reservedIdentifier == identifier)
+        #expect(request.pendingIdentifier == nil)
+    }
+
+    @Test("successful navigation retains Deadline ownership when Activity dismissal cancels the caller")
+    func successfulHandoffWinsOverDismissalCancellation() async throws {
+        let identifier = UUID()
+        let stub = WorkflowActivityStub(workflows: [
+            summary(identifier, stage: .failed, completed: 0, total: 1, retained: true),
+        ])
+        let model = DeliveryWorkflowActivityModel(dependencies: stub.dependencies)
+        await model.reload()
+        let request = ActivityWorkflowResumeRequest()
+        let task = try #require(request.begin(identifier, model: model) { _ in
+            request.cancel() // Activity disappears as Deadline accepts the workflow.
+            return true
+        })
+        await task.value
+        #expect(stub.reservedIdentifier == identifier)
+        #expect(request.pendingIdentifier == nil)
+        #expect(await model.removeConfirmedWorkflow(identifier) == false)
+        #expect(stub.removedIdentifiers.isEmpty)
+    }
+
+    @Test("failed or stale Activity navigation releases retained resume ownership")
+    func declinedNavigationAbandonsResume() async throws {
+        let identifier = UUID()
+        let stub = WorkflowActivityStub(workflows: [
+            summary(identifier, stage: .failed, completed: 0, total: 1, retained: true),
+        ])
+        let model = DeliveryWorkflowActivityModel(dependencies: stub.dependencies)
+        await model.reload()
+        let request = ActivityWorkflowResumeRequest()
+        let pending = request.begin(identifier, model: model, resume: { _ in false })
+        let task = try #require(pending)
+        await task.value
+        #expect(stub.reservedIdentifier == nil)
+        #expect(request.pendingIdentifier == nil)
+        #expect(await model.requestResume(identifier))
+    }
+
+    @Test("closing Activity cancels delayed navigation and abandons its exact resume reservation")
+    func cancellationAbandonsResume() async throws {
+        let identifier = UUID()
+        let stub = WorkflowActivityStub(workflows: [
+            summary(identifier, stage: .failed, completed: 0, total: 1, retained: true),
+        ])
+        let model = DeliveryWorkflowActivityModel(dependencies: stub.dependencies)
+        await model.reload()
+        let request = ActivityWorkflowResumeRequest()
+        let gate = ActivityResumeGate()
+        var navigated = false
+        let task = try #require(request.begin(identifier, model: model) { _ in
+            await gate.wait()
+            guard !Task.isCancelled else { return false }
+            navigated = true
+            return true
+        })
+        await gate.waitUntilEntered()
+        request.cancel()
+        gate.release()
+        await task.value
+        #expect(!navigated)
+        #expect(stub.reservedIdentifier == nil)
+        #expect(request.pendingIdentifier == nil)
+    }
+
+    @Test("Activity cancellation during evidence validation releases ownership without starting navigation")
+    func cancellationDuringValidation() async throws {
+        let identifier = UUID()
+        let stub = WorkflowActivityStub(workflows: [
+            summary(identifier, stage: .failed, completed: 0, total: 1, retained: true),
+        ])
+        let gate = ActivityResumeGate()
+        stub.resumeValidation = { await gate.wait() }
+        let model = DeliveryWorkflowActivityModel(dependencies: stub.dependencies)
+        await model.reload()
+        let request = ActivityWorkflowResumeRequest()
+        var navigated = false
+        let task = try #require(request.begin(identifier, model: model) { _ in
+            navigated = true
+            return true
+        })
+        await gate.waitUntilEntered()
+        request.cancel()
+        gate.release()
+        await task.value
+        #expect(!navigated)
+        #expect(stub.reservedIdentifier == nil)
+        #expect(request.pendingIdentifier == nil)
+    }
+
     @Test("manual cleanup is exact, confirmed by its API, and survives relaunch")
     func confirmedCleanupAndRelaunch() async {
         let retained = UUID(uuidString: "92000000-0000-0000-0000-000000000001")!
@@ -184,6 +302,7 @@ private final class WorkflowActivityStub {
     var activeIdentifier: UUID?
     var reservedIdentifier: UUID?
     var catalogFailure: Error?
+    var resumeValidation: (() async -> Void)?
     var validatedResumeIdentifiers: [UUID] = []
     var removedIdentifiers: [UUID] = []
 
@@ -209,6 +328,7 @@ private final class WorkflowActivityStub {
                 }
                 validatedResumeIdentifiers.append(identifier)
                 reservedIdentifier = identifier
+                await resumeValidation?()
             },
             releaseResume: { [weak self] identifier in
                 if self?.reservedIdentifier == identifier {
@@ -227,5 +347,31 @@ private final class WorkflowActivityStub {
                 self?.activeIdentifier ?? self?.reservedIdentifier
             }
         )
+    }
+}
+
+@MainActor
+private final class ActivityResumeGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var entered: CheckedContinuation<Void, Never>?
+    private var isEntered = false
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            isEntered = true
+            entered?.resume()
+            entered = nil
+        }
+    }
+
+    func waitUntilEntered() async {
+        if isEntered { return }
+        await withCheckedContinuation { entered = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }
