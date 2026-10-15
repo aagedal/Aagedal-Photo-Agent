@@ -1,5 +1,11 @@
 # Next release — delivery plan (historical `v2.3` working path)
 
+**Native face review worker (2026-10-15):** Model preflight, inventory/approval checks
+and terminal receipt reads use a retained serial Dispatch actor. Cancellation preserves
+task context; dismissed reviews reject delayed receipt publication. Failed receipt
+inspection preserves terminal operation evidence. Authenticated helper handoff and
+broader qualification remain open; see the [dated continuation](../release/native-face-review-worker-2026-10-15.md).
+
 **History and direct Browser async continuation (2026-10-15):** History restore
 and direct Browser mutations await retained metadata durability with duplicate exclusion,
 editor freezing and target-context checks. History retains the chosen point by value.
