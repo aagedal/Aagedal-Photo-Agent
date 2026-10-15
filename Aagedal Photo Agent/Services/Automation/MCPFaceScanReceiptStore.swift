@@ -5,7 +5,18 @@ import Foundation
 /// embeddings, error text or native consent claims enter this archive. Physical
 /// thumbnail UUIDs are retained only for exact completion/recovery correlation.
 nonisolated final class MCPFaceScanReceiptStore: Sendable {
-    enum Failure: Error, Equatable { case capacity, invalidStorage, invalidTransition }
+    enum Failure: Error, Equatable, LocalizedError {
+        case capacity, invalidStorage, invalidTransition, mismatchedCompletion
+
+        var errorDescription: String? {
+            switch self {
+            case .capacity: "The retained face scan receipt archive is full."
+            case .invalidStorage: "The retained face scan receipt archive cannot be verified."
+            case .invalidTransition: "The retained face scan receipt cannot enter the requested state."
+            case .mismatchedCompletion: "The receipt does not match the reviewed face scan and its completed operation."
+            }
+        }
+    }
     enum Phase: String, Codable, Sendable { case admitted, executionPossible, completed }
     struct Completion: Codable, Equatable, Sendable {
         var outcome: AutomationOperationRegistry.Outcome
@@ -47,6 +58,23 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
         let includeJerseyNumbers: Bool
         var phase: Phase
         var completion: Completion?
+
+        /// A valid archive entry is not necessarily evidence for the visible review.
+        /// Match the original retained intent and durable terminal operation before
+        /// publishing completion. This grants neither consent nor replay permission.
+        func requireCompletion(intent: MCPFaceScanIntentStore.Intent,
+                               operation: AutomationOperationRegistry.Record) throws {
+            guard intentID == intent.id, operationID == operation.id,
+                  snapshotRevision == intent.prepared.snapshotRevision,
+                  photoCount == intent.prepared.imageURLs.count,
+                  forceFullScan == intent.prepared.forceFullScan,
+                  includeJerseyNumbers == intent.prepared.includeJerseyNumbers,
+                  operation.kind == .faceScan, operation.isTerminal,
+                  phase == .completed, let completion,
+                  completion.outcome == operation.outcome else {
+                throw Failure.mismatchedCompletion
+            }
+        }
     }
     private struct Archive: Codable { let version: Int; var receipts: [Receipt] }
     private struct Envelope: Codable { let payload: Data; let sha256: String }
