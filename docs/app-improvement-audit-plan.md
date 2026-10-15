@@ -1,5 +1,12 @@
 # App improvement audit plan
 
+**Activity and Rename async continuation (2026-10-15):** Activity resume and
+Batch Rename preparation await guarded metadata durability. Cancellation and changed
+target context abandon delayed actions; Activity transfers or releases exact workflow
+ownership, and cancelled Rename preparation reopens writers before moves. Broad
+qualification remains open; see the
+[dated continuation](plan-status-activity-rename-async-continuation-2026-10-15.md).
+
 **Metadata file-action async continuation (2026-10-15):** Export, signing,
 IPTC copy/paste and RAW archive actions await the shared guarded durability barrier
 and reject changed folder/selection context. Activity resume, rename preparation

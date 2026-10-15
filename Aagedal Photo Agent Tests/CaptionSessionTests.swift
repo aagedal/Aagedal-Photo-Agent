@@ -12,6 +12,78 @@ struct CaptionSessionTests {
         URL(fileURLWithPath: "/tmp/caption-c.jpg"),
     ]
 
+    @Test("Preparation awaits retained writes, excludes commands and rejects replaced context", arguments: [false, true])
+    func durablePreparation(replaceContext: Bool) async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption.prepare")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let started = AsyncSignal()
+        let release = AsyncSignal()
+        var current = true
+        var prepared = false
+        queue.enqueueAsync { await release.wait() }
+        let task = Task { @MainActor in
+            try await coordinator.prepareForTransition(hasLiveEditor: false, isCurrent: {
+                started.signal()
+                return current
+            })
+            prepared = true
+        }
+        await started.wait()
+        #expect(coordinator.isTransitioning)
+        #expect(!prepared)
+        #expect(throws: CaptionSessionError.transitionInProgress) { try coordinator.reserveTransition() }
+        current = !replaceContext
+        release.signal()
+        if replaceContext {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        } else {
+            try await task.value
+        }
+        #expect(prepared == !replaceContext)
+        #expect(!queue.hasPendingWork)
+        #expect(!coordinator.isTransitioning)
+    }
+
+    @Test("Cancelled preparation completes admitted persistence and releases admission")
+    func cancelledPreparation() async throws {
+        let queue = CaptionDraftPersistenceQueue(label: "caption.prepare-cancel")
+        let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
+        let started = AsyncSignal()
+        let release = AsyncSignal()
+        queue.enqueueAsync { await release.wait() }
+        let task = Task { @MainActor in
+            try await coordinator.prepareForTransition(hasLiveEditor: false, isCurrent: {
+                started.signal()
+                return true
+            })
+        }
+        await started.wait()
+        task.cancel()
+        #expect(coordinator.isTransitioning)
+        release.signal()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(!queue.hasPendingWork)
+        #expect(!coordinator.isTransitioning)
+    }
+
+    @Test("Preparation preserves editor failure and missing-handler refusal, then permits retry")
+    func failedPreparation() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        await #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) {
+            try await coordinator.prepareForTransition(hasLiveEditor: true, isCurrent: { true })
+        }
+        #expect(!coordinator.isTransitioning)
+        let owner = UUID()
+        coordinator.register(owner: owner, handler: { throw FlushFailure() })
+        await #expect(throws: FlushFailure.self) {
+            try await coordinator.prepareForTransition(hasLiveEditor: true, isCurrent: { true })
+        }
+        #expect(!coordinator.isTransitioning)
+        coordinator.register(owner: owner, handler: {})
+        try await coordinator.prepareForTransition(hasLiveEditor: true, isCurrent: { true })
+        #expect(!coordinator.isTransitioning)
+    }
+
     @Test("Shared transition reservation excludes commands before the task starts and while flushing")
     func sharedTransitionReservation() async throws {
         let coordinator = CaptionWorkspaceFlushCoordinator()

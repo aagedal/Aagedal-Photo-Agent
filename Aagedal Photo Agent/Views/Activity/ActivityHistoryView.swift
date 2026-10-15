@@ -11,7 +11,7 @@ struct ActivityHistoryButton: View {
     var transcriptionModel: CaptionVoiceMemoBatchTranscriptionModel
     var receiptLibrary: DeliveryReceiptLibraryModel
     var workflowActivity: DeliveryWorkflowActivityModel
-    let onResumeWorkflow: (UUID) -> Bool
+    let onResumeWorkflow: @MainActor (UUID) async -> Bool
     var isWorking = false
     var overallProgress: Double? = nil
     @State private var isShowingHistory = false
@@ -57,13 +57,55 @@ struct ActivityHistoryButton: View {
     }
 }
 
+/// Owns a single Activity resume from evidence validation through awaited navigation. Closing
+/// Activity cancels navigation while the callback's durability barrier finishes admitted writes.
+@MainActor
+@Observable
+final class ActivityWorkflowResumeRequest {
+    private(set) var pendingIdentifier: UUID?
+    @ObservationIgnored private var task: Task<Void, Never>?
+
+    @discardableResult
+    func begin(
+        _ identifier: UUID,
+        model: DeliveryWorkflowActivityModel,
+        resume: @escaping @MainActor (UUID) async -> Bool
+    ) -> Task<Void, Never>? {
+        guard pendingIdentifier == nil else { return nil }
+        pendingIdentifier = identifier
+        let task = Task { @MainActor in
+            defer {
+                pendingIdentifier = nil
+                self.task = nil
+            }
+            guard !Task.isCancelled else { return }
+            guard await model.requestResume(identifier) else { return }
+            guard !Task.isCancelled else {
+                await model.abandonResume(identifier)
+                return
+            }
+            // Success transfers ownership to Deadline. Its dismissal of Activity may cancel
+            // this task before the callback returns; cancellation cannot undo that handoff.
+            if !(await resume(identifier)) {
+                await model.abandonResume(identifier)
+            }
+        }
+        self.task = task
+        return task
+    }
+
+    func cancel() {
+        task?.cancel()
+    }
+}
+
 struct ActivityHistoryView: View {
     var history: ActivityHistoryStore
     var faceViewModel: FaceRecognitionViewModel
     var transcriptionModel: CaptionVoiceMemoBatchTranscriptionModel
     @Bindable var receiptLibrary: DeliveryReceiptLibraryModel
     @Bindable var workflowActivity: DeliveryWorkflowActivityModel
-    let onResumeWorkflow: (UUID) -> Bool
+    let onResumeWorkflow: @MainActor (UUID) async -> Bool
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -78,6 +120,7 @@ struct ActivityHistoryView: View {
     @State private var expandedReceipts: Set<UUID> = []
     @State private var pendingReceiptDeletion: DeliveryReceiptActivitySummary?
     @State private var pendingWorkflowDeletion: DeliveryWorkflowActivitySummary?
+    @State private var resumeRequest = ActivityWorkflowResumeRequest()
 
     private var filteredEntries: [ActivityEntry] {
         switch filter {
@@ -143,17 +186,14 @@ struct ActivityHistoryView: View {
                         model: workflowActivity,
                         pendingDeletion: $pendingWorkflowDeletion,
                         resume: { workflowIdentifier in
-                            Task {
-                                guard await workflowActivity.requestResume(workflowIdentifier) else {
-                                    return
-                                }
-                                guard onResumeWorkflow(workflowIdentifier) else {
-                                    await workflowActivity.abandonResume(workflowIdentifier)
-                                    return
-                                }
-                            }
+                            resumeRequest.begin(
+                                workflowIdentifier,
+                                model: workflowActivity,
+                                resume: onResumeWorkflow
+                            )
                         }
                     )
+                    .disabled(resumeRequest.pendingIdentifier != nil)
                 }
             }
             .frame(maxHeight: 600)
@@ -161,6 +201,7 @@ struct ActivityHistoryView: View {
         .padding(12)
         .frame(minWidth: 420, idealWidth: 680, maxWidth: 900)
         .accessibilityIdentifier("activity.history")
+        .onDisappear { resumeRequest.cancel() }
         .task {
             await receiptLibrary.reload()
             await workflowActivity.reload()

@@ -795,6 +795,22 @@ final class CaptionWorkspaceFlushCoordinator {
         return token
     }
 
+    /// Async preparation for callers that must continue in their own throwing workflow.
+    /// Keep editor/command admission frozen until durability and target validation finish.
+    func prepareForTransition(
+        hasLiveEditor: Bool,
+        isCurrent: @MainActor () -> Bool
+    ) async throws {
+        let token = try reserveTransition()
+        defer { if transitionOwner == token { transitionOwner = nil } }
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+        if hasLiveEditor { try await flushAsync() }
+        else if hasPendingPersistence { try await flushQueuedPersistenceAsync() }
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
+    }
+
     func performReservedTransition(
         _ token: UUID,
         flush: @MainActor () async throws -> Void,
