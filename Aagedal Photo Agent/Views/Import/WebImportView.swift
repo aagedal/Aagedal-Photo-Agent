@@ -14,6 +14,7 @@ struct WebImportView: View {
     @State private var error: String?
     @State private var task: Task<Void, Never>?
     @State private var completedFolder: URL?
+    @State private var retainedFolder: URL?
     let onImported: (URL) -> Void
 
     var body: some View {
@@ -23,21 +24,29 @@ struct WebImportView: View {
                 TextField("Instagram or X post URL", text: $url)
                     .textFieldStyle(.roundedBorder)
                     .disabled(task != nil)
-                    .onChange(of: url) { _, _ in inspection = nil; selected = []; completedFolder = nil }
-                Button("Find Media", action: inspect).disabled(task != nil || url.isEmpty)
+                    .onSubmit { if canInspect { inspect() } }
+                    .onChange(of: url) { _, _ in resetInspection() }
+                Button("Find Media", action: inspect).disabled(!canInspect)
             }
             HStack {
                 Button(cookies == nil ? "Choose Cookies File…" : "Cookies: \(cookies!.lastPathComponent)") {
                     let panel = NSOpenPanel()
                     panel.canChooseDirectories = false
-                    if panel.runModal() == .OK { cookies = panel.url; inspection = nil }
+                    if panel.runModal() == .OK { cookies = panel.url; resetInspection() }
                 }
-                if cookies != nil { Button("Clear") { cookies = nil; inspection = nil } }
+                if cookies != nil { Button("Clear") { cookies = nil; resetInspection() } }
                 Text("Optional Netscape cookies file for posts that require sign-in.")
                     .font(.caption).foregroundStyle(.secondary)
             }.disabled(task != nil)
             if let inspection {
-                Text("\(inspection.items.count) media items · Highest available quality").font(.headline)
+                HStack {
+                    Text("\(selected.count) of \(inspection.items.count) selected · Best available quality").font(.headline)
+                    Spacer()
+                    Button("Select All") { selected = Set(inspection.items.map(\.id)) }
+                        .disabled(task != nil || selected.count == inspection.items.count)
+                    Button("Select None") { selected.removeAll() }
+                        .disabled(task != nil || selected.isEmpty)
+                }
                 List(inspection.items) { item in
                     Toggle(isOn: Binding(get: { selected.contains(item.id) }, set: { value in
                         if value { selected.insert(item.id) } else { selected.remove(item.id) }
@@ -73,6 +82,11 @@ struct WebImportView: View {
             Text("Each import creates Originals, Working and Provenance folders. JPEG working copies receive embedded metadata; videos, other formats and credentialed JPEGs receive XMP sidecars.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let retainedFolder {
+                Button("Reveal Retained Files in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([retainedFolder])
+                }
+            }
             if !status.isEmpty { HStack { if task != nil { ProgressView().controlSize(.small) }; Text(status) } }
             HStack {
                 Button(task == nil ? "Close" : "Cancel") {
@@ -82,7 +96,7 @@ struct WebImportView: View {
                 if let folder = completedFolder {
                     Button("Open Working Folder") { onImported(folder); dismiss() }.buttonStyle(.borderedProminent)
                 } else {
-                    Button("Download & Import", action: importSelected)
+                    Button(selected.isEmpty ? "Download & Import" : "Download & Import (\(selected.count))", action: importSelected)
                         .buttonStyle(.borderedProminent)
                         .disabled(task != nil || inspection == nil || selected.isEmpty || destination == nil)
                 }
@@ -93,11 +107,24 @@ struct WebImportView: View {
         .onDisappear { task?.cancel() }
     }
 
-    private func inspect() {
-        error = nil
-        status = "Reading post…"
+    private var canInspect: Bool {
+        task == nil && !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func resetInspection() {
         inspection = nil
+        selected.removeAll()
         completedFolder = nil
+        retainedFolder = nil
+        caption = ""
+        status = ""
+        error = nil
+    }
+
+    private func inspect() {
+        guard canInspect else { return }
+        resetInspection()
+        status = "Reading post…"
         task = Task { @MainActor in
             defer { task = nil }
             do {
@@ -112,17 +139,25 @@ struct WebImportView: View {
     }
 
     private func importSelected() {
-        guard let inspection, let destination else { return }
+        guard task == nil, !selected.isEmpty, let inspection, let destination else { return }
         error = nil
+        retainedFolder = nil
         task = Task { @MainActor in
             defer { task = nil }
             do {
                 completedFolder = try await WebMediaImportService().importMedia(
                     inspection: inspection, selected: selected, cookies: cookies,
-                    destination: destination, caption: caption, progress: { status = $0 })
+                    destination: destination, caption: caption,
+                    onRetainedBatch: { retainedFolder = $0 }, progress: { status = $0 })
                 status = "Import complete. Originals are preserved unchanged."
-            } catch is CancellationError { status = "Cancelled. Completed original downloads are retained in the destination." }
-            catch { self.error = error.localizedDescription; status = "Import stopped. Check the destination for retained originals." }
+            } catch is CancellationError {
+                status = retainedFolder == nil ? "Cancelled. No files were retained."
+                    : "Cancelled. Downloaded and partial originals are retained."
+            } catch {
+                self.error = error.localizedDescription
+                status = retainedFolder == nil ? "Import stopped. No files were retained."
+                    : "Import stopped. Downloaded and partial originals are retained."
+            }
         }
     }
 }

@@ -80,11 +80,13 @@ actor WebImportFilesystemService {
 
     /// Cancellation never skips cleanup. Empty batches can be removed; any downloaded or
     /// partial original, or inability to enumerate originals, preserves the entire batch.
-    func cleanupEmptyBatch(_ batch: URL) {
+    @discardableResult
+    func cleanupEmptyBatch(_ batch: URL) -> URL? {
         try? beforeOperation(.cleanup)
         let originals = batch.appendingPathComponent("Originals", isDirectory: true)
         if (try? FileManager.default.contentsOfDirectory(atPath: originals.path).isEmpty) == true {
             try? FileManager.default.removeItem(at: batch)
         }
+        return FileManager.default.fileExists(atPath: batch.path) ? batch : nil
     }
 }

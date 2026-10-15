@@ -18,7 +18,8 @@ final class WebMediaImportService {
 
     func importMedia(
         inspection: WebPostInspection, selected: Set<String>, cookies: URL?,
-        destination: URL, caption: String, progress: @escaping (String) -> Void
+        destination: URL, caption: String,
+        onRetainedBatch: (URL) -> Void = { _ in }, progress: @escaping (String) -> Void
     ) async throws -> URL {
         let batch = destination.appendingPathComponent("Web Import \(UUID().uuidString)", isDirectory: true)
         let originals = batch.appendingPathComponent("Originals", isDirectory: true)
@@ -26,17 +27,25 @@ final class WebMediaImportService {
         let provenance = batch.appendingPathComponent("Provenance", isDirectory: true)
         do {
             try await filesystem.prepare(batch: batch, inspection: inspection)
-            progress("Downloading selected media…")
+            progress("Downloading \(selected.count) selected media items…")
             let result = try await download(inspection, selected, cookies, originals)
             try Task.checkCancellation()
             guard !result.files.isEmpty else {
                 throw WebDownloadRuntimeService.RuntimeError.failed("No media was downloaded. Try finding the media again before importing.")
             }
+            let returnedIDs = Set(result.files.map { $0.item.id })
+            guard returnedIDs == selected, result.files.count == selected.count,
+                  selected.isSubset(of: Set(inspection.items.map(\.id))),
+                  Set(result.files.map(\.filename)).count == result.files.count else {
+                throw WebDownloadRuntimeService.RuntimeError.failed("The downloaded media did not match your selection. Find the media again before importing.")
+            }
+            guard result.files.allSatisfy({ file in
+                !file.filename.isEmpty && file.filename == URL(fileURLWithPath: file.filename).lastPathComponent
+                    && !file.filename.hasPrefix(".")
+            }) else { throw WebDownloadRuntimeService.RuntimeError.invalidResponse }
             try await filesystem.createWorkingDirectory(working)
             for (index, file) in result.files.enumerated() {
                 try Task.checkCancellation()
-                guard file.filename == URL(fileURLWithPath: file.filename).lastPathComponent,
-                      !file.filename.hasPrefix(".") else { throw WebDownloadRuntimeService.RuntimeError.invalidResponse }
                 progress("Writing metadata \(index + 1) of \(result.files.count)…")
                 let original = originals.appendingPathComponent(file.filename)
                 let copy = working.appendingPathComponent(file.filename)
@@ -81,7 +90,9 @@ final class WebMediaImportService {
             await filesystem.cleanupEmptyBatch(batch)
             return working
         } catch {
-            await filesystem.cleanupEmptyBatch(batch)
+            if let retained = await filesystem.cleanupEmptyBatch(batch) {
+                onRetainedBatch(retained)
+            }
             throw error
         }
     }

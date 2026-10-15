@@ -52,6 +52,9 @@ Old generations are currently retained; automatic cleanup is not implemented.
 File → Import from Web URL supports individual Instagram posts/reels and X posts.
 It lists images and videos in post order, downloads selected items using
 gallery-dl's preferred quality, and uses its yt-dlp integration for DASH video.
+Use Select All or Select None to adjust the selection; the import button shows
+the selected count. Changing the URL or cookies clears the previous post's
+selection, caption and status. Press Return in the URL field to find media.
 An optional Netscape cookies file can be selected explicitly. Browser cookies
 are not read automatically and credentials are excluded from provenance records.
 
@@ -67,6 +70,10 @@ Each batch creates:
 The posting account is Source, not Creator. Publication time does not become
 capture time. The user can edit the working caption while the original post text
 stays in provenance. Completed originals survive enrichment failures.
+If an import fails or is cancelled, Reveal Retained Files in Finder opens the
+retained batch. If no files remain, the dialog reports that instead. Before
+creating working copies, the app checks that download results match the complete
+selection and have distinct, valid filenames.
 
 This initial UI lists media type and dimensions; it does not yet show thumbnail
 previews or enumerate all alternate quality variants. Video metadata is written
@@ -84,6 +91,7 @@ xcodebuild test -project 'Aagedal Photo Agent.xcodeproj' \
 ```
 
 Bridge tests cover URL admission, mixed carousel ordering, stable selected-item
-identity, downloaded bytes, changed selections, and wheel archive validation.
+identity (including subsets of posts without media numbering), downloaded bytes,
+changed selections, and wheel archive validation.
 Native tests cover unchanged JPEG/video originals, JPEG metadata readback,
 original-versus-edited captions, video XMP and cancellation preservation.
