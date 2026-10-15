@@ -68,7 +68,7 @@ final class MetadataEditorBufferRegistry {
         return .changed
     }
 
-    // Match the actual EditableTextField/BufferedTextField bindings exactly: preserve whitespace,
+    // Match the actual EditableTextField/BufferedTextEditor bindings exactly: preserve whitespace,
     // turn only the empty string into nil, and leave specialized controls to their own editors.
     private static func keyPath(for key: String) -> WritableKeyPath<IPTCMetadata, String?>? {
         switch key {
@@ -1744,11 +1744,10 @@ struct MetadataPanel: View {
                         viewModel.resolveDescriptionConflict(keepXMP: keepXMP)
                     }
                 }
-                BufferedTextField(
+                BufferedTextEditor(
                     currentValue: viewModel.editingMetadata.description ?? "",
                     readCurrentValue: { viewModel.editingMetadata.description ?? "" },
                     placeholder: viewModel.isBatchEdit ? viewModel.batchPlaceholder(for: "description") : "Enter description",
-                    lineLimit: 4...8,
                     focusedField: $focusedField,
                     focusKey: "description",
                     onTextFinished: { newValue in
@@ -1782,13 +1781,12 @@ struct MetadataPanel: View {
                         .help("Variable Reference")
                         .accessibilityLabel("Variable reference for accessibility extended description")
                     }
-                    BufferedTextField(
+                    BufferedTextEditor(
                         currentValue: viewModel.editingMetadata.extendedDescription ?? "",
                         readCurrentValue: { viewModel.editingMetadata.extendedDescription ?? "" },
                         placeholder: viewModel.isBatchEdit
                             ? viewModel.batchPlaceholder(for: "extendedDescription")
                             : "Describe the visual content for accessibility",
-                        lineLimit: 4...8,
                         focusedField: $focusedField,
                         focusKey: "extendedDescription",
                         onTextFinished: { newValue in
@@ -3526,9 +3524,9 @@ struct EditableTextEditor: View {
     }
 }
 
-/// Text field that buffers keystrokes locally to prevent per-keystroke
+/// Scrollable text editor that buffers keystrokes locally to prevent per-keystroke
 /// re-evaluation of the parent view. Syncs on focus loss or Return.
-private struct BufferedTextField: View {
+private struct BufferedTextEditor: View {
     @Environment(\.metadataEditorBuffers) private var editorBuffers
     @Environment(\.metadataEditorBufferLoadID) private var bufferLoadID
     @Environment(\.metadataEditorCurrentLoadID) private var currentLoadID
@@ -3537,7 +3535,6 @@ private struct BufferedTextField: View {
     let currentValue: String
     let readCurrentValue: () -> String
     let placeholder: String
-    let lineLimit: ClosedRange<Int>
     let focusedField: FocusState<String?>.Binding
     let focusKey: String
     var onTextFinished: (String?) -> Void
@@ -3549,12 +3546,30 @@ private struct BufferedTextField: View {
 
     var body: some View {
         let isFocused = focusedField.wrappedValue == focusKey
-        TextField(placeholder, text: $localText, axis: .vertical)
-            .accessibilityIdentifier("metadata.input.\(focusKey)")
-            .lineLimit(lineLimit)
-            .textFieldStyle(.roundedBorder)
+        ZStack(alignment: .topLeading) {
+            if localText.isEmpty {
+                Text(placeholder)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            TextEditor(text: $localText)
+                .accessibilityLabel(placeholder)
+                .accessibilityIdentifier("metadata.input.\(focusKey)")
+                .scrollContentBackground(.hidden)
+                .focused(focusedField, equals: focusKey)
+                .padding(3)
+        }
             .font(.body)
-            .focused(focusedField, equals: focusKey)
+            .frame(height: 120)
+            .background(.background, in: RoundedRectangle(cornerRadius: 5))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(isFocused ? Color.accentColor : Color.primary.opacity(0.2))
+                    .allowsHitTesting(false)
+            }
             .onAppear { registerBuffer() }
             .onChange(of: bufferLoadID) { _, _ in registerBuffer() }
             .onDisappear { editorBuffers?.unregister(key: focusKey, owner: bufferOwner) }
