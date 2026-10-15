@@ -206,7 +206,7 @@ struct WebMediaImportTests {
             Issue.record("Expected cancellation")
         } catch is CancellationError {}
         let batch = try #require(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first)
-        #expect(retained == batch)
+        #expect(try #require(retained).resolvingSymlinksInPath() == batch.resolvingSymlinksInPath())
         #expect(try Data(contentsOf: batch.appendingPathComponent("Originals/001.jpg")) == bytes)
         #expect(FileManager.default.fileExists(atPath: batch.appendingPathComponent("Provenance/post.json").path))
     }
