@@ -89,6 +89,21 @@ final class MCPNativeFaceScanReviewModel {
     }
 
     func prepare(folder: URL, forceFullScan: Bool, includeJerseyNumbers: Bool) async {
+        await prepare { service in
+            try service.prepare(arguments: ["path": .string(folder.path),
+                "forceFullScan": .bool(forceFullScan), "includeJerseyNumbers": .bool(includeJerseyNumbers)])
+        }
+    }
+
+    /// App-internal handoff for an already retained request. The caller must still
+    /// authenticate helper presentation; the ID itself supplies no native consent.
+    func prepare(intentID: UUID) async {
+        await prepare { service in try service.prepare(intentID: intentID) }
+    }
+
+    private func prepare(
+        _ prepareReview: @escaping @Sendable (MCPNativeFaceScanReviewService) throws -> MCPNativeFaceScanReviewService.Review
+    ) async {
         guard !isRunning && !isPreparing else { message = Failure.operationInProgress.localizedDescription; return }
         dismiss()
         operation = nil; receipt = nil; message = nil
@@ -103,8 +118,7 @@ final class MCPNativeFaceScanReviewModel {
             try session.begin(validateModel: validateModel)
             let prepared = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
-                    try service.prepare(arguments: ["path": .string(folder.path),
-                        "forceFullScan": .bool(forceFullScan), "includeJerseyNumbers": .bool(includeJerseyNumbers)])
+                    try prepareReview(service)
                 }.value
             } onCancel: { session.withdraw(); service.revokeAll() }
             try Task.checkCancellation()

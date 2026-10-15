@@ -56,13 +56,23 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
     /// Replacing the visible review revokes all prior session capabilities, including
     /// active effect permission. Preparation does not grant consent or schedule work.
     func prepare(arguments: [String: MCPJSONValue]) throws -> Review {
+        try prepare { try self.intents.prepare(arguments: arguments) }
+    }
+
+    /// Review the exact retained request, never a replacement captured from its path
+    /// or options. This grants no consent and does not renew the original intent lifetime.
+    func prepare(intentID: UUID) throws -> Review {
+        try prepare { try self.intents.inspect(id: intentID) }
+    }
+
+    private func prepare(intent: () throws -> MCPFaceScanIntentStore.Intent) throws -> Review {
         let preparationGeneration = lock.withLock { revokeLocked(); return generation }
         // Inventory I/O must not hold the capability lock: dismissal and withdrawal
         // remain immediate while the caller prepares on its background executor.
         try validateSession()
         let preparedAt = monotonicClock()
         let deadline = preparedAt.advanced(by: .seconds(MCPFaceScanIntentStore.lifetime))
-        let intent = try intents.prepare(arguments: arguments)
+        let intent = try intent()
         _ = try intents.inspect(id: intent.id)
         try validateSession()
         let checkedAt = monotonicClock()
@@ -98,6 +108,10 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
         }
         do {
             try validateSession()
+            let beforeInspection = monotonicClock()
+            guard beforeInspection >= review.preparedAt, beforeInspection < review.deadline else {
+                throw Failure.expiredApproval
+            }
             let current = try intents.inspect(id: review.intent.id)
             guard current.prepared.snapshotRevision == review.intent.prepared.snapshotRevision else {
                 throw Failure.changedReview
@@ -105,7 +119,7 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
             let now = try checkedNow()
             guard now >= current.createdAt, now < current.expiresAt else { throw Failure.expiredApproval }
             let monotonicNow = monotonicClock()
-            guard monotonicNow >= review.preparedAt, monotonicNow < review.deadline else {
+            guard monotonicNow >= beforeInspection, monotonicNow < review.deadline else {
                 throw Failure.expiredApproval
             }
             return try lock.withLock {

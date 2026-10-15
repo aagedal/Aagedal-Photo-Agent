@@ -31,6 +31,32 @@ struct MCPFaceScanAdmissionServiceTests {
         return Fixture(root: root, authority: authority, service: .init(authorizationStore: authority), photos: photos)
     }
 
+    @Test("Preparation time consumes the fixed monotonic intent lifetime", arguments: [300.0, -1.0])
+    func preparationMonotonicLifetime(elapsed: TimeInterval) throws {
+        nonisolated final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var instant = ContinuousClock.now
+            private var reads = 0
+            func now(advance: TimeInterval) -> Date {
+                lock.withLock {
+                    reads += 1
+                    if reads == 2 { instant = instant.advanced(by: .seconds(advance)) }
+                    return Date(timeIntervalSince1970: 100)
+                }
+            }
+            func monotonicNow() -> ContinuousClock.Instant { lock.withLock { instant } }
+        }
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let clock = Clock()
+        let intents = MCPFaceScanIntentStore(admission: f.service, maximumIntents: 1,
+            clock: { clock.now(advance: elapsed) }, monotonicClock: { clock.monotonicNow() })
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try intents.prepare(arguments: f.arguments) }
+        // The failed preparation consumes neither store capacity nor a folder reservation.
+        let intent = try intents.prepare(arguments: f.arguments)
+        #expect(try intents.inspect(id: intent.id).id == intent.id)
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
     @Test("Preparation is deterministic, complete, and creates no scan or operation data")
     func completeReadOnlySnapshot() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

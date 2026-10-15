@@ -3,6 +3,17 @@
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Helper-visible readiness and model/executable identity remain unresolved. Automation Settings now binds the exact retained request and ordered prepared photo set to concrete provider/options/model/executable identity, fresh readiness and explicit native consent. One durably admitted/linked operation retains original rooted reservations and carrier witnesses through inference, anchored transcript draft saves and terminal completion. Cancellation preserves completed drafts; retained linked requests cannot replay after relaunch. Epoch-bound intent inspection and confirmed cancelled-request capacity maintenance remain available. Authenticated exact-request transcription review presentation is available through the matching signed helper and running app; helper start now requires an exact one-use native grant. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the dedicated Photo Agent FFmpeg 9.0.2 variant and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
 **Updated:** 2026-10-15
 
+**Exact retained face-intent review (2026-10-15):** Native review can inspect the
+original retained intent by ID without replacing its inventory/options or renewing
+its lifetime. Monotonic expiry starts before capture and guards inspection/admission,
+including a frozen wall clock. Authenticated helper handoff and descriptor-anchored
+execution remain open. Focused validation passes 58 tests / four suites; integrated
+validation passes 4,155 tests with two existing Sony skips, zero failures (4,157 total /
+402 suites). Native consent/receipt/relaunch passes one test. Repository, 36-tool
+helper, model bundle and development-signature checks pass. A native main-thread
+warning retains the performance gate. See the
+[dated continuation](retained-face-intent-review-2026-10-15.md).
+
 **Metadata file-action async continuation (2026-10-15):** Export, signing,
 IPTC copy/paste and RAW archive actions await the shared guarded durability barrier
 and reject changed folder/selection context. Activity resume, rename preparation
@@ -1174,6 +1185,14 @@ The historical unrelated project ordering diff was committed separately as `fee5
 cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
+
+**Current after the 2026-10-15 retained face-intent continuation:** Native review now
+accepts the exact original retained face intent without creating a replacement or
+renewing expiry; capture and admission share a fixed monotonic lifetime. Next wire
+session/epoch-authenticated app-owned helper presentation and durable request/operation
+linkage. Descriptor-anchored physical scanner effects remain required before enabling
+helper execution. See the [dated record](retained-face-intent-review-2026-10-15.md).
+
 
 **Current after the 2026-10-14 native acceptance continuation:** Native face consent,
 receipt persistence without replayed consent, and cancelled Develop capture cleanup

@@ -43,6 +43,7 @@ struct MCPNativeFaceScanReviewServiceTests {
         let state: State
         let authority: MCPAuthorizationStore
         let operations: MCPFaceScanOperationService
+        let intents: MCPFaceScanIntentStore
         let service: MCPNativeFaceScanReviewService
     }
     private func fixture(capacity: Int = 256, validateSession: (@Sendable () throws -> Void)? = nil, schedule: @escaping MCPFaceScanOperationService.Scheduler) throws -> Fixture {
@@ -53,19 +54,103 @@ struct MCPNativeFaceScanReviewServiceTests {
         let state = State()
         let authority = MCPAuthorizationStore(readConfigurationData: { state.read() }, writeConfigurationData: { state.write($0) })
         try authority.addRoot(photos); try authority.setEnabled(true)
-        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authority), clock: { state.now() })
+        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authority), clock: { state.now() },
+            monotonicClock: { state.monotonicNow() })
         let operations = MCPFaceScanOperationService(intents: intents,
             registry: .init(storageDirectory: root.appendingPathComponent("operations")),
             receipts: .init(storageDirectory: root.appendingPathComponent("receipts"), maximumReceipts: capacity), schedule: schedule)
         let service = MCPNativeFaceScanReviewService(intents: intents, operations: operations,
             validateSession: validateSession ?? { try state.validate() }, clock: { state.now() },
             monotonicClock: { state.monotonicNow() })
-        return .init(root: root, photos: photos, state: state, authority: authority, operations: operations, service: service)
+        return .init(root: root, photos: photos, state: state, authority: authority, operations: operations, intents: intents, service: service)
     }
     private func refusingScheduler(_: MCPFaceScanIntentStore, _: UUID,
         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unconsented scan was scheduled")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+    }
+
+    @Test("Retained intent review preserves exact identity/options and needs fresh explicit consent")
+    func retainedIntentReview() async throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let intent = try f.intents.prepare(arguments: ["path": .string(f.photos.path), "includeJerseyNumbers": .bool(true)])
+        let review = try f.service.prepare(intentID: intent.id)
+        #expect(review.intent.id == intent.id)
+        #expect(review.intent.createdAt == intent.createdAt)
+        #expect(review.intent.expiresAt == intent.expiresAt)
+        #expect(review.intent.prepared.snapshotRevision == intent.prepared.snapshotRevision)
+        #expect(review.intent.prepared.includeJerseyNumbers)
+        #expect(review.intent.prepared.forceFullScan)
+        #expect(throws: MCPNativeFaceScanReviewService.Failure.acknowledgementRequired) {
+            try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: false)
+        }
+        let approval = try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: true)
+        let replacement = try f.service.prepare(intentID: intent.id)
+        #expect(replacement.intent.id == intent.id)
+        await #expect(throws: MCPNativeFaceScanReviewService.Failure.unavailableApproval) {
+            try await f.service.submit(approval)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    @Test("Reviewing a retained intent cannot renew expiry with a frozen wall clock", arguments: [true, false])
+    func retainedIntentOriginalDeadline(reviewBeforeExpiry: Bool) throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let intent = try f.intents.prepare(arguments: ["path": .string(f.photos.path)])
+        f.state.advanceMonotonic(299)
+        let review = reviewBeforeExpiry ? try f.service.prepare(intentID: intent.id) : nil
+        f.state.advanceMonotonic(1)
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) {
+            try f.service.prepare(intentID: intent.id)
+        }
+        if let review {
+            #expect(throws: MCPNativeFaceScanReviewService.Failure.changedReview) {
+                try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: false)
+            }
+        }
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try f.intents.inspect(id: intent.id) }
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try f.intents.retain(id: intent.id) }
+        // Expired entries do not exhaust capacity under a frozen wall clock.
+        for _ in 0..<16 { _ = try f.intents.prepare(arguments: ["path": .string(f.photos.path)]) }
+    }
+
+    @Test("An open retained review expires at the intent deadline before approval or submission", arguments: [true, false])
+    func retainedIntentAdmissionDeadline(approveBeforeExpiry: Bool) async throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let intent = try f.intents.prepare(arguments: ["path": .string(f.photos.path)])
+        f.state.advanceMonotonic(299)
+        let review = try f.service.prepare(intentID: intent.id)
+        if approveBeforeExpiry {
+            let approval = try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: false)
+            f.state.advanceMonotonic(1)
+            await #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) { try await f.service.submit(approval) }
+        } else {
+            f.state.advanceMonotonic(1)
+            #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) {
+                try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: false)
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    @Test("Retained review refuses changed evidence and unknown IDs without creating replacement intents", arguments: ["unknown", "inventory", "authorization", "session"])
+    func retainedIntentRefusal(kind: String) throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let intent = try f.intents.prepare(arguments: ["path": .string(f.photos.path)])
+        switch kind {
+        case "inventory": try Data("new".utf8).write(to: f.photos.appendingPathComponent("new.jpg"))
+        case "authorization": try f.authority.setEnabled(false)
+        case "session": f.state.withdraw()
+        default: break
+        }
+        #expect(throws: (any Error).self) {
+            try f.service.prepare(intentID: kind == "unknown" ? UUID() : intent.id)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
     }
 
     @Test("Withdrawal does not wait for preparation I/O and in-flight preparation cannot restore review")
@@ -109,7 +194,8 @@ struct MCPNativeFaceScanReviewServiceTests {
         let state = State()
         let authority = MCPAuthorizationStore(readConfigurationData: { state.read() }, writeConfigurationData: { state.write($0) })
         try authority.addRoot(photos); try authority.setEnabled(true)
-        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authority), clock: { state.now() })
+        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authority), clock: { state.now() },
+            monotonicClock: { state.monotonicNow() })
         let receipts = MCPFaceScanReceiptStore(storageDirectory: root.appendingPathComponent("receipts"))
         let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
         let scanner = FaceRecognitionViewModel(readService: SwiftExifReadService(),
@@ -120,7 +206,9 @@ struct MCPNativeFaceScanReviewServiceTests {
         let service = MCPNativeFaceScanReviewService(intents: intents, operations: operations,
             validateSession: { try state.validate() }, clock: { state.now() },
             monotonicClock: { state.monotonicNow() })
-        let review = try service.prepare(arguments: ["path": .string(photos.path)])
+        let intent = try intents.prepare(arguments: ["path": .string(photos.path)])
+        let review = try service.prepare(intentID: intent.id)
+        #expect(review.intent.id == intent.id)
         let canonicalPhoto = try authority.authorizeExistingPath(photo.path).url
         #expect(review.intent.prepared.imageURLs == [canonicalPhoto])
         #expect(try receipts.receipts().isEmpty)
