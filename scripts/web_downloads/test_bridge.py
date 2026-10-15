@@ -81,6 +81,32 @@ class BridgeTests(unittest.TestCase):
             with patch.object(extractor, "find", self.post), self.assertRaises(ValueError):
                 bridge.download(self.request)
 
+    def test_subset_download_without_numbers_keeps_inspected_positions(self):
+        class UnnumberedPost(SyntheticPost):
+            def items(self):
+                for kind, url, metadata in super().items():
+                    metadata.pop("num", None)
+                    yield kind, "text:original fixture bytes" if kind == Message.Url else url, metadata
+
+        def post(url):
+            return UnnumberedPost(re.match(UnnumberedPost.pattern, url))
+
+        with patch.object(extractor, "find", post):
+            inspection = bridge.inspect(self.request)
+        # Cover a single later item as well as a noncontiguous selection.
+        for indices in ((1,), (0, 2)):
+            with self.subTest(indices=indices), tempfile.TemporaryDirectory() as temporary:
+                selected = [inspection["items"][index] for index in indices]
+                self.request.update(destination=temporary, items=selected)
+                with patch.object(extractor, "find", post):
+                    result = bridge.download(self.request)
+                self.assertEqual([file["item"] for file in result["files"]], selected)
+                self.assertEqual([file["filename"] for file in result["files"]],
+                                 [f"{index + 1:03}.{selected[offset]['extension']}"
+                                  for offset, index in enumerate(indices)])
+                for file in result["files"]:
+                    self.assertEqual((Path(temporary) / file["filename"]).read_bytes(), b"original fixture bytes")
+
     def test_real_gallery_download_finalizes_selected_file(self):
         class BytesPost(SyntheticPost):
             def items(self):

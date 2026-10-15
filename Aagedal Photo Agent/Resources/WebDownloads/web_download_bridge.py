@@ -211,11 +211,16 @@ def download(request):
         def __init__(self, url):
             super().__init__(url)
             self.files = []
+            self.position = 0
 
         def handle_url(self, url, metadata):
-            record = media_record(url, metadata, len(self.files) + 1)
+            # Count every extracted item, including unselected ones, just as
+            # inspection does. Some extractors do not provide a num field.
+            self.position += 1
+            record = media_record(url, metadata, self.position)
             if record["id"] not in expected:
                 return
+            metadata = dict(metadata, num=record["position"])
             super().handle_url(url, metadata)
             path = Path(self.pathfmt.realpath).resolve()
             if path.parent != destination.resolve() or not path.is_file() or path.is_symlink():

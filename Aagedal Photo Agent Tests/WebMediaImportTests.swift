@@ -148,22 +148,65 @@ struct WebMediaImportTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
+    @Test("Invalid download results retain originals without creating working copies",
+          arguments: ["missing", "unexpected", "duplicate", "duplicateFilename", "unsafeFilename"])
+    func invalidDownloadResults(reason: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = item(1, kind: "video", extension: "mp4")
+        let second = item(2, kind: "video", extension: "mp4")
+        let other = item(3, kind: "video", extension: "mp4")
+        let inspection = WebPostInspection(url: "fixture", items: [first, second], versions: [:])
+        let files: [WebDownloadedFile]
+        switch reason {
+        case "missing": files = [.init(item: first, filename: "001.mp4")]
+        case "unexpected": files = [.init(item: first, filename: "001.mp4"), .init(item: other, filename: "003.mp4")]
+        case "duplicate": files = [.init(item: first, filename: "001.mp4"), .init(item: first, filename: "002.mp4")]
+        case "duplicateFilename": files = [.init(item: first, filename: "001.mp4"), .init(item: second, filename: "001.mp4")]
+        default: files = [.init(item: first, filename: "001.mp4"), .init(item: second, filename: "../002.mp4")]
+        }
+        let bytes = Data("retained original".utf8)
+        var retained: URL?
+        let filesystem = WebImportFilesystemService(beforeOperation: { operation in
+            #expect(operation != .workingDirectory)
+            #expect(operation != .copy)
+            #expect(operation != .provenanceWrite)
+        })
+        let service = WebMediaImportService(download: { _, _, _, destination in
+            try bytes.write(to: destination.appendingPathComponent("001.mp4"))
+            return WebDownloadResult(files: files, versions: [:])
+        }, filesystem: filesystem)
+        do {
+            _ = try await service.importMedia(inspection: inspection, selected: [first.id, second.id], cookies: nil,
+                destination: root, caption: "", onRetainedBatch: { retained = $0 }, progress: { _ in })
+            Issue.record("An invalid download result must not complete the import")
+        } catch is WebDownloadRuntimeService.RuntimeError {}
+        let batch = try #require(retained)
+        #expect(batch.deletingLastPathComponent().path == root.path)
+        #expect(try Data(contentsOf: batch.appendingPathComponent("Originals/001.mp4")) == bytes)
+        #expect(!FileManager.default.fileExists(atPath: batch.appendingPathComponent("Working").path))
+    }
+
     @Test("A failed download retains already received originals")
     func failureRetainsOriginals() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let bytes = Data("downloaded original".utf8)
+        var retained: URL?
         let service = WebMediaImportService(download: { _, _, _, destination in
             try bytes.write(to: destination.appendingPathComponent("001.jpg"))
             throw CancellationError()
         })
         do {
             _ = try await service.importMedia(inspection: WebPostInspection(url: "fixture", items: [], versions: [:]),
-                selected: [], cookies: nil, destination: root, caption: "", progress: { _ in })
+                selected: [], cookies: nil, destination: root, caption: "",
+                onRetainedBatch: { retained = $0 }, progress: { _ in })
             Issue.record("Expected cancellation")
         } catch is CancellationError {}
         let batch = try #require(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first)
+        #expect(try #require(retained).resolvingSymlinksInPath() == batch.resolvingSymlinksInPath())
         #expect(try Data(contentsOf: batch.appendingPathComponent("Originals/001.jpg")) == bytes)
         #expect(FileManager.default.fileExists(atPath: batch.appendingPathComponent("Provenance/post.json").path))
     }
