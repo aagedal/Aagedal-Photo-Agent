@@ -3,6 +3,12 @@
 **Status:** living planning index  
 **Last reviewed:** 2026-10-15
 
+**Exact retained face-intent review (2026-10-15):** Native review can inspect the
+original retained intent by ID without replacing its inventory/options or renewing
+its lifetime. Monotonic expiry starts before capture and guards inspection/admission,
+including a frozen wall clock. Authenticated helper handoff and descriptor-anchored
+execution remain open; see the [dated continuation](release/retained-face-intent-review-2026-10-15.md).
+
 **History and direct Browser async continuation (2026-10-15):** History restore
 and direct Browser mutations await retained metadata durability, reject obsolete targets,
 and exclude repeated commands. Production synchronous Caption flush callers are eliminated;

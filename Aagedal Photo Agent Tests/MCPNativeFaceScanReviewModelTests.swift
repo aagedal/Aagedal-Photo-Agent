@@ -35,6 +35,7 @@ struct MCPNativeFaceScanReviewModelTests {
         let state: State
         let model: MCPNativeFaceScanReviewModel
         let receipts: MCPFaceScanReceiptStore
+        let intents: MCPFaceScanIntentStore
     }
     @MainActor private func fixture(schedule: @escaping MCPFaceScanOperationService.Scheduler) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/native-face-presentation-\(UUID())", isDirectory: true)
@@ -49,12 +50,31 @@ struct MCPNativeFaceScanReviewModelTests {
         let operations = MCPFaceScanOperationService(intents: intents,
             registry: .init(storageDirectory: root.appendingPathComponent("operations")), receipts: receipts, schedule: schedule)
         return .init(root: root, photos: photos, state: state,
-            model: .init(intents: intents, operations: operations, receipts: receipts, readiness: { state.readiness() }, modelPreflight: { state.preflight() }), receipts: receipts)
+            model: .init(intents: intents, operations: operations, receipts: receipts, readiness: { state.readiness() }, modelPreflight: { state.preflight() }), receipts: receipts, intents: intents)
     }
     private func refuse(_: MCPFaceScanIntentStore, _: UUID,
                         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unexpected scheduling without valid native consent/readiness")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+    }
+
+    @Test("Retained intent presentation keeps exact identity and does not infer consent") @MainActor
+    func retainedIntentPresentation() async throws {
+        let f = try fixture(schedule: refuse)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let intent = try f.intents.prepare(arguments: ["path": .string(f.photos.path), "includeJerseyNumbers": .bool(true)])
+        await f.model.prepare(intentID: intent.id)
+        let review = try #require(f.model.review)
+        #expect(review.intent.id == intent.id)
+        #expect(review.intent.prepared.snapshotRevision == intent.prepared.snapshotRevision)
+        #expect(!f.model.acknowledgesScan && !f.model.acknowledgesReset)
+        #expect(!f.model.canStart)
+        await f.model.start()
+        #expect(try f.receipts.receipts().isEmpty)
+        f.model.dismiss()
+        await f.model.prepare(intentID: UUID())
+        #expect(f.model.review == nil)
+        #expect(f.model.message != nil)
     }
 
     @Test("Jersey review shows exact inventory and requires both native acknowledgements") @MainActor
