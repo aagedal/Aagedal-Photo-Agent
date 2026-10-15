@@ -6,6 +6,20 @@ import Observation
 /// existing path-based publication limits.
 @MainActor @Observable
 final class MCPNativeFaceScanReviewModel {
+    /// Model loading, inventory checks and receipt reads may block. Retain the
+    /// caller's task on a serial Dispatch executor rather than detaching its work.
+    actor ReviewWorker {
+        nonisolated let queue = DispatchSerialQueue(label: "com.aagedal.photo-agent.native-face-review", qos: .utility)
+        nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+        func run<Value: Sendable>(_ body: @Sendable () throws -> Value) throws -> Value {
+            try Task.checkCancellation()
+            let result = try body()
+            try Task.checkCancellation()
+            return result
+        }
+    }
+
     nonisolated enum Failure: LocalizedError {
         case sessionWithdrawn, modelChanged, operationInProgress
         var errorDescription: String? {
@@ -56,16 +70,19 @@ final class MCPNativeFaceScanReviewModel {
     @ObservationIgnored private let session: Session
     @ObservationIgnored private let service: MCPNativeFaceScanReviewService
     @ObservationIgnored private let operations: MCPFaceScanOperationService
-    @ObservationIgnored private let receipts: MCPFaceScanReceiptStore
+    @ObservationIgnored private let worker = ReviewWorker()
+    @ObservationIgnored private let readReceipt: @Sendable (UUID) throws -> MCPFaceScanReceiptStore.Receipt?
     @ObservationIgnored private let modelPreflight: @Sendable () throws -> (@Sendable () throws -> Void)
     @ObservationIgnored private var generation = UUID()
 
     init(intents: MCPFaceScanIntentStore, operations: MCPFaceScanOperationService,
          receipts: MCPFaceScanReceiptStore,
          readiness: @escaping @Sendable () -> FaceRecognitionModelAvailability = { CoreMLFaceEmbedder.shared.availability },
-         modelPreflight: @escaping @Sendable () throws -> (@Sendable () throws -> Void)) {
+         modelPreflight: @escaping @Sendable () throws -> (@Sendable () throws -> Void),
+         readReceipt: (@Sendable (UUID) throws -> MCPFaceScanReceiptStore.Receipt?)? = nil) {
         let session = Session(readiness: readiness)
-        self.session = session; self.operations = operations; self.receipts = receipts
+        self.session = session; self.operations = operations
+        self.readReceipt = readReceipt ?? { id in try receipts.receipts().first { $0.operationID == id } }
         self.modelPreflight = modelPreflight
         service = .init(intents: intents, operations: operations, validateSession: { try session.validate() })
     }
@@ -87,6 +104,8 @@ final class MCPNativeFaceScanReviewModel {
         review != nil && !isRunning && !isPreparing && acknowledgesScan
             && (review?.intent.prepared.forceFullScan != true || acknowledgesReset)
     }
+
+    var canCancel: Bool { isRunning && operation?.isTerminal == false }
 
     func prepare(folder: URL, forceFullScan: Bool, includeJerseyNumbers: Bool) async {
         await prepare { service in
@@ -112,14 +131,12 @@ final class MCPNativeFaceScanReviewModel {
         defer { isPreparing = false }
         do {
             let preflight = modelPreflight
-            let validateModel = try await Task.detached(priority: .userInitiated) { try preflight() }.value
+            let validateModel = try await worker.run { try preflight() }
             try Task.checkCancellation()
             guard current == generation else { return }
             try session.begin(validateModel: validateModel)
             let prepared = try await withTaskCancellationHandler {
-                try await Task.detached(priority: .userInitiated) {
-                    try prepareReview(service)
-                }.value
+                try await worker.run { try prepareReview(service) }
             } onCancel: { session.withdraw(); service.revokeAll() }
             try Task.checkCancellation()
             guard current == generation else { service.revokeAll(); return }
@@ -141,9 +158,9 @@ final class MCPNativeFaceScanReviewModel {
         defer { isRunning = false }
         do {
             let service = self.service, scan = acknowledgesScan, reset = acknowledgesReset
-            let approval = try await Task.detached(priority: .userInitiated) {
+            let approval = try await worker.run {
                 try service.approve(review, acknowledgesScan: scan, acknowledgesReset: reset)
-            }.value
+            }
             guard current == generation, !Task.isCancelled else { service.revoke(approval); dismiss(); return }
             self.review = nil
             acknowledgesScan = false; acknowledgesReset = false
@@ -155,25 +172,34 @@ final class MCPNativeFaceScanReviewModel {
             let completed = try await operations.waitForCompletion(admitted.id)
             guard current == generation else { return }
             operation = completed
-            receipt = try receipts.receipts().first { $0.operationID == completed.id }
+            message = "Loading the completed face scan receipt…"
+            let readReceipt = self.readReceipt
+            let retainedReceipt = try await worker.run { try readReceipt(completed.id) }
+            guard current == generation else { return }
+            try Task.checkCancellation()
+            receipt = retainedReceipt
             guard receipt != nil else { throw MCPFaceScanOperationService.Failure.missingCompletion }
             message = Self.completionMessage(completed.outcome)
         } catch {
             guard current == generation else { return }
             self.review = nil; session.withdraw(); service.revokeAll()
-            message = "Face scan stopped or could not be admitted: \(error.localizedDescription). Inspect retained receipts before retrying."
+            if operation?.isTerminal == true {
+                message = "The face scan has finished, but its receipt could not be loaded: \(error.localizedDescription). Inspect retained operation history before retrying."
+            } else {
+                message = "Face scan stopped or could not be admitted: \(error.localizedDescription). Inspect retained receipts before retrying."
+            }
         }
     }
 
     func cancel() async {
-        guard isRunning, let operation else { return }
+        guard canCancel, let operation else { return }
         let current = generation
         do {
             _ = try await operations.requestCancellation(operation.id)
-            guard current == generation else { return }
+            guard current == generation, self.operation?.isTerminal == false else { return }
             message = "Cancellation requested. Waiting for the retained scanner to finish."
         } catch {
-            guard current == generation else { return }
+            guard current == generation, self.operation?.isTerminal == false else { return }
             message = "Cancellation could not be recorded: \(error.localizedDescription). The scan may still be running."
         }
     }

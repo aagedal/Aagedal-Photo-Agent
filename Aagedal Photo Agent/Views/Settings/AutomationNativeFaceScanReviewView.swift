@@ -74,7 +74,7 @@ struct AutomationNativeFaceScanReviewView: View {
                     ProgressView().controlSize(.small)
                 }
                 Button("Cancel Retained Face Scan") { Task { await model.cancel() } }
-                    .disabled(model.operation == nil).accessibilityIdentifier("automation.faceReview.cancel")
+                    .disabled(!model.canCancel).accessibilityIdentifier("automation.faceReview.cancel")
             }
             if let message = model.message {
                 Text(verbatim: message).accessibilityIdentifier("automation.faceReview.status")

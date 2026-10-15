@@ -37,7 +37,11 @@ struct MCPNativeFaceScanReviewModelTests {
         let receipts: MCPFaceScanReceiptStore
         let intents: MCPFaceScanIntentStore
     }
-    @MainActor private func fixture(schedule: @escaping MCPFaceScanOperationService.Scheduler) throws -> Fixture {
+    @MainActor private func fixture(
+        schedule: @escaping MCPFaceScanOperationService.Scheduler,
+        preflightCheckpoint: (@Sendable () throws -> Void)? = nil,
+        readReceipt: (@Sendable (MCPFaceScanReceiptStore, UUID) throws -> MCPFaceScanReceiptStore.Receipt?)? = nil
+    ) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/native-face-presentation-\(UUID())", isDirectory: true)
         let photos = root.appendingPathComponent("photos", isDirectory: true)
         try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
@@ -49,13 +53,138 @@ struct MCPNativeFaceScanReviewModelTests {
         let receipts = MCPFaceScanReceiptStore(storageDirectory: root.appendingPathComponent("receipts"))
         let operations = MCPFaceScanOperationService(intents: intents,
             registry: .init(storageDirectory: root.appendingPathComponent("operations")), receipts: receipts, schedule: schedule)
-        return .init(root: root, photos: photos, state: state,
-            model: .init(intents: intents, operations: operations, receipts: receipts, readiness: { state.readiness() }, modelPreflight: { state.preflight() }), receipts: receipts, intents: intents)
+        let reader: @Sendable (UUID) throws -> MCPFaceScanReceiptStore.Receipt?
+        if let readReceipt {
+            reader = { id in try readReceipt(receipts, id) }
+        } else {
+            reader = { id in try receipts.receipts().first { $0.operationID == id } }
+        }
+        let model = MCPNativeFaceScanReviewModel(intents: intents, operations: operations,
+            receipts: receipts, readiness: { state.readiness() }, modelPreflight: {
+                try preflightCheckpoint?()
+                return state.preflight()
+            }, readReceipt: reader)
+        return .init(root: root, photos: photos, state: state, model: model,
+                     receipts: receipts, intents: intents)
     }
     private func refuse(_: MCPFaceScanIntentStore, _: UUID,
                         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unexpected scheduling without valid native consent/readiness")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+    }
+
+    nonisolated private enum Context {
+        @TaskLocal static var marker: UUID?
+    }
+
+    @Test("Review worker preserves task context and cancellation across blocking work") @MainActor
+    func workerContextAndCancellation() async throws {
+        let worker = MCPNativeFaceScanReviewModel.ReviewWorker()
+        let entered = Gate(), release = DispatchSemaphore(value: 0), marker = UUID()
+        let task = Task {
+            try await Context.$marker.withValue(marker) {
+                try await worker.run {
+                    #expect(!Thread.isMainThread)
+                    #expect(Context.marker == marker)
+                    Task { await entered.open() }
+                    // Avoid trapping the main actor if executor ownership regresses.
+                    if !Thread.isMainThread { release.wait() }
+                    return true
+                }
+            }
+        }
+        await entered.wait()
+        task.cancel()
+        release.signal()
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled blocking review work published a result")
+        } catch is CancellationError {}
+    }
+
+    @Test("Cancelled or dismissed model loading cannot publish a late review", arguments: [true, false]) @MainActor
+    func withdrawalDuringModelLoading(cancel: Bool) async throws {
+        let entered = Gate(), release = DispatchSemaphore(value: 0)
+        let f = try fixture(schedule: refuse, preflightCheckpoint: {
+            #expect(!Thread.isMainThread)
+            Task { await entered.open() }
+            if !Thread.isMainThread { release.wait() }
+            #expect(Task.isCancelled == cancel)
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let task = Task { await f.model.prepare(folder: f.photos, forceFullScan: false, includeJerseyNumbers: false) }
+        await entered.wait()
+        if cancel { task.cancel() }
+        else { f.model.dismiss() }
+        release.signal()
+        await task.value
+        #expect(f.model.review == nil)
+        #expect(!f.model.isPreparing)
+        #expect(!f.model.canStart)
+        #expect(try f.receipts.receipts().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    @Test("Dismissal or cancellation during receipt I/O rejects delayed publication", arguments: [true, false]) @MainActor
+    func dismissalDuringReceiptRead(cancel: Bool) async throws {
+        let entered = Gate(), release = DispatchSemaphore(value: 0)
+        let f = try fixture(schedule: { intents, id, validate in
+            let intent = try intents.inspect(id: id)
+            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+            try validate()
+            return .init(admission: .scheduled(request), task: Task {
+                .init(folderURL: request.folderURL, outcome: .completed)
+            })
+        }, readReceipt: { receipts, id in
+            #expect(!Thread.isMainThread)
+            Task { await entered.open() }
+            if !Thread.isMainThread { release.wait() }
+            return try receipts.receipts().first { $0.operationID == id }
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        await f.model.prepare(folder: f.photos, forceFullScan: false, includeJerseyNumbers: false)
+        f.model.acknowledgesScan = true
+        let task = Task { await f.model.start() }
+        await entered.wait()
+        #expect(!f.model.canCancel)
+        await f.model.cancel()
+        #expect(f.model.message == "Loading the completed face scan receipt…")
+        if cancel { task.cancel() }
+        else { f.model.dismiss() }
+        #expect(f.model.receipt == nil)
+        release.signal()
+        await task.value
+        #expect(!f.model.isRunning)
+        #expect(f.model.receipt == nil)
+        if cancel {
+            #expect(f.model.operation?.outcome == .verified)
+            #expect(f.model.message?.contains("receipt could not be loaded") == true)
+        } else {
+            #expect(f.model.message == nil)
+        }
+        #expect(try f.receipts.receipts().count == 1)
+    }
+
+    @Test("A failed receipt read preserves the terminal operation and durable completion") @MainActor
+    func failedReceiptRead() async throws {
+        let f = try fixture(schedule: { intents, id, validate in
+            let intent = try intents.inspect(id: id)
+            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+            try validate()
+            return .init(admission: .scheduled(request), task: Task {
+                .init(folderURL: request.folderURL, outcome: .completed)
+            })
+        }, readReceipt: { _, _ in throw CocoaError(.fileReadNoPermission) })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        await f.model.prepare(folder: f.photos, forceFullScan: false, includeJerseyNumbers: false)
+        f.model.acknowledgesScan = true
+        await f.model.start()
+        #expect(f.model.operation?.outcome == .verified)
+        #expect(f.model.receipt == nil)
+        #expect(f.model.message?.contains("receipt could not be loaded") == true)
+        #expect(!f.model.canStart)
+        await f.model.start()
+        #expect(try f.receipts.receipts().count == 1)
     }
 
     @Test("Retained intent presentation keeps exact identity and does not infer consent") @MainActor

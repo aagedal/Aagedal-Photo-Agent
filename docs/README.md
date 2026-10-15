@@ -1,5 +1,11 @@
 # Project planning overview
 
+**Native face review worker (2026-10-15):** Model preflight, inventory/approval checks
+and terminal receipt reads use a retained serial Dispatch actor. Cancellation preserves
+task context; dismissed reviews reject delayed receipt publication. Failed receipt
+inspection preserves terminal operation evidence. Authenticated helper handoff and
+broader qualification remain open; see the [dated continuation](release/native-face-review-worker-2026-10-15.md).
+
 **Status:** living planning index  
 **Last reviewed:** 2026-10-15
 
