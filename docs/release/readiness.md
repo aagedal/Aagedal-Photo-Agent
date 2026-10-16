@@ -1,5 +1,15 @@
 # 3.0 coordinator state
 
+**Native face review capacity maintenance (2026-10-16):** Settings reviews and
+explicitly removes exact cancelled-only request evidence on a retained filesystem
+worker. Cleanup rechecks the epoch and complete cancelled records atomically, rotates
+the submission epoch and preserves awaiting-review evidence. Durable scan admission,
+operation linkage and anchored effects remain open. Independent review, 16 focused tests,
+4,199-test regression (two existing Sony skips, zero failures), signed native cleanup/Cancel
+acceptance, repository, 41-tool helper, model and development signature checks pass.
+State remains IMPLEMENTING; see the
+[dated continuation](native-face-review-capacity-maintenance-2026-10-16.md).
+
 **Durable face review handoff (2026-10-16):** Bounded checksum-protected face requests
 freeze original root/folder/inventory/options and a boot-bound continuous five-minute
 lifetime. The matching signed helper can ask the running app to present the exact

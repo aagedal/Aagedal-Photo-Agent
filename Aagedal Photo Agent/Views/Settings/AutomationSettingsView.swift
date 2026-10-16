@@ -212,6 +212,9 @@ struct AutomationSettingsView: View {
             Section("Face Scan Intent Review") {
                 AutomationFaceScanIntentReviewView()
                     .id(model.configuration.authorizationRevision)
+                Divider()
+                AutomationFaceReviewMaintenanceView()
+                    .id(model.configuration.authorizationRevision)
             }
             .id("faceScanIntentReview")
 

@@ -468,6 +468,49 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(visibleText(expiry), originalExpiry)
         XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.requestID"]).contains(id))
         try assertNoWrites()
+        // Native capacity maintenance requires an exact cancelled-only review.
+        dismiss.click()
+        let inspect = settings.buttons["automation.faceMaintenance.inspect"]
+        XCTAssertTrue(inspect.waitForExistence(timeout: 8))
+        inspect.click()
+        let capacity = settings.staticTexts["automation.faceMaintenance.capacity"]
+        expectation(for: NSPredicate { _, _ in self.visibleText(capacity).contains("Cancelled requests: 1") }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        XCTAssertTrue(visibleText(capacity).contains("Retained requests: 2 of 64"))
+        let cleanup = settings.buttons["automation.faceMaintenance.requestCleanup"]
+        cleanup.click()
+        let cancelCleanup = settings.buttons["Cancel"]
+        XCTAssertTrue(cancelCleanup.waitForExistence(timeout: 4))
+        cancelCleanup.click()
+        try assertNoWrites()
+        cleanup.click()
+        let confirm = settings.buttons["Remove Cancelled Requests"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 4))
+        confirm.click()
+        let status = settings.staticTexts["automation.faceMaintenance.status"]
+        expectation(for: NSPredicate { _, _ in self.visibleText(status).contains("requests removed") }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        func archive(_ bytes: Data) throws -> [String: Any] {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+            XCTAssertEqual(envelope["sha256"] as? String, SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined())
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        }
+        let archiveURL = folder.appendingPathComponent("face-review-requests/operations.json")
+        let before = try archive(original[try XCTUnwrap(protectedURLs.firstIndex(of: archiveURL))])
+        let after = try archive(Data(contentsOf: archiveURL))
+        XCTAssertNotEqual(after["currentEpoch"] as? String, epoch)
+        let beforeRecords = try XCTUnwrap(before["records"] as? [[String: Any]])
+        let afterRecords = try XCTUnwrap(after["records"] as? [[String: Any]])
+        XCTAssertEqual(afterRecords.count, 1)
+        let active = try XCTUnwrap(beforeRecords.first { $0["requestID"] as? String == id })
+        XCTAssertEqual(try JSONSerialization.data(withJSONObject: afterRecords[0], options: [.sortedKeys]),
+                       try JSONSerialization.data(withJSONObject: active, options: [.sortedKeys]))
+        for (url, bytes) in zip(protectedURLs, original) where url != archiveURL {
+            XCTAssertEqual(try Data(contentsOf: url), bytes, url.lastPathComponent)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".face_data").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("transcription-review-operations/operations.json").path))
         // Qualify real listener shutdown rather than XCTest's forced termination.
         app.typeKey("q", modifierFlags: .command)
         expectation(for: NSPredicate { _, _ in self.app.state == .notRunning }, evaluatedWith: app)
