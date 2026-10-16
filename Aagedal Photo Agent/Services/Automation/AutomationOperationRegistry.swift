@@ -129,6 +129,29 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         }
     }
 
+    /// Managed admission keeps a real owner lease alive while history is locked.
+    /// Callbacks follow the history-before-request lock order and never reenter history.
+    func withAvailableManagedOperationID<T>(_ id: UUID, ownerLease: AutomationOperationPersistence.OwnerLease,
+                                           _ body: () throws -> T) throws -> T {
+        try persistence.validateOwnerLease(ownerLease, ownerID: ownerLease.ownerID)
+        return try withExtendedLifetime(ownerLease) { try withAvailableOperationID(id, body) }
+    }
+
+    /// Link only an actual queued, uncancelled face operation owned by this lease.
+    func withQueuedFaceScanOperation<T>(_ id: UUID, ownerLease: AutomationOperationPersistence.OwnerLease,
+                                       _ body: (Record) throws -> T) throws -> T {
+        try persistence.validateOwnerLease(ownerLease, ownerID: ownerLease.ownerID)
+        return try withExtendedLifetime(ownerLease) {
+            try withLockedRecords { records in
+                guard let record = records.first(where: { $0.id == id }),
+                      record.ownerID == ownerLease.ownerID, record.ownerLeaseManaged == true,
+                      record.kind == .faceScan, record.state == .queued,
+                      record.cancellationRequestedAt == nil, record.batchProgress == nil else { throw Failure.invalidTransition }
+                return try body(record)
+            }
+        }
+    }
+
     func inspect(_ id: UUID) throws -> Record {
         try transaction(readOnly: true) { records in
             guard let record = records.first(where: { $0.id == id }) else { throw Failure.unknownOperation }

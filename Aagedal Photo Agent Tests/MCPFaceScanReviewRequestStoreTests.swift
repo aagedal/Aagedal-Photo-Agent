@@ -237,6 +237,245 @@ struct MCPFaceScanReviewRequestStoreTests {
         let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
     }
 
+    @Test("One-way admission and exact live-owner linkage survive restart without permitting replay")
+    func durableAdmission() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), original = try f.request(id)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let owner = UUID(), operationID = UUID(), admissionID = UUID()
+        let lease = try registry.acquireOwnerLease(ownerID: owner)
+        let admitted = try f.store.admit(id, requestEpoch: f.epoch, expected: original,
+            admissionID: admissionID, operationID: operationID, ownerLease: lease, registry: registry)
+        #expect(admitted.state == .admitted)
+        #expect(admitted.admission?.intentSHA256 == original.intentSHA256)
+        #expect(admitted.admission?.ownerID == owner.uuidString.lowercased())
+        #expect(try f.restarted().inspect(id, requestEpoch: f.epoch) == admitted)
+        #expect(try registry.records().isEmpty)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+            try f.store.admit(id, requestEpoch: f.epoch, expected: original,
+                operationID: UUID(), ownerLease: lease, registry: registry)
+        }
+        _ = try registry.enqueue(kind: .faceScan, ownerID: owner, operationID: operationID,
+            now: f.clock.date(), ownerLease: lease)
+        let linked = try f.store.link(id, requestEpoch: f.epoch, operationID: operationID, ownerLease: lease, registry: registry)
+        #expect(linked.state == .linked)
+        #expect(linked.intent == original.intent)
+        #expect(try f.restarted().inspect(id, requestEpoch: f.epoch) == linked)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidTransition) {
+            try f.store.link(id, requestEpoch: f.epoch, operationID: operationID, ownerLease: lease, registry: registry)
+        }
+        f.clock.advance(wall: 301, monotonic: 301)
+        try f.store.checkCancellation(id, requestEpoch: f.epoch, admissionID: admissionID, operationID: operationID, ownerID: owner)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidTransition) {
+            try f.store.checkCancellation(id, requestEpoch: f.epoch, admissionID: UUID(), operationID: operationID, ownerID: owner)
+        }
+        let cancelled = try f.store.cancel(id, requestEpoch: f.epoch)
+        #expect(cancelled.state == .linked)
+        #expect(cancelled.admission == admitted.admission)
+        #expect(throws: CancellationError.self) {
+            try f.store.checkCancellation(id, requestEpoch: f.epoch, admissionID: admissionID, operationID: operationID, ownerID: owner)
+        }
+        #expect(try f.restarted().inspect(id, requestEpoch: f.epoch) == cancelled)
+        #expect(try f.store.maintenanceSnapshot().cancelledRecords.isEmpty)
+    }
+
+    @Test("Admission rejects reused identity, stale evidence, stale epochs, expiry and cancelled tasks")
+    func admissionRefusals() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let lease = try registry.acquireOwnerLease(ownerID: UUID())
+        let firstID = UUID(), secondID = UUID(), operationID = UUID(), admissionID = UUID()
+        let first = try f.request(firstID), second = try f.request(secondID)
+        _ = try f.store.admit(firstID, requestEpoch: f.epoch, expected: first, admissionID: admissionID,
+            operationID: operationID, ownerLease: lease, registry: registry)
+        let before = try Data(contentsOf: f.archive)
+        for reuseOperation in [true, false] {
+            #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+                try f.store.admit(secondID, requestEpoch: f.epoch, expected: second,
+                    admissionID: reuseOperation ? UUID() : admissionID,
+                    operationID: reuseOperation ? operationID : UUID(), ownerLease: lease, registry: registry)
+            }
+        }
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.staleEpoch) {
+            try f.store.admit(secondID, requestEpoch: UUID(), expected: second,
+                operationID: UUID(), ownerLease: lease, registry: registry)
+        }
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+            try f.store.admit(secondID, requestEpoch: f.epoch, expected: first,
+                operationID: UUID(), ownerLease: lease, registry: registry)
+        }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try f.store.admit(secondID, requestEpoch: f.epoch, expected: second,
+                operationID: UUID(), ownerLease: lease, registry: registry)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        f.clock.advance(monotonic: 300)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.expiredRequest) {
+            try f.store.admit(secondID, requestEpoch: f.epoch, expected: second,
+                operationID: UUID(), ownerLease: lease, registry: registry)
+        }
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Linkage rejects wrong actual kind, owner, lease, state, cancellation and reserved identity")
+    func linkageRefusals() throws {
+        for mode in 0..<9 {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+            let owner = UUID(), lease = try registry.acquireOwnerLease(ownerID: owner)
+            let id = UUID(), original = try f.request(id), reserved = UUID()
+            _ = try f.store.admit(id, requestEpoch: f.epoch, expected: original,
+                operationID: reserved, ownerLease: lease, registry: registry)
+            let otherLease = try registry.acquireOwnerLease(ownerID: UUID())
+            let actual = mode == 0 ? UUID() : reserved
+            _ = try registry.enqueue(kind: mode == 1 ? .voiceTranscription : .faceScan,
+                ownerID: mode == 2 ? otherLease.ownerID : owner, operationID: actual,
+                now: f.clock.date().addingTimeInterval(mode == 8 ? -1 : 0),
+                ownerLease: mode == 3 ? nil : (mode == 2 ? otherLease : lease))
+            if mode == 4 { _ = try registry.start(actual, ownerID: owner, now: f.clock.date()) }
+            if mode == 5 { _ = try registry.requestCancellation(actual, now: f.clock.date()) }
+            if mode == 6 { _ = try f.store.cancel(id, requestEpoch: f.epoch) }
+            let before = try Data(contentsOf: f.archive)
+            #expect(throws: (any Error).self) {
+                try f.store.link(id, requestEpoch: f.epoch, operationID: actual,
+                    ownerLease: mode == 7 ? otherLease : lease, registry: registry)
+            }
+            #expect(try Data(contentsOf: f.archive) == before)
+            #expect(try f.restarted().inspect(id, requestEpoch: f.epoch).state == .admitted)
+        }
+    }
+
+    @Test("Preexisting operation history and foreign-directory owner leases cannot admit")
+    func historyRefusals() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let foreign = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("foreign-history"))
+        let lease = try registry.acquireOwnerLease(ownerID: UUID()), other = try foreign.acquireOwnerLease(ownerID: UUID())
+        let id = UUID(), record = try f.request(id), operation = UUID(), before = try Data(contentsOf: f.archive)
+        _ = try registry.enqueue(kind: .faceScan, ownerID: lease.ownerID, operationID: operation, now: f.clock.date(), ownerLease: lease)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+            try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: operation, ownerLease: lease, registry: registry)
+        }
+        #expect(throws: AutomationOperationRegistry.Failure.wrongOwner) {
+            try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: UUID(), ownerLease: other, registry: registry)
+        }
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Linkage binds the reserved history directory even for an equivalent managed owner and operation")
+    func foreignHistoryLink() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let foreign = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("foreign-history"))
+        let owner = UUID(), lease = try registry.acquireOwnerLease(ownerID: owner)
+        let otherLease = try foreign.acquireOwnerLease(ownerID: owner)
+        let id = UUID(), record = try f.request(id), operation = UUID()
+        _ = try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: operation, ownerLease: lease, registry: registry)
+        _ = try foreign.enqueue(kind: .faceScan, ownerID: owner, operationID: operation, now: f.clock.date(), ownerLease: otherLease)
+        let before = try Data(contentsOf: f.archive)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidTransition) {
+            try f.store.link(id, requestEpoch: f.epoch, operationID: operation, ownerLease: otherLease, registry: foreign)
+        }
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Cancelled admissions cannot link or be retired as cancelled-only capacity")
+    func cancelledAdmissionCapacity() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let lease = try registry.acquireOwnerLease(ownerID: UUID())
+        let id = UUID(), record = try f.request(id), operation = UUID()
+        _ = try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: operation, ownerLease: lease, registry: registry)
+        let cancelled = try f.store.cancel(id, requestEpoch: f.epoch)
+        #expect(cancelled.state == .admitted)
+        #expect(try f.store.cancel(id, requestEpoch: f.epoch) == cancelled)
+        let cancelledID = UUID(); _ = try f.request(cancelledID)
+        _ = try f.store.cancel(cancelledID, requestEpoch: f.epoch)
+        let review = try f.store.maintenanceSnapshot()
+        #expect(review.cancelledBeforeAdmissionCount == 1)
+        _ = try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: review.cancelledRecords)
+        #expect(try f.store.records() == [cancelled])
+        _ = try registry.enqueue(kind: .faceScan, ownerID: lease.ownerID, operationID: operation, now: f.clock.date(), ownerLease: lease)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidTransition) {
+            try f.store.link(id, requestEpoch: f.epoch, operationID: operation, ownerLease: lease, registry: registry)
+        }
+    }
+
+    @Test("Legacy review archives decode and upgrade on the next durable transition")
+    func legacyArchive() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(), record = try f.request(id)
+        try mutate(f) { $0["schemaVersion"] = 1 }
+        #expect(try f.restarted().inspect(id, requestEpoch: f.epoch) == record)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let lease = try registry.acquireOwnerLease(ownerID: UUID())
+        _ = try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: UUID(), ownerLease: lease, registry: registry)
+        #expect(try f.restarted().inspect(id, requestEpoch: f.epoch).state == .admitted)
+    }
+
+    @Test("Linkage refuses expired admission and cancelled tasks without changing retained evidence")
+    func linkageLifetime() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+        let lease = try registry.acquireOwnerLease(ownerID: UUID())
+        let id = UUID(), record = try f.request(id), operation = UUID()
+        _ = try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: operation, ownerLease: lease, registry: registry)
+        _ = try registry.enqueue(kind: .faceScan, ownerID: lease.ownerID, operationID: operation, now: f.clock.date(), ownerLease: lease)
+        let before = try Data(contentsOf: f.archive)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try f.store.link(id, requestEpoch: f.epoch, operationID: operation, ownerLease: lease, registry: registry)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        f.clock.advance(monotonic: 300)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.expiredRequest) {
+            try f.store.link(id, requestEpoch: f.epoch, operationID: operation, ownerLease: lease, registry: registry)
+        }
+        #expect(try Data(contentsOf: f.archive) == before)
+    }
+
+    @Test("Version two archives reject malformed admission correlation, times, state and duplicate reservations")
+    func malformedAdmissions() throws {
+        for mode in 0..<12 {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("history"))
+            let lease = try registry.acquireOwnerLease(ownerID: UUID())
+            let id = UUID(), record = try f.request(id), operation = UUID()
+            _ = try f.store.admit(id, requestEpoch: f.epoch, expected: record, operationID: operation, ownerLease: lease, registry: registry)
+            _ = try registry.enqueue(kind: .faceScan, ownerID: lease.ownerID, operationID: operation, now: f.clock.date(), ownerLease: lease)
+            _ = try f.store.link(id, requestEpoch: f.epoch, operationID: operation, ownerLease: lease, registry: registry)
+            try mutate(f) { archive in
+                var records = archive["records"] as! [[String: Any]], value = records[0]
+                var admission = value["admission"] as! [String: Any]
+                switch mode {
+                case 0: admission["requestID"] = UUID().uuidString.lowercased()
+                case 1: admission["requestEpoch"] = UUID().uuidString.lowercased()
+                case 2: admission["intentSHA256"] = String(repeating: "0", count: 64)
+                case 3: admission["ownerID"] = "invalid"
+                case 4: admission["admittedAt"] = (admission["admittedAt"] as! Double) + 301
+                case 5: admission["unexpected"] = true
+                case 6: value.removeValue(forKey: "linkedAt")
+                case 7: value["state"] = "cancelled"; value["cancellationRequestedAt"] = value["updatedAt"]
+                case 8: value["linkedAt"] = (value["linkedAt"] as! Double) - 1
+                case 9: archive["schemaVersion"] = 1
+                case 10, 11:
+                    var duplicate = value
+                    duplicate["requestID"] = UUID().uuidString.lowercased()
+                    var otherAdmission = admission
+                    otherAdmission["requestID"] = duplicate["requestID"]
+                    if mode == 10 { otherAdmission["admissionID"] = UUID().uuidString.lowercased() }
+                    else { otherAdmission["operationID"] = UUID().uuidString.lowercased() }
+                    duplicate["admission"] = otherAdmission
+                    records.append(duplicate)
+                default: break
+                }
+                value["admission"] = admission; records[0] = value; archive["records"] = records
+            }
+            #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidStorage) { try f.restarted().records() }
+        }
+    }
+
     @Test("Checksums and strict shape/state/identity/date validation reject corrupt retained evidence")
     func malformed() throws {
         for mode in 0..<8 {
