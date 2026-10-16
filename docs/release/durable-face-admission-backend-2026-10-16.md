@@ -103,6 +103,11 @@ was run for this backend-only slice.
 
 ## Remaining implementation and qualification
 
+The subsequent [lifecycle integration](durable-face-lifecycle-integration-2026-10-16.md)
+implements the retained-capability, managed-hook, cancellation and optional receipt
+backend work described below. Native durable presentation/start wiring and anchored
+physical effects remain open; the following records this slice's original handoff.
+
 These backend APIs are not connected to the native consent/start action or the helper.
 The current authenticated helper handoff remains read-only. The existing app-local
 scanner route is unchanged. Next, retain the rooted folder capability before durable

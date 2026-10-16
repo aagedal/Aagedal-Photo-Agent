@@ -153,6 +153,21 @@ nonisolated final class MCPFaceScanIntentStore: @unchecked Sendable {
         catch { retained.release(); throw error }
     }
 
+    /// Read the original durable binding while review is still fresh. This never
+    /// recaptures inventory, so callers may already own the folder reservation.
+    func reviewBinding(id: UUID) throws -> (record: MCPFaceScanReviewRequestStore.Record,
+                                          requests: MCPFaceScanReviewRequestStore)? {
+        _ = try lookup(id)
+        return lock.withLock {
+            guard let entry = intents[id], let record = entry.durableRecord,
+                  let requests = entry.requests else { return nil }
+            return (record, requests)
+        }
+    }
+
+    /// Final freshness check after retention and immediately before one-way admission.
+    func validateAdmission(id: UUID) throws { _ = try lookup(id) }
+
     func checkAuthority(_ intent: Intent) throws { try admission.checkAuthority(intent.prepared) }
 
     private func now() throws -> Date {

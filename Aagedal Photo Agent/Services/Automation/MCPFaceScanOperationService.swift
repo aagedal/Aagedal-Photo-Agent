@@ -8,7 +8,7 @@ actor MCPFaceScanOperationService {
     /// A scheduled submission must own its actual task; returning a nil or unrelated
     /// task violates this executor contract. The production native bridge captures it
     /// synchronously with scheduling on MainActor.
-    typealias Scheduler = @Sendable (MCPFaceScanIntentStore, UUID, @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission
+    typealias Scheduler = @Sendable (MCPFaceScanAdmissionService.RetainedFolder, UUID, @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission
     private let intents: MCPFaceScanIntentStore
     private let registry: AutomationOperationRegistry
     private let receipts: MCPFaceScanReceiptStore
@@ -29,8 +29,8 @@ actor MCPFaceScanOperationService {
     @MainActor static func native(intents: MCPFaceScanIntentStore, registry: AutomationOperationRegistry,
                                   receipts: MCPFaceScanReceiptStore,
                                   scanner: FaceRecognitionViewModel) -> MCPFaceScanOperationService {
-        .init(intents: intents, registry: registry, receipts: receipts, schedule: { intents, id, validateNativeAuthority in
-            try await scanner.scheduleRetainedFolderScan(intents: intents, id: id, validateNativeAuthority: validateNativeAuthority)
+        .init(intents: intents, registry: registry, receipts: receipts, schedule: { retained, _, validateNativeAuthority in
+            await scanner.scheduleRetainedFolderScan(retained: retained, validateNativeAuthority: validateNativeAuthority)
         })
     }
 
@@ -44,81 +44,137 @@ actor MCPFaceScanOperationService {
         guard !stopping else { throw AutomationOperationExecutionCoordinator.Failure.stopped }
         let intent = try intents.inspect(id: intentID)
         try nativeAdmission(intent)
-        let operationID = UUID()
+        let binding = try intents.reviewBinding(id: intentID)
+        let retained = try intents.retain(id: intentID)
+        let operationID = UUID(), admissionID = UUID()
+        let ownerID = await coordinator.ownerID
         let receipts = self.receipts, intents = self.intents, schedule = self.schedule, registry = self.registry
-        return try await coordinator.submit(kind: .faceScan, operationID: operationID,
-            admission: { try receipts.admit(intent: intent, operationID: operationID) }) { context in
-            defer { nativeCompletion() }
-            // Both conservative execution evidence and coordination effects precede
-            // scanner scheduling (which may immediately schedule a reset/write).
-            try await context.checkCancellation()
-            try receipts.markExecutionPossible(operationID)
-            try await context.markEffectsMayHaveOccurred()
-            // The caller's native capability must remain valid for the retained task;
-            // recheck it immediately before scheduling as well as initial admission.
-            try nativeAdmission(intent)
-            let submission = try await schedule(intents, intentID, { try nativeAdmission(intent) })
-            let registrationError = await self.retainSubmission(submission, operationID: operationID)
-            // This watcher owns only this exact handle and ends before operation
-            // completion. External helper requests cannot accidentally cancel a later
-            // scanner slot. Failed history reads stop possible effects conservatively.
-            let cancellationWatcher = Task { () -> Bool in
-                while !Task.isCancelled {
-                    do {
-                        if try registry.inspect(operationID).cancellationRequestedAt != nil {
-                            submission.cancel()
-                            return false
-                        }
-                    } catch {
-                        submission.cancel()
-                        return true
+        let checkDurable: @Sendable () throws -> Void = {
+            guard let binding else { return }
+            try binding.requests.checkCancellation(UUID(uuidString: binding.record.requestID)!,
+                requestEpoch: UUID(uuidString: binding.record.requestEpoch)!, admissionID: admissionID,
+                operationID: operationID, ownerID: ownerID)
+        }
+        do {
+            return try await coordinator.submit(kind: .faceScan, operationID: operationID,
+                managedAdmission: { lease in
+                    try nativeAdmission(intent)
+                    try retained.validate()
+                    try intents.validateAdmission(id: intentID)
+                    let durable: MCPFaceScanReviewRequestStore.Admission?
+                    if let binding {
+                        let admitted = try binding.requests.admit(UUID(uuidString: binding.record.requestID)!,
+                            requestEpoch: UUID(uuidString: binding.record.requestEpoch)!, expected: binding.record,
+                            admissionID: admissionID, operationID: operationID, ownerLease: lease, registry: registry)
+                        durable = admitted.admission
+                    } else { durable = nil }
+                    try receipts.admit(intent: intent, operationID: operationID, durableAdmission: durable)
+                }, managedDidEnqueue: { record, lease in
+                    if let binding {
+                        _ = try binding.requests.link(UUID(uuidString: binding.record.requestID)!,
+                            requestEpoch: UUID(uuidString: binding.record.requestEpoch)!, operationID: record.id,
+                            ownerLease: lease, registry: registry)
                     }
-                    do { try await Task.sleep(for: .milliseconds(100)) }
-                    catch { return false }
+                }, cancellationCheck: { id in
+                    do { try checkDurable() }
+                    catch is CancellationError {
+                        _ = try registry.requestCancellation(id)
+                        throw CancellationError()
+                    }
+                }, completion: { retained.release(); nativeCompletion() }) { context in
+                // Both conservative execution evidence and coordination effects precede
+                // scanner scheduling (which may immediately schedule a reset/write).
+                try await context.checkCancellation()
+                try receipts.markExecutionPossible(operationID)
+                try await context.markEffectsMayHaveOccurred()
+                // The caller's native capability must remain valid for the retained task;
+                // recheck it immediately before scheduling as well as initial admission.
+                try nativeAdmission(intent)
+                let submission = try await schedule(retained, intentID, {
+                    try nativeAdmission(intent)
+                    try checkDurable()
+                    if try registry.inspect(operationID).cancellationRequestedAt != nil { throw CancellationError() }
+                })
+                let registrationError = await self.retainSubmission(submission, operationID: operationID)
+                // This watcher owns only this exact handle and ends before operation
+                // completion. External helper requests cannot accidentally cancel a later
+                // scanner slot. Failed history reads stop possible effects conservatively.
+                let cancellationWatcher = Task { () -> Bool in
+                    while !Task.isCancelled {
+                        do {
+                            do { try checkDurable() }
+                            catch is CancellationError {
+                                _ = try registry.requestCancellation(operationID)
+                                submission.cancel()
+                                return false
+                            }
+                            if try registry.inspect(operationID).cancellationRequestedAt != nil {
+                                submission.cancel()
+                                return false
+                            }
+                        } catch {
+                            submission.cancel()
+                            return true
+                        }
+                        do { try await Task.sleep(for: .milliseconds(100)) }
+                        catch { return false }
+                    }
+                    return false
                 }
-                return false
-            }
-            // Drain every returned task, including an invalid refused/mismatched
-            // submission. Ownership lasts until its actual possible effects end.
-            let completion = await submission.completion()
-            cancellationWatcher.cancel()
-            let watcherFailed = await cancellationWatcher.value
-            await self.releaseSubmission(operationID)
-            var coordinationFailed = registrationError != nil || watcherFailed
-            let requested: Bool
-            do { requested = try self.registry.inspect(operationID).cancellationRequestedAt != nil }
-            catch { requested = false; coordinationFailed = true }
-            let matches: Bool
-            if case .scheduled(let request) = submission.admission {
-                matches = request.folderURL == intent.prepared.folderURL.standardizedFileURL
-                    && request.imageURLs.map(\.standardizedFileURL) == intent.prepared.imageURLs.map(\.standardizedFileURL)
-                    && request.forceFullScan == intent.prepared.forceFullScan
-                    && request.includeJerseyNumbers == intent.prepared.includeJerseyNumbers
-                    && completion?.folderURL.standardizedFileURL == intent.prepared.folderURL.standardizedFileURL
-            } else { matches = false }
-            var evidence: MCPFaceScanReceiptStore.Completion
-            if let completion {
-                evidence = Self.evidence(completion, cancellationRequested: requested)
-                if !matches {
+                // Drain every returned task, including an invalid refused/mismatched
+                // submission. Ownership lasts until its actual possible effects end.
+                let completion = await submission.completion()
+                cancellationWatcher.cancel()
+                let watcherFailed = await cancellationWatcher.value
+                await self.releaseSubmission(operationID)
+                var coordinationFailed = registrationError != nil || watcherFailed
+                // The exact worker may finish before the watcher's first poll, or
+                // observe request cancellation at an effect boundary during that poll.
+                // Reconcile once more after drain before recording terminal evidence.
+                do { try checkDurable() }
+                catch is CancellationError {
+                    do { _ = try registry.requestCancellation(operationID) }
+                    catch { coordinationFailed = true }
+                } catch { coordinationFailed = true }
+                let requested: Bool
+                do { requested = try self.registry.inspect(operationID).cancellationRequestedAt != nil }
+                catch { requested = false; coordinationFailed = true }
+                let matches: Bool
+                if case .scheduled(let request) = submission.admission {
+                    matches = request.folderURL == intent.prepared.folderURL.standardizedFileURL
+                        && request.imageURLs.map(\.standardizedFileURL) == intent.prepared.imageURLs.map(\.standardizedFileURL)
+                        && request.forceFullScan == intent.prepared.forceFullScan
+                        && request.includeJerseyNumbers == intent.prepared.includeJerseyNumbers
+                        && completion?.folderURL.standardizedFileURL == intent.prepared.folderURL.standardizedFileURL
+                } else { matches = false }
+                var evidence: MCPFaceScanReceiptStore.Completion
+                if let completion {
+                    evidence = Self.evidence(completion, cancellationRequested: requested)
+                    if !matches {
+                        evidence.outcome = .recoveryRequired
+                        evidence.submissionMismatch = true
+                    }
+                } else {
+                    let refused: Bool
+                    if case .refused = submission.admission { refused = true } else { refused = false }
+                    evidence = .init(outcome: refused ? .failed : .recoveryRequired, processedCount: 0,
+                        failureCount: 0, unsignedFileCount: intent.prepared.imageURLs.count,
+                        committedThumbnailCount: 0, committedDocumentCount: 0, resetCommitted: false,
+                        persistenceFailed: false, completionUnavailable: !refused)
+                }
+                if coordinationFailed {
                     evidence.outcome = .recoveryRequired
-                    evidence.submissionMismatch = true
+                    evidence.coordinationFailed = true
                 }
-            } else {
-                let refused: Bool
-                if case .refused = submission.admission { refused = true } else { refused = false }
-                evidence = .init(outcome: refused ? .failed : .recoveryRequired, processedCount: 0,
-                    failureCount: 0, unsignedFileCount: intent.prepared.imageURLs.count,
-                    committedThumbnailCount: 0, committedDocumentCount: 0, resetCommitted: false,
-                    persistenceFailed: false, completionUnavailable: !refused)
+                // Failure to preserve physical completion is uncertain, even if the worker
+                // itself reports success. Coordinator fallback remains recoveryRequired.
+                try receipts.complete(operationID, evidence: evidence)
+                return evidence.outcome
             }
-            if coordinationFailed {
-                evidence.outcome = .recoveryRequired
-                evidence.coordinationFailed = true
-            }
-            // Failure to preserve physical completion is uncertain, even if the worker
-            // itself reports success. Coordinator fallback remains recoveryRequired.
-            try receipts.complete(operationID, evidence: evidence)
-            return evidence.outcome
+        } catch {
+            retained.release()
+            nativeCompletion()
+            throw error
         }
     }
 

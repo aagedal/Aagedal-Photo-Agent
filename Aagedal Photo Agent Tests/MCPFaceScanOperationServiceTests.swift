@@ -12,6 +12,14 @@ struct MCPFaceScanOperationServiceTests {
         func read() -> Data? { lock.withLock { data } }
         func write(_ data: Data?) { lock.withLock { self.data = data } }
     }
+    nonisolated private final class AdmissionClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var offset: TimeInterval = 0
+        private var checks = 0
+        func date() -> Date { lock.withLock { Date().addingTimeInterval(offset) } }
+        func expire() { lock.withLock { offset = 600 } }
+        func expireOnSecondCheck() { lock.withLock { checks += 1; if checks == 2 { offset = 600 } } }
+    }
     private actor Gate {
         private var opened = false
         private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -31,8 +39,11 @@ struct MCPFaceScanOperationServiceTests {
         let intent: MCPFaceScanIntentStore.Intent
         let registry: AutomationOperationRegistry
         let receipts: MCPFaceScanReceiptStore
+        let requests: MCPFaceScanReviewRequestStore?
+        let durableRecord: MCPFaceScanReviewRequestStore.Record?
     }
-    private func fixture(capacity: Int = 256) throws -> Fixture {
+    private func fixture(capacity: Int = 256, durable: Bool = false,
+                         clock: @escaping @Sendable () -> Date = Date.init) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/face-operation-\(UUID())", isDirectory: true)
         let photos = root.appendingPathComponent("photos", isDirectory: true)
         try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
@@ -40,11 +51,19 @@ struct MCPFaceScanOperationServiceTests {
         let box = Box()
         let authority = MCPAuthorizationStore(readConfigurationData: { box.read() }, writeConfigurationData: { box.write($0) })
         try authority.addRoot(photos); try authority.setEnabled(true)
-        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authority))
-        let intent = try intents.prepare(arguments: ["path": .string(photos.path)])
+        let admission = MCPFaceScanAdmissionService(authorizationStore: authority)
+        let intents = MCPFaceScanIntentStore(admission: admission, clock: clock)
+        let requests = durable ? MCPFaceScanReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"), clock: clock) : nil
+        let record = try requests.map { requests in
+            try requests.request(requestID: UUID(), requestEpoch: requests.capacitySnapshot().epoch,
+                arguments: ["path": .string(photos.path)], admission: admission)
+        }
+        let intent = try record.map { try intents.adopt(record: $0, requests: requests!) }
+            ?? intents.prepare(arguments: ["path": .string(photos.path)])
         return .init(root: root, intents: intents, intent: intent,
             registry: .init(storageDirectory: root.appendingPathComponent("operations")),
-            receipts: .init(storageDirectory: root.appendingPathComponent("receipts"), maximumReceipts: capacity))
+            receipts: .init(storageDirectory: root.appendingPathComponent("receipts"), maximumReceipts: capacity),
+            requests: requests, durableRecord: record)
     }
     private func request(_ intent: MCPFaceScanIntentStore.Intent) -> FaceFolderScanRequest {
         .init(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL,
@@ -320,6 +339,155 @@ struct MCPFaceScanOperationServiceTests {
         let replacement = try JSONSerialization.data(withJSONObject: ["payload": modified.base64EncodedString(), "sha256": digest])
         try replacement.write(to: archiveURL)
         #expect(throws: MCPFaceScanReceiptStore.Failure.invalidStorage) { try f.receipts.receipts() }
+    }
+
+    @Test("Durable linkage precedes scheduling and cancellation retains ownership until exact task drain")
+    func durableLifecycle() async throws {
+        let f = try fixture(durable: true); defer { try? FileManager.default.removeItem(at: f.root) }
+        let requests = try #require(f.requests), original = try #require(f.durableRecord)
+        let requestID = UUID(uuidString: original.requestID)!, epoch = UUID(uuidString: original.requestEpoch)!
+        let entered = Gate(), release = Gate(), cancelled = Gate()
+        let request = request(f.intent)
+        let service = MCPFaceScanOperationService(intents: f.intents, registry: f.registry, receipts: f.receipts,
+            schedule: { retained, id, validate in
+                #expect(id == f.intent.id)
+                try retained.validate()
+                try validate()
+                let record = try requests.inspect(requestID, requestEpoch: epoch)
+                #expect(record.state == .linked)
+                let admission = try #require(record.admission)
+                let operation = try f.registry.inspect(UUID(uuidString: admission.operationID)!)
+                #expect(operation.state == .running)
+                #expect(operation.ownerLeaseManaged == true)
+                #expect(try f.receipts.receipts().first?.durableAdmission == admission)
+                // The original review has been consumed; scheduling must not look it up.
+                #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+                    try f.intents.inspect(id: id)
+                }
+                return .init(admission: .scheduled(request), task: Task {
+                    await entered.open()
+                    for _ in 0..<200 {
+                        if Task.isCancelled { break }
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+                    #expect(Task.isCancelled)
+                    await cancelled.open()
+                    await release.wait()
+                    // Cancelling the operation must not release a still-running task's folder.
+                    let validation = await Task.detached { try retained.validate() }.result
+                    if case .failure(let error) = validation { Issue.record("Released before drain: \(error)") }
+                    return .init(folderURL: request.folderURL, outcome: .cancelled)
+                })
+            })
+        let operation = try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        await entered.wait()
+        _ = try requests.cancel(requestID, requestEpoch: epoch)
+        await cancelled.wait()
+        #expect(throws: (any Error).self) { try MCPProcessReservation.acquireFolder(request.folderURL) }
+        #expect(try f.registry.inspect(operation.id).cancellationRequestedAt != nil)
+        await release.open()
+        let terminal = try await service.waitForCompletion(operation.id)
+        #expect(terminal.outcome == .cancelled)
+        let receipt = try #require(try f.receipts.receipts().first)
+        let linked = try requests.inspect(requestID, requestEpoch: epoch)
+        try receipt.requireCompletion(intent: f.intent, operation: terminal, durableRecord: linked, registry: f.registry)
+        #expect(throws: MCPFaceScanReceiptStore.Failure.mismatchedCompletion) {
+            try receipt.requireCompletion(intent: f.intent, operation: terminal)
+        }
+        let lease = try MCPProcessReservation.acquireFolder(request.folderURL); lease.release()
+        await #expect(throws: (any Error).self) {
+            try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        }
+        #expect(try f.registry.records().count == 1)
+        _ = try await service.shutdown()
+    }
+
+    @Test("Receipt refusal after durable admission preserves one-way evidence and releases the folder")
+    func durableReceiptRefusal() async throws {
+        let f = try fixture(capacity: 0, durable: true); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = MCPFaceScanOperationService(intents: f.intents, registry: f.registry, receipts: f.receipts,
+            schedule: { _, _, _ in
+                Issue.record("Failed receipt admission scheduled work")
+                return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+            })
+        await #expect(throws: MCPFaceScanReceiptStore.Failure.capacity) {
+            try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        }
+        let record = try #require(try f.requests?.records().first)
+        #expect(record.state == .admitted)
+        #expect(record.admission != nil)
+        #expect(try f.registry.records().isEmpty)
+        let lease = try MCPProcessReservation.acquireFolder(f.intent.prepared.folderURL); lease.release()
+        await #expect(throws: (any Error).self) {
+            try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        }
+    }
+
+    @Test("Expiry after retention refuses admission and releases the exact folder")
+    func expiresBeforeAdmission() async throws {
+        let clock = AdmissionClock()
+        let f = try fixture(durable: true, clock: { clock.date() })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = MCPFaceScanOperationService(intents: f.intents, registry: f.registry, receipts: f.receipts,
+            schedule: { _, _, _ in
+                Issue.record("Expired retained intent scheduled work")
+                return .init(admission: .refused(.scanAlreadyRunning), task: nil)
+            })
+        await #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) {
+            try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in
+                // The second check runs after folder retention, immediately before admission.
+                clock.expireOnSecondCheck()
+            })
+        }
+        #expect(try f.requests?.records().first?.state == .awaitingReview)
+        #expect(try f.receipts.receipts().isEmpty)
+        let lease = try MCPProcessReservation.acquireFolder(f.intent.prepared.folderURL); lease.release()
+    }
+
+    @Test("Original expiry does not interrupt already linked retained work")
+    func expiresAfterAdmission() async throws {
+        let clock = AdmissionClock()
+        let f = try fixture(durable: true, clock: { clock.date() })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let request = request(f.intent)
+        let service = MCPFaceScanOperationService(intents: f.intents, registry: f.registry, receipts: f.receipts,
+            schedule: { retained, _, validate in
+                clock.expire()
+                try retained.validate()
+                try validate()
+                return .init(admission: .scheduled(request), task: Task {
+                    do { try validate() } catch { Issue.record("Admitted work expired: \(error)") }
+                    return .init(folderURL: request.folderURL, outcome: .completed)
+                })
+            })
+        let operation = try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        let terminal = try await service.waitForCompletion(operation.id)
+        #expect(terminal.outcome == .verified)
+        let record = try #require(try f.requests?.records().first)
+        let receipt = try #require(try f.receipts.receipts().first)
+        try receipt.requireCompletion(intent: f.intent, operation: terminal, durableRecord: record, registry: f.registry)
+        let lease = try MCPProcessReservation.acquireFolder(f.intent.prepared.folderURL); lease.release()
+    }
+
+    @Test("Durable cancellation at exact task completion reaches terminal operation history")
+    func cancellationAtTaskCompletion() async throws {
+        let f = try fixture(durable: true); defer { try? FileManager.default.removeItem(at: f.root) }
+        let requests = try #require(f.requests), record = try #require(f.durableRecord)
+        let request = request(f.intent)
+        let service = MCPFaceScanOperationService(intents: f.intents, registry: f.registry, receipts: f.receipts,
+            schedule: { _, _, _ in
+                // Complete before the watcher can be created, so its first poll may
+                // lose the race to completion. Final reconciliation must handle both.
+                _ = try requests.cancel(UUID(uuidString: record.requestID)!, requestEpoch: UUID(uuidString: record.requestEpoch)!)
+                return .init(admission: .scheduled(request), task: Task {
+                    .init(folderURL: request.folderURL, outcome: .cancelled)
+                })
+            })
+        let operation = try await service.submit(intentID: f.intent.id, nativeAdmission: { _ in })
+        let terminal = try await service.waitForCompletion(operation.id)
+        #expect(terminal.cancellationRequestedAt != nil)
+        #expect(terminal.outcome == .cancelled)
+        #expect(try f.receipts.receipts().first?.completion?.outcome == .cancelled)
     }
 
 }
