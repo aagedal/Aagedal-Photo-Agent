@@ -200,7 +200,11 @@ enum UITestTranscriptionReviewFixture {
                         arguments: ["path": .string(root.path), "includeJerseyNumbers": .bool(true)],
                         admission: .init(authorizationStore: authority))
                     let prepared = try faceRequests.revalidate(record, admission: .init(authorizationStore: authority))
+                    let cancelled = try faceRequests.request(requestID: UUID(), requestEpoch: UUID(uuidString: record.requestEpoch)!,
+                        arguments: ["path": .string(root.path)], admission: .init(authorizationStore: authority))
+                    _ = try faceRequests.cancel(UUID(uuidString: cancelled.requestID)!, requestEpoch: UUID(uuidString: cancelled.requestEpoch)!)
                     let manifest: [String: Any] = ["requestID": record.requestID, "requestEpoch": record.requestEpoch,
+                        "cancelledRequestID": cancelled.requestID,
                         "photoPaths": prepared.imageURLs.map(\.path), "photoCount": record.intent.photoCount,
                         "forceFullScan": record.intent.forceFullScan, "includeJerseyNumbers": record.intent.includeJerseyNumbers,
                         "preparedAt": ISO8601DateFormatter().string(from: record.intent.preparedAt),

@@ -75,6 +75,14 @@ nonisolated final class MCPFaceScanReviewRequestStore: Sendable {
         let maximumRecords: Int
         let cancelledBeforeAdmissionCount: Int
     }
+    struct MaintenanceSnapshot: Equatable, Sendable {
+        /// No epoch exists until a helper explicitly initializes the archive.
+        let epoch: UUID?
+        let retainedCount: Int
+        let maximumRecords: Int
+        let cancelledRecords: [Record]
+        var cancelledBeforeAdmissionCount: Int { cancelledRecords.count }
+    }
     private struct Archive: Codable { let schemaVersion: Int; var currentEpoch: String; var records: [Record] }
     private struct Envelope: Codable { let payload: Data; let sha256: String }
     static let lifetime: TimeInterval = 300
@@ -101,6 +109,23 @@ nonisolated final class MCPFaceScanReviewRequestStore: Sendable {
     func capacitySnapshot() throws -> CapacitySnapshot {
         try transaction { CapacitySnapshot(epoch: UUID(uuidString: $0.currentEpoch)!, retainedCount: $0.records.count,
             maximumRecords: maximumRecords, cancelledBeforeAdmissionCount: $0.records.filter { $0.state == .cancelled }.count) }
+    }
+    /// Inspect the archive under its lock without creating storage or an epoch.
+    func maintenanceSnapshot() throws -> MaintenanceSnapshot {
+        do {
+            return try persistence.transaction(readOnly: true) { data in
+                let archive = try data.map(decode)
+                return (MaintenanceSnapshot(epoch: archive.flatMap { UUID(uuidString: $0.currentEpoch) },
+                    retainedCount: archive?.records.count ?? 0, maximumRecords: maximumRecords,
+                    cancelledRecords: archive?.records.filter { $0.state == .cancelled } ?? []), data ?? Data())
+            }
+        } catch let failure as AutomationOperationRegistry.Failure {
+            switch failure {
+            case .capacity: throw Failure.capacity
+            case .invalidStorage: throw Failure.invalidStorage
+            default: throw Failure.storageUnavailable
+            }
+        }
     }
     func records() throws -> [Record] { try transaction(readOnly: true) { $0.records } }
     /// Status retrieval never refreshes the preparation window or implies freshness.
@@ -203,6 +228,24 @@ nonisolated final class MCPFaceScanReviewRequestStore: Sendable {
         try transaction { archive in
             guard archive.currentEpoch == expectedEpoch.uuidString.lowercased() else { throw Failure.staleEpoch }
             guard archive.records.contains(where: { $0.state == .cancelled }) else { throw Failure.invalidTransition }
+            archive.records.removeAll { $0.state == .cancelled }
+            let epoch = UUID(); archive.currentEpoch = epoch.uuidString.lowercased(); return epoch
+        }
+    }
+    /// The complete cancelled evidence, rather than just IDs/counts, must still
+    /// match the native review. A concurrent cancellation invalidates that review.
+    @discardableResult func recoverCancelledCapacity(expectedEpoch: UUID, reviewedCancelledRecords: [Record]) throws -> UUID {
+        try transaction { archive in
+            guard archive.currentEpoch == expectedEpoch.uuidString.lowercased() else { throw Failure.staleEpoch }
+            let cancelled = archive.records.filter { $0.state == .cancelled }
+            guard !reviewedCancelledRecords.isEmpty,
+                  reviewedCancelledRecords.allSatisfy({ $0.state == .cancelled }),
+                  cancelled.sorted(by: { $0.requestID < $1.requestID }) == reviewedCancelledRecords.sorted(by: { $0.requestID < $1.requestID }) else {
+                throw Failure.conflictingRequest
+            }
+            // Last cancellation boundary precedes all mutation. Once committed,
+            // callers receive the durable result even if their task is cancelled.
+            try Task.checkCancellation()
             archive.records.removeAll { $0.state == .cancelled }
             let epoch = UUID(); archive.currentEpoch = epoch.uuidString.lowercased(); return epoch
         }

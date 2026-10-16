@@ -77,6 +77,65 @@ struct MCPFaceScanReviewRequestStoreTests {
         #expect(capacity.maximumRecords == 64)
         #expect(try MCPFaceScanReviewRequestStore(storageDirectory: root).capacitySnapshot() == capacity)
     }
+    @Test("Maintenance inspection does not initialize storage or invent an epoch")
+    func maintenanceEmpty() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/face-maintenance-empty-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MCPFaceScanReviewRequestStore(storageDirectory: root)
+        let review = try store.maintenanceSnapshot()
+        #expect(review.epoch == nil)
+        #expect(review.retainedCount == 0)
+        #expect(review.cancelledRecords.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
+    @Test("Cleanup binds full cancelled evidence, refuses raced cancellations and replay, preserves active evidence")
+    func reviewedCleanup() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let first = UUID(), second = UUID(), activeID = UUID()
+        _ = try f.request(first); _ = try f.request(second)
+        let active = try f.request(activeID)
+        _ = try f.store.cancel(first, requestEpoch: f.epoch)
+        let review = try f.store.maintenanceSnapshot()
+        _ = try f.store.cancel(second, requestEpoch: f.epoch)
+        let racedBytes = try Data(contentsOf: f.archive)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+            try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: review.cancelledRecords)
+        }
+        #expect(try Data(contentsOf: f.archive) == racedBytes)
+        let current = try f.store.maintenanceSnapshot()
+        var changed = current.cancelledRecords
+        let old = changed[0]
+        changed[0] = .init(requestID: old.requestID, requestEpoch: old.requestEpoch, intent: old.intent,
+            intentSHA256: old.intentSHA256, createdAt: old.createdAt, updatedAt: old.updatedAt.addingTimeInterval(1),
+            state: old.state, cancellationRequestedAt: old.cancellationRequestedAt)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.conflictingRequest) {
+            try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: changed)
+        }
+        let epoch = try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: current.cancelledRecords)
+        #expect(epoch != f.epoch)
+        #expect(try f.store.records() == [active])
+        #expect(try f.restarted().inspect(activeID, requestEpoch: f.epoch) == active)
+        #expect(throws: MCPFaceScanReviewRequestStore.Failure.staleEpoch) {
+            try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: current.cancelledRecords)
+        }
+    }
+
+    @Test("Cancellation before cleanup mutation preserves exact archive bytes and epoch")
+    func cancelledCleanup() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = UUID(); _ = try f.request(id)
+        _ = try f.store.cancel(id, requestEpoch: f.epoch)
+        let review = try f.store.maintenanceSnapshot(), bytes = try Data(contentsOf: f.archive)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try f.store.recoverCancelledCapacity(expectedEpoch: f.epoch, reviewedCancelledRecords: review.cancelledRecords)
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try Data(contentsOf: f.archive) == bytes)
+        #expect(try f.store.maintenanceSnapshot() == review)
+    }
+
     @Test("Immutable original evidence survives relaunch and exact retries without renewing time")
     func restoration() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

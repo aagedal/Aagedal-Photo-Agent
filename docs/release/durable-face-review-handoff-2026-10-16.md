@@ -158,8 +158,8 @@ repository console is `build/face-review-handoff/repository-final.log`.
 
 ## Next implementation
 
-Add native cancelled-request capacity maintenance using the existing internal epoch-rotating
-recovery API. Implement a one-way durable face admission with exact reserved operation/owner linkage,
+Native cancelled-request capacity maintenance is implemented in the
+[following continuation](native-face-review-capacity-maintenance-2026-10-16.md). Implement a one-way durable face admission with exact reserved operation/owner linkage,
 then explicitly adopt app-local review bound to the original durable request and original
 expiry. Preserve the original continuous lifetime through every adoption; never recapture
 a new five-minute window. Complete descriptor-anchored reset/thumbnail/document effects

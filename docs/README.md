@@ -1,5 +1,12 @@
 # Project planning overview
 
+**Native face review capacity maintenance (2026-10-16):** Settings reviews and
+explicitly removes exact cancelled-only request evidence on a retained filesystem
+worker. Cleanup rechecks the epoch and complete cancelled records atomically, rotates
+the submission epoch and preserves awaiting-review evidence. Durable scan admission,
+operation linkage and anchored effects remain open; see the
+[dated continuation](release/native-face-review-capacity-maintenance-2026-10-16.md).
+
 **Durable face review handoff (2026-10-16):** Bounded durable requests preserve original
 inventory/options and boot-bound continuous expiry across process handoff. Authenticated
 helper requests can present exact read-only inventory in Automation settings; the view

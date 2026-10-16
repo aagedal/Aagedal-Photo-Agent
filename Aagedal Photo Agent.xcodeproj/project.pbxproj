@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		CA1700000000000000000002 /* AutomationFaceReviewMaintenanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1700000000000000000001 /* AutomationFaceReviewMaintenanceTests.swift */; };
 		D13100000000000000000102 /* DevelopTemplateBatchExecutionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */; };
 		C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000101 /* RAWSourceDecoder.swift */; };
 		C12700000000000000000102 /* DevelopTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12700000000000000000101 /* DevelopTemplate.swift */; };
@@ -311,6 +312,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		CA1700000000000000000001 /* AutomationFaceReviewMaintenanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationFaceReviewMaintenanceTests.swift; sourceTree = "<group>"; };
 		D13100000000000000000101 /* DevelopTemplateBatchExecutionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchExecutionServiceTests.swift; sourceTree = "<group>"; };
 		C13000000000000000000101 /* RAWSourceDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Aagedal Photo Agent/Services/RAWSourceDecoder.swift"; sourceTree = SOURCE_ROOT; };
 		C12700000000000000000101 /* DevelopTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DevelopTemplate.swift; path = "Aagedal Photo Agent/Models/DevelopTemplate.swift"; sourceTree = SOURCE_ROOT; };
@@ -740,6 +742,7 @@
 				AB2500000000000000000001 /* DevelopTemplateTests.swift */,
 				AB2600000000000000000001 /* ActivityHistoryTests.swift */,
 				C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */,
+				CA1700000000000000000001 /* AutomationFaceReviewMaintenanceTests.swift */,
 				CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */,
 				CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */,
 				AB2700000000000000000001 /* PreviousImportDetectorTests.swift */,
@@ -1240,6 +1243,7 @@
 				AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */,
 				AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */,
 				C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */,
+				CA1700000000000000000002 /* AutomationFaceReviewMaintenanceTests.swift in Sources */,
 				CA1600000000000000000002 /* MCPFaceScanReviewRequestStoreTests.swift in Sources */,
 				CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */,
 				AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */,
