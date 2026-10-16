@@ -46,6 +46,7 @@ xcodebuild -project "Aagedal Photo Agent.xcodeproj" \
 - Star ratings (0-5) and color labels with keyboard shortcuts
 - Photo Mechanic-style cull shortcuts in full-screen (bare digits for rating/label, X to trash)
 - Sort by name, date modified, date added, file size, or star rating
+- Sort by visual similarity to a selected photo using local image analysis. Choose **Similarity** again to use a new selection; without a selection, the first local photo by name is the reference. Analysis uses original pixels and runs in the background, with a completed/total photo counter beside the sort menu's spinner.
 - Filter by star rating, color label, person shown, or missing required metadata fields
 - Full-text search across filenames and IPTC metadata fields
 - Folder favorites, recent folders, and drag-and-drop folder organization in the sidebar

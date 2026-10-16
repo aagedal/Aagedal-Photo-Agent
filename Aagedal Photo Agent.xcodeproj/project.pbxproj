@@ -118,6 +118,7 @@
 		AFACE1000000000000000002 /* AuraFaceChannelReferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */; };
 		AFACE2000000000000000002 /* AuraFaceInstallerSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */; };
 		B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */; };
+		E2C7D6C64271442287E0CE79 /* ImageSimilarityServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74DF6197ADCB48928F5E1D4C /* ImageSimilarityServiceTests.swift */; };
 		B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */; };
 		B71AFE10A1B0E2510C12C200 /* ApprovedListServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A71AFE10A1B0E2510C12C100 /* ApprovedListServiceTests.swift */; };
 		BA7C03000000000000000002 /* BatchRenameRecipeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */; };
@@ -415,6 +416,7 @@
 		AFACE1000000000000000001 /* AuraFaceChannelReferenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceChannelReferenceTests.swift; sourceTree = "<group>"; };
 		AFACE2000000000000000001 /* AuraFaceInstallerSecurityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AuraFaceInstallerSecurityTests.swift; sourceTree = "<group>"; };
 		B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserXMPSidecarLoadServiceTests.swift; sourceTree = "<group>"; };
+		74DF6197ADCB48928F5E1D4C /* ImageSimilarityServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ImageSimilarityServiceTests.swift; sourceTree = "<group>"; };
 		B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeywordListEditorPersistenceServiceTests.swift; sourceTree = "<group>"; };
 		B39C75CEAE5F40119B8DA811 /* PendingMetadataWriteCallerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PendingMetadataWriteCallerTests.swift; sourceTree = "<group>"; };
 		BA7C03000000000000000001 /* BatchRenameRecipeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BatchRenameRecipeTests.swift; sourceTree = "<group>"; };
@@ -678,6 +680,7 @@
 				AE3A10000000000000000001 /* AnalysisExportFileServiceTests.swift */,
 				7EA0E1000000000000000001 /* TeamRosterExportServiceTests.swift */,
 				B0A0E1000000000000000001 /* BrowserXMPSidecarLoadServiceTests.swift */,
+				74DF6197ADCB48928F5E1D4C /* ImageSimilarityServiceTests.swift */,
 				B0A0E2000000000000000001 /* KeywordListEditorPersistenceServiceTests.swift */,
 				1A6E32000000000000000001 /* ImageMemoryCoordinatorTests.swift */,
 				A55000000000000000000001 /* AppStartupSignpostStateMachineTests.swift */,
@@ -1174,6 +1177,7 @@
 				AE3A10000000000000000002 /* AnalysisExportFileServiceTests.swift in Sources */,
 				7EA0E1000000000000000002 /* TeamRosterExportServiceTests.swift in Sources */,
 				B0A0E1000000000000000002 /* BrowserXMPSidecarLoadServiceTests.swift in Sources */,
+				E2C7D6C64271442287E0CE79 /* ImageSimilarityServiceTests.swift in Sources */,
 				B0A0E2000000000000000002 /* KeywordListEditorPersistenceServiceTests.swift in Sources */,
 				1A6E32000000000000000002 /* ImageMemoryCoordinatorTests.swift in Sources */,
 				A55000000000000000000002 /* AppStartupSignpostStateMachineTests.swift in Sources */,

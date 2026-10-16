@@ -372,14 +372,29 @@ struct BrowserSortOrderMenu: View {
                 }
             }
         } label: {
-            Text(viewModel.sortOrder.rawValue)
-                .lineLimit(1)
-                .frame(minWidth: 92, alignment: .leading)
+            HStack(spacing: 6) {
+                if viewModel.isSortingBySimilarity {
+                    ProgressView().controlSize(.small)
+                }
+                Text(viewModel.sortOrder.rawValue)
+                    .lineLimit(1)
+                    .frame(minWidth: 92, alignment: .leading)
+                if let progress = viewModel.similarityScanProgress {
+                    Text("\(progress.completed) / \(progress.total)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("\(progress.completed) of \(progress.total) photos scanned")
+                }
+            }
         }
         .menuIndicator(.visible)
         .fixedSize(horizontal: true, vertical: false)
-        .help("Sort by \(viewModel.sortOrder.rawValue)")
+        .help(viewModel.sortOrder == .similarity
+              ? "Sort by visual similarity to \(viewModel.similarityReferenceURL?.lastPathComponent ?? "the first photo"). Select a photo and choose Similarity again to change the reference. Uses original image pixels."
+              : "Sort by \(viewModel.sortOrder.rawValue)")
         .accessibilityLabel("Sort order")
-        .accessibilityValue(viewModel.sortOrder.rawValue)
+        .accessibilityValue(viewModel.similarityScanProgress.map {
+            "Similarity, \($0.completed) of \($0.total) photos scanned"
+        } ?? viewModel.sortOrder.rawValue)
     }
 }

@@ -95,6 +95,7 @@ final class BrowserViewModel {
     var folderLoadErrorMessage: String?
     var sortOrder: SortOrder = .name {
         didSet {
+            if sortOrder != .similarity { resetSimilaritySort() }
             UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
             guard !isBatchUpdating else { return }
             setNeedsSortRebuild(forceSort: true)
@@ -111,6 +112,14 @@ final class BrowserViewModel {
     }
     var sortFeedback: String?
     @ObservationIgnored private var sortFeedbackTask: Task<Void, Never>?
+    var isSortingBySimilarity = false
+    private(set) var similarityScanProgress: ImageSimilarityService.Progress?
+    private(set) var similarityReferenceURL: URL?
+    @ObservationIgnored private let similarityService = ImageSimilarityService()
+    @ObservationIgnored private var similaritySortTask: Task<Void, Never>?
+    @ObservationIgnored private var similarityInputs: [ImageSimilarityService.Input] = []
+    @ObservationIgnored private var similarityOrder: [URL] = []
+    @ObservationIgnored private var similarityRequestID = UUID()
     var favoriteFolders: [FavoriteFolder] = []
     var openFolders: [URL] = []
     var subfoldersByOpenFolder: [URL: [URL]] = [:]
@@ -354,6 +363,7 @@ final class BrowserViewModel {
     }
 
     deinit {
+        similaritySortTask?.cancel()
         sortFeedbackTask?.cancel()
         searchDebounceTask?.cancel()
         rebuildCoalesceTask?.cancel()
@@ -383,7 +393,7 @@ final class BrowserViewModel {
     }
 
     private func rebuildSortedCache(forceSort: Bool = true) {
-        let needsSort = forceSort || sortOrder == .rating || sortOrder == .label
+        let needsSort = forceSort || sortOrder == .rating || sortOrder == .label || sortOrder == .similarity
         if needsSort {
             let sorted: [ImageFile]
             switch sortOrder {
@@ -408,6 +418,12 @@ final class BrowserViewModel {
                     }
                     return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
                 }
+            case .similarity:
+                updateSimilaritySortIfNeeded()
+                let byURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+                let ordered = Set(similarityOrder)
+                sorted = similarityOrder.compactMap { byURL[$0] }
+                    + images.filter { !ordered.contains($0.url) }.sorted(by: Self.similarityNameOrder)
             case .manual:
                 if manualOrder.isEmpty {
                     sorted = images
@@ -776,6 +792,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
     func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+        resetSimilaritySort()
         fieldMutationDisplayID = UUID()
         AppStartupSignposts.shared.firstFolderLoadStarted()
 
@@ -4328,6 +4345,67 @@ final class BrowserViewModel {
         return true
     }
 
+    // MARK: - Similarity Sort
+
+    private static func similarityNameOrder(_ lhs: ImageFile, _ rhs: ImageFile) -> Bool {
+        let comparison = lhs.filename.localizedStandardCompare(rhs.filename)
+        return comparison == .orderedSame
+            ? lhs.url.absoluteString < rhs.url.absoluteString
+            : comparison == .orderedAscending
+    }
+
+    private func resetSimilaritySort() {
+        similaritySortTask?.cancel()
+        similaritySortTask = nil
+        similarityRequestID = UUID()
+        similarityInputs = []
+        similarityOrder = []
+        similarityReferenceURL = nil
+        isSortingBySimilarity = false
+        similarityScanProgress = nil
+    }
+
+    private func updateSimilaritySortIfNeeded() {
+        let inputs = images.sorted(by: Self.similarityNameOrder).map(ImageSimilarityService.Input.init)
+        guard inputs != similarityInputs else { return }
+        similaritySortTask?.cancel()
+        similarityInputs = inputs
+        similarityOrder = []
+        similarityScanProgress = nil
+        let requestID = UUID()
+        similarityRequestID = requestID
+        if !inputs.contains(where: { $0.url == similarityReferenceURL && $0.canAnalyze }) {
+            similarityReferenceURL = inputs.first(where: \.canAnalyze)?.url
+        }
+        guard let reference = similarityReferenceURL, !inputs.isEmpty else {
+            isSortingBySimilarity = false
+            return
+        }
+        isSortingBySimilarity = true
+        similarityScanProgress = .init(completed: 0, total: inputs.filter(\.canAnalyze).count)
+        let service = similarityService
+        similaritySortTask = Task { @MainActor [weak self] in
+            do {
+                let order = try await service.order(inputs, reference: reference) { @MainActor [weak self] progress in
+                    guard !Task.isCancelled, let self,
+                          self.similarityRequestID == requestID, self.sortOrder == .similarity else { return }
+                    self.similarityScanProgress = progress
+                }
+                guard !Task.isCancelled, let self,
+                      self.similarityRequestID == requestID, self.sortOrder == .similarity else { return }
+                self.similarityOrder = order
+                self.isSortingBySimilarity = false
+                self.similarityScanProgress = nil
+                self.setNeedsSortRebuild(forceSort: true)
+            } catch {
+                guard !Task.isCancelled, let self, self.similarityRequestID == requestID else { return }
+                self.isSortingBySimilarity = false
+                self.similarityScanProgress = nil
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Manual Sort
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {
@@ -4338,6 +4416,14 @@ final class BrowserViewModel {
     /// command avoids toolbar control focus/activation changes being interpreted as selection
     /// writes by SwiftUI on newer macOS releases.
     func selectSortOrder(_ newValue: SortOrder) {
+        if newValue == .similarity {
+            resetSimilaritySort()
+            similarityReferenceURL = sortedImages.first(where: { selectedImageIDs.contains($0.url) && $0.isImageFile && !$0.isICloudDownloadPending })?.url
+            if sortOrder == .similarity {
+                setNeedsSortRebuild(forceSort: true)
+                return
+            }
+        }
         guard newValue != sortOrder else { return }
         if newValue == .manual {
             initializeManualOrder(from: sortedImages)
@@ -4353,6 +4439,7 @@ final class BrowserViewModel {
         case rating = "Rating"
         case label = "Label"
         case fileType = "File Type"
+        case similarity = "Similarity"
         case manual = "Manual"
 
         func overlayDescription(reversed: Bool) -> String {
@@ -4364,6 +4451,7 @@ final class BrowserViewModel {
             case .rating: return reversed ? "Rating Lowest First" : "Rating Highest First"
             case .label: return reversed ? "Label Reversed" : "Label"
             case .fileType: return reversed ? "File Type Z → A" : "File Type A → Z"
+            case .similarity: return reversed ? "Least Similar First" : "Most Similar First"
             case .manual: return "Manual Order"
             }
         }
