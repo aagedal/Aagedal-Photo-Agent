@@ -1,5 +1,12 @@
 # Project planning overview
 
+**Durable face admission backend (2026-10-16):** One-way admissions reserve the
+original request digest, exact operation and managed owner before enqueue. Linkage
+verifies actual queued history and its live lease. App-local adoption preserves the
+original wall/continuous lifetime; post-admission cancellation cannot free capacity.
+Native lifecycle/receipt integration and anchored effects remain open; see the
+[dated continuation](release/durable-face-admission-backend-2026-10-16.md).
+
 **Native face review capacity maintenance (2026-10-16):** Settings reviews and
 explicitly removes exact cancelled-only request evidence on a retained filesystem
 worker. Cleanup rechecks the epoch and complete cancelled records atomically, rotates

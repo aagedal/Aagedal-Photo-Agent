@@ -83,6 +83,7 @@
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
 		CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */; };
 		CA1600000000000000000002 /* MCPFaceScanReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */; };
+		CA1600000000000000000012 /* MCPFaceScanIntentAdoptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000011 /* MCPFaceScanIntentAdoptionTests.swift */; };
 		CA1600000000000000000004 /* MCPFaceScanReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */; };
 		C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */; };
 		AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2600000000000000000001 /* ActivityHistoryTests.swift */; };
@@ -386,6 +387,7 @@
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
 		CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeFaceScanReviewInvocationServiceTests.swift; sourceTree = "<group>"; };
 		CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanReviewRequestStoreTests.swift; sourceTree = "<group>"; };
+		CA1600000000000000000011 /* MCPFaceScanIntentAdoptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanIntentAdoptionTests.swift; sourceTree = "<group>"; };
 		CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPFaceScanReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPFaceScanReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
 		C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPFaceScanAdmissionServiceTests.swift; sourceTree = "<group>"; };
 		AB2600000000000000000001 /* ActivityHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ActivityHistoryTests.swift; sourceTree = "<group>"; };
@@ -744,6 +746,7 @@
 				C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */,
 				CA1700000000000000000001 /* AutomationFaceReviewMaintenanceTests.swift */,
 				CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */,
+				CA1600000000000000000011 /* MCPFaceScanIntentAdoptionTests.swift */,
 				CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */,
 				AB2700000000000000000001 /* PreviousImportDetectorTests.swift */,
 				AB2800000000000000000001 /* ICloudSyncCoordinatorTests.swift */,
@@ -1245,6 +1248,7 @@
 				C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */,
 				CA1700000000000000000002 /* AutomationFaceReviewMaintenanceTests.swift in Sources */,
 				CA1600000000000000000002 /* MCPFaceScanReviewRequestStoreTests.swift in Sources */,
+				CA1600000000000000000012 /* MCPFaceScanIntentAdoptionTests.swift in Sources */,
 				CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */,
 				AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */,
 				AB2800000000000000000002 /* ICloudSyncCoordinatorTests.swift in Sources */,

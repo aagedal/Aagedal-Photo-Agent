@@ -1,5 +1,16 @@
 # 3.0 coordinator state
 
+**Durable face admission backend (2026-10-16):** Version-two face request archives
+reserve immutable request/admission/operation/managed-owner/history correlation and
+verify exact queued, uncancelled linkage under the history lock. Post-admission
+cancellation preserves evidence; explicit app-session adoption preserves original
+wall and boot-bound continuous expiry. Native consent/start, retained capability and
+receipt integration remain next, followed by descriptor-anchored scanner effects.
+The authenticated helper presentation remains read-only. Independent review, 44 focused
+tests, 4,214-test regression (two existing Sony skips, zero failures), repository, 41-tool
+helper, model and development-signature checks pass. State remains IMPLEMENTING;
+see the [dated continuation](durable-face-admission-backend-2026-10-16.md).
+
 **Native face review capacity maintenance (2026-10-16):** Settings reviews and
 explicitly removes exact cancelled-only request evidence on a retained filesystem
 worker. Cleanup rechecks the epoch and complete cancelled records atomically, rotates

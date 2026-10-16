@@ -109,7 +109,10 @@ execution, complete accessibility acceptance or distribution packaging.
 
 ## Remaining work
 
-One-way durable face admission and exact reserved operation/owner linkage remain next.
+The one-way archive admission/linkage and app-local adoption backend are implemented
+in the [next continuation](durable-face-admission-backend-2026-10-16.md). Native lifecycle,
+retained capability and receipt integration remain next. The original investigation
+below records the requirements for that complete workflow.
 A bounded investigation identifies these concrete requirements:
 
 - Read existing request archives compatibly and persist one-way admission/linkage states
@@ -126,7 +129,8 @@ A bounded investigation identifies these concrete requirements:
 - Reserve operation IDs before enqueue, link through coordinator lifecycle hooks, and
   carry durable cancellation and request/operation correlation into receipt validation.
 
-These are next-slice design constraints, not implemented admission behavior.
+The archive/adoption backend now satisfies part of these requirements; the next continuation
+distinguishes implemented APIs from remaining scanner integration.
 Descriptor-anchored reset/thumbnail/document effects must precede helper execution. The initial read-only socket recapture can still outlast its I/O
 waiter; this maintenance workflow does not alter that boundary. Native scanner/provider,
 real-volume performance, accessibility and distribution qualification remain separate.
