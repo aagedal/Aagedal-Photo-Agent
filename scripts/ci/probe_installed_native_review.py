@@ -24,6 +24,7 @@ import uuid
 SHARED_ROOT = Path("/private/tmp/apa-installed-qualification")
 TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperOpensExactTranscriptionReviewWithoutExecution"
 EXECUTION_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperConsumesExactNativeConsentAndCompletesDrafts"
+FACE_REVIEW_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperOpensExactFaceReviewWithoutExecution"
 MAX_MESSAGE = 65_536
 REQUEST_KEYS = {"schemaVersion", "token", "call", "helperURL", "applicationPID", "rootURL", "socketDirectory", "requestID", "requestEpoch", "tool"}
 
@@ -90,11 +91,15 @@ def file_hash(path):
         os.close(descriptor)
 
 
-def protected_state(root, allow_execution=False):
+def protected_state(root, allow_execution=False, face_review=False):
     paths = [root / "transcription-review-authorization.json", root / "transcription-review-manifest.json",
              root / "transcription-review-plans/plans.json", root / "synthetic-review-runtime", root / "synthetic-review-model"]
     if not allow_execution:
         paths.append(root / "transcription-review-requests/operations.json")
+    if face_review:
+        paths.extend([root / "face-review-manifest.json", root / "face-review-requests/operations.json"])
+        if (root / ".face_data").exists():
+            raise ProbeFailure("unexpected_face_scan_data")
     for pattern in ("*.jpg", "*.wav", ".*.voice-memo.json"):
         paths.extend(root.glob(pattern))
     result = {str(path.relative_to(root)): file_hash(path) for path in paths}
@@ -103,12 +108,15 @@ def protected_state(root, allow_execution=False):
     return result
 
 
-def validate_request(value, token, call, fixture, expected_helper, execution=False):
+def validate_request(value, token, call, fixture, expected_helper, execution=False, face_review=False):
     if not isinstance(value, dict) or set(value) != REQUEST_KEYS or value["schemaVersion"] != 1:
         raise ProbeFailure("invalid_rendezvous_schema")
     if value["token"] != token or type(value["call"]) is not int or value["call"] != call or not 1 <= call <= (9 if execution else 4):
         raise ProbeFailure("invalid_rendezvous_token_or_call")
-    if value["tool"] != ("start_voice_transcription" if call >= 5 else "open_voice_transcription_review"):
+    if execution and face_review:
+        raise ProbeFailure("incompatible_probe_modes")
+    expected_tool = "open_face_scan_review" if face_review else "start_voice_transcription" if call >= 5 else "open_voice_transcription_review"
+    if value["tool"] != expected_tool:
         raise ProbeFailure("unexpected_rendezvous_tool")
     if value["helperURL"] != str(expected_helper):
         raise ProbeFailure("unexpected_helper_location")
@@ -173,11 +181,11 @@ def execution_state(root):
     return {str(path.relative_to(root)): file_hash(path) for path in paths}
 
 
-def invoke_helper(helper, root, socket, request, pair_hashes, app_executable):
+def invoke_helper(helper, root, socket, request, pair_hashes, app_executable, face_review=False):
     if [file_hash(app_executable), file_hash(helper)] != pair_hashes:
         raise ProbeFailure("built_pair_changed")
-    allow_execution = request["call"] >= 8
-    before = protected_state(root, allow_execution)
+    allow_execution = not face_review and request["call"] >= 8
+    before = protected_state(root, allow_execution, face_review)
     durable_before = execution_state(root)
     environment = os.environ.copy()
     for key in ("OS_ACTIVITY_DT_MODE", "CFLOG_FORCE_STDERR", "IDEPreferLogStreaming"):
@@ -188,7 +196,7 @@ def invoke_helper(helper, root, socket, request, pair_hashes, app_executable):
                             capture_output=True, timeout=8, env=environment, check=False)
     if len(result.stdout) >= MAX_MESSAGE or len(result.stderr) >= MAX_MESSAGE:
         raise ProbeFailure("helper_output_limit")
-    if [file_hash(app_executable), file_hash(helper)] != pair_hashes or protected_state(root, allow_execution) != before:
+    if [file_hash(app_executable), file_hash(helper)] != pair_hashes or protected_state(root, allow_execution, face_review) != before:
         raise ProbeFailure("built_pair_or_sources_changed")
     if request["call"] != 8 and execution_state(root) != durable_before:
         raise ProbeFailure("refusal_or_retry_changed_execution_evidence")
@@ -241,7 +249,9 @@ def completed_operation_evidence(root, request):
             "durableEvidenceSHA256": execution_state(root)}
 
 
-def validate_results(cases, execution=False):
+def validate_results(cases, execution=False, face_review=False):
+    if execution and face_review:
+        return False
     if len(cases) != (9 if execution else 4):
         return False
     for index, case in enumerate(cases):
@@ -253,7 +263,19 @@ def validate_results(cases, execution=False):
                 return False
             result = lines[1]["result"]
             value = result["structuredContent"]
-            if index >= 4:
+            if face_review:
+                if case.get("tool") != "open_face_scan_review":
+                    return False
+                if index in (0, 2):
+                    if result["isError"] is not True or value["code"] != "stale_face_scan_review_request_epoch":
+                        return False
+                elif (result["isError"] is not False or value["status"] != "reviewRequired"
+                      or value["scope"] != "authenticated-native-face-review-handoff"
+                      or value["requestID"] != case["requestID"] or value["requestEpoch"] != case["requestEpoch"]
+                      or "operationID" in value
+                      or any(value[key] is not False for key in ("consentGranted", "executionAvailable", "completionConfirmed"))):
+                    return False
+            elif index >= 4:
                 if index in (4, 5, 6):
                     if result["isError"] is not True or value["code"] != "native_execution_unavailable":
                         return False
@@ -280,7 +302,9 @@ def validate_results(cases, execution=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execution", action="store_true", help="Also qualify exact native grant consumption, synthetic drafts and non-replay")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--execution", action="store_true", help="Also qualify exact native grant consumption, synthetic drafts and non-replay")
+    mode.add_argument("--face-review", action="store_true", help="Qualify only exact face review presentation, refusing scan execution and preserving original evidence")
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--derived-data-path", type=Path, required=True)
     parser.add_argument("--result-bundle", type=Path, required=True)
@@ -292,7 +316,7 @@ def main():
     report = {"schemaVersion": 1, "passed": False, "authentication": "production signature requirements and kernel audit-token peers",
               "helperLaunch": "normal standalone subprocess outside XCTest runner sandbox", "runnerSandboxEnabled": None,
               "productionSandboxChanged": False, "testRunnerWritableFixtureRoot": str(SHARED_ROOT), "sharedParentRetained": True,
-              "hostPreferencesChanged": False, "executionSubmitted": False, "executionModeRequested": args.execution, "nativeExecutionRequested": False, "verifiedCompletion": False,
+              "hostPreferencesChanged": False, "executionSubmitted": False, "executionModeRequested": args.execution, "faceReviewModeRequested": args.face_review, "nativeExecutionRequested": False, "verifiedCompletion": False,
               "executionSubmissionStatus": "not-observed", "cases": [], "cleanupComplete": False,
               "limitations": ["Debug disposable stores and deterministic synthetic provider; no real Apple/Whisper inference",
                               "Does not qualify distribution signing or notarization"]}
@@ -340,9 +364,9 @@ def main():
         environment["TEST_RUNNER_AAGEDAL_INSTALLED_HELPER_ROOT"] = str(SHARED_ROOT)
         command = ["/usr/bin/xcrun", "xcodebuild", "test", "-project", "Aagedal Photo Agent.xcodeproj",
                    "-scheme", "Aagedal Photo Agent UI Smoke Tests", "-configuration", "Debug", "-destination", "platform=macOS",
-                   "-derivedDataPath", str(derived), "-disableAutomaticPackageResolution", "-parallel-testing-enabled", "NO",
+                   "-derivedDataPath", str(derived), "-disableAutomaticPackageResolution", "-parallel-testing-enabled", "NO", "-jobs", "2",
                    "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
-                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{EXECUTION_TEST if args.execution else TEST}",
+                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{FACE_REVIEW_TEST if args.face_review else EXECUTION_TEST if args.execution else TEST}",
                    "-resultBundlePath", str(args.result_bundle.resolve())]
         pinned = None
         runner_checked = False
@@ -375,7 +399,7 @@ def main():
                     request_path = fixture / f"installed-helper-request-{call}.json"
                     if call <= (9 if args.execution else 4) and request_path.exists():
                         request = read_private_json(request_path)
-                        root, socket = validate_request(request, token, call, fixture, helper, args.execution)
+                        root, socket = validate_request(request, token, call, fixture, helper, args.execution, args.face_review)
                         socket_paths.add(socket)
                         response = {"schemaVersion": 1, "token": token, "call": call}
                         try:
@@ -386,7 +410,7 @@ def main():
                                 pinned = [file_hash(app_executable), file_hash(helper)]
                                 report["appExecutableSHA256"], report["helperSHA256"] = pinned
                                 report["appPath"] = str(app)
-                            response.update(invoke_helper(helper, root, socket, request, pinned, app_executable))
+                            response.update(invoke_helper(helper, root, socket, request, pinned, app_executable, args.face_review))
                             if args.execution and call == 8:
                                 try:
                                     scheduled = json.loads(response["stdout"].splitlines()[1])["result"]["structuredContent"]
@@ -430,7 +454,7 @@ def main():
         report["executionSubmissionStatus"] = ("durably-linked-and-completed" if report.get("completedOperation")
             else "scheduled-admission-unconfirmed" if report["nativeExecutionRequested"] else "not-observed")
         report["verifiedCompletion"] = bool(report.get("completedOperation"))
-        report["passed"] = process.returncode == 0 and executed and validate_results(report["cases"], args.execution) and (not args.execution or "completedOperation" in report)
+        report["passed"] = process.returncode == 0 and executed and validate_results(report["cases"], args.execution, args.face_review) and (not args.execution or "completedOperation" in report)
         if not report["passed"]:
             report["failure"] = "installed_native_review_qualification_failed"
     except (ProbeFailure, OSError, ValueError, subprocess.TimeoutExpired) as error:

@@ -51,6 +51,8 @@ nonisolated final class MCPFaceScanAdmissionService: Sendable {
         fileprivate let images: [ImageWitness]
         let snapshotRevision: String
 
+        var rootID: UUID { target.rootID }
+        var folderIdentity: MCPFileIdentity { target.identity }
         var folderURL: URL { target.url }
         var imageURLs: [URL] { images.map { target.url.appendingPathComponent($0.name) } }
         var forceFullScan: Bool { request.forceFullScan }

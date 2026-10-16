@@ -15,7 +15,13 @@ final class AutomationNativeInvocationController {
         let requestEpoch: UUID
     }
 
+    struct FaceReview: Equatable, Sendable {
+        let id = UUID()
+        let presentation: AutomationNativeFaceScanReviewInvocationService.Presentation
+    }
+
     private(set) var pendingReview: Review?
+    private(set) var pendingFaceReview: FaceReview?
     private(set) var isAvailable = false
     private(set) var isChecking = false
     private var listener: AutomationNativeInvocationChannel.Listener?
@@ -49,6 +55,20 @@ final class AutomationNativeInvocationController {
         }
     }
 
+    /// A timed-out socket may leave inventory validation draining off-main. Keep
+    /// that work bounded until its UI task exits, rather than recycling its slot.
+    nonisolated final class FacePresentationGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var occupied = false
+        func acquire() -> Bool {
+            lock.withLock {
+                guard !occupied else { return false }
+                occupied = true; return true
+            }
+        }
+        func release() { lock.withLock { occupied = false } }
+    }
+
     func start() {
         let fixture = UITestNativeInvocationConfiguration.current
         guard listener == nil, !isChecking,
@@ -68,8 +88,38 @@ final class AutomationNativeInvocationController {
                         plans: fixture?.plans ?? .init(storageDirectory: MCPVoiceTranscriptionPlanStore.defaultStorageDirectory()),
                         facade: facade,
                         registry: try fixture?.registry ?? .init(storageDirectory: AutomationOperationRegistry.defaultStorageDirectory()))
+                    let faceService = AutomationNativeFaceScanReviewInvocationService(
+                        requests: .init(storageDirectory: try fixture?.rootURL.appendingPathComponent("face-review-requests", isDirectory: true)
+                            ?? MCPFaceScanReviewRequestStore.defaultStorageDirectory()),
+                        admission: .init(authorizationStore: facade.authorizationStore))
+                    let faceGate = FacePresentationGate()
                     let candidate = try AutomationNativeInvocationChannel.Listener(
                         directory: fixture?.socketDirectory ?? AutomationNativeInvocationChannel.defaultDirectory) { request in
+                        if request.kind == .faceReview {
+                            guard faceGate.acquire() else { return try .init(status: .unavailable) }
+                            let retained: AutomationNativeFaceScanReviewInvocationService.Presentation
+                            do { retained = try faceService.invoke(requestID: request.requestID, requestEpoch: request.requestEpoch) }
+                            catch { faceGate.release(); throw error }
+                            let handoff = ExecutionHandoff()
+                            Task { @MainActor in
+                                defer { faceGate.release() }
+                                // Inventory I/O stays off the main actor even after
+                                // entering the UI handoff. A retired waiter cannot
+                                // publish a delayed review after timeout or stop.
+                                let checked = await Task.detached(priority: .utility) {
+                                    try? faceService.revalidate(retained)
+                                }.value
+                                handoff.resolve {
+                                    let controller = AutomationNativeInvocationController.shared
+                                    guard controller.generation == expected, let checked else { return false }
+                                    do { try faceService.requireFreshForPublication(checked) }
+                                    catch { return false }
+                                    controller.pendingFaceReview = FaceReview(presentation: checked)
+                                    return true
+                                }
+                            }
+                            return try .init(status: handoff.wait() ? .reviewRequired : .unavailable)
+                        }
                         switch try service.invoke(requestID: request.requestID, requestEpoch: request.requestEpoch) {
                         case .review(let retained):
                             if request.kind == .start {
@@ -129,7 +179,7 @@ final class AutomationNativeInvocationController {
         generation = UUID()
         startup?.cancel(); startup = nil
         listener?.stop(); listener = nil
-        pendingReview = nil; isAvailable = false; isChecking = false
+        pendingReview = nil; pendingFaceReview = nil; isAvailable = false; isChecking = false
         executionModel?.invalidateExecutionReview()
         executionModel = nil
     }
@@ -140,5 +190,9 @@ final class AutomationNativeInvocationController {
 
     func consume(_ review: Review) {
         if pendingReview == review { pendingReview = nil }
+    }
+
+    func consumeFaceReview(_ review: FaceReview) {
+        if pendingFaceReview == review { pendingFaceReview = nil }
     }
 }

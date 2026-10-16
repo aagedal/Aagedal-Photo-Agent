@@ -99,7 +99,8 @@ def probe(executable):
         require(len(names) == len(set(names)), "Duplicate tool identifiers")
         for tool in tools:
             require(tool["annotations"]["readOnlyHint"] is (tool["name"] not in {
-                "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
+                "open_face_scan_review", "get_face_scan_review_capacity", "request_face_scan_review", "cancel_face_scan_review_request",
+            "create_team", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request", "prepare_voice_transcription",
                 "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request",
                 "open_voice_transcription_review", "start_voice_transcription",
             }),
@@ -138,6 +139,10 @@ def probe(executable):
         require(face_tool["inputSchema"]["additionalProperties"] is False and
                 set(face_tool["inputSchema"]["required"]) == {"path"},
                 "Face preparation must require explicit folder authority")
+        for name in ("get_face_scan_review_capacity", "request_face_scan_review", "get_face_scan_review_request", "cancel_face_scan_review_request", "open_face_scan_review"):
+            require(name in names, "Missing durable face review tool: " + name)
+            tool = next(tool for tool in tools if tool["name"] == name)
+            require(tool["inputSchema"]["additionalProperties"] is False, "Face review accepts unbounded arguments")
         require("start_face_scan" not in names, "Update probe when guarded face execution ships")
         for identifier, arguments in [(206, {}), (207, {"path": "/unavailable", "execute": True}),
                                       (208, {"path": "/unavailable", "forceFullScan": "true"})]:

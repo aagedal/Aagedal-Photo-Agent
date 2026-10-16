@@ -2479,8 +2479,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
     let operationRegistry: AutomationOperationRegistry?
     let nativeReviewRequests: MCPNativeReviewRequestStore?
     let voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore?
+    let faceScanReviewRequests: MCPFaceScanReviewRequestStore?
     let nativeReviewInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
     let nativeExecutionInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
+    let nativeFaceReviewInvocation: @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response
 
     init(authorizationStore: MCPAuthorizationStore = MCPAuthorizationStore(), templateDiscovery: MCPTemplateDiscovery? = nil,
          patchPlans: MCPIPTCPatchPlanStore = MCPIPTCPatchPlanStore(),
@@ -2489,6 +2491,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
          operationRegistry: AutomationOperationRegistry? = nil,
          nativeReviewRequests: MCPNativeReviewRequestStore? = nil,
          voiceTranscriptionReviewRequests: MCPVoiceTranscriptionReviewRequestStore? = nil,
+         faceScanReviewRequests: MCPFaceScanReviewRequestStore? = nil,
+         nativeFaceReviewInvocation: @escaping @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response = { id, epoch in
+             try AutomationNativeInvocationChannel.Client().invoke(.init(requestID: id, requestEpoch: epoch, kind: .faceReview))
+         },
          nativeReviewInvocation: @escaping @Sendable (UUID, UUID) throws -> AutomationNativeInvocationChannel.Response = { id, epoch in
              try AutomationNativeInvocationChannel.Client().invoke(.init(requestID: id, requestEpoch: epoch))
          },
@@ -2501,6 +2507,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
         self.operationRegistry = operationRegistry
         self.nativeReviewRequests = nativeReviewRequests
         self.voiceTranscriptionReviewRequests = voiceTranscriptionReviewRequests
+        self.faceScanReviewRequests = faceScanReviewRequests
+        self.nativeFaceReviewInvocation = nativeFaceReviewInvocation
         self.nativeReviewInvocation = nativeReviewInvocation
         self.nativeExecutionInvocation = nativeExecutionInvocation
         self.patchPlans = patchPlans
@@ -2650,6 +2658,46 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                 description: "Discover stable editorial JSON field IDs and typed read values, including structured records and absence semantics. This catalog does not authorize writes or expose metadata values.",
                 properties: [:],
                 required: []
+            ),
+            definition(
+                name: "open_face_scan_review",
+                description: "Ask the running matching signed app to present one exact retained face review request using its original canonical lowercase requestID/requestEpoch. Revalidates original expiry, rooted authority and complete inventory before handoff and native publication. This read-only native presentation grants no consent or scanner admission and offers no start action. Does not launch the app, download a model or reset/write face data.",
+                properties: [
+                    "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
+                ], required: ["requestID", "requestEpoch"], readOnly: false
+            ),
+            definition(
+                name: "get_face_scan_review_capacity",
+                description: "Inspect bounded durable face review request capacity and initialize its submission epoch. Does not evict evidence or grant review, consent or execution.",
+                properties: [:], required: [], readOnly: false
+            ),
+            definition(
+                name: "request_face_scan_review",
+                description: "Retain an immutable complete-folder face scan review request with the current requestEpoch and a new canonical lowercase requestID. Freezes rooted inventory identity, normalized options and an original five-minute wall/monotonic lifetime. Exact retries retain original evidence and expiry; changed inventory, authority, options, stale epochs and expired or lost boot witnesses refuse. Creates only private review coordination evidence. Does not present native review, grant consent, download a model, create an operation, reset face data or start scanning.",
+                properties: [
+                    "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "path": .object(["type": .string("string")]),
+                    "forceFullScan": .object(["type": .string("boolean")]),
+                    "includeJerseyNumbers": .object(["type": .string("boolean")]),
+                ], required: ["requestID", "requestEpoch", "path"], readOnly: false
+            ),
+            definition(
+                name: "get_face_scan_review_request",
+                description: "Inspect historical status and immutable evidence for an exact retained face review request, including cancelled or expired requests. Requires original canonical lowercase requestID/requestEpoch. Status does not check present authority, inventory or lifetime and cannot grant review, consent or scanning.",
+                properties: [
+                    "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
+                ], required: ["requestID", "requestEpoch"]
+            ),
+            definition(
+                name: "cancel_face_scan_review_request",
+                description: "Durably cancel an exact retained face review request. This request domain admits no scanning. Cancellation grants no permission and preserves the original evidence; it does not mutate photos or remove face data.",
+                properties: [
+                    "requestID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "requestEpoch": .object(["type": .string("string"), "format": .string("uuid")]),
+                ], required: ["requestID", "requestEpoch"], readOnly: false
             ),
             definition(
                 name: "prepare_face_scan",
@@ -2852,6 +2900,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             case "get_voice_transcription_plan": acceptedArguments = ["planID"]
             case "prepare_iptc_patch": acceptedArguments = MCPIPTCPatchPreparation.argumentKeys
             case "prepare_face_scan": acceptedArguments = ["path", "forceFullScan", "includeJerseyNumbers"]
+            case "request_face_scan_review": acceptedArguments = ["requestID", "requestEpoch", "path", "forceFullScan", "includeJerseyNumbers"]
+            case "get_face_scan_review_request", "cancel_face_scan_review_request", "open_face_scan_review": acceptedArguments = ["requestID", "requestEpoch"]
             case "preview_develop_template": acceptedArguments = MCPDevelopTemplatePreview.argumentKeys
             case "preview_metadata_template": acceptedArguments = MCPMetadataTemplatePreview.argumentKeys
             case "preview_metadata_template_batch": acceptedArguments = MCPMetadataTemplateBatchPreview.argumentKeys
@@ -3098,6 +3148,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                         .string("revision-bound-iptc-proofreading-preview"), .string("session-iptc-plan-revalidation"),
                         .string("revision-bound-native-publication-requirements"),
                         .string("durable-native-review-intent"),
+                        .string("durable-face-scan-review-intent"),
+                        .string("authenticated-native-face-review-handoff"),
                         .string("durable-operation-discovery"), .string("durable-operation-status"), .string("cooperative-operation-cancellation-request"),
                     ]),
                     "mutationToolsAvailable": .bool(true),
@@ -3112,6 +3164,10 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     "voiceTranscriptionHelperStartToolAvailable": .bool(true),
                     "voiceTranscriptionHelperStartConsent": .string("fresh-exact-native-one-use-grant"),
                     "voiceTranscriptionHelperStartConsentTTLSeconds": .integer(60),
+                    "faceScanReviewRequestsAvailable": .bool(true),
+                    "faceScanReviewOpenToolAvailable": .bool(true),
+                    "faceScanReviewNativeAdmissionAvailable": .bool(false),
+                    "faceScanHelperStartToolAvailable": .bool(false),
                     "nativeReviewInvocationTransport": .string("mutually-authenticated-local-socket"),
                     "nativeReviewSessionAvailability": .string("checked-on-invocation"),
                     "helperCommitAvailable": .bool(false),
@@ -3132,6 +3188,70 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
                     return failure(code: "invalid_arguments", message: "kind must be metadata or develop")
                 }
                 return success(try templateDiscovery.list(kind: kind))
+            case "open_face_scan_review":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                guard let id = canonicalUUID(arguments["requestID"]),
+                      let epoch = canonicalUUID(arguments["requestEpoch"]) else { throw MCPFaceScanReviewRequestStore.Failure.invalidArguments }
+                let requests = try faceScanReviewRequests ?? MCPFaceScanReviewRequestStore(
+                    storageDirectory: MCPFaceScanReviewRequestStore.defaultStorageDirectory())
+                let record = try requests.inspect(id, requestEpoch: epoch)
+                _ = try requests.revalidate(record, admission: .init(authorizationStore: authorizationStore))
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                do {
+                    let response = try nativeFaceReviewInvocation(id, epoch)
+                    guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                    guard response.status == .reviewRequired else { throw AutomationNativeInvocationChannel.Failure.unavailable }
+                    return success(["scope": .string("authenticated-native-face-review-handoff"),
+                        "requestID": .string(id.uuidString.lowercased()), "requestEpoch": .string(epoch.uuidString.lowercased()),
+                        "status": .string(response.status.rawValue), "consentGranted": .bool(false),
+                        "executionAvailable": .bool(false), "completionConfirmed": .bool(false)])
+                } catch {
+                    return failure(code: "native_review_unavailable", message: "Face review requires the running matching signed app and the original current request. No consent or scan admission was granted.")
+                }
+            case "get_face_scan_review_capacity", "request_face_scan_review", "get_face_scan_review_request", "cancel_face_scan_review_request":
+                guard configuration.isEnabled else { throw MCPAuthorizationError.disabled }
+                // Validate handles before initializing any private coordination storage.
+                let handles: (UUID, UUID)?
+                if name == "get_face_scan_review_capacity" { handles = nil }
+                else {
+                    guard let id = canonicalUUID(arguments["requestID"]),
+                          let epoch = canonicalUUID(arguments["requestEpoch"]) else {
+                        throw MCPFaceScanReviewRequestStore.Failure.invalidArguments
+                    }
+                    handles = (id, epoch)
+                }
+                let requests = try faceScanReviewRequests ?? MCPFaceScanReviewRequestStore(
+                    storageDirectory: MCPFaceScanReviewRequestStore.defaultStorageDirectory())
+                let admission = MCPFaceScanAdmissionService(authorizationStore: authorizationStore)
+                let value: [String: MCPJSONValue]
+                if let (id, epoch) = handles {
+                    let record: MCPFaceScanReviewRequestStore.Record
+                    if name == "request_face_scan_review" {
+                        let scanArguments = arguments.filter { !["requestID", "requestEpoch"].contains($0.key) }
+                        record = try requests.request(requestID: id, requestEpoch: epoch,
+                            arguments: scanArguments, admission: admission)
+                    } else if name == "cancel_face_scan_review_request" {
+                        record = try requests.cancel(id, requestEpoch: epoch)
+                    } else {
+                        record = try requests.inspect(id, requestEpoch: epoch)
+                    }
+                    if name == "request_face_scan_review" {
+                        _ = try requests.revalidate(record, admission: admission)
+                    }
+                    guard case .object(let fields) = record.protocolValue else { throw MCPFaceScanReviewRequestStore.Failure.invalidStorage }
+                    value = fields
+                } else {
+                    let capacity = try requests.capacitySnapshot()
+                    value = ["requestProtocolVersion": .integer(1),
+                        "requestEpoch": .string(capacity.epoch.uuidString.lowercased()),
+                        "retainedCount": .integer(Int64(capacity.retainedCount)),
+                        "maximumRecords": .integer(Int64(capacity.maximumRecords)),
+                        "cancelledBeforeAdmissionCount": .integer(Int64(capacity.cancelledBeforeAdmissionCount)),
+                        "executionAvailable": .bool(false), "nativePresentationAvailable": .bool(true),
+                        "consentGranted": .bool(false)]
+                }
+                guard try authorizationStore.load() == configuration else { throw MCPAuthorizationError.rootChanged }
+                return success(value)
             case "prepare_face_scan":
                 guard case .object(let value) = try MCPFaceScanAdmissionService(authorizationStore: authorizationStore)
                     .prepare(arguments: arguments).protocolValue else {
@@ -3244,6 +3364,8 @@ nonisolated struct MCPFoundationTools: MCPToolServing, Sendable {
             default:
                 return failure(code: "unknown_tool", message: "Unknown Photo Agent automation tool")
             }
+        } catch let error as MCPFaceScanReviewRequestStore.Failure {
+            return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPVoiceTranscriptionReviewRequestStore.Failure {
             return failure(code: error.rawValue, message: error.localizedDescription)
         } catch let error as MCPNativeReviewRequestStore.Failure {

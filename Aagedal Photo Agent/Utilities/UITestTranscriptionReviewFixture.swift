@@ -19,7 +19,8 @@ enum UITestTranscriptionReviewFixture {
         guard configuration.isEnabled, environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] == "1" else { return nil }
         return Worker(folder: configuration.folderURL,
             includesRetainedIntent: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] == "1",
-            executionMode: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"])
+            executionMode: environment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"],
+            includesFaceReview: environment["AAGEDAL_UI_TEST_FACE_REVIEW"] == "1")
     }
 
     /// Two explicit launch gates isolate synthetic providers from host preferences/assets.
@@ -89,9 +90,11 @@ enum UITestTranscriptionReviewFixture {
         let folder: URL?
         let includesRetainedIntent: Bool
         let executionMode: String?
+        let includesFaceReview: Bool
         private var underlying: AutomationTranscriptionReviewService?
-        init(folder: URL?, includesRetainedIntent: Bool, executionMode: String?) {
+        init(folder: URL?, includesRetainedIntent: Bool, executionMode: String?, includesFaceReview: Bool) {
             self.folder = folder; self.includesRetainedIntent = includesRetainedIntent; self.executionMode = executionMode
+            self.includesFaceReview = includesFaceReview
         }
 
         private func service() throws -> AutomationTranscriptionReviewService {
@@ -186,6 +189,24 @@ enum UITestTranscriptionReviewFixture {
                 registry = operations
                 binding = MCPNativeVoiceTranscriptionBindingService(requests: requests, plans: plans,
                     facade: facade, batches: batches, readiness: { _ in })
+            }
+            // An additional opt-in fixture retains real face review evidence only
+            // after all source files are created. It never creates scanner consent.
+            if includesFaceReview {
+                let faceManifest = root.appendingPathComponent("face-review-manifest.json")
+                if !FileManager.default.fileExists(atPath: faceManifest.path) {
+                    let faceRequests = MCPFaceScanReviewRequestStore(storageDirectory: root.appendingPathComponent("face-review-requests"))
+                    let record = try faceRequests.request(requestID: UUID(), requestEpoch: faceRequests.capacitySnapshot().epoch,
+                        arguments: ["path": .string(root.path), "includeJerseyNumbers": .bool(true)],
+                        admission: .init(authorizationStore: authority))
+                    let prepared = try faceRequests.revalidate(record, admission: .init(authorizationStore: authority))
+                    let manifest: [String: Any] = ["requestID": record.requestID, "requestEpoch": record.requestEpoch,
+                        "photoPaths": prepared.imageURLs.map(\.path), "photoCount": record.intent.photoCount,
+                        "forceFullScan": record.intent.forceFullScan, "includeJerseyNumbers": record.intent.includeJerseyNumbers,
+                        "preparedAt": ISO8601DateFormatter().string(from: record.intent.preparedAt),
+                        "expiresAt": ISO8601DateFormatter().string(from: record.intent.expiresAt)]
+                    try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys]).write(to: faceManifest, options: .withoutOverwriting)
+                }
             }
             let result = AutomationTranscriptionReviewService(plans: plans, facade: facade, requests: requests,
                 bindingService: binding, operationRegistry: registry)

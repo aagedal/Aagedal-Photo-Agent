@@ -57,6 +57,44 @@ class InstalledNativeReviewProbeTests(unittest.TestCase):
                 cases[7]["stdout"] = json.dumps({"id": 1, "result": {}}) + "\n" + json.dumps(result)
                 self.assertFalse(probe.validate_results(cases, execution=True))
 
+    def face_cases(self):
+        cases = []
+        for index in range(4):
+            refused = index in (0, 2)
+            value = {"code": "stale_face_scan_review_request_epoch"} if refused else {
+                "scope": "authenticated-native-face-review-handoff", "status": "reviewRequired",
+                "requestID": self.request_id, "requestEpoch": self.epoch,
+                "consentGranted": False, "executionAvailable": False, "completionConfirmed": False,
+            }
+            cases.append({"tool": "open_face_scan_review", "requestID": self.request_id, "requestEpoch": self.epoch,
+                          "exitCode": 0, "stderr": "", "stdout": "\n".join(json.dumps(line) for line in [
+                              {"id": 1, "result": {}}, {"id": 2, "result": {"isError": refused, "structuredContent": value}},
+                          ])})
+        return cases
+
+    def test_face_mode_requires_exact_refusals_and_presentation_only_acknowledgements(self):
+        cases = self.face_cases()
+        self.assertTrue(probe.validate_results(cases, face_review=True))
+        self.assertFalse(probe.validate_results(cases[:3], face_review=True))
+        self.assertFalse(probe.validate_results(cases, execution=True, face_review=True))
+        self.assertFalse(probe.validate_results(self.cases()[:4], face_review=True))
+        for field, value in (("executionAvailable", True), ("consentGranted", True), ("operationID", None)):
+            with self.subTest(field=field):
+                changed = self.face_cases()
+                result = json.loads(changed[1]["stdout"].splitlines()[1])
+                result["result"]["structuredContent"][field] = value
+                changed[1]["stdout"] = json.dumps({"id": 1, "result": {}}) + "\n" + json.dumps(result)
+                self.assertFalse(probe.validate_results(changed, face_review=True))
+
+    def test_face_mode_rejects_transcription_and_execution_rendezvous_tools(self):
+        # Validation rejects the tool before touching the requested filesystem/PID.
+        request = dict.fromkeys(probe.REQUEST_KEYS)
+        request.update(schemaVersion=1, token="isolated", call=1)
+        for tool in ("open_voice_transcription_review", "start_voice_transcription", "request_face_scan_review", "faceScanStart"):
+            request["tool"] = tool
+            with self.subTest(tool=tool), self.assertRaisesRegex(probe.ProbeFailure, "unexpected_rendezvous_tool"):
+                probe.validate_request(request, "isolated", 1, Path("/unused"), Path("/unused/helper"), face_review=True)
+
     def write_archive(self, root, relative, records):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)

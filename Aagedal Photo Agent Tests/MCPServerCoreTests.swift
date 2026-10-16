@@ -923,12 +923,12 @@ struct MCPServerCoreTests {
         #expect(tools.map { $0["name"] as? String } == [
             "start_voice_transcription",
             "open_voice_transcription_review",
-            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "prepare_face_scan", "list_templates", "inspect_develop_template", "preview_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
+            "prepare_voice_transcription", "get_voice_transcription_plan", "get_voice_transcription_review_capacity", "list_voice_transcription_review_requests", "request_voice_transcription_review", "get_voice_transcription_review_request", "cancel_voice_transcription_review_request", "get_native_review_request_capacity", "request_iptc_patch_review", "get_native_review_request", "cancel_native_review_request", "list_operations", "get_operation_status", "cancel_operation", "create_team", "get_server_capabilities", "list_supported_photo_formats", "list_metadata_fields", "open_face_scan_review", "get_face_scan_review_capacity", "request_face_scan_review", "get_face_scan_review_request", "cancel_face_scan_review_request", "prepare_face_scan", "list_templates", "inspect_develop_template", "preview_develop_template", "preview_metadata_template", "preview_metadata_template_batch", "list_transcription_providers", "list_authorized_roots", "inspect_path_authorization",
             "inspect_photo_revision", "get_photo_metadata", "prepare_iptc_patch", "get_iptc_patch_plan", "inspect_iptc_patch_publication_requirements", "get_photo_voice_memo", "inspect_app_photo_draft",
         ])
         for tool in tools {
             let annotations = try #require(tool["annotations"] as? [String: Any])
-            #expect(annotations["readOnlyHint"] as? Bool == (!["start_voice_transcription", "open_voice_transcription_review", "create_team", "prepare_voice_transcription", "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request"].contains(tool["name"] as? String ?? "")))
+            #expect(annotations["readOnlyHint"] as? Bool == (!["open_face_scan_review", "get_face_scan_review_capacity", "request_face_scan_review", "cancel_face_scan_review_request", "start_voice_transcription", "open_voice_transcription_review", "create_team", "prepare_voice_transcription", "get_voice_transcription_review_capacity", "request_voice_transcription_review", "cancel_voice_transcription_review_request", "cancel_operation", "get_native_review_request_capacity", "request_iptc_patch_review", "cancel_native_review_request"].contains(tool["name"] as? String ?? "")))
             #expect(annotations["destructiveHint"] as? Bool == false)
             #expect(annotations["openWorldHint"] as? Bool == false)
         }
@@ -1017,6 +1017,63 @@ struct MCPServerCoreTests {
         try authorization.setEnabled(false)
         #expect(tools.callTool(name: "prepare_face_scan", arguments: ["path": .string(root.path)])
             .objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
+    }
+
+    @Test("Durable face review tools bind original evidence and only hand off native presentation")
+    func durableFaceReviewTools() throws {
+        let root = try temporaryTeamFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("frame.jpg")
+        let original = Data("disposable image".utf8)
+        try original.write(to: photo)
+        let authorization = store()
+        try authorization.addRoot(root); try authorization.setEnabled(true)
+        let requests = MCPFaceScanReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+        nonisolated final class Calls: @unchecked Sendable {
+            private let lock = NSLock()
+            private var handles: [(UUID, UUID)] = []
+            func add(_ id: UUID, _ epoch: UUID) { lock.withLock { handles.append((id, epoch)) } }
+            var count: Int { lock.withLock { handles.count } }
+        }
+        let calls = Calls()
+        let tools = MCPFoundationTools(authorizationStore: authorization, faceScanReviewRequests: requests,
+            nativeFaceReviewInvocation: { id, epoch in calls.add(id, epoch); return try .init(status: .reviewRequired) })
+        func content(_ name: String, _ arguments: [String: MCPJSONValue] = [:]) throws -> [String: MCPJSONValue] {
+            let result = tools.callTool(name: name, arguments: arguments)
+            #expect(result.objectValue?["isError"] == .bool(false))
+            return try #require(result.objectValue?["structuredContent"]?.objectValue)
+        }
+        let capacity = try content("get_face_scan_review_capacity")
+        let epoch = try #require(capacity["requestEpoch"])
+        let handles: [String: MCPJSONValue] = ["requestID": .string(UUID().uuidString.lowercased()), "requestEpoch": epoch]
+        let arguments = handles.merging(["path": .string(root.path), "includeJerseyNumbers": .bool(true)]) { _, new in new }
+        let first = try content("request_face_scan_review", arguments)
+        #expect(first["forceFullScan"] == .bool(true))
+        #expect(first["executionAvailable"] == .bool(false))
+        #expect(try content("request_face_scan_review", arguments) == first)
+        #expect(try content("get_face_scan_review_request", handles) == first)
+        let handoff = try content("open_face_scan_review", handles)
+        #expect(handoff["status"] == .string("reviewRequired"))
+        #expect(handoff["consentGranted"] == .bool(false))
+        #expect(calls.count == 1)
+        for tool in ["open_face_scan_review", "get_face_scan_review_request", "cancel_face_scan_review_request"] {
+            var bad = handles; bad["consent"] = .bool(true)
+            #expect(tools.callTool(name: tool, arguments: bad).objectValue?["structuredContent"]?.objectValue?["code"] == .string("invalid_arguments"))
+        }
+        try Data("changed inventory".utf8).write(to: photo)
+        #expect(tools.callTool(name: "open_face_scan_review", arguments: handles).objectValue?["isError"] == .bool(true))
+        #expect(calls.count == 1)
+        // Historical status remains inspectable after inventory change and cancellation.
+        #expect(try content("get_face_scan_review_request", handles) == first)
+        let cancelled = try content("cancel_face_scan_review_request", handles)
+        #expect(cancelled["status"] == .string("cancelled"))
+        #expect(try content("get_face_scan_review_request", handles) == cancelled)
+        #expect(tools.callTool(name: "open_face_scan_review", arguments: handles).objectValue?["isError"] == .bool(true))
+        #expect(calls.count == 1)
+        #expect(!tools.supportsTool(named: "start_face_scan"))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data").path))
+        try authorization.setEnabled(false)
+        #expect(tools.callTool(name: "get_face_scan_review_request", arguments: handles).objectValue?["structuredContent"]?.objectValue?["code"] == .string("disabled"))
     }
 
     @Test("Owned JSON draft inspection exposes only bounded descriptive fields and is not effective IPTC")

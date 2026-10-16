@@ -333,7 +333,7 @@ struct SettingsView: View {
         .frame(minWidth: 720, idealWidth: 760, minHeight: 560, idealHeight: 620)
         .onAppear {
             applyRequestedDestination()
-            if nativeInvocation.pendingReview != nil { showDestination(.automation) }
+            if nativeInvocation.pendingReview != nil || nativeInvocation.pendingFaceReview != nil { showDestination(.automation) }
             ftpViewModel.loadConnections()
             templateViewModel.loadTemplates()
             developTemplateViewModel.loadTemplates()
@@ -347,6 +347,9 @@ struct SettingsView: View {
             applyRequestedDestination()
         }
         .onChange(of: nativeInvocation.pendingReview?.id) { _, id in
+            if id != nil { showDestination(.automation) }
+        }
+        .onChange(of: nativeInvocation.pendingFaceReview?.id) { _, id in
             if id != nil { showDestination(.automation) }
         }
         .onReceive(NotificationCenter.default.publisher(for: .templatesStorageDidChange)) { _ in

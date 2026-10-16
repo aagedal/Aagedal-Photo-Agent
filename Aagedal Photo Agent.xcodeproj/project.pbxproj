@@ -80,6 +80,9 @@
 		AB2300000000000000000002 /* WatermarkRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2300000000000000000001 /* WatermarkRenderingTests.swift */; };
 		AB2400000000000000000002 /* DevelopInteractionBehaviorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */; };
 		AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2500000000000000000001 /* DevelopTemplateTests.swift */; };
+		CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */; };
+		CA1600000000000000000002 /* MCPFaceScanReviewRequestStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */; };
+		CA1600000000000000000004 /* MCPFaceScanReviewRequestStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */; };
 		C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */; };
 		AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2600000000000000000001 /* ActivityHistoryTests.swift */; };
 		AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2700000000000000000001 /* PreviousImportDetectorTests.swift */; };
@@ -379,6 +382,9 @@
 		AB2300000000000000000001 /* WatermarkRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WatermarkRenderingTests.swift; sourceTree = "<group>"; };
 		AB2400000000000000000001 /* DevelopInteractionBehaviorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopInteractionBehaviorTests.swift; sourceTree = "<group>"; };
 		AB2500000000000000000001 /* DevelopTemplateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DevelopTemplateTests.swift; sourceTree = "<group>"; };
+		CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomationNativeFaceScanReviewInvocationServiceTests.swift; sourceTree = "<group>"; };
+		CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanReviewRequestStoreTests.swift; sourceTree = "<group>"; };
+		CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MCPFaceScanReviewRequestStore.swift; path = "Aagedal Photo Agent/Services/Automation/MCPFaceScanReviewRequestStore.swift"; sourceTree = SOURCE_ROOT; };
 		C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MCPFaceScanAdmissionServiceTests.swift; sourceTree = "<group>"; };
 		AB2600000000000000000001 /* ActivityHistoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ActivityHistoryTests.swift; sourceTree = "<group>"; };
 		AB2700000000000000000001 /* PreviousImportDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PreviousImportDetectorTests.swift; sourceTree = "<group>"; };
@@ -734,6 +740,8 @@
 				AB2500000000000000000001 /* DevelopTemplateTests.swift */,
 				AB2600000000000000000001 /* ActivityHistoryTests.swift */,
 				C9F100000000000000000001 /* MCPFaceScanAdmissionServiceTests.swift */,
+				CA1600000000000000000001 /* MCPFaceScanReviewRequestStoreTests.swift */,
+				CA1600000000000000000005 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift */,
 				AB2700000000000000000001 /* PreviousImportDetectorTests.swift */,
 				AB2800000000000000000001 /* ICloudSyncCoordinatorTests.swift */,
 				AB2900000000000000000001 /* C2PASigningImportTests.swift */,
@@ -889,6 +897,7 @@
 				D91000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift */,
 				C74000000000000000000001 /* MCPTemplateDiscovery.swift */,
 				C9F000000000000000000001 /* MCPFaceScanAdmissionService.swift */,
+				CA1600000000000000000003 /* MCPFaceScanReviewRequestStore.swift */,
 				C13000000000000000000101 /* RAWSourceDecoder.swift */,
 				C12700000000000000000101 /* DevelopTemplate.swift */,
 				C92000000000000000000401 /* MCPMetadataTemplateBatchPreview.swift */,
@@ -1231,6 +1240,8 @@
 				AB2500000000000000000002 /* DevelopTemplateTests.swift in Sources */,
 				AB2600000000000000000002 /* ActivityHistoryTests.swift in Sources */,
 				C9F100000000000000000002 /* MCPFaceScanAdmissionServiceTests.swift in Sources */,
+				CA1600000000000000000002 /* MCPFaceScanReviewRequestStoreTests.swift in Sources */,
+				CA1600000000000000000006 /* AutomationNativeFaceScanReviewInvocationServiceTests.swift in Sources */,
 				AB2700000000000000000002 /* PreviousImportDetectorTests.swift in Sources */,
 				AB2800000000000000000002 /* ICloudSyncCoordinatorTests.swift in Sources */,
 				AB2900000000000000000002 /* C2PASigningImportTests.swift in Sources */,
@@ -1360,6 +1371,7 @@
 				D92000000000000000000000 /* Aagedal Photo Agent/Models/TeamRecord.swift in Sources */,
 				C74000000000000000000002 /* MCPTemplateDiscovery.swift in Sources */,
 				C9F000000000000000000002 /* MCPFaceScanAdmissionService.swift in Sources */,
+				CA1600000000000000000004 /* MCPFaceScanReviewRequestStore.swift in Sources */,
 				C13000000000000000000102 /* RAWSourceDecoder.swift in Sources */,
 				C12700000000000000000102 /* DevelopTemplate.swift in Sources */,
 				C92000000000000000000402 /* MCPMetadataTemplateBatchPreview.swift in Sources */,

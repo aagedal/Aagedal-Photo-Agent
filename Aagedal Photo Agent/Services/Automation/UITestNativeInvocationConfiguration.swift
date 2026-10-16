@@ -59,6 +59,9 @@ nonisolated struct UITestNativeInvocationConfiguration: Sendable {
     var requests: MCPVoiceTranscriptionReviewRequestStore {
         .init(storageDirectory: rootURL.appendingPathComponent("transcription-review-requests"))
     }
+    var faceRequests: MCPFaceScanReviewRequestStore {
+        .init(storageDirectory: rootURL.appendingPathComponent("face-review-requests"))
+    }
     var registry: AutomationOperationRegistry {
         .init(storageDirectory: rootURL.appendingPathComponent("transcription-review-operations"))
     }
@@ -70,7 +73,11 @@ nonisolated struct UITestNativeInvocationConfiguration: Sendable {
             patchPlans: .init(storageDirectory: rootURL.appendingPathComponent("isolated-patch-plans")),
             voiceTranscriptionPlans: plans, operationRegistry: registry,
             nativeReviewRequests: .init(storageDirectory: rootURL.appendingPathComponent("isolated-native-review")),
-            voiceTranscriptionReviewRequests: requests, nativeReviewInvocation: { id, epoch in
+            voiceTranscriptionReviewRequests: requests, faceScanReviewRequests: faceRequests,
+            nativeFaceReviewInvocation: { id, epoch in
+                try AutomationNativeInvocationChannel.Client(directory: directory)
+                    .invoke(.init(requestID: id, requestEpoch: epoch, kind: .faceReview))
+            }, nativeReviewInvocation: { id, epoch in
                 try AutomationNativeInvocationChannel.Client(directory: directory)
                     .invoke(.init(requestID: id, requestEpoch: epoch))
             }, nativeExecutionInvocation: { id, epoch in
