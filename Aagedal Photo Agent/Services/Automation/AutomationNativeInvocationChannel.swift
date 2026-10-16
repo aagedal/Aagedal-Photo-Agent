@@ -32,7 +32,10 @@ nonisolated enum AutomationNativeInvocationChannel {
     private static let receivedAcknowledgement = Data("{\"schemaVersion\":1,\"status\":\"peerReceipt\"}".utf8)
 
     struct Request: Equatable, Sendable {
-        enum Kind: String, Sendable { case review = "voiceTranscriptionReview", start = "voiceTranscriptionStart" }
+        enum Kind: String, Sendable {
+            case review = "voiceTranscriptionReview", start = "voiceTranscriptionStart"
+            case faceReview = "faceScanReview"
+        }
         let requestID: UUID
         let requestEpoch: UUID
         let kind: Kind

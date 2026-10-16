@@ -1,5 +1,17 @@
 # 3.0 coordinator state
 
+**Durable face review handoff (2026-10-16):** Bounded checksum-protected face requests
+freeze original root/folder/inventory/options and a boot-bound continuous five-minute
+lifetime. The matching signed helper can ask the running app to present the exact
+read-only inventory after repeated validation. No scanner consent/admission is exposed;
+one-way durable operation linkage and descriptor-anchored effects remain next. Historical
+status and cancellation retain evidence. Independent review, 134 focused tests, final
+4,192-test regression (two existing Sony skips, zero failures), signed native four-call
+presentation/normal-Quit acceptance, repository, 41-tool helper, model and signature checks
+pass. The initial synchronous recapture can outlast socket timeout; it remains bounded
+and can only present read-only evidence. See the [dated continuation](durable-face-review-handoff-2026-10-16.md)
+for verification and remaining limits. State remains IMPLEMENTING.
+
 **Video still and dictation filesystem continuation (2026-10-16):** Video destination
 probes, encoding/publication and JXL teardown use a retained Dispatch actor. Dictation
 workspace creation, streaming hashing and cleanup use another worker and retain busy

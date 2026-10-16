@@ -372,6 +372,109 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         try exerciseSignedBundledHelperTranscription(execute: false)
     }
 
+    /// Runs only through the external signed-helper probe in its face-only mode.
+    @MainActor
+    func testSignedBundledHelperOpensExactFaceReviewWithoutExecution() throws {
+        guard installedHelperToken != nil else {
+            throw XCTSkip("Run scripts/ci/probe_installed_native_review.py --face-review for the real signed helper boundary.")
+        }
+        let folder = try makePhotoFolder(count: 1)
+        let socket = URL(fileURLWithPath: "/private/tmp/apa-integration-\(UUID().uuidString.lowercased())", isDirectory: true)
+        defer { app?.terminate() }
+        launch(workflow: "open-folder", folder: folder, transcriptionReview: true,
+            transcriptionReviewExecution: "complete", transcriptionHelperSocket: socket, faceReview: true)
+        let readyURL = folder.appendingPathComponent("transcription-helper-listener-ready.json")
+        expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: readyURL.path) }, evaluatedWith: app)
+        waitForExpectations(timeout: 15)
+        let readiness = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: readyURL)) as? [String: Any])
+        XCTAssertEqual(readiness["available"] as? Bool, true, "Requires the actual matching signed application and helper.")
+        var runner = Bundle(for: CoreWorkflowSmokeTests.self).bundleURL
+        while runner.pathExtension != "app", runner.path != "/" { runner.deleteLastPathComponent() }
+        guard runner.pathExtension == "app" else { throw BundledHelperSmokeFailure.invalidRunnerLocation }
+        let expectedApplication = runner.deletingLastPathComponent().appendingPathComponent("Aagedal Photo Agent.app").resolvingSymlinksInPath()
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "aagedal.Aagedal-Photo-Agent")
+            .filter { !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath() == expectedApplication }
+        XCTAssertEqual(running.count, 1)
+        let application = try XCTUnwrap(running.first)
+        let executable = try XCTUnwrap(application.executableURL)
+        let helper = executable.deletingLastPathComponent().appendingPathComponent("photo-agent-mcp")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            folder.appendingPathComponent("face-review-manifest.json"))) as? [String: Any])
+        let id = try XCTUnwrap(manifest["requestID"] as? String), epoch = try XCTUnwrap(manifest["requestEpoch"] as? String)
+        let paths = try XCTUnwrap(manifest["photoPaths"] as? [String])
+        XCTAssertEqual(paths.count, 3)
+        XCTAssertEqual(manifest["forceFullScan"] as? Bool, true)
+        XCTAssertEqual(manifest["includeJerseyNumbers"] as? Bool, true)
+        let protectedNames = ["face-review-manifest.json", "face-review-requests/operations.json",
+            "transcription-review-manifest.json", "transcription-review-authorization.json",
+            "transcription-review-plans/plans.json", "transcription-review-requests/operations.json"]
+        let protectedURLs = protectedNames.map { folder.appendingPathComponent($0) } +
+            (try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil))
+                .filter { ["jpg", "wav"].contains($0.pathExtension) || $0.lastPathComponent.hasSuffix(".voice-memo.json") }
+        let original = try protectedURLs.map { try Data(contentsOf: $0) }
+        func assertNoWrites() throws {
+            for (url, bytes) in zip(protectedURLs, original) { XCTAssertEqual(try Data(contentsOf: url), bytes, url.lastPathComponent) }
+            XCTAssertFalse(application.isTerminated)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".photo_metadata").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".face_data").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("transcription-review-operations/operations.json").path))
+        }
+        func invoke(_ requestedEpoch: String) throws -> [String: Any] {
+            try invokeBundledTranscriptionHelper(helper, applicationPID: application.processIdentifier, root: folder, socket: socket,
+                requestID: id, requestEpoch: requestedEpoch, tool: "open_face_scan_review")
+        }
+        func acknowledge(_ result: [String: Any]) throws {
+            XCTAssertEqual(result["isError"] as? Bool, false)
+            let value = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(value["scope"] as? String, "authenticated-native-face-review-handoff")
+            XCTAssertEqual(value["requestID"] as? String, id); XCTAssertEqual(value["requestEpoch"] as? String, epoch)
+            XCTAssertEqual(value["status"] as? String, "reviewRequired")
+            for key in ["consentGranted", "executionAvailable", "completionConfirmed"] { XCTAssertEqual(value[key] as? Bool, false, key) }
+            XCTAssertNil(value["operationID"])
+        }
+        func refuse(_ result: [String: Any]) throws {
+            XCTAssertEqual(result["isError"] as? Bool, true)
+            let value = try XCTUnwrap(result["structuredContent"] as? [String: Any])
+            XCTAssertEqual(value["code"] as? String, "stale_face_scan_review_request_epoch")
+        }
+        let settings = app.windows["com_apple_SwiftUI_Settings_window"]
+        try refuse(invoke(UUID().uuidString.lowercased()))
+        XCTAssertFalse(settings.buttons["automation.faceIntentReview.dismiss"].exists)
+        try assertNoWrites()
+        try acknowledge(invoke(epoch))
+        XCTAssertTrue(settings.waitForExistence(timeout: 12))
+        let dismiss = settings.buttons["automation.faceIntentReview.dismiss"]
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 12))
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.requestID"]).contains(id))
+        for path in paths { XCTAssertTrue(settings.staticTexts[URL(fileURLWithPath: path).lastPathComponent].exists, path) }
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.scanMode"]).contains("Full scan requested"))
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.jerseyMode"]).contains("Jersey number recognition requested"))
+        let expiry = settings.staticTexts["automation.faceIntentReview.expiry"]
+        let originalExpiry = visibleText(expiry)
+        XCTAssertTrue(originalExpiry.contains("Opening this request keeps its original expiry"))
+        let detail = settings.descendants(matching: .any)["automation.faceIntentReview.detail"]
+        XCTAssertEqual(detail.buttons.allElementsBoundByIndex.map(\.label), ["Dismiss Face Intent"])
+        XCTAssertEqual(detail.checkBoxes.count, 0)
+        try refuse(invoke(UUID().uuidString.lowercased()))
+        XCTAssertTrue(dismiss.exists)
+        XCTAssertEqual(visibleText(expiry), originalExpiry)
+        try assertNoWrites()
+        dismiss.click()
+        expectation(for: NSPredicate { _, _ in !dismiss.exists }, evaluatedWith: nil)
+        waitForExpectations(timeout: 8)
+        try acknowledge(invoke(epoch))
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 12))
+        XCTAssertEqual(visibleText(expiry), originalExpiry)
+        XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.requestID"]).contains(id))
+        try assertNoWrites()
+        // Qualify real listener shutdown rather than XCTest's forced termination.
+        app.typeKey("q", modifierFlags: .command)
+        expectation(for: NSPredicate { _, _ in self.app.state == .notRunning }, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socket.appendingPathComponent("review.sock").path))
+    }
+
     @MainActor
     func testSignedBundledHelperConsumesExactNativeConsentAndCompletesDrafts() throws {
         try exerciseSignedBundledHelperTranscription(execute: true)
@@ -3909,9 +4012,11 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionReviewCapacity: Bool = false,
         transcriptionReviewExecution: String? = nil,
         transcriptionInvocation: Bool = false,
-        transcriptionHelperSocket: URL? = nil
+        transcriptionHelperSocket: URL? = nil,
+        faceReview: Bool = false
     ) {
         app = XCUIApplication()
+        if faceReview { app.launchEnvironment["AAGEDAL_UI_TEST_FACE_REVIEW"] = "1" }
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
         if transcriptionReviewCapacity { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_CAPACITY"] = "1" }
         if let transcriptionReviewExecution { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW_EXECUTION"] = transcriptionReviewExecution }

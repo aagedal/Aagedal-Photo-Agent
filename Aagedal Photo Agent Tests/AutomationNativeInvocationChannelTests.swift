@@ -79,6 +79,22 @@ struct AutomationNativeInvocationChannelTests {
         }
     }
 
+    @Test func faceReviewHasOnlyCanonicalHandlesAndNoExecutionKind() throws {
+        let original = Channel.Request(requestID: UUID(), requestEpoch: UUID(), kind: .faceReview)
+        let encoded = try original.encoded()
+        #expect(try Channel.Request.decode(encoded) == original)
+        let valid = try object(encoded)
+        #expect(valid["kind"] as? String == "faceScanReview")
+        for name in ["faceScanStart", "faceScanExecute"] {
+            var invalid = valid; invalid["kind"] = name
+            #expect(throws: Channel.Failure.invalidMessage) { try Channel.Request.decode(json(invalid)) }
+        }
+        for name in ["path", "forceFullScan", "includeJerseyNumbers", "consent"] {
+            var invalid = valid; invalid[name] = "untrusted"
+            #expect(throws: Channel.Failure.invalidMessage) { try Channel.Request.decode(json(invalid)) }
+        }
+    }
+
     @Test func realSocketsAuthenticateBothDirectionsAndReturnOnlyStatus() throws {
         let fixture = try Fixture(); defer { fixture.remove() }
         let serverPeers = Counter(), clientPeers = Counter(), calls = Counter(), expected = request()

@@ -134,7 +134,7 @@ struct AutomationSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(nativeInvocation.isAvailable
-                    ? "Authenticated client review is available while Photo Agent is running. Opening a request grants no transcription consent."
+                    ? "Authenticated client review is available while Photo Agent is running. Opening a request grants no transcription or face scan consent."
                     : "Client review requires the running app and its matching signed helper. You can also review retained requests below.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Allow team creation", isOn: Binding(
@@ -209,6 +209,12 @@ struct AutomationSettingsView: View {
             }
             .id("transcriptionIntentReview")
 
+            Section("Face Scan Intent Review") {
+                AutomationFaceScanIntentReviewView()
+                    .id(model.configuration.authorizationRevision)
+            }
+            .id("faceScanIntentReview")
+
             Section("Operation History") {
                 AutomationOperationHistoryView()
             }
@@ -250,6 +256,9 @@ struct AutomationSettingsView: View {
         .onAppear { model.reload() }
         .onChange(of: nativeInvocation.pendingReview?.id, initial: true) { _, id in
             if id != nil { scroll.scrollTo("transcriptionIntentReview", anchor: .top) }
+        }
+        .onChange(of: nativeInvocation.pendingFaceReview?.id, initial: true) { _, id in
+            if id != nil { scroll.scrollTo("faceScanIntentReview", anchor: .top) }
         }
         }
     }

@@ -1,5 +1,11 @@
 # Project planning overview
 
+**Durable face review handoff (2026-10-16):** Bounded durable requests preserve original
+inventory/options and boot-bound continuous expiry across process handoff. Authenticated
+helper requests can present exact read-only inventory in Automation settings; the view
+has no consent or scan-start action. Durable scan admission/linkage and anchored effects
+remain open; see the [dated continuation](release/durable-face-review-handoff-2026-10-16.md).
+
 **Video still and dictation filesystem continuation (2026-10-16):** Video destination
 probes, encoding/publication and JXL teardown use a retained Dispatch actor. Dictation
 workspace creation, streaming hashing and cleanup use another worker and retain busy

@@ -91,6 +91,11 @@ struct Aagedal_Photo_AgentApp: App {
                     openSettings()
                     NSApp.activate(ignoringOtherApps: true)
                 }
+                .onChange(of: nativeInvocation.pendingFaceReview?.id) { _, id in
+                    guard id != nil else { return }
+                    openSettings()
+                    NSApp.activate(ignoringOtherApps: true)
+                }
         }
         .commands {
             CommandGroup(replacing: .appInfo) {
