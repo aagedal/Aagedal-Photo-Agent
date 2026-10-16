@@ -1712,7 +1712,13 @@ final class FaceRecognitionViewModel {
     /// operation retention; this capability advertises no helper execution permission.
     func scheduleRetainedFolderScan(intents: MCPFaceScanIntentStore, id: UUID,
                                    validateNativeAuthority: @escaping @Sendable () throws -> Void = {}) throws -> FaceFolderScanSubmission {
-        let retained = try intents.retain(id: id)
+        try scheduleRetainedFolderScan(retained: intents.retain(id: id), validateNativeAuthority: validateNativeAuthority)
+    }
+
+    /// Takes the exact capability acquired before durable admission. No intent lookup
+    /// or recapture can reopen review once the durable record has been admitted.
+    func scheduleRetainedFolderScan(retained: MCPFaceScanAdmissionService.RetainedFolder,
+                                   validateNativeAuthority: @escaping @Sendable () throws -> Void = {}) -> FaceFolderScanSubmission {
         let prepared = retained.prepared
         let admission = scanFolder(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL,
             forceFullScan: prepared.forceFullScan, includeJerseyNumbers: prepared.includeJerseyNumbers,

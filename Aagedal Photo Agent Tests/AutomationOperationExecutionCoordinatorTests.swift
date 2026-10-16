@@ -20,6 +20,26 @@ struct AutomationOperationExecutionCoordinatorTests {
         }
     }
     private enum InjectedFailure: Error { case write }
+    nonisolated private final class Configuration: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Data?
+        func read() -> Data? { lock.withLock { value } }
+        func write(_ data: Data?) { lock.withLock { value = data } }
+    }
+    private func faceRequest(root: URL) throws -> (MCPFaceScanReviewRequestStore, MCPFaceScanReviewRequestStore.Record) {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("disposable image".utf8).write(to: root.appendingPathComponent("image.jpg"))
+        let configuration = Configuration()
+        let authority = MCPAuthorizationStore(readConfigurationData: { configuration.read() },
+            writeConfigurationData: { configuration.write($0) })
+        try authority.addRoot(root)
+        try authority.setEnabled(true)
+        let requests = MCPFaceScanReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+        let epoch = try requests.capacitySnapshot().epoch
+        let record = try requests.request(requestID: UUID(), requestEpoch: epoch,
+            arguments: ["path": .string(root.path)], admission: MCPFaceScanAdmissionService(authorizationStore: authority))
+        return (requests, record)
+    }
     private func directory() throws -> URL {
         let canonical = try #require(realpath(FileManager.default.temporaryDirectory.path, nil))
         defer { free(canonical) }
@@ -341,6 +361,123 @@ struct AutomationOperationExecutionCoordinatorTests {
             _ = try registry.reconcileAbandonedOwners(now: now)
         }
         #expect(try registry.records() == [first, later])
+    }
+
+    @Test("Managed hooks durably admit and link a face request before its worker")
+    func managedFaceRequest() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (requests, original) = try faceRequest(root: root)
+        let id = try #require(UUID(uuidString: original.requestID))
+        let epoch = try #require(UUID(uuidString: original.requestEpoch))
+        let operationID = UUID(), admissionID = UUID(), owner = UUID()
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry, ownerID: owner)
+        let accepted = try await runner.submit(kind: .faceScan, operationID: operationID,
+            managedAdmission: { lease in
+                #expect(lease.ownerID == owner)
+                #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("operations/operations.json").path))
+                _ = try requests.admit(id, requestEpoch: epoch, expected: original, admissionID: admissionID,
+                    operationID: operationID, ownerLease: lease, registry: registry)
+            }, managedDidEnqueue: { record, lease in
+                #expect(record.id == operationID)
+                #expect(record.state == .queued)
+                #expect(record.ownerLeaseManaged == true)
+                #expect(try requests.inspect(id, requestEpoch: epoch).state == .admitted)
+                _ = try requests.link(id, requestEpoch: epoch, operationID: record.id,
+                    ownerLease: lease, registry: registry)
+            }) { _ in
+                let restarted = MCPFaceScanReviewRequestStore(storageDirectory: root.appendingPathComponent("requests"))
+                #expect(try restarted.inspect(id, requestEpoch: epoch).state == .linked)
+                try restarted.checkCancellation(id, requestEpoch: epoch, admissionID: admissionID,
+                    operationID: operationID, ownerID: owner)
+                return .verified
+            }
+        #expect(try await runner.waitForCompletion(accepted.id).outcome == .verified)
+    }
+
+    @Test("Enqueue failure preserves durable face admission without linking or work")
+    func managedFaceEnqueueFailure() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (requests, original) = try faceRequest(root: root)
+        let id = try #require(UUID(uuidString: original.requestID))
+        let epoch = try #require(UUID(uuidString: original.requestEpoch))
+        let operationID = UUID()
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"), maximumRecords: 0)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        await #expect(throws: AutomationOperationRegistry.Failure.capacity) {
+            try await runner.submit(kind: .faceScan, operationID: operationID, managedAdmission: { lease in
+                _ = try requests.admit(id, requestEpoch: epoch, expected: original,
+                    operationID: operationID, ownerLease: lease, registry: registry)
+            }, managedDidEnqueue: { _, _ in Issue.record("Failed enqueue reached linkage") },
+                completion: { Issue.record("Failed submission transferred cleanup ownership") }) { _ in
+                Issue.record("Failed enqueue executed work")
+                return .verified
+            }
+        }
+        #expect(try requests.inspect(id, requestEpoch: epoch).state == .admitted)
+        #expect(try registry.records().isEmpty)
+    }
+
+    @Test("A managed admission refusal never enqueues or transfers cleanup ownership")
+    func managedAdmissionFailure() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        await #expect(throws: InjectedFailure.write) {
+            try await runner.submit(kind: .faceScan, managedAdmission: { _ in throw InjectedFailure.write },
+                managedDidEnqueue: { _, _ in Issue.record("Refused admission reached linkage") },
+                completion: { Issue.record("Refused admission transferred cleanup ownership") }) { _ in
+                Issue.record("Refused admission executed work")
+                return .verified
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("operations.json").path))
+    }
+
+    @Test("Face cancellation during managed linkage schedules no work")
+    func managedFaceLinkFailure() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (requests, original) = try faceRequest(root: root)
+        let id = try #require(UUID(uuidString: original.requestID))
+        let epoch = try #require(UUID(uuidString: original.requestEpoch))
+        let operationID = UUID()
+        let registry = AutomationOperationRegistry(storageDirectory: root.appendingPathComponent("operations"))
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        await #expect(throws: MCPFaceScanReviewRequestStore.Failure.invalidTransition) {
+            try await runner.submit(kind: .faceScan, operationID: operationID, managedAdmission: { lease in
+                _ = try requests.admit(id, requestEpoch: epoch, expected: original,
+                    operationID: operationID, ownerLease: lease, registry: registry)
+            }, managedDidEnqueue: { record, lease in
+                _ = try requests.cancel(id, requestEpoch: epoch)
+                _ = try requests.link(id, requestEpoch: epoch, operationID: record.id, ownerLease: lease, registry: registry)
+            }, completion: { Issue.record("Failed linkage transferred cleanup ownership") }) { _ in
+                Issue.record("Unlinked face work executed")
+                return .verified
+            }
+        }
+        #expect(try requests.inspect(id, requestEpoch: epoch).state == .admitted)
+        #expect(try registry.inspect(operationID).outcome == .failed)
+    }
+
+    @Test("Retained completion runs even when durable cancellation prevents worker entry")
+    func completionWithoutWork() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let runner = AutomationOperationExecutionCoordinator(registry: registry)
+        let completed = Configuration()
+        let record = try await runner.submit(kind: .faceScan, managedDidEnqueue: { record, _ in
+            _ = try registry.requestCancellation(record.id)
+        }, completion: { completed.write(Data([1])) }) { _ in
+            Issue.record("Cancelled operation entered worker")
+            return .verified
+        }
+        #expect(try await runner.waitForCompletion(record.id).outcome == .cancelled)
+        #expect(completed.read() == Data([1]))
     }
 
     @Test("Admission and link durability precede execution; lost links never schedule work")

@@ -67,7 +67,7 @@ struct MCPNativeFaceScanReviewModelTests {
         return .init(root: root, photos: photos, state: state, model: model,
                      receipts: receipts, intents: intents)
     }
-    private func refuse(_: MCPFaceScanIntentStore, _: UUID,
+    private func refuse(_: MCPFaceScanAdmissionService.RetainedFolder, _: UUID,
                         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unexpected scheduling without valid native consent/readiness")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
@@ -128,9 +128,9 @@ struct MCPNativeFaceScanReviewModelTests {
     @Test("Dismissal or cancellation during receipt I/O rejects delayed publication", arguments: [true, false]) @MainActor
     func dismissalDuringReceiptRead(cancel: Bool) async throws {
         let entered = Gate(), release = DispatchSemaphore(value: 0)
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 .init(folderURL: request.folderURL, outcome: .completed)
@@ -167,9 +167,9 @@ struct MCPNativeFaceScanReviewModelTests {
 
     @Test("A failed receipt read preserves the terminal operation and durable completion") @MainActor
     func failedReceiptRead() async throws {
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 .init(folderURL: request.folderURL, outcome: .completed)
@@ -254,9 +254,9 @@ struct MCPNativeFaceScanReviewModelTests {
     @Test("Dismissal withdraws retained effect permission and stale completion cannot repopulate UI") @MainActor
     func dismissalDuringWork() async throws {
         let entered = Gate(), release = Gate()
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 await entered.open(); await release.wait()
@@ -282,9 +282,9 @@ struct MCPNativeFaceScanReviewModelTests {
     @Test("Readiness is checked again by the retained worker after admission") @MainActor
     func readinessDuringWork() async throws {
         let entered = Gate(), release = Gate()
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 await entered.open(); await release.wait()
@@ -308,9 +308,9 @@ struct MCPNativeFaceScanReviewModelTests {
         "includeJerseyNumbers", "phase", "outcome", "missing"
     ]) @MainActor
     func mismatchedReceipt(field: String) async throws {
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 .init(folderURL: request.folderURL, outcome: .completed)
@@ -359,9 +359,9 @@ struct MCPNativeFaceScanReviewModelTests {
 
     @Test("Successful retained work presents its exact durable terminal receipt and cannot replay") @MainActor
     func terminalReceipt() async throws {
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 try? validate()

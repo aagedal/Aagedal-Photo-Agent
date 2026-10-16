@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 /// Bounded private coordination evidence. No photo paths, names, face identities,
-/// embeddings, error text or native consent claims enter this archive. Physical
+/// embeddings, error text or native consent claims enter this archive. The optional
+/// durable binding retains only the private operation-history location. Physical
 /// thumbnail UUIDs are retained only for exact completion/recovery correlation.
 nonisolated final class MCPFaceScanReceiptStore: Sendable {
     enum Failure: Error, Equatable, LocalizedError {
@@ -58,12 +59,15 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
         let includeJerseyNumbers: Bool
         var phase: Phase
         var completion: Completion?
+        var durableAdmission: MCPFaceScanReviewRequestStore.Admission? = nil
 
         /// A valid archive entry is not necessarily evidence for the visible review.
         /// Match the original retained intent and durable terminal operation before
         /// publishing completion. This grants neither consent nor replay permission.
         func requireCompletion(intent: MCPFaceScanIntentStore.Intent,
-                               operation: AutomationOperationRegistry.Record) throws {
+                               operation: AutomationOperationRegistry.Record,
+                               durableRecord: MCPFaceScanReviewRequestStore.Record? = nil,
+                               registry: AutomationOperationRegistry? = nil) throws {
             guard intentID == intent.id, operationID == operation.id,
                   snapshotRevision == intent.prepared.snapshotRevision,
                   photoCount == intent.prepared.imageURLs.count,
@@ -73,6 +77,34 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
                   phase == .completed, let completion,
                   completion.outcome == operation.outcome else {
                 throw Failure.mismatchedCompletion
+            }
+            guard Self.matches(intent: intent, admission: durableAdmission) else { throw Failure.mismatchedCompletion }
+            if let admission = durableAdmission {
+                guard let durableRecord, let registry, durableRecord.state == .linked,
+                      durableRecord.admission == admission,
+                      durableRecord.requestID == admission.requestID,
+                      durableRecord.requestEpoch == admission.requestEpoch,
+                      durableRecord.intentSHA256 == admission.intentSHA256,
+                      durableRecord.intent.snapshotRevision == snapshotRevision,
+                      durableRecord.intent.photoCount == photoCount,
+                      durableRecord.intent.forceFullScan == forceFullScan,
+                      durableRecord.intent.includeJerseyNumbers == includeJerseyNumbers,
+                      admission.operationID == operation.id.uuidString.lowercased(),
+                      admission.ownerID == operation.ownerID.uuidString.lowercased(),
+                      operation.ownerLeaseManaged == true,
+                      registry.storageDirectory.standardizedFileURL.path == admission.operationStoragePath,
+                      try registry.inspect(operationID) == operation else { throw Failure.mismatchedCompletion }
+            } else if durableRecord != nil { throw Failure.mismatchedCompletion }
+        }
+
+        fileprivate static func matches(intent: MCPFaceScanIntentStore.Intent,
+                                        admission: MCPFaceScanReviewRequestStore.Admission?) -> Bool {
+            switch (intent.durableRequest, admission) {
+            case (nil, nil): true
+            case let (request?, admission?):
+                request.requestID == admission.requestID && request.requestEpoch == admission.requestEpoch
+                    && request.intentSHA256 == admission.intentSHA256
+            default: false
             }
         }
     }
@@ -108,7 +140,12 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
             .appendingPathComponent("FaceScanReceipts", isDirectory: true)
     }
 
-    func admit(intent: MCPFaceScanIntentStore.Intent, operationID: UUID) throws {
+    func admit(intent: MCPFaceScanIntentStore.Intent, operationID: UUID,
+               durableAdmission: MCPFaceScanReviewRequestStore.Admission? = nil) throws {
+        guard Receipt.matches(intent: intent, admission: durableAdmission),
+              durableAdmission.map({ $0.operationID == operationID.uuidString.lowercased() }) ?? true else {
+            throw Failure.mismatchedCompletion
+        }
         try transaction { receipts in
             guard !receipts.contains(where: { $0.intentID == intent.id || $0.operationID == operationID }) else {
                 throw Failure.invalidTransition
@@ -117,7 +154,7 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
             receipts.append(.init(intentID: intent.id, operationID: operationID,
                 snapshotRevision: intent.prepared.snapshotRevision, photoCount: intent.prepared.imageURLs.count,
                 forceFullScan: intent.prepared.forceFullScan, includeJerseyNumbers: intent.prepared.includeJerseyNumbers,
-                phase: .admitted))
+                phase: .admitted, durableAdmission: durableAdmission))
         }
     }
 
@@ -158,7 +195,14 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
                         let required: Set<String> = ["intentID", "operationID", "snapshotRevision", "photoCount",
                             "forceFullScan", "includeJerseyNumbers", "phase"]
                         guard required.isSubset(of: Set(entry.keys)),
-                              Set(entry.keys).isSubset(of: required.union(["completion"])) else { throw Failure.invalidStorage }
+                              Set(entry.keys).isSubset(of: required.union(["completion", "durableAdmission"])),
+                              !entry.values.contains(where: { $0 is NSNull }) else { throw Failure.invalidStorage }
+                        if let admission = entry["durableAdmission"] {
+                            guard let fields = admission as? [String: Any],
+                                  Set(fields.keys) == ["admissionID", "requestID", "requestEpoch", "intentSHA256",
+                                      "operationID", "ownerID", "admittedAt", "operationStoragePath"],
+                                  !fields.values.contains(where: { $0 is NSNull }) else { throw Failure.invalidStorage }
+                        }
                         if let completion = entry["completion"] {
                             guard let fields = completion as? [String: Any], Set(fields.keys) == Set(["outcome",
                                 "processedCount", "failureCount", "unsignedFileCount", "committedThumbnailCount",
@@ -194,7 +238,23 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
     private func validate(_ receipts: [Receipt]) throws {
         guard receipts.count <= maximumReceipts, Set(receipts.map(\.intentID)).count == receipts.count,
               Set(receipts.map(\.operationID)).count == receipts.count else { throw Failure.invalidStorage }
+        let admissions = receipts.compactMap(\.durableAdmission)
+        guard Set(admissions.map(\.admissionID)).count == admissions.count,
+              Set(admissions.map(\.requestID)).count == admissions.count else { throw Failure.invalidStorage }
         for receipt in receipts {
+            if let admission = receipt.durableAdmission {
+                guard [admission.admissionID, admission.requestID, admission.requestEpoch, admission.operationID,
+                       admission.ownerID].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+                      admission.operationID == receipt.operationID.uuidString.lowercased(),
+                      admission.intentSHA256.utf8.count == 64,
+                      admission.intentSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                      admission.admittedAt.timeIntervalSinceReferenceDate.isFinite,
+                      admission.operationStoragePath.hasPrefix("/"), !admission.operationStoragePath.contains("\0"),
+                      admission.operationStoragePath.utf8.count <= 4096,
+                      URL(fileURLWithPath: admission.operationStoragePath).standardizedFileURL.path == admission.operationStoragePath else {
+                    throw Failure.invalidStorage
+                }
+            }
             let digest = receipt.snapshotRevision.dropFirst(7)
             guard receipt.snapshotRevision.hasPrefix("sha256:"), digest.count == 64,
                   digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),

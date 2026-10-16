@@ -1,5 +1,15 @@
 # 3.0 coordinator state
 
+**Durable face lifecycle integration (2026-10-16):** The operation bridge retains
+its exact folder before one-way admission, uses the coordinator's actual managed lease
+for admission/linkage before work, and drains the exact scanner task before release.
+Durable cancellation and optional receipt correlation preserve original request, admission,
+operation, owner and history evidence. Independent review, 101 focused tests, the
+4,226-test regression (two existing skips, zero failures), repository, helper, model and
+development-signature checks pass. Native durable presentation/start wiring and anchored
+writes remain open; see the
+[dated continuation](durable-face-lifecycle-integration-2026-10-16.md).
+
 **Durable face admission backend (2026-10-16):** Version-two face request archives
 reserve immutable request/admission/operation/managed-owner/history correlation and
 verify exact queued, uncancelled linkage under the history lock. Post-admission

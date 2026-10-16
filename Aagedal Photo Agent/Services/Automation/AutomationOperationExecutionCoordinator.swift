@@ -55,25 +55,39 @@ actor AutomationOperationExecutionCoordinator {
 
     /// Admission and durable enqueue finish before execution can begin. A returned
     /// record is an acceptance receipt, never a promise that mutation succeeded.
+    /// Managed hooks share the exact live lease used for enqueue. Completion belongs
+    /// to the retained task and also runs when cancellation refuses work at entry;
+    /// the caller remains responsible for cleanup when submission itself throws.
     func submit(kind: AutomationOperationRegistry.Kind,
                 operationID: UUID = UUID(),
                 admission: @Sendable () throws -> Void = {},
                 didEnqueue: @Sendable (AutomationOperationRegistry.Record) throws -> Void = { _ in },
+                managedAdmission: @Sendable (AutomationOperationPersistence.OwnerLease) throws -> Void = { _ in },
+                managedDidEnqueue: @Sendable (AutomationOperationRegistry.Record, AutomationOperationPersistence.OwnerLease) throws -> Void = { _, _ in },
                 cancellationCheck: @escaping @Sendable (UUID) throws -> Void = { _ in },
+                completion: @escaping @Sendable () -> Void = {},
                 work: @escaping Work) throws -> AutomationOperationRegistry.Record {
         guard accepting else { throw Failure.stopped }
         guard tasks.count < maximumConcurrentOperations else { throw Failure.capacity }
         if ownerLease == nil { ownerLease = try registry.acquireOwnerLease(ownerID: ownerID) }
+        guard let ownerLease else { throw Failure.unresolved }
         // Persist intent admission before enqueue, then persist its operation link before
         // scheduling work. A failure at either boundary never schedules the closure.
         try admission()
+        try managedAdmission(ownerLease)
         let record = try registry.enqueue(kind: kind, ownerID: ownerID, operationID: operationID, ownerLease: ownerLease)
-        do { try didEnqueue(record) }
+        do {
+            try didEnqueue(record)
+            try managedDidEnqueue(record, ownerLease)
+        }
         catch {
             _ = try? registry.finish(record.id, ownerID: ownerID, outcome: .failed)
             throw error
         }
-        tasks[record.id] = Task { try await execute(record.id, cancellationCheck: cancellationCheck, work: work) }
+        tasks[record.id] = Task {
+            defer { completion() }
+            return try await execute(record.id, cancellationCheck: cancellationCheck, work: work)
+        }
         return record
     }
 

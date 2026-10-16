@@ -1,5 +1,15 @@
 # Project planning overview
 
+**Durable face lifecycle integration (2026-10-16):** The operation bridge retains
+its exact folder before one-way admission, uses the coordinator's actual managed lease
+for admission/linkage before work, and drains the exact scanner task before release.
+Durable cancellation and optional receipt correlation preserve original request, admission,
+operation, owner and history evidence. Independent review, 101 focused tests, the
+4,226-test regression (two existing skips, zero failures), repository, helper, model and
+development-signature checks pass. Native durable presentation/start wiring and anchored
+writes remain open; see the
+[dated continuation](release/durable-face-lifecycle-integration-2026-10-16.md).
+
 **Durable face admission backend (2026-10-16):** One-way admissions reserve the
 original request digest, exact operation and managed owner before enqueue. Linkage
 verifies actual queued history and its live lease. App-local adoption preserves the

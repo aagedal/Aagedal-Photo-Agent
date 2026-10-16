@@ -64,7 +64,7 @@ struct MCPNativeFaceScanReviewServiceTests {
             monotonicClock: { state.monotonicNow() })
         return .init(root: root, photos: photos, state: state, authority: authority, operations: operations, intents: intents, service: service)
     }
-    private func refusingScheduler(_: MCPFaceScanIntentStore, _: UUID,
+    private func refusingScheduler(_: MCPFaceScanAdmissionService.RetainedFolder, _: UUID,
         _: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
         Issue.record("Unconsented scan was scheduled")
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
@@ -280,10 +280,10 @@ struct MCPNativeFaceScanReviewServiceTests {
     @Test("Consumed authority is single use, survives preview expiry and ends after worker drain")
     func retainedCapability() async throws {
         let entered = Gate(), release = Gate()
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs,
-                folderURL: intent.prepared.folderURL, forceFullScan: false, includeJerseyNumbers: false)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs,
+                folderURL: prepared.folderURL, forceFullScan: false, includeJerseyNumbers: false)
             try validate()
             return .init(admission: .scheduled(request), task: Task {
                 await entered.open(); await release.wait()
@@ -343,9 +343,9 @@ struct MCPNativeFaceScanReviewServiceTests {
     @Test("Session withdrawal is rechecked by the retained scanner effect capability")
     func withdrawalDuringWork() async throws {
         let entered = Gate(), release = Gate()
-        let f = try fixture(schedule: { intents, id, validate in
-            let intent = try intents.inspect(id: id)
-            let request = FaceFolderScanRequest(imageURLs: intent.prepared.imageURLs, folderURL: intent.prepared.folderURL)
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL)
             return .init(admission: .scheduled(request), task: Task {
                 await entered.open(); await release.wait()
                 #expect(throws: MCPNativeFaceScanReviewService.Failure.unavailableApproval) { try validate() }
