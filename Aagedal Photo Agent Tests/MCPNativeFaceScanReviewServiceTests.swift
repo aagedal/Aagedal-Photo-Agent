@@ -70,6 +70,84 @@ struct MCPNativeFaceScanReviewServiceTests {
         return .init(admission: .refused(.scanAlreadyRunning), task: nil)
     }
 
+    private func durableRequest(_ f: Fixture) throws -> (MCPFaceScanReviewRequestStore, MCPFaceScanReviewRequestStore.Record) {
+        let requests = MCPFaceScanReviewRequestStore(storageDirectory: f.root.appendingPathComponent("requests"),
+            clock: { f.state.now() })
+        let record = try requests.request(requestID: UUID(), requestEpoch: requests.capacitySnapshot().epoch,
+            arguments: ["path": .string(f.photos.path), "includeJerseyNumbers": .bool(true)],
+            admission: .init(authorizationStore: f.authority))
+        return (requests, record)
+    }
+
+    @Test("Durable adoption reviews original correlation/options/expiry without admission or renewed lifetime")
+    func durableReview() throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        f.state.advance(120)
+        let review = try f.service.prepare(record: record, requests: requests)
+        #expect(review.intent.createdAt == record.intent.preparedAt)
+        #expect(review.intent.expiresAt == record.intent.expiresAt)
+        #expect(review.intent.durableRequest == MCPFaceScanIntentStore.DurableRequest(requestID: record.requestID,
+            requestEpoch: record.requestEpoch, intentSHA256: record.intentSHA256))
+        #expect(review.intent.prepared.snapshotRevision == record.intent.snapshotRevision)
+        #expect(review.intent.prepared.imageURLs.count == record.intent.photoCount)
+        #expect(review.intent.prepared.forceFullScan && review.intent.prepared.includeJerseyNumbers)
+        let replacement = try f.service.prepare(record: record, requests: requests)
+        #expect(replacement.intent.id == review.intent.id)
+        #expect(try requests.records() == [record])
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+        #expect(!FileManager.default.fileExists(atPath: f.photos.appendingPathComponent(".photo_metadata").path))
+        f.state.advanceMonotonic(180)
+        #expect(throws: MCPFaceScanIntentStore.Failure.expiredIntent) {
+            try f.service.prepare(record: record, requests: requests)
+        }
+    }
+
+    @Test("Durable adoption refuses changed or withdrawn evidence and revokes replaced native approval",
+          arguments: ["cancel", "inventory", "authorization", "session"])
+    func durableReviewRefusal(kind: String) async throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        let original = try f.service.prepare(arguments: ["path": .string(f.photos.path)])
+        let approval = try f.service.approve(original, acknowledgesScan: true, acknowledgesReset: false)
+        switch kind {
+        case "cancel":
+            _ = try requests.cancel(UUID(uuidString: record.requestID)!, requestEpoch: UUID(uuidString: record.requestEpoch)!)
+        case "inventory": try Data("new".utf8).write(to: f.photos.appendingPathComponent("new.jpg"))
+        case "authorization": try f.authority.setEnabled(false)
+        default: f.state.withdraw()
+        }
+        let before = try requests.records()
+        #expect(throws: (any Error).self) { try f.service.prepare(record: record, requests: requests) }
+        #expect(throws: MCPNativeFaceScanReviewService.Failure.changedReview) {
+            try f.service.approve(original, acknowledgesScan: true, acknowledgesReset: false)
+        }
+        await #expect(throws: MCPNativeFaceScanReviewService.Failure.unavailableApproval) { try await f.service.submit(approval) }
+        #expect(try requests.records() == before)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    @Test("Replacing durable review keeps the adopted intent and invalidates the prior capability")
+    func durableReviewReplacement() async throws {
+        let f = try fixture(schedule: refusingScheduler)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        let review = try f.service.prepare(record: record, requests: requests)
+        #expect(throws: MCPNativeFaceScanReviewService.Failure.acknowledgementRequired) {
+            try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: false)
+        }
+        let approval = try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: true)
+        let replacement = try f.service.prepare(record: record, requests: requests)
+        #expect(replacement.intent.id == review.intent.id)
+        #expect(throws: MCPNativeFaceScanReviewService.Failure.changedReview) {
+            try f.service.approve(review, acknowledgesScan: true, acknowledgesReset: true)
+        }
+        await #expect(throws: MCPNativeFaceScanReviewService.Failure.unavailableApproval) { try await f.service.submit(approval) }
+        #expect(try requests.records() == [record])
+    }
+
     @Test("Retained intent review preserves exact identity/options and needs fresh explicit consent")
     func retainedIntentReview() async throws {
         let f = try fixture(schedule: refusingScheduler)
