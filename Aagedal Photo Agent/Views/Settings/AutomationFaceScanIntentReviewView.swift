@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// Displays authenticated durable evidence. Native scanner consent and execution
-/// are deliberately absent from this presentation-only handoff.
+/// Authenticated evidence may be explicitly adopted into a revocable native
+/// review. Retained-request execution stays unavailable until anchored effects.
 struct AutomationFaceScanIntentReviewView: View {
     @State private var nativeInvocation = AutomationNativeInvocationController.shared
+    @State private var model: MCPNativeFaceScanReviewModel?
+    @State private var preparation: Task<Void, Never>?
+    @State private var message: String?
 
     var body: some View {
         if let review = nativeInvocation.pendingFaceReview {
@@ -31,15 +34,50 @@ struct AutomationFaceScanIntentReviewView: View {
                     .font(.caption)
                 Text(verbatim: presentation.record.requestID).font(.caption).textSelection(.enabled)
                     .accessibilityIdentifier("automation.faceIntentReview.requestID")
-                Button("Dismiss Face Intent") { nativeInvocation.consumeFaceReview(review) }
-                    .accessibilityIdentifier("automation.faceIntentReview.dismiss")
+                HStack {
+                    Button("Review Original Face Request") { adopt(presentation) }
+                        .disabled(model?.isPreparing == true)
+                        .accessibilityIdentifier("automation.faceIntentReview.adopt")
+                    Button("Dismiss Face Intent") { dismiss(); nativeInvocation.consumeFaceReview(review) }
+                        .accessibilityIdentifier("automation.faceIntentReview.dismiss")
+                }
+                if let model {
+                    AutomationNativeFaceScanReviewView(model: model, retainedRequest: true)
+                }
+                if let message { Text(verbatim: message).font(.caption) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("automation.faceIntentReview.detail")
-            .onDisappear { nativeInvocation.consumeFaceReview(review) }
+            .onChange(of: review.id) { _, _ in dismiss() }
+            .onDisappear { dismiss(); nativeInvocation.consumeFaceReview(review) }
         } else {
             Text("Open a retained face scan request from an authenticated local client to inspect its exact original inventory and options. This review starts no scan.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func adopt(_ presentation: AutomationNativeFaceScanReviewInvocationService.Presentation) {
+        preparation?.cancel(); message = nil
+        do {
+            let fixture = UITestNativeInvocationConfiguration.current
+            guard !ProcessInfo.processInfo.arguments.contains("--ui-testing") || fixture != nil else {
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+            let requests = try fixture?.faceRequests ?? MCPFaceScanReviewRequestStore(
+                storageDirectory: MCPFaceScanReviewRequestStore.defaultStorageDirectory())
+            let model = try self.model ?? MCPNativeFaceScanReviewModel.retainedReview(
+                authorizationStore: fixture?.authorizationStore ?? MCPAuthorizationStore(),
+                operationDirectory: try fixture?.rootURL.appendingPathComponent("native-face-review-operations")
+                    ?? AutomationOperationRegistry.defaultStorageDirectory(),
+                receiptDirectory: try fixture?.rootURL.appendingPathComponent("native-face-review-receipts")
+                    ?? MCPFaceScanReceiptStore.defaultStorageDirectory())
+            self.model = model
+            preparation = Task { await model.prepare(record: presentation.record, requests: requests) }
+        } catch { message = error.localizedDescription }
+    }
+
+    private func dismiss() {
+        preparation?.cancel(); preparation = nil
+        model?.dismiss(); model = nil; message = nil
     }
 }

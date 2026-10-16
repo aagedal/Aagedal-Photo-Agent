@@ -1,5 +1,15 @@
 # Project planning overview
 
+**Durable face native adoption (2026-10-16):** Settings explicitly adopts the
+original authenticated client request into a revocable native review without renewing
+its inventory/options or expiry. Replacements and dismissal revoke previous capabilities.
+Retained requests expose no scan consent or start controls; the native model also refuses
+durable starts and the Settings factory owns no scanner. Anchored effects, durable execution
+and completion-context wiring remain next. Independent review, 35 focused tests, the
+4,231-test regression (two existing skips, zero failures), signed native adoption/
+dismissal, repository, 41-tool helper, model and development-signature checks pass. See the
+[dated continuation](release/durable-face-native-adoption-2026-10-16.md).
+
 **Durable face lifecycle integration (2026-10-16):** The operation bridge retains
 its exact folder before one-way admission, uses the coordinator's actual managed lease
 for admission/linkage before work, and drains the exact scanner task before release.

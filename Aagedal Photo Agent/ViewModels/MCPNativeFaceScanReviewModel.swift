@@ -21,12 +21,13 @@ final class MCPNativeFaceScanReviewModel {
     }
 
     nonisolated enum Failure: LocalizedError {
-        case sessionWithdrawn, modelChanged, operationInProgress
+        case sessionWithdrawn, modelChanged, operationInProgress, durableExecutionUnavailable
         var errorDescription: String? {
             switch self {
             case .sessionWithdrawn: "The native review was dismissed. Prepare a new review."
             case .modelChanged: "Face model readiness changed. Prepare a new review after the model is available."
             case .operationInProgress: "Wait for the retained face scan to finish before preparing another review."
+            case .durableExecutionUnavailable: "Scanning from retained client requests is not available yet."
             }
         }
     }
@@ -100,8 +101,24 @@ final class MCPNativeFaceScanReviewModel {
         })
     }
 
+    /// Settings may adopt authenticated client evidence for native review. This
+    /// factory deliberately has no scanner until durable effects are anchored.
+    static func retainedReview(authorizationStore: MCPAuthorizationStore,
+                               operationDirectory: URL, receiptDirectory: URL) -> MCPNativeFaceScanReviewModel {
+        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authorizationStore))
+        let receipts = MCPFaceScanReceiptStore(storageDirectory: receiptDirectory)
+        let operations = MCPFaceScanOperationService(intents: intents,
+            registry: .init(storageDirectory: operationDirectory), receipts: receipts,
+            schedule: { _, _, _ in throw Failure.durableExecutionUnavailable })
+        return .init(intents: intents, operations: operations, receipts: receipts, modelPreflight: {
+            let embedder = CoreMLFaceEmbedder.shared
+            let capability = try embedder.prepareNativeScanModel()
+            return { try embedder.validateNativeScanModel(capability) }
+        })
+    }
+
     var canStart: Bool {
-        review != nil && !isRunning && !isPreparing && acknowledgesScan
+        review != nil && review?.intent.durableRequest == nil && !isRunning && !isPreparing && acknowledgesScan
             && (review?.intent.prepared.forceFullScan != true || acknowledgesReset)
     }
 
@@ -118,6 +135,12 @@ final class MCPNativeFaceScanReviewModel {
     /// authenticate helper presentation; the ID itself supplies no native consent.
     func prepare(intentID: UUID) async {
         await prepare { service in try service.prepare(intentID: intentID) }
+    }
+
+    /// The authenticated presentation is selected by native UI, never by helper
+    /// confirmation. Adoption preserves original evidence and grants no consent.
+    func prepare(record: MCPFaceScanReviewRequestStore.Record, requests: MCPFaceScanReviewRequestStore) async {
+        await prepare { service in try service.prepare(record: record, requests: requests) }
     }
 
     private func prepare(

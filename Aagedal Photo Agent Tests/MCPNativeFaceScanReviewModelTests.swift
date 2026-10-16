@@ -77,6 +77,59 @@ struct MCPNativeFaceScanReviewModelTests {
         @TaskLocal static var marker: UUID?
     }
 
+    @MainActor private func durableRequest(_ f: Fixture) throws -> (MCPFaceScanReviewRequestStore, MCPFaceScanReviewRequestStore.Record) {
+        let authority = MCPAuthorizationStore(readConfigurationData: { f.state.read() }, writeConfigurationData: { f.state.write($0) })
+        let requests = MCPFaceScanReviewRequestStore(storageDirectory: f.root.appendingPathComponent("requests"))
+        let record = try requests.request(requestID: UUID(), requestEpoch: requests.capacitySnapshot().epoch,
+            arguments: ["path": .string(f.photos.path), "includeJerseyNumbers": .bool(true)],
+            admission: .init(authorizationStore: authority))
+        return (requests, record)
+    }
+
+    @Test("Explicit durable adoption reviews exact original evidence without enabling execution") @MainActor
+    func durableReviewOnly() async throws {
+        let f = try fixture(schedule: refuse)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        await f.model.prepare(record: record, requests: requests)
+        let review = try #require(f.model.review)
+        #expect(review.intent.durableRequest?.intentSHA256 == record.intentSHA256)
+        #expect(review.intent.prepared.snapshotRevision == record.intent.snapshotRevision)
+        #expect(review.intent.createdAt == record.intent.preparedAt)
+        #expect(review.intent.expiresAt == record.intent.expiresAt)
+        #expect(review.intent.prepared.forceFullScan && review.intent.prepared.includeJerseyNumbers)
+        #expect(!f.model.acknowledgesScan && !f.model.acknowledgesReset)
+        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
+        #expect(!f.model.canStart)
+        await f.model.start()
+        #expect(f.model.operation == nil && f.model.receipt == nil)
+        await f.model.prepare(record: record, requests: requests)
+        #expect(f.model.review?.intent.id == review.intent.id)
+        #expect(!f.model.acknowledgesScan && !f.model.acknowledgesReset)
+        f.model.dismiss()
+        #expect(f.model.review == nil)
+        #expect(try requests.records() == [record])
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    @Test("Dismissal during durable preflight prevents delayed adoption publication") @MainActor
+    func dismissedDurableReview() async throws {
+        let entered = Gate(), release = DispatchSemaphore(value: 0)
+        let f = try fixture(schedule: refuse, preflightCheckpoint: {
+            #expect(!Thread.isMainThread)
+            Task { await entered.open() }
+            release.wait()
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        let task = Task { await f.model.prepare(record: record, requests: requests) }
+        await entered.wait()
+        f.model.dismiss(); release.signal()
+        await task.value
+        #expect(f.model.review == nil && !f.model.isPreparing && !f.model.canStart)
+        #expect(try requests.records() == [record])
+    }
+
     @Test("Review worker preserves task context and cancellation across blocking work") @MainActor
     func workerContextAndCancellation() async throws {
         let worker = MCPNativeFaceScanReviewModel.ReviewWorker()

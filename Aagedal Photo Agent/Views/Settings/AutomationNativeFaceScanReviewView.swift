@@ -6,11 +6,14 @@ struct AutomationNativeFaceScanReviewView: View {
     @Bindable var model: MCPNativeFaceScanReviewModel
     private let fixedFolder: URL?
     private let scanner: FaceRecognitionViewModel?
+    private let retainedRequest: Bool
     @State private var forceFullScan = false
     @State private var includeJerseyNumbers = false
 
-    init(model: MCPNativeFaceScanReviewModel, fixedFolder: URL? = nil, scanner: FaceRecognitionViewModel? = nil) {
+    init(model: MCPNativeFaceScanReviewModel, fixedFolder: URL? = nil, scanner: FaceRecognitionViewModel? = nil,
+         retainedRequest: Bool = false) {
         self.model = model; self.fixedFolder = fixedFolder; self.scanner = scanner
+        self.retainedRequest = retainedRequest
     }
 
     init(scanner: FaceRecognitionViewModel, authorizationStore: MCPAuthorizationStore) throws {
@@ -20,7 +23,7 @@ struct AutomationNativeFaceScanReviewView: View {
         let operationDirectory = try UITestNativeInvocationConfiguration.current?.rootURL
             .appendingPathComponent("native-face-review-operations", isDirectory: true)
             ?? AutomationOperationRegistry.defaultStorageDirectory()
-        fixedFolder = nil; self.scanner = scanner
+        fixedFolder = nil; self.scanner = scanner; retainedRequest = false
         self.model = .native(scanner: scanner, authorizationStore: authorizationStore,
             operationDirectory: operationDirectory,
             receiptDirectory: try MCPFaceScanReceiptStore.defaultStorageDirectory())
@@ -28,17 +31,19 @@ struct AutomationNativeFaceScanReviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Prepare a local face scan for an authorized folder, then review its exact immediate photo inventory and saved-data effects. Preparing does not start a scan or download a model.")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Full scan: reset saved face results", isOn: $forceFullScan)
-                .accessibilityIdentifier("automation.faceReview.fullScan")
-                .disabled(model.isRunning || model.isPreparing)
-            Toggle("Recognize jersey numbers (requires a full scan)", isOn: $includeJerseyNumbers)
-                .accessibilityIdentifier("automation.faceReview.jersey")
-                .disabled(model.isRunning || model.isPreparing)
-            Button(fixedFolder == nil ? "Choose Folder and Prepare Face Scan…" : "Prepare Current Folder Face Scan") { choose() }
-                .disabled(model.isRunning || model.isPreparing)
-                .accessibilityIdentifier("automation.faceReview.prepare")
+            if !retainedRequest {
+                Text("Prepare a local face scan for an authorized folder, then review its exact immediate photo inventory and saved-data effects. Preparing does not start a scan or download a model.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Full scan: reset saved face results", isOn: $forceFullScan)
+                    .accessibilityIdentifier("automation.faceReview.fullScan")
+                    .disabled(model.isRunning || model.isPreparing)
+                Toggle("Recognize jersey numbers (requires a full scan)", isOn: $includeJerseyNumbers)
+                    .accessibilityIdentifier("automation.faceReview.jersey")
+                    .disabled(model.isRunning || model.isPreparing)
+                Button(fixedFolder == nil ? "Choose Folder and Prepare Face Scan…" : "Prepare Current Folder Face Scan") { choose() }
+                    .disabled(model.isRunning || model.isPreparing)
+                    .accessibilityIdentifier("automation.faceReview.prepare")
+            }
             if let review = model.review {
                 Text(verbatim: review.intent.prepared.folderURL.path).textSelection(.enabled)
                 Text("Exact reviewed inventory: \(review.intent.prepared.imageURLs.count) photos")
@@ -54,14 +59,19 @@ struct AutomationNativeFaceScanReviewView: View {
                 ForEach(review.consequences.filter { !$0.hasPrefix("Physical scanner writes") }, id: \.self) { Text(verbatim: $0).font(.caption) }
                 Text("Review expires at \(review.intent.expiresAt.formatted(date: .omitted, time: .standard)). Changed inventory, authorization, model readiness or dismissal requires a new review.")
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle("I approve scanning exactly these photos and saving local face data", isOn: $model.acknowledgesScan)
-                    .accessibilityIdentifier("automation.faceReview.consent")
-                if review.intent.prepared.forceFullScan {
-                    Toggle("I approve resetting saved face results and deleting their thumbnails", isOn: $model.acknowledgesReset)
-                        .accessibilityIdentifier("automation.faceReview.resetConsent")
+                if review.intent.durableRequest == nil {
+                    Toggle("I approve scanning exactly these photos and saving local face data", isOn: $model.acknowledgesScan)
+                        .accessibilityIdentifier("automation.faceReview.consent")
+                    if review.intent.prepared.forceFullScan {
+                        Toggle("I approve resetting saved face results and deleting their thumbnails", isOn: $model.acknowledgesReset)
+                            .accessibilityIdentifier("automation.faceReview.resetConsent")
+                    }
+                    Button("Start Reviewed Face Scan") { Task { await model.start() } }
+                        .disabled(!model.canStart).accessibilityIdentifier("automation.faceReview.start")
+                } else {
+                    Text("Scanning from retained client requests is not available yet. This review grants no scan consent.")
+                        .font(.caption).accessibilityIdentifier("automation.faceReview.retainedReviewOnly")
                 }
-                Button("Start Reviewed Face Scan") { Task { await model.start() } }
-                    .disabled(!model.canStart).accessibilityIdentifier("automation.faceReview.start")
                 Button("Dismiss Review") { model.dismiss() }
             }
             if model.isPreparing { ProgressView("Preparing exact inventory…").controlSize(.small) }

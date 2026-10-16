@@ -65,6 +65,13 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
         try prepare { try self.intents.inspect(id: intentID) }
     }
 
+    /// Explicit app-internal adoption of the original durable evidence. Adoption
+    /// preserves its correlation and remaining lifetime; it supplies no consent.
+    func prepare(record: MCPFaceScanReviewRequestStore.Record,
+                 requests: MCPFaceScanReviewRequestStore) throws -> Review {
+        try prepare { try self.intents.adopt(record: record, requests: requests) }
+    }
+
     private func prepare(intent: () throws -> MCPFaceScanIntentStore.Intent) throws -> Review {
         let preparationGeneration = lock.withLock { revokeLocked(); return generation }
         // Inventory I/O must not hold the capability lock: dismissal and withdrawal
