@@ -1,5 +1,14 @@
 # 3.0 coordinator state
 
+**Develop review lifecycle (2026-10-17):** An app-side native review model retains
+preparation and cleanup through dismissal, refuses replacement while draining and
+keeps exact cleanup evidence for retry. Admission revalidates after retention and
+retires cancelled/drifted preparation, including uncertain persistence returns,
+without restoring execution authority. Native presentation/consent/Start and rooted
+physical commit authority remain open. The 82-test focused run and 4,279-test
+regression pass (two existing skips, zero failures). State stays IMPLEMENTING; see the
+[dated continuation](develop-review-lifecycle-2026-10-17.md).
+
 **Durable face native execution (2026-10-17):** Settings now adopts the original
 retained request into explicit scan/reset consent and native Start on the app-owned
 scanner shared with Browser. Completion validates the current linked request and actual
@@ -1291,6 +1300,13 @@ The historical unrelated project ordering diff was committed separately as `fee5
 cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
+
+**Current after the 2026-10-17 Develop review-lifecycle continuation:** Retained
+app-side review preparation, dismissal and cleanup retry are implemented. Continue
+production native capture/review presentation and managed consent/operation wiring;
+keep execution gated on embedded owned-effect stages, synchronous descriptor-rooted
+commit authority and watermark admission. See the
+[dated record](develop-review-lifecycle-2026-10-17.md).
 
 **Current after the 2026-10-17 durable face native-execution continuation:** Native
 scan/reset consent, Start, anchored effects and linked completion validation are integrated

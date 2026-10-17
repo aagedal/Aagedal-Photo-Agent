@@ -761,4 +761,371 @@ struct DevelopTemplateBatchCaptureServiceTests {
             #expect(!FileManager.default.fileExists(atPath: directory.path))
         }
     }
+
+    private actor ReviewGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var entered = false
+        private var observers: [CheckedContinuation<Void, Never>] = []
+        func suspend() async {
+            entered = true
+            observers.forEach { $0.resume() }; observers = []
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func waitUntilEntered() async {
+            if entered { return }
+            await withCheckedContinuation { observers.append($0) }
+        }
+        func release() { continuation?.resume(); continuation = nil }
+    }
+
+    private actor ReviewCleanup {
+        var ids: [UUID] = []
+        var failures = 0
+        init(failures: Int = 0) { self.failures = failures }
+        func record(_ id: UUID) throws {
+            ids.append(id)
+            if failures > 0 { failures -= 1; throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
+        }
+    }
+
+    @Test("Dismissed preparation drains its exact late review and refuses replacement through cleanup")
+    func reviewModelLatePreparation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let prepared = try await service.review(capture)
+        let preparationGate = ReviewGate(), cleanupGate = ReviewGate(), cleanup = ReviewCleanup()
+        let model = DevelopTemplateBatchReviewModel(cancel: { review in
+            try Task.checkCancellation()
+            try await cleanup.record(review.id)
+            await cleanupGate.suspend()
+            try await service.cancel(review)
+        }, retryPreparationCleanup: { try await service.retryCancelledReviewCleanup() })
+        let task = Task { await model.prepare { await preparationGate.suspend(); return prepared } }
+        await preparationGate.waitUntilEntered()
+        model.dismiss()
+        #expect(model.review == nil && model.isBusy)
+        await model.prepare { Issue.record("Replacement must be refused while preparation drains"); return prepared }
+        await preparationGate.release()
+        await cleanupGate.waitUntilEntered()
+        #expect(model.review == nil && model.isBusy)
+        await model.prepare { Issue.record("Replacement must be refused while cleanup drains"); return prepared }
+        await cleanupGate.release()
+        await task.value
+        #expect(!model.isBusy && model.review == nil && model.cleanupRequiredID == nil)
+        #expect(await cleanup.ids == [capture.intent.id])
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+    }
+
+    @Test("Failed native cleanup retains exact review for explicit retry without restoring visible evidence")
+    func reviewModelCleanupRetry() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let prepared = try await service.review(capture)
+        let cleanup = ReviewCleanup(failures: 1)
+        let model = DevelopTemplateBatchReviewModel(cancel: { review in
+            try await cleanup.record(review.id)
+            try await service.cancel(review)
+        }, retryPreparationCleanup: { try await service.retryCancelledReviewCleanup() })
+        await model.prepare { prepared }
+        #expect(model.review?.id == capture.intent.id)
+        #expect(model.review?.evidence.photos.map(\.requestID) == capture.intent.requests.map(\.id))
+        model.dismiss()
+        #expect(model.review == nil && model.isBusy)
+        await model.waitForIdle()
+        #expect(!model.isBusy && model.cleanupRequiredID == capture.intent.id && model.message != nil)
+        await model.prepare { Issue.record("Failed cleanup must block new preparation"); return prepared }
+        await model.retryCleanup()
+        #expect(await cleanup.ids == [capture.intent.id, capture.intent.id])
+        #expect(model.cleanupRequiredID == nil && model.message == nil && model.review == nil)
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+    }
+
+    @Test("Cancellation after durable retention retires the inaccessible review and prevents replay")
+    func reviewCancellationAfterRetention() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in }, afterRetention: {
+                withUnsafeCurrentTask { $0?.cancel() }
+            })
+        let task = Task { try await service.review(capture) }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        let cleanup = try await store.prepareCancelledCleanup()
+        #expect(try await store.cleanupCancelledReviews(cleanup) == 1)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await service.review(capture) }
+    }
+
+    @Test("Carrier or session drift during retention retires the unpublished native review")
+    func reviewDriftDuringRetention() async throws {
+        for changeCarrier in [true, false] {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+                photos: f.photos, mode: .writeToXMPSidecar)
+            let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+            let gate = ReviewGate(), session = MCPServerCoreTests.DataBox()
+            session.write(Data("active".utf8))
+            let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+                configurationRevision: { "native-v1" }, validateSession: { _ in
+                    guard session.read() == Data("active".utf8) else { throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
+                }, afterRetention: { await gate.suspend() })
+            let task = Task { try await service.review(capture) }
+            await gate.waitUntilEntered()
+            if changeCarrier { try Data("changed".utf8).write(to: f.photos[0]) }
+            else { session.write(Data("withdrawn".utf8)) }
+            await gate.release()
+            await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) { try await task.value }
+            #expect(try await store.load(capture.intent.id).state == .cancelled)
+        }
+    }
+
+
+    @Test("Failed review retirement retains exact cleanup evidence until storage is restored")
+    func reviewRetentionCleanupFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let directory = f.root.appendingPathComponent("Admission")
+        let backup = f.root.appendingPathComponent("AdmissionBackup")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in }, afterRetention: {
+                try FileManager.default.moveItem(at: directory, to: backup)
+                try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: backup)
+                throw CancellationError()
+            })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)) {
+            try await service.review(capture)
+        }
+        #expect(await service.cancelledReviewCleanupIDs == [capture.intent.id])
+        #expect(try await DevelopTemplateBatchAdmissionStore(directory: backup).load(capture.intent.id).state == .awaitingReview)
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        try await service.retryCancelledReviewCleanup()
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) { try await service.review(capture) }
+    }
+
+
+    @Test("Failed explicit review cancellation remains cleanup-only and retries the original review")
+    func reviewExplicitCancellationCleanupFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let directory = f.root.appendingPathComponent("Admission")
+        let backup = f.root.appendingPathComponent("AdmissionBackup")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        try FileManager.default.moveItem(at: directory, to: backup)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: backup)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)) {
+            try await service.cancel(review)
+        }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in Issue.record("Cleanup-only review cannot grant consent") },
+                executionService: .init(write: { request, _, _ in
+                    Issue.record("Cleanup-only review cannot write"); return .init(requestID: request.id)
+                }), checkpointStore: .init(directory: f.root.appendingPathComponent("Checkpoints")))
+        }
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        try await service.cancel(review)
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+    }
+
+
+    @Test("Dismissed preparation cleanup failure blocks replacement and survives failed explicit retry")
+    func reviewModelPreparationCleanupRetry() async throws {
+        let id = UUID(), gate = ReviewGate(), cleanup = ReviewCleanup(failures: 1)
+        let model = DevelopTemplateBatchReviewModel(cancel: { _ in
+            Issue.record("Failed preparation has no review capability to cancel")
+        }, retryPreparationCleanup: { try await cleanup.record(id) })
+        let task = Task { await model.prepare {
+            await gate.suspend()
+            throw DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(id)
+        } }
+        await gate.waitUntilEntered()
+        model.dismiss()
+        await gate.release()
+        await task.value
+        #expect(model.review == nil && model.cleanupRequiredID == id && !model.isBusy)
+        await model.prepare {
+            Issue.record("Preparation cleanup must block replacement")
+            throw CancellationError()
+        }
+        await model.retryCleanup()
+        #expect(model.cleanupRequiredID == id && model.message != nil)
+        await model.retryCleanup()
+        #expect(model.cleanupRequiredID == nil && model.message == nil && model.review == nil)
+        #expect(await cleanup.ids == [id, id])
+    }
+
+    @Test("Failed durable admission retains cleanup authority without restoring execution")
+    func reviewAdmissionStorageFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let directory = f.root.appendingPathComponent("Admission")
+        let backup = f.root.appendingPathComponent("AdmissionBackup")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        let writer = DevelopTemplateBatchExecutionService(write: { request, _, _ in
+            Issue.record("Failed durable admission must prevent writes")
+            return .init(requestID: request.id)
+        })
+        try FileManager.default.moveItem(at: directory, to: backup)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: backup)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)) {
+            try await service.execute(review, consent: { _ in Issue.record("Failed admission cannot grant consent") },
+                executionService: writer, checkpointStore: checkpoints)
+        }
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        #expect(try await store.load(capture.intent.id).state == .awaitingReview)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in }, executionService: writer, checkpointStore: checkpoints)
+        }
+        try await service.cancel(review)
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Checkpoints").path))
+    }
+
+    @Test("Committed retention failure retires evidence without publishing a review")
+    func reviewCommittedRetentionFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"),
+            afterRetain: { throw AutomationOperationRegistry.Failure.storageUnavailable })
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        await #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+            try await service.review(capture)
+        }
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) {
+            try await service.review(capture)
+        }
+    }
+
+    @Test("Committed cancellation failure retries exact terminal evidence without restoring execution")
+    func reviewCommittedCancellationFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let failure = MCPServerCoreTests.DataBox(); failure.write(Data([1]))
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"),
+            afterFinishReview: {
+                if failure.read() == Data([1]) {
+                    failure.write(Data())
+                    throw AutomationOperationRegistry.Failure.storageUnavailable
+                }
+            })
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)) {
+            try await service.cancel(review)
+        }
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+        #expect(await service.cancelledReviewCleanupIDs == [capture.intent.id])
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in Issue.record("Retirement cannot restore consent") },
+                executionService: .init(write: { request, _, _ in
+                    Issue.record("Retirement cannot restore writes"); return .init(requestID: request.id)
+                }), checkpointStore: .init(directory: f.root.appendingPathComponent("Checkpoints")))
+        }
+        // A separately reviewed cleanup may retire the committed journal before retry.
+        let cleanup = try await store.prepareCancelledCleanup()
+        #expect(try await store.cleanupCancelledReviews(cleanup) == 1)
+        try await service.retryCancelledReviewCleanup()
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+        #expect(try await store.inspect().isEmpty)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) {
+            try await service.review(capture)
+        }
+    }
+
+    @Test("Committed execution admission failure preserves consumed evidence through cleanup")
+    func reviewCommittedExecutionAdmissionFailure() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let failure = MCPServerCoreTests.DataBox(); failure.write(Data([1]))
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"),
+            afterFinishReview: {
+                if failure.read() == Data([1]) {
+                    failure.write(Data())
+                    throw AutomationOperationRegistry.Failure.storageUnavailable
+                }
+            })
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let review = try await service.review(capture)
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("Checkpoints"))
+        let writer = DevelopTemplateBatchExecutionService(write: { request, _, _ in
+            Issue.record("Uncertain admission must prevent writes"); return .init(requestID: request.id)
+        })
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)) {
+            try await service.execute(review, consent: { _ in Issue.record("Uncertain admission cannot grant consent") },
+                executionService: writer, checkpointStore: checkpoints)
+        }
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        try await service.retryCancelledReviewCleanup()
+        #expect(await service.cancelledReviewCleanupIDs.isEmpty)
+        #expect(try await store.load(capture.intent.id).state == .consumed)
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.unavailableReview) {
+            try await service.execute(review, consent: { _ in }, executionService: writer, checkpointStore: checkpoints)
+        }
+        await #expect(throws: DevelopTemplateBatchAdmissionFailure.alreadyConsumed) {
+            try await service.review(capture)
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("Checkpoints").path))
+    }
+
+    @Test("Cancelling the caller awaiting preparation drains its late review")
+    func reviewModelCallerCancellation() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let capture = try f.service.capture(templateID: f.template.id, templateRevision: f.revision,
+            photos: f.photos, mode: .writeToXMPSidecar)
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("Admission"))
+        let service = DevelopTemplateBatchAdmissionService(captureService: f.service, store: store,
+            configurationRevision: { "native-v1" }, validateSession: { _ in })
+        let prepared = try await service.review(capture)
+        let gate = ReviewGate(), cleanup = ReviewCleanup()
+        let model = DevelopTemplateBatchReviewModel(cancel: { review in
+            try Task.checkCancellation()
+            try await cleanup.record(review.id)
+            try await service.cancel(review)
+        }, retryPreparationCleanup: { try await service.retryCancelledReviewCleanup() })
+        let caller = Task { await model.prepare { await gate.suspend(); return prepared } }
+        await gate.waitUntilEntered()
+        caller.cancel()
+        await Task.yield()
+        await gate.release()
+        await caller.value
+        await model.waitForIdle()
+        #expect(model.review == nil && !model.isBusy && model.cleanupRequiredID == nil)
+        #expect(await cleanup.ids == [capture.intent.id])
+        #expect(try await store.load(capture.intent.id).state == .cancelled)
+    }
 }

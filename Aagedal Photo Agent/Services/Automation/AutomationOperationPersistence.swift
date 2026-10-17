@@ -96,7 +96,16 @@ nonisolated final class AutomationOperationPersistence: Sendable {
         let (result, replacement) = try body(existing)
         try validateDirectoryIdentity(root)
         try validateNamedIdentity(lock, name: "operations.lock", root: root)
-        if !readOnly, replacement != existing { try write(replacement, root: root) }
+        if !readOnly {
+            if replacement != existing {
+                try write(replacement, root: root)
+            } else if syncDirectoryParent(root) != 0 {
+                // An earlier replacement may have committed before its directory
+                // flush failed. Idempotent retries must complete that durability
+                // boundary too, even when no bytes need rewriting.
+                throw AutomationOperationRegistry.Failure.storageUnavailable
+            }
+        }
         try validateDirectoryIdentity(root)
         return result
     }

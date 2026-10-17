@@ -1,5 +1,12 @@
 # App improvement audit plan
 
+**Develop review lifecycle (2026-10-17):** App-side native review preparation and
+cleanup now retain ownership through dismissal and storage retry. Admission rechecks
+retained evidence and handles committed-then-thrown journal returns without restoring
+execution authority. Production presentation/consent and rooted physical commits remain
+open; no checklist count changes. See the
+[dated continuation](release/develop-review-lifecycle-2026-10-17.md).
+
 **Exact face completion linkage (2026-10-15):** Native receipt publication now
 matches the original intent, inventory revision, photo count and scan/reset options
 to the exact completed face operation and its outcome. Missing, incomplete or
