@@ -259,4 +259,202 @@ struct FaceDataWriteCapabilityTests {
         #expect(FaceDataStorageService().loadFaceData(for: root)?.scanComplete == true)
     }
 
+    @Test("Retained reset removes exact tree and permits subsequent anchored writes")
+    func resetAndRewrite() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in })
+        let id = UUID()
+        try writer.saveThumbnail(Data("crop".utf8), for: id)
+        try writer.saveFaceData(document(root))
+        let service = FaceDataFolderLoadService(deleteFaceData: { _ in Issue.record("Retained reset reached legacy deletion") })
+        let result = await service.deleteAll(for: root, writeCapability: writer)
+        guard case .anchored(let evidence) = result else { Issue.record("Missing anchored reset"); return }
+        #expect(evidence.completed)
+        #expect(evidence.failureMessage == nil)
+        #expect(evidence.removedRelativePaths == [".face_data/face_data.json", ".face_data/thumbnails/\(id.uuidString).jpg", ".face_data/thumbnails", ".face_data"])
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data").path))
+        try writer.saveFaceData(document(root))
+        #expect(FaceDataStorageService().loadFaceData(for: root)?.scanComplete == true)
+    }
+
+    @Test("Reset preflight refuses symbolic links without any physical deletion")
+    func resetRefusesLink() throws {
+        let root = try fixture(), outside = try fixture()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: outside) }
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in })
+        try Data("old".utf8).write(to: root.appendingPathComponent(".face_data/a.json"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(".face_data/z-link"), withDestinationURL: outside)
+        let result = writer.reset()
+        #expect(!result.completed && result.removedRelativePaths.isEmpty)
+        #expect(try Data(contentsOf: root.appendingPathComponent(".face_data/a.json")) == Data("old".utf8))
+    }
+
+    @Test("Reset authority withdrawal records the exact physical prefix", arguments: [false, true])
+    func resetWithdrawal(afterRemoval: Bool) throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let authority = Authority()
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { try authority.check($0) }, checkpoint: { point in
+            switch point {
+            case .willRemove where !afterRemoval: authority.revoke()
+            case .didRemove where afterRemoval: authority.revoke()
+            default: break
+            }
+        })
+        try Data("old".utf8).write(to: root.appendingPathComponent(".face_data/a.json"))
+        let result = writer.reset()
+        #expect(!result.completed)
+        #expect(result.removedRelativePaths == (afterRemoval ? [".face_data/a.json"] : []))
+        #expect(result.failureMessage != nil)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data/a.json").path) != afterRemoval)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data/thumbnails").path))
+    }
+
+    @Test("Directory replacement at reset boundaries cannot redirect traversal", arguments: [false, true])
+    func resetDirectoryReplacement(afterRemoval: Bool) throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent(".face_data"), moved = root.appendingPathComponent("saved")
+        try Data("old".utf8).write(to: original.appendingPathComponent("a.json"))
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in }, checkpoint: { point in
+            let replace: Bool
+            switch point {
+            case .willRemove: replace = !afterRemoval
+            case .didRemove: replace = afterRemoval
+            default: replace = false
+            }
+            if replace {
+                try FileManager.default.moveItem(at: original, to: moved)
+                try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+                try Data("replacement".utf8).write(to: original.appendingPathComponent("sentinel"))
+            }
+        })
+        let result = writer.reset()
+        #expect(!result.completed)
+        #expect(result.removedRelativePaths == (afterRemoval ? [".face_data/a.json"] : []))
+        #expect(try Data(contentsOf: original.appendingPathComponent("sentinel")) == Data("replacement".utf8))
+        #expect(FileManager.default.fileExists(atPath: moved.appendingPathComponent("a.json").path) != afterRemoval)
+    }
+
+    @Test("Reset cancellation before or after physical removal retains exact evidence", arguments: [false, true])
+    func resetCancellation(afterRemoval: Bool) async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("old".utf8).write(to: root.appendingPathComponent(".face_data/a.json"))
+        let result = await Task {
+            let writer = try! FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in }, checkpoint: { point in
+                switch point {
+                case .willRemove where !afterRemoval: withUnsafeCurrentTask { $0?.cancel() }
+                case .didRemove where afterRemoval: withUnsafeCurrentTask { $0?.cancel() }
+                default: break
+                }
+            })
+            return await FaceDataFolderLoadService().deleteAll(for: root, writeCapability: writer)
+        }.value
+        guard case .anchored(let result) = result else { Issue.record("Missing reset evidence"); return }
+        #expect(!result.completed && result.cancellationRequested)
+        #expect(result.removedRelativePaths == (afterRemoval ? [".face_data/a.json"] : []))
+    }
+
+    @Test("An externally appearing storage directory is refused by reset")
+    func resetAbsentBinding() throws {
+        let root = try fixture(existingStorage: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in })
+        #expect(writer.reset().completed)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".face_data"), withIntermediateDirectories: false)
+        let result = writer.reset()
+        #expect(!result.completed && result.removedRelativePaths.isEmpty)
+    }
+
+    @Test("Reset refuses substituted leaf inodes without deleting the replacement")
+    func resetLeafReplacement() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let leaf = root.appendingPathComponent(".face_data/a.json")
+        let saved = root.appendingPathComponent("original")
+        try Data("original".utf8).write(to: leaf)
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in }, checkpoint: { point in
+            if case .willRemove(".face_data/a.json") = point {
+                try FileManager.default.moveItem(at: leaf, to: saved)
+                try Data("replacement".utf8).write(to: leaf)
+            }
+        })
+        let evidence = writer.reset()
+        #expect(!evidence.completed && evidence.removedRelativePaths.isEmpty)
+        #expect(try Data(contentsOf: leaf) == Data("replacement".utf8))
+        #expect(try Data(contentsOf: saved) == Data("original".utf8))
+    }
+
+    @Test("Nested reset failures preserve each physical removal boundary", arguments: [".face_data/nested/a", ".face_data/nested", ".face_data/thumbnails", ".face_data"], [false, true])
+    func resetPhysicalFailure(path: String, afterRemoval: Bool) throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".face_data/nested"), withIntermediateDirectories: false)
+        try Data("old".utf8).write(to: root.appendingPathComponent(".face_data/nested/a"))
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in }, checkpoint: { point in
+            switch point {
+            case .willRemove(let entry) where !afterRemoval && entry == path: throw Refusal.withdrawn
+            case .didRemove(let entry) where afterRemoval && entry == path: throw Refusal.withdrawn
+            default: break
+            }
+        })
+        let evidence = writer.reset()
+        #expect(!evidence.completed && evidence.failureMessage != nil)
+        let all = [".face_data/nested/a", ".face_data/nested", ".face_data/thumbnails", ".face_data"]
+        let count = try #require(all.firstIndex(of: path)) + (afterRemoval ? 1 : 0)
+        #expect(evidence.removedRelativePaths == Array(all.prefix(count)))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".face_data").path) == (count != all.count))
+    }
+
+    @Test("Authority cancellation is retained even before task cancellation arrives", arguments: [false, true])
+    func resetAuthorityCancellation(afterRemoval: Bool) throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("old".utf8).write(to: root.appendingPathComponent(".face_data/a.json"))
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in }, checkpoint: { point in
+            switch point {
+            case .willRemove where !afterRemoval: throw CancellationError()
+            case .didRemove where afterRemoval: throw CancellationError()
+            default: break
+            }
+        })
+        let evidence = writer.reset()
+        #expect(!evidence.completed && evidence.cancellationRequested && evidence.failureMessage == nil)
+        #expect(evidence.removedRelativePaths == (afterRemoval ? [".face_data/a.json"] : []))
+    }
+
+    @Test("Reset removes an admitted hardlink without changing external file bytes")
+    func resetHardlink() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let external = root.appendingPathComponent("photo-sentinel")
+        let bytes = Data("preserve outside storage".utf8)
+        try bytes.write(to: external)
+        try FileManager.default.linkItem(at: external, to: root.appendingPathComponent(".face_data/linked"))
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in })
+        let evidence = writer.reset()
+        #expect(evidence.completed)
+        #expect(evidence.removedRelativePaths.contains(".face_data/linked"))
+        #expect(try Data(contentsOf: external) == bytes)
+    }
+
+    @Test("Overdeep reset trees refuse before any removal")
+    func resetDepthLimit() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent(".face_data/a.json")
+        try Data("preserve".utf8).write(to: original)
+        var nested = root.appendingPathComponent(".face_data")
+        for _ in 0..<64 {
+            nested.appendPathComponent("nested")
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
+        }
+        let writer = try FaceDataWriteCapability(folderURL: root, effectAuthority: { _ in })
+        let evidence = writer.reset()
+        #expect(!evidence.completed && evidence.removedRelativePaths.isEmpty)
+        #expect(try Data(contentsOf: original) == Data("preserve".utf8))
+    }
+
 }

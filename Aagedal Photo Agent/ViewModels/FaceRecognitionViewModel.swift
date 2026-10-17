@@ -1091,13 +1091,6 @@ final class FaceRecognitionViewModel {
             do { try effectAuthority?(folderURL) }
             catch { return refuseAuthority(error) }
 
-            // Reset traversal has a separate descriptor-anchoring gate. Retained requests
-            // must never reach the legacy path-based recursive deletion implementation.
-            if retainedAuthority != nil && forceFullScan {
-                return refuseAuthority(CocoaError(.featureUnsupported, userInfo: [
-                    NSLocalizedDescriptionKey: "Retained face resets require descriptor-based deletion, which is not available yet."
-                ]))
-            }
             let writeCapability: FaceDataWriteCapability?
             do {
                 if let effectAuthority {
@@ -1111,20 +1104,29 @@ final class FaceRecognitionViewModel {
             var resetPersistence: FaceDataDeletionResult?
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
-                // Preparation is deliberately detached from later scan cancellation. Rename
-                // quiescence may cancel immediately, but the scan still needs a stable starting
-                // snapshot and must durably write its exact partial completion before returning.
-                let deletion = await Task.detached(priority: .utility) {
-                    await folderLoadService.deleteAll(for: folderURL, effectAuthority: effectAuthority)
-                }.value
+                // Retained reset observes cancellation between removals and returns its
+                // physical prefix. Legacy native preparation keeps its detached behavior.
+                let deletion: FaceDataDeletionResult
+                if let writeCapability {
+                    // Retained resets sample scan cancellation between physical removals.
+                    deletion = await folderLoadService.deleteAll(for: folderURL,
+                        effectAuthority: effectAuthority, writeCapability: writeCapability)
+                } else {
+                    deletion = await Task.detached(priority: .utility) {
+                        await folderLoadService.deleteAll(for: folderURL, effectAuthority: effectAuthority)
+                    }.value
+                }
                 resetPersistence = deletion
-                guard case .committed = deletion else {
-                    // A failed reset must never become permission to overwrite the previous
-                    // document with a fresh scan. Retain presentation and its durable baseline
-                    // so the user can inspect the results and explicitly retry the reset.
-                    self.errorMessage = deletion.failureMessage.map {
-                        "Failed to remove previous face data: \($0)"
-                    } ?? "Face scan stopped before previous face data was removed."
+                guard deletion.deletionCompleted else {
+                    // A failed reset must never authorize a fresh scan/save. Keep the snapshot
+                    // available for inspection; resetPersistence retains its exact physical effects.
+                    if case .anchored(let evidence) = deletion, !evidence.removedRelativePaths.isEmpty {
+                        self.errorMessage = "Face reset stopped after removing \(evidence.removedRelativePaths.count) saved entries. Review the folder before retrying."
+                    } else {
+                        self.errorMessage = deletion.failureMessage.map {
+                            "Failed to remove previous face data: \($0)"
+                        } ?? "Face scan stopped before previous face data was removed."
+                    }
                     self.isScanning = false
                     self.isCancellingScan = false
                     self.scanningFolderURL = nil
@@ -1132,9 +1134,16 @@ final class FaceRecognitionViewModel {
                     self.scanProcessedCount = 0
                     self.scanTotalCount = 0
                     self.activeScanTask = nil
+                    let resetOutcome: FaceScanCompletion.Outcome
+                    if case .anchored(let evidence) = deletion, evidence.cancellationRequested,
+                       evidence.failureMessage == nil {
+                        resetOutcome = .cancelled
+                    } else {
+                        resetOutcome = .refused(.resetFailed(self.errorMessage ?? "Face scan reset failed."))
+                    }
                     return FaceScanCompletion(
                         folderURL: folderURL.standardizedFileURL,
-                        outcome: .refused(.resetFailed(self.errorMessage ?? "Face scan reset failed.")),
+                        outcome: resetOutcome,
                         persistenceError: deletion.failureMessage,
                         resetPersistence: deletion
                     )
