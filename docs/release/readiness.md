@@ -1,5 +1,14 @@
 # 3.0 coordinator state
 
+**Develop native review presentation (2026-10-17):** Automation Settings now
+captures up to eight explicit authorized photos against an exact local Develop template
+revision and displays the ordered review evidence. Fixed sidecar policy and production
+RAW configuration bind capture/admission. App-owned presentation preserves cleanup retry
+across Settings reopening; filesystem work uses retained Dispatch executors. Native consent,
+Start/operation linkage and rooted physical commits remain open. The 110-test focused
+run and 4,284-test regression pass (two existing skips, zero failures). State stays IMPLEMENTING;
+see the [dated continuation](develop-native-review-presentation-2026-10-17.md).
+
 **Develop review lifecycle (2026-10-17):** An app-side native review model retains
 preparation and cleanup through dismissal, refuses replacement while draining and
 keeps exact cleanup evidence for retry. Admission revalidates after retention and

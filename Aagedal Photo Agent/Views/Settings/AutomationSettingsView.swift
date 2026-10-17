@@ -222,6 +222,10 @@ struct AutomationSettingsView: View {
                 AutomationOperationHistoryView()
             }
 
+            Section("Develop Template Review") {
+                DevelopTemplateBatchReviewView(authorizationRevision: model.configuration.authorizationRevision)
+            }
+
             Section("Develop Capture History") {
                 DevelopTemplateBatchAdmissionView()
             }
