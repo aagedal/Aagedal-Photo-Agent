@@ -860,6 +860,7 @@ nonisolated struct MCPAutomationFacade: Sendable {
     func installPendingDraft(data: Data, expected: MCPPhotoCarrierSnapshot,
                              reservation: MCPProcessReservationLease,
                              afterPrepareDirectory: (@Sendable (Int32) throws -> Void)? = nil,
+                             onDestination: (@Sendable (URL) throws -> Void)? = nil,
                              beforeInstall: @Sendable () throws -> Void = {},
                              beforeMutation: @Sendable (MCPPreparedXMPIdentity) throws -> Void = { _ in },
                              afterInstall: (@Sendable (MCPPhotoCarrierSnapshot) throws -> Void)? = nil) throws -> URL {
@@ -908,6 +909,10 @@ nonisolated struct MCPAutomationFacade: Sendable {
         // Keep a sole owned legacy draft at its existing name. Migrating would require a
         // second recoverable mutation; leaving two owned generations makes reads ambiguous.
         let destinationName = !currentExists && expected.appSidecarBytes != nil ? legacyName : currentName
+        // Expose the selected carrier path for exact uncertain-write receipts, including
+        // a sole owned legacy carrier that remains at its original filename.
+        try onDestination?(target.url.deletingLastPathComponent().appendingPathComponent(".photo_metadata")
+            .appendingPathComponent(destinationName))
         let temporaryName = ".automation-draft-\(UUID().uuidString).tmp"
         let descriptor = Darwin.openat(destinationDirectory, temporaryName,
             O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
@@ -956,6 +961,30 @@ nonisolated struct MCPAutomationFacade: Sendable {
         try validate()
         try MCPPhotoRevisionEvidence.requireSameDirectory(name: ".photo_metadata",
             in: directory.descriptor, descriptor: destinationDirectory)
+        // The recovery callback can perform durable I/O. Rebind the exact staged inode
+        // and bytes after it returns; checking only the original carriers cannot detect
+        // replacement of the temporary entry or writes through its retained descriptor.
+        var finalOpened = stat(), finalStaged = stat()
+        guard Darwin.fstat(descriptor, &finalOpened) == 0,
+              Darwin.fstatat(destinationDirectory, temporaryName, &finalStaged, AT_SYMLINK_NOFOLLOW) == 0,
+              (finalOpened.st_mode & S_IFMT) == S_IFREG, finalOpened.st_nlink == 1,
+              (finalStaged.st_mode & S_IFMT) == S_IFREG, finalStaged.st_nlink == 1,
+              MCPPreparedXMPIdentity(finalOpened) == MCPPreparedXMPIdentity(opened),
+              MCPPreparedXMPIdentity(finalStaged) == MCPPreparedXMPIdentity(opened) else {
+            throw MCPAutomationReadError.photoChanged
+        }
+        var finalReadback = Data(count: data.count)
+        try finalReadback.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+            var consumed = 0
+            while consumed < buffer.count {
+                let count = Darwin.pread(descriptor, base.advanced(by: consumed), buffer.count - consumed, off_t(consumed))
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw MCPAutomationReadError.photoChanged }
+                consumed += count
+            }
+        }
+        guard finalReadback == data else { throw MCPAutomationReadError.photoChanged }
         guard Darwin.renameat(destinationDirectory, temporaryName, destinationDirectory,
             destinationName) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
         temporaryExists = false
@@ -1071,6 +1100,31 @@ nonisolated struct MCPAutomationFacade: Sendable {
         // recovery later checks that same inode along with exact bytes and live revisions.
         try beforeMutation(MCPPreparedXMPIdentity(opened))
         try validate()
+        // Durable recovery runs caller code. Its return must not authorize a different
+        // temporary inode or changed bytes than the generation it just retained.
+        var finalOpened = stat(), finalStaged = stat()
+        guard Darwin.fstat(descriptor, &finalOpened) == 0,
+              Darwin.fstatat(directory.descriptor, temporaryName, &finalStaged, AT_SYMLINK_NOFOLLOW) == 0,
+              (finalOpened.st_mode & S_IFMT) == S_IFREG, finalOpened.st_nlink == 1,
+              (finalStaged.st_mode & S_IFMT) == S_IFREG, finalStaged.st_nlink == 1,
+              MCPPreparedXMPIdentity(finalOpened) == MCPPreparedXMPIdentity(opened),
+              MCPPreparedXMPIdentity(finalStaged) == MCPPreparedXMPIdentity(opened) else {
+            throw MCPAutomationReadError.photoChanged
+        }
+        var finalReadback = Data(count: data.count)
+        if !data.isEmpty {
+            try finalReadback.withUnsafeMutableBytes { buffer in
+                guard let base = buffer.baseAddress else { throw MCPAutomationReadError.unsafeCarrier }
+                var consumed = 0
+                while consumed < buffer.count {
+                    let count = Darwin.pread(descriptor, base.advanced(by: consumed), buffer.count - consumed, off_t(consumed))
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { throw MCPAutomationReadError.photoChanged }
+                    consumed += count
+                }
+            }
+        }
+        guard finalReadback == data else { throw MCPAutomationReadError.photoChanged }
         guard Darwin.renameat(directory.descriptor, temporaryName, directory.descriptor,
             destination.lastPathComponent) == 0 else { throw MCPAutomationReadError.unsafeCarrier }
         temporaryExists = false
