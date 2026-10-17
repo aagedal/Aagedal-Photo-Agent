@@ -13,6 +13,8 @@ final class DevelopTemplateBatchReviewModel {
     private(set) var message: String?
     var cleanupRequiredID: UUID? { pendingCleanup?.id ?? preparationCleanupID }
 
+    @ObservationIgnored private let beginSession: @Sendable () -> Void
+    @ObservationIgnored private let withdrawSession: @Sendable () -> Void
     @ObservationIgnored private let cancelReview: Cancellation
     @ObservationIgnored private let retryPreparationCleanup: @Sendable () async throws -> Void
     @ObservationIgnored private var pendingCleanup: Review?
@@ -21,14 +23,24 @@ final class DevelopTemplateBatchReviewModel {
     @ObservationIgnored private var generation = UUID()
 
     init(cancel: @escaping Cancellation,
-         retryPreparationCleanup: @escaping @Sendable () async throws -> Void) {
+         retryPreparationCleanup: @escaping @Sendable () async throws -> Void,
+         beginSession: @escaping @Sendable () -> Void = {},
+         withdrawSession: @escaping @Sendable () -> Void = {}) {
+        self.beginSession = beginSession; self.withdrawSession = withdrawSession
         cancelReview = cancel
         self.retryPreparationCleanup = retryPreparationCleanup
+    }
+
+    convenience init(service: DevelopTemplateBatchNativeReviewService) {
+        self.init(cancel: { try await service.admission.cancel($0) },
+            retryPreparationCleanup: { try await service.admission.retryCancelledReviewCleanup() },
+            beginSession: { service.session.begin() }, withdrawSession: { service.session.withdraw() })
     }
 
     /// The retained task outlives a dismissed view and drains any late review retirement.
     func prepare(_ preparation: @escaping Preparation) async {
         guard !isBusy, review == nil, cleanupRequiredID == nil else { return }
+        beginSession()
         generation = UUID()
         let current = generation
         isBusy = true; message = nil
@@ -64,6 +76,7 @@ final class DevelopTemplateBatchReviewModel {
 
     /// Visibility and consent disappear synchronously; filesystem cleanup remains owned.
     func dismiss() {
+        withdrawSession()
         generation = UUID()
         operation?.cancel()
         guard let retained = review else { return }

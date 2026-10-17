@@ -47,6 +47,202 @@ struct DevelopTemplateBatchCaptureServiceTests {
                 resolveScope: { .init(directory: root, release: {}) }))
     }
 
+    private nonisolated enum NativeReviewContext {
+        @TaskLocal static var value: String?
+    }
+
+    @Test("Native presentation retains exact failed cleanup across reopening and unlocks only after retry")
+    func nativePresentationCleanupAcrossReopening() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let originals = try f.photos.map { try Data(contentsOf: $0) }
+        let failure = MCPServerCoreTests.DataBox(); failure.write(Data([1]))
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("NativeAdmission"),
+            afterFinishReview: {
+                if failure.read() == Data([1]) { throw AutomationOperationRegistry.Failure.storageUnavailable }
+            })
+        let service = DevelopTemplateBatchNativeReviewService(authorizationStore: f.facade.authorizationStore,
+            discovery: f.discovery, store: store, configurationRevision: { "native-sidecar-v1" })
+        let presentation = DevelopTemplateBatchReviewPresentation(service: service)
+        await presentation.refresh()
+        let staleSelection = presentation.selectionGeneration
+        presentation.dismiss()
+        presentation.selectPhotos(f.photos, generation: staleSelection)
+        #expect(presentation.photos.isEmpty)
+        presentation.selectPhotos(Array(repeating: f.photos[0], count: DevelopTemplateBatchIntent.maximumPhotos + 1),
+            generation: presentation.selectionGeneration)
+        #expect(presentation.photos.isEmpty && presentation.message != nil)
+        await presentation.prepare()
+        #expect(presentation.model?.review == nil)
+        #expect(try await store.inspect().isEmpty)
+        let selected = Array(f.photos.reversed())
+        presentation.selectPhotos(selected, generation: presentation.selectionGeneration)
+        #expect(presentation.photos == selected && presentation.message == nil)
+        await presentation.prepare()
+        let model = try #require(presentation.model)
+        let review = try #require(model.review)
+        let retained = try await store.load(review.id)
+        presentation.dismiss()
+        await model.waitForIdle()
+        #expect(model.review == nil && model.cleanupRequiredID == review.id)
+        #expect(presentation.inputsLocked && presentation.photos.isEmpty)
+        // The commit succeeded but acknowledgement failed. Reopening must preserve
+        // this exact cleanup owner, including when another explicit retry fails.
+        #expect(try await store.load(review.id).state == .cancelled)
+        presentation.dismiss()
+        let generation = presentation.selectionGeneration
+        var changed = f.template; changed.name = "Changed while cleanup is pending"
+        try JSONEncoder().encode(changed).write(to: f.templateURL)
+        await presentation.refresh()
+        #expect(presentation.selectionGeneration == generation)
+        #expect(presentation.templates.first?.revision == f.revision)
+        presentation.photos = f.photos
+        await presentation.prepare()
+        #expect(try await store.inspect().map(\.id) == [review.id])
+        await model.retryCleanup()
+        #expect(model.cleanupRequiredID == review.id && presentation.inputsLocked)
+        #expect(try await store.load(review.id).evidenceData == retained.evidenceData)
+        failure.write(Data())
+        await model.retryCleanup()
+        #expect(model.cleanupRequiredID == nil && !presentation.inputsLocked)
+        #expect(try await store.load(review.id).evidenceSHA256 == retained.evidenceSHA256)
+        await presentation.refresh()
+        #expect(presentation.templates.first?.name == changed.name)
+        await presentation.prepare()
+        let next = try #require(model.review)
+        #expect(next.id != review.id)
+        let canonicalPhotos = try f.photos.map { try f.facade.capturePhotoSnapshot(path: $0.path).target.url }
+        #expect(next.evidence.photos.map(\.url) == canonicalPhotos)
+        #expect(next.evidence.template == changed)
+        presentation.dismiss()
+        await model.waitForIdle()
+        #expect(try await store.load(next.id).state == .cancelled)
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == originals)
+    }
+
+    @Test("Native review lists exact templates and retires ordered sidecar capture without writing photos")
+    func nativeReviewCaptureAndDismissal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let original = try f.photos.map { try Data(contentsOf: $0) }
+        let directory = f.root.appendingPathComponent("NativeAdmission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchNativeReviewService(authorizationStore: f.facade.authorizationStore,
+            discovery: f.discovery, store: store, configurationRevision: { "native-sidecar-v1" })
+        let templates = try await service.templates()
+        #expect(templates == [.init(id: f.template.id, name: f.template.name, revision: f.revision)])
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        let template = try #require(templates.first)
+        let model = DevelopTemplateBatchReviewModel(service: service)
+        let selected = Array(f.photos.reversed())
+        await model.prepare { try await service.prepare(template: template, photos: selected) }
+        let review = try #require(model.review)
+        let canonicalSelection = try selected.map { try f.facade.capturePhotoSnapshot(path: $0.path).target.url }
+        #expect(review.evidence.photos.map(\.url) == canonicalSelection)
+        #expect(review.evidence.template == f.template)
+        let payload = try #require(JSONSerialization.jsonObject(with: review.evidence.originalIntentData) as? [String: Any])
+        let requests = try #require(payload["photos"] as? [[String: Any]])
+        #expect(requests.compactMap { $0["mode"] as? String }
+            == [MetadataWriteMode.writeToXMPSidecar.rawValue, MetadataWriteMode.writeToXMPSidecar.rawValue])
+        #expect(try await store.load(review.id).state == .awaitingReview)
+        model.dismiss()
+        #expect(model.review == nil)
+        await model.waitForIdle()
+        #expect(model.cleanupRequiredID == nil && !model.isBusy)
+        #expect(try await store.load(review.id).state == .cancelled)
+        #expect(try f.photos.map { try Data(contentsOf: $0) } == original)
+        for photo in f.photos {
+            #expect(!FileManager.default.fileExists(atPath: photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path))
+    }
+
+    @Test("Native review refuses a withdrawn session and stale template before retaining evidence")
+    func nativeReviewSessionAndStaleTemplate() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("NativeAdmission")
+        let store = DevelopTemplateBatchAdmissionStore(directory: directory)
+        let service = DevelopTemplateBatchNativeReviewService(authorizationStore: f.facade.authorizationStore,
+            discovery: f.discovery, store: store, configurationRevision: { "native-sidecar-v1" })
+        let template = try #require(try await service.templates().first)
+        await #expect(throws: CancellationError.self) {
+            try await service.prepare(template: template, photos: f.photos)
+        }
+        service.session.begin(); service.session.withdraw()
+        await #expect(throws: CancellationError.self) {
+            try await service.prepare(template: template, photos: f.photos)
+        }
+        service.session.begin()
+        var changed = f.template; changed.name = "Changed after discovery"
+        try JSONEncoder().encode(changed).write(to: f.templateURL)
+        await #expect(throws: MCPMetadataTemplatePreview.Failure.staleTemplate) {
+            try await service.prepare(template: template, photos: f.photos)
+        }
+        #expect(try await store.inspect().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    @Test("Native worker captures and retires the maximum eight-photo batch in exact order")
+    func nativeReviewMaximumBatch() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let bytes = try Data(contentsOf: f.photos[0])
+        var photos = f.photos
+        for index in photos.count..<DevelopTemplateBatchIntent.maximumPhotos {
+            let photo = f.root.appendingPathComponent("maximum-\(index).png")
+            try bytes.write(to: photo)
+            photos.append(photo)
+        }
+        let selected = Array(photos.reversed())
+        let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("NativeAdmission"))
+        let service = DevelopTemplateBatchNativeReviewService(authorizationStore: f.facade.authorizationStore,
+            discovery: f.discovery, store: store, configurationRevision: { "native-sidecar-v1" })
+        let template = try #require(try await service.templates().first)
+        let model = DevelopTemplateBatchReviewModel(service: service)
+        await model.prepare { try await service.prepare(template: template, photos: selected) }
+        let review = try #require(model.review)
+        #expect(review.evidence.photos.count == DevelopTemplateBatchIntent.maximumPhotos)
+        let canonicalSelection = try selected.map { try f.facade.capturePhotoSnapshot(path: $0.path).target.url }
+        #expect(review.evidence.photos.map(\.url) == canonicalSelection)
+        #expect(Set(review.evidence.photos.map(\.requestID)).count == selected.count)
+        let retained = try await store.inspect()
+        #expect(retained.count == 1 && retained.first?.photos.map(\.url) == canonicalSelection)
+        model.dismiss()
+        await model.waitForIdle()
+        #expect(model.cleanupRequiredID == nil && !model.isBusy)
+        #expect(try await store.load(review.id).state == .cancelled)
+        for photo in selected { #expect(try Data(contentsOf: photo) == bytes) }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent(MetadataSidecarService.sidecarDirectoryName).path))
+        for photo in selected {
+            #expect(!FileManager.default.fileExists(atPath: photo.deletingPathExtension().appendingPathExtension("xmp").path))
+        }
+    }
+
+    @Test("Native worker preserves task context off the main thread and refuses configuration drift")
+    func nativeReviewWorkerConfigurationDrift() async throws {
+        for driftCall: UInt8 in [2, 3] {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            let calls = MCPServerCoreTests.DataBox(); calls.write(Data([0]))
+            let workerEvidence = MCPServerCoreTests.DataBox()
+            let store = DevelopTemplateBatchAdmissionStore(directory: f.root.appendingPathComponent("NativeAdmission"))
+            let service = DevelopTemplateBatchNativeReviewService(authorizationStore: f.facade.authorizationStore,
+                discovery: f.discovery, store: store, configurationRevision: {
+                    let call = (calls.read()?.first ?? 0) + 1
+                    calls.write(Data([call]))
+                    if call == 1 {
+                        workerEvidence.write(Data("\(Thread.isMainThread):\(NativeReviewContext.value ?? "missing")".utf8))
+                    }
+                    return call >= driftCall ? "changed" : "initial"
+                })
+            let template = try #require(try await service.templates().first)
+            service.session.begin()
+            await NativeReviewContext.$value.withValue("native-review-context") {
+                await #expect(throws: DevelopTemplateBatchAdmissionFailure.changedEvidence) {
+                    try await service.prepare(template: template, photos: f.photos)
+                }
+            }
+            #expect(workerEvidence.read() == Data("false:native-review-context".utf8))
+            #expect(try await store.inspect().isEmpty)
+        }
+    }
+
     @Test("Ordered capture owns fresh layers, exact source/carrier evidence and makes no writes")
     func orderedIndependentCapture() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

@@ -187,7 +187,7 @@ struct SettingsView: View {
             case .sync: ["Sync everything", "App preferences", "Keyword lists", "Templates", "Known People database", "Teams", "Watermarks", "iCloud Drive"]
             case .updates: ["Current Version", "Automatic Updates", "Automatically check for updates", "Check frequency"]
             case .webDownloads: ["Web Download Tools", "yt-dlp", "FFmpeg", "Browser media import"]
-            case .automation: ["Local MCP Server", "Allow team creation", "Authorized Folders", "Client Setup", "Proofreading Plan Review", "Transcription Intent Review", "Operation History", "Develop Capture History", "Review Cancelled Capture Cleanup", "Retire Cancelled Captures", "Develop Batch Recovery", "Face Scan Receipts", "Interrupted XMP Publication", "Privacy and activity", "Codex"]
+            case .automation: ["Local MCP Server", "Allow team creation", "Authorized Folders", "Client Setup", "Proofreading Plan Review", "Transcription Intent Review", "Operation History", "Develop Template Review", "Prepare Develop Review", "Develop Capture History", "Review Cancelled Capture Cleanup", "Retire Cancelled Captures", "Develop Batch Recovery", "Face Scan Receipts", "Interrupted XMP Publication", "Privacy and activity", "Codex"]
             case .shortcuts: ["Keyboard shortcuts", "Culling shortcut profile", "Rating & Label", "Caption Workspace", "Key bindings"]
             case .licenses: ["Third-party licenses", "Open source", "Acknowledgments"]
             }

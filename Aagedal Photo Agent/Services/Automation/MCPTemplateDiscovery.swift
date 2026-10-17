@@ -213,6 +213,12 @@ nonisolated enum MCPDevelopTemplatePreview {
         return RAWConfiguration(profile: profile as? String, decoder: decoder as? String)
     }
 
+    static func configurationRevision() throws -> String {
+        let configuration = try rawConfiguration()
+        let data = try JSONEncoder().encode([configuration.profile, configuration.decoder])
+        return "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func settingsValue(_ settings: CameraRawSettings) throws -> MCPJSONValue {
         try JSONDecoder().decode(MCPJSONValue.self, from: JSONEncoder().encode(settings))
     }

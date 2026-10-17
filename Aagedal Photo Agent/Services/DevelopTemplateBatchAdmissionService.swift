@@ -101,6 +101,9 @@ nonisolated struct DevelopTemplateBatchAdmissionCleanupPreview: Sendable {
 /// Separate from physical checkpoints so a cancelled review can never be mistaken for
 /// an execution receipt. Anchored, locked transactions make consumption cross-instance.
 actor DevelopTemplateBatchAdmissionStore {
+    nonisolated let queue = DispatchSerialQueue(label: "com.aagedal.photo-agent.develop-admission-storage", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     static let maximumEvidenceBytes = 16_777_216
     static let maximumStorageBytes = 67_108_864
     static let maximumEntries = 128
@@ -356,6 +359,9 @@ actor DevelopTemplateBatchAdmissionStore {
 /// Only this process's independent capture can become a native review. Tokens are opaque,
 /// tied to the service instance, and removed before any await that can reenter the actor.
 actor DevelopTemplateBatchAdmissionService {
+    nonisolated let queue = DispatchSerialQueue(label: "com.aagedal.photo-agent.develop-admission-review", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     struct Review: Sendable, Identifiable {
         let id: UUID
         let evidence: DevelopTemplateBatchAdmissionEvidence
@@ -390,7 +396,7 @@ actor DevelopTemplateBatchAdmissionService {
         self.afterRetention = afterRetention
     }
 
-    func review(_ capture: DevelopTemplateBatchCapture) async throws -> Review {
+    func review(_ capture: DevelopTemplateBatchCapture, expectedConfigurationRevision: String? = nil) async throws -> Review {
         try Task.checkCancellation()
         // Embedded workers need an explicit owned-effect stage before their original
         // inode can be retired. Until that is wired, native admission is sidecar-only.
@@ -404,6 +410,9 @@ actor DevelopTemplateBatchAdmissionService {
         }
         let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: capture,
             configurationRevision: configurationRevision())
+        guard expectedConfigurationRevision == nil || expectedConfigurationRevision == evidence.configurationRevision else {
+            throw DevelopTemplateBatchAdmissionFailure.changedEvidence
+        }
         try validateAuthority(capture, evidence: evidence)
         try validateCarriers(capture)
         let token = UUID()
