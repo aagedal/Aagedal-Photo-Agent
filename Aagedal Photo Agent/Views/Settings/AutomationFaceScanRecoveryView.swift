@@ -54,7 +54,11 @@ struct AutomationFaceScanRecoveryView: View {
                         if let completion = receipt.completion {
                             Text("Processed: \(completion.processedCount). Failed: \(completion.failureCount). Unqualified files: \(completion.unsignedFileCount).")
                             Text("Committed thumbnails: \(completion.committedThumbnailCount). Committed documents: \(completion.committedDocumentCount).")
-                            if completion.resetCommitted { Text("Saved face data reset was committed.") }
+                            if let reset = completion.reset, reset.completed == false,
+                               let removed = reset.removedRelativePaths, !removed.isEmpty {
+                                Text("Reset stopped after removing \(removed.count) saved face-data entries. Review the folder before retrying.")
+                                    .foregroundStyle(.orange)
+                            } else if completion.resetCommitted { Text("Saved face data reset was committed.") }
                             if completion.persistenceFailed || completion.completionUnavailable || completion.submissionMismatch || completion.coordinationFailed {
                                 Text("Completion or persistence is uncertain. Preserve this evidence and inspect the saved files before another scan.")
                                     .foregroundStyle(.orange)
@@ -73,6 +77,12 @@ struct AutomationFaceScanRecoveryView: View {
                                 ? "Execution was admitted; physical effects may have occurred without a completion receipt."
                                 : "Admitted without a completion receipt. This record cannot prove whether execution started.")
                                 .foregroundStyle(.orange)
+                        }
+                        if let admission = receipt.durableAdmission {
+                            Text(verbatim: "Original request: \(admission.requestID)").font(.caption)
+                            Text(verbatim: "Admission: \(admission.admissionID)").font(.caption)
+                            Text("Historical client correlation; inspection does not restore consent or prove current folder contents.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         Text(verbatim: "Intent: \(receipt.intentID.uuidString.lowercased())").font(.caption)
                         Text(verbatim: "Inventory revision: \(receipt.snapshotRevision)").font(.caption)

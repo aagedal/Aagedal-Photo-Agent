@@ -375,13 +375,26 @@ final class CoreWorkflowSmokeTests: XCTestCase {
     /// Runs only through the external signed-helper probe in its face-only mode.
     @MainActor
     func testSignedBundledHelperOpensExactFaceReviewWithoutExecution() throws {
+        try exerciseSignedBundledHelperFace(execute: false)
+    }
+
+    @MainActor
+    func testSignedBundledHelperFaceScanRequiresNativeConsentAndRetainsCompletion() throws {
+        try exerciseSignedBundledHelperFace(execute: true)
+    }
+
+    @MainActor
+    private func exerciseSignedBundledHelperFace(execute: Bool) throws {
         guard installedHelperToken != nil else {
             throw XCTSkip("Run scripts/ci/probe_installed_native_review.py --face-review for the real signed helper boundary.")
         }
         let folder = try makePhotoFolder(count: 1)
+        let receiptRoot = fixtureRoot.appendingPathComponent("ManagedFaceReceipts")
+        let people = fixtureRoot.appendingPathComponent("RetainedFacePeople", isDirectory: true)
+        try FileManager.default.createDirectory(at: people, withIntermediateDirectories: true)
         let socket = URL(fileURLWithPath: "/private/tmp/apa-integration-\(UUID().uuidString.lowercased())", isDirectory: true)
         defer { app?.terminate() }
-        launch(workflow: "open-folder", folder: folder, transcriptionReview: true,
+        launch(workflow: "open-folder", folder: folder, knownPeopleRoot: people, transcriptionReview: true,
             transcriptionReviewExecution: "complete", transcriptionHelperSocket: socket, faceReview: true)
         let readyURL = folder.appendingPathComponent("transcription-helper-listener-ready.json")
         expectation(for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: readyURL.path) }, evaluatedWith: app)
@@ -457,10 +470,9 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(detail.buttons.allElementsBoundByIndex.map(\.label), ["Review Original Face Request", "Dismiss Face Intent"])
         XCTAssertEqual(detail.checkBoxes.count, 0)
         settings.buttons["automation.faceIntentReview.adopt"].click()
-        XCTAssertTrue(settings.staticTexts["automation.faceReview.retainedReviewOnly"].waitForExistence(timeout: 30))
-        XCTAssertFalse(settings.buttons["automation.faceReview.start"].exists)
-        XCTAssertFalse(settings.checkBoxes["automation.faceReview.consent"].exists)
-        XCTAssertFalse(settings.checkBoxes["automation.faceReview.resetConsent"].exists)
+        XCTAssertTrue(settings.descendants(matching: .any)["automation.faceReview.consent"].waitForExistence(timeout: 45))
+        XCTAssertTrue(settings.descendants(matching: .any)["automation.faceReview.resetConsent"].exists)
+        XCTAssertFalse(settings.buttons["automation.faceReview.start"].isEnabled)
         XCTAssertFalse(settings.buttons["automation.faceReview.prepare"].exists)
         XCTAssertEqual(visibleText(expiry), originalExpiry)
         try assertNoWrites()
@@ -476,6 +488,98 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         XCTAssertEqual(visibleText(expiry), originalExpiry)
         XCTAssertTrue(visibleText(settings.staticTexts["automation.faceIntentReview.requestID"]).contains(id))
         try assertNoWrites()
+        if execute {
+            // Disposable populated storage proves reset removes actual entries.
+            let oldThumbnail = folder.appendingPathComponent(".face_data/thumbnails/old.jpg")
+            try FileManager.default.createDirectory(at: oldThumbnail.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let oldBytes = Data("disposable previous face thumbnail".utf8)
+            try oldBytes.write(to: oldThumbnail)
+            settings.buttons["automation.faceIntentReview.adopt"].click()
+            let consent = settings.descendants(matching: .any)["automation.faceReview.consent"]
+            XCTAssertTrue(consent.waitForExistence(timeout: 45))
+            let start = settings.buttons["automation.faceReview.start"]
+            XCTAssertFalse(start.isEnabled)
+            consent.click()
+            XCTAssertFalse(start.isEnabled)
+            XCTAssertEqual(try Data(contentsOf: oldThumbnail), oldBytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: receiptRoot.path))
+            for (url, bytes) in zip(protectedURLs, original) { XCTAssertEqual(try Data(contentsOf: url), bytes) }
+            settings.descendants(matching: .any)["automation.faceReview.resetConsent"].click()
+            XCTAssertTrue(start.isEnabled)
+            start.click()
+            let status = settings.descendants(matching: .any)["automation.faceReview.status"]
+            expectation(for: NSPredicate { _, _ in
+                guard status.exists else { return false }
+                let message = self.visibleText(status)
+                return ["Face scan completed", "Face scan requires review", "Face scan did not complete",
+                        "Face scan stopped", "receipt could not be loaded"].contains { message.contains($0) }
+            }, evaluatedWith: nil)
+            waitForExpectations(timeout: 60)
+            XCTAssertTrue(visibleText(status).contains("Face scan completed"), visibleText(status))
+            XCTAssertFalse(start.exists)
+            XCTAssertFalse(consent.exists)
+            let document = folder.appendingPathComponent(".face_data/face_data.json")
+            let savedData = try Data(contentsOf: document)
+            let receiptsURL = receiptRoot.appendingPathComponent("operations.json")
+            let receiptBytes = try Data(contentsOf: receiptsURL)
+            func archive(_ url: URL) throws -> [String: Any] {
+                let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+                let payload = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(envelope["payload"] as? String)))
+                return try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            }
+            let records = try XCTUnwrap(archive(receiptsURL)["receipts"] as? [[String: Any]])
+            XCTAssertEqual(records.count, 1)
+            let receipt = try XCTUnwrap(records.first)
+            XCTAssertEqual(receipt["photoCount"] as? Int, paths.count)
+            XCTAssertEqual(receipt["forceFullScan"] as? Bool, true)
+            XCTAssertEqual(receipt["includeJerseyNumbers"] as? Bool, true)
+            XCTAssertEqual(receipt["phase"] as? String, "completed")
+            let completion = try XCTUnwrap(receipt["completion"] as? [String: Any])
+            XCTAssertEqual(completion["outcome"] as? String, "verified")
+            XCTAssertEqual(completion["processedCount"] as? Int, paths.count)
+            XCTAssertEqual(completion["failureCount"] as? Int, 0)
+            let reset = try XCTUnwrap(completion["reset"] as? [String: Any])
+            XCTAssertEqual(reset["completed"] as? Bool, true)
+            XCTAssertEqual(reset["removedRelativePaths"] as? [String], [".face_data/thumbnails/old.jpg", ".face_data/thumbnails", ".face_data"])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: oldThumbnail.path))
+            let admission = try XCTUnwrap(receipt["durableAdmission"] as? [String: Any])
+            XCTAssertEqual(admission["requestID"] as? String, id)
+            XCTAssertEqual(admission["requestEpoch"] as? String, epoch)
+            XCTAssertEqual(admission["operationID"] as? String, (receipt["operationID"] as? String)?.lowercased())
+            let requestRecords = try XCTUnwrap(archive(folder.appendingPathComponent("face-review-requests/operations.json"))["records"] as? [[String: Any]])
+            let linked = try XCTUnwrap(requestRecords.first { $0["requestID"] as? String == id })
+            XCTAssertEqual(linked["state"] as? String, "linked")
+            XCTAssertEqual(try JSONSerialization.data(withJSONObject: try XCTUnwrap(linked["admission"]), options: [.sortedKeys]),
+                           try JSONSerialization.data(withJSONObject: admission, options: [.sortedKeys]))
+            for (url, bytes) in zip(protectedURLs, original) where url != folder.appendingPathComponent("face-review-requests/operations.json") {
+                XCTAssertEqual(try Data(contentsOf: url), bytes, url.lastPathComponent)
+            }
+            app.terminate()
+            launch(workflow: "open-folder", folder: folder, knownPeopleRoot: people, transcriptionReview: true,
+                transcriptionReviewExecution: "complete", transcriptionHelperSocket: socket, faceReview: true)
+            XCTAssertEqual(try Data(contentsOf: document), savedData)
+            XCTAssertEqual(try Data(contentsOf: receiptsURL), receiptBytes)
+            XCTAssertFalse(app.buttons["automation.faceReview.start"].exists)
+            XCTAssertFalse(app.descendants(matching: .any)["automation.faceReview.consent"].exists)
+            app.typeKey(",", modifierFlags: .command)
+            let reopened = app.windows["com_apple_SwiftUI_Settings_window"]
+            XCTAssertTrue(reopened.waitForExistence(timeout: 8))
+            reopened.outlines["Sidebar"].staticTexts["Automation"].firstMatch.click()
+            let managed = reopened.buttons["automation.faceReceipts.managed"]
+            XCTAssertTrue(managed.waitForExistence(timeout: 8))
+            managed.click()
+            let operationID = try XCTUnwrap(receipt["operationID"] as? String).lowercased()
+            let historyEntry = reopened.buttons["automation.faceReceipts.entry.\(operationID)"]
+            XCTAssertTrue(historyEntry.waitForExistence(timeout: 8))
+            historyEntry.click()
+            XCTAssertTrue(reopened.staticTexts["Original request: \(id)"].exists)
+            XCTAssertFalse(reopened.buttons["automation.faceReview.start"].exists)
+            XCTAssertEqual(try Data(contentsOf: receiptsURL), receiptBytes)
+            app.typeKey("q", modifierFlags: .command)
+            expectation(for: NSPredicate { _, _ in self.app.state == .notRunning }, evaluatedWith: app)
+            waitForExpectations(timeout: 8)
+            return
+        }
         // Native capacity maintenance requires an exact cancelled-only review.
         dismiss.click()
         let inspect = settings.buttons["automation.faceMaintenance.inspect"]
@@ -4066,6 +4170,15 @@ final class CoreWorkflowSmokeTests: XCTestCase {
         transcriptionHelperSocket: URL? = nil,
         faceReview: Bool = false
     ) {
+        // Resolve the existing parent physically, then append the possibly missing
+        // receipt directory. Foundation can shorten an existing /private/tmp leaf
+        // back to the /tmp symlink on relaunch; durable storage correctly refuses it.
+        guard let resolvedFixtureRoot = Darwin.realpath(fixtureRoot.path, nil) else {
+            XCTFail("The disposable fixture root could not be resolved")
+            return
+        }
+        let faceReceiptPath = String(cString: resolvedFixtureRoot) + "/ManagedFaceReceipts"
+        free(resolvedFixtureRoot)
         app = XCUIApplication()
         if faceReview { app.launchEnvironment["AAGEDAL_UI_TEST_FACE_REVIEW"] = "1" }
         if transcriptionReview { app.launchEnvironment["AAGEDAL_UI_TEST_TRANSCRIPTION_REVIEW"] = "1" }
@@ -4081,7 +4194,7 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-whisper-model-root", fixtureRoot.appendingPathComponent("WhisperModels").path,
             "--ui-test-develop-checkpoint-root", fixtureRoot.appendingPathComponent("ManagedDevelopCheckpoints").resolvingSymlinksInPath().path,
             "--ui-test-develop-admission-root", fixtureRoot.appendingPathComponent("ManagedDevelopAdmissions").resolvingSymlinksInPath().path,
-            "--ui-test-face-receipt-root", fixtureRoot.appendingPathComponent("ManagedFaceReceipts").resolvingSymlinksInPath().path,
+            "--ui-test-face-receipt-root", faceReceiptPath,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
         ]
         if workflow == "known-people-interchange" {

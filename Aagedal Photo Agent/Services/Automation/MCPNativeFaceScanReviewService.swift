@@ -1,8 +1,8 @@
 import Foundation
 
 /// Native process/session-only consent. Neither review nor approval is serializable or
-/// exposed to the helper. Physical scanner publication remains path based; this service
-/// binds consent and authority but does not claim descriptor-anchored mutation.
+/// exposed to the helper. Retained client requests use the scanner's anchored
+/// publication capability; this service binds native consent and authority.
 nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
     enum Failure: Error, Equatable {
         case changedReview, acknowledgementRequired, unavailableApproval, expiredApproval, invalidClock
@@ -11,6 +11,8 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
     struct Review: Sendable {
         let intent: MCPFaceScanIntentStore.Intent
         let consequences: [String]
+        /// Original store retained independently of review expiry for terminal validation.
+        let durableRequests: MCPFaceScanReviewRequestStore?
         fileprivate let generation: UUID
         fileprivate let preparedAt: ContinuousClock.Instant
         fileprivate let deadline: ContinuousClock.Instant
@@ -81,13 +83,13 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
         let deadline = preparedAt.advanced(by: .seconds(MCPFaceScanIntentStore.lifetime))
         let intent = try intent()
         _ = try intents.inspect(id: intent.id)
+        let binding = try intents.reviewBinding(id: intent.id)
         try validateSession()
         let checkedAt = monotonicClock()
         guard checkedAt >= preparedAt, checkedAt < deadline else { throw Failure.expiredApproval }
         var consequences = [
             "Scans every listed immediate photo locally for faces; optional jersey recognition uses the exact reviewed options.",
-            "Execution can create face thumbnails, embeddings and folder face data. Cancellation does not undo committed effects.",
-            "Physical scanner writes currently use paths. This consent does not establish descriptor-anchored publication."
+            "Execution can create face thumbnails, embeddings and folder face data. Cancellation does not undo committed effects."
         ]
         if intent.prepared.forceFullScan {
             consequences.append("A full scan resets existing folder face results and may delete their thumbnails before replacing results.")
@@ -96,7 +98,7 @@ nonisolated final class MCPNativeFaceScanReviewService: @unchecked Sendable {
             guard generation == preparationGeneration else { throw Failure.changedReview }
             try validateSession()
             currentReview = intent.id
-            return Review(intent: intent, consequences: consequences, generation: generation,
+            return Review(intent: intent, consequences: consequences, durableRequests: binding?.requests, generation: generation,
                           preparedAt: preparedAt, deadline: deadline)
         }
     }

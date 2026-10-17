@@ -1,5 +1,16 @@
 # Project planning overview
 
+**Durable face native execution (2026-10-17):** Settings now adopts the original
+retained request into explicit scan/reset consent and native Start on the app-owned
+scanner shared with Browser. Completion validates the current linked request and actual
+terminal managed operation without renewing expiry. Dismissal/cancellation retains exact
+worker drain; historical receipts preserve request/admission and partial-reset context.
+The 53-test focused run and 4,266-test regression pass (two existing skips, zero failures).
+Signed native consent/reset/completion/history/relaunch passes; two native runtime
+warnings retain the performance gate. State remains IMPLEMENTING; see the
+[dated continuation](release/durable-face-native-execution-2026-10-17.md).
+
+
 **Durable face anchored reset (2026-10-17):** Retained full scans now reset through
 the same descriptor capability used for later publication. Exact physical removal prefixes
 survive cancellation, authority withdrawal and verification failure; partial resets stop

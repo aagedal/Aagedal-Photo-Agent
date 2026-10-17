@@ -11,6 +11,8 @@ struct Aagedal_Photo_AgentApp: App {
     @ObservedObject private var imageScaling = ImageScalingController.shared
     @State private var settingsViewModel = SettingsViewModel()
     @State private var commandRouter = AppCommandRouter()
+    @State private var activityHistory: ActivityHistoryStore
+    @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var knownPeopleInterchangeController: KnownPeopleInterchangeController
     @State private var didOpenKnownPeopleUITestWorkflow = false
     private let recentFolders = RecentFoldersStore.shared
@@ -23,6 +25,10 @@ struct Aagedal_Photo_AgentApp: App {
         if uiTestConfiguration.isEnabled, let root = uiTestConfiguration.watermarkRootURL {
             WatermarkStore.storageOverrideURL = root.standardizedFileURL
         }
+        let history = ActivityHistoryStore()
+        _activityHistory = State(initialValue: history)
+        _faceRecognitionViewModel = State(initialValue: FaceRecognitionViewModel(
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(), activityHistory: history))
         _knownPeopleInterchangeController = State(initialValue: KnownPeopleInterchangeController(
             operations: KnownPeopleInterchangeProductionOperations()
         ))
@@ -47,7 +53,8 @@ struct Aagedal_Photo_AgentApp: App {
 
     var body: some Scene {
         Window("Aagedal Photo Agent", id: "main") {
-            ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter)
+            ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter,
+                        faceRecognition: faceRecognitionViewModel, history: activityHistory)
                 .environment(commandRouter)
                 .environment(knownPeopleInterchangeController)
                 .onAppear {
@@ -481,6 +488,7 @@ struct Aagedal_Photo_AgentApp: App {
 
         Settings {
             SettingsView(settingsViewModel: settingsViewModel)
+                .environment(faceRecognitionViewModel)
                 .environment(commandRouter)
                 .environment(knownPeopleInterchangeController)
         }

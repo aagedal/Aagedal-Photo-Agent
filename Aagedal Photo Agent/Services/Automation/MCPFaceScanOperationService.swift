@@ -1,8 +1,8 @@
 import Foundation
 
 /// App-side durable bridge only. Callers must establish native consent independently.
-/// Scheduling still uses the scanner's existing effect checks and path-based storage;
-/// these receipts confer neither helper execution nor rooted publication authority.
+/// Retained requests use anchored scanner effects and exact managed ownership;
+/// these receipts confer neither helper execution nor publication authority.
 actor MCPFaceScanOperationService {
     enum Failure: Error { case missingCompletion, mismatchedSubmission }
     /// A scheduled submission must own its actual task; returning a nil or unrelated
@@ -176,6 +176,24 @@ actor MCPFaceScanOperationService {
             nativeCompletion()
             throw error
         }
+    }
+
+    /// Historical completion is checked against the original request store without
+    /// reapplying preparation expiry or recapturing inventory after physical effects.
+    nonisolated func requireCompletion(_ receipt: MCPFaceScanReceiptStore.Receipt,
+                                       review: MCPNativeFaceScanReviewService.Review,
+                                       operation: AutomationOperationRegistry.Record) throws {
+        let record: MCPFaceScanReviewRequestStore.Record?
+        if let request = review.intent.durableRequest {
+            guard let requests = review.durableRequests,
+                  let id = UUID(uuidString: request.requestID),
+                  let epoch = UUID(uuidString: request.requestEpoch) else {
+                throw MCPFaceScanReceiptStore.Failure.mismatchedCompletion
+            }
+            record = try requests.inspect(id, requestEpoch: epoch)
+        } else { record = nil }
+        try receipt.requireCompletion(intent: review.intent, operation: operation,
+                                      durableRecord: record, registry: registry)
     }
 
     func waitForCompletion(_ id: UUID) async throws -> AutomationOperationRegistry.Record {

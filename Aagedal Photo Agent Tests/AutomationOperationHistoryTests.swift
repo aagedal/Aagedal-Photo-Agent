@@ -109,6 +109,20 @@ struct AutomationOperationHistoryTests {
             .contains("1 of 2 photos finished"))
     }
 
+    @Test("Face recovery history describes retained face effects and partial reset")
+    func faceRecoveryHistory() throws {
+        let fixture = try Fixture()
+        let owner = UUID()
+        let operation = try fixture.registry.enqueue(kind: .faceScan, ownerID: owner)
+        _ = try fixture.registry.start(operation.id, ownerID: owner)
+        let record = try fixture.registry.finish(operation.id, ownerID: owner, outcome: .recoveryRequired)
+        let guidance = AutomationOperationHistoryView.recoveryGuidance(record)
+        #expect(guidance.contains("face scan receipt"))
+        #expect(guidance.contains("partial reset"))
+        #expect(guidance.contains("does not undo committed effects"))
+        #expect(!guidance.contains("pending metadata"))
+    }
+
     @Test @MainActor func failedRefreshRetainsVisibleEvidenceAndSuccessfulRetryClearsError() async throws {
         let fixture = try Fixture()
         let record = try fixture.registry.enqueue(kind: .iptcDraft, ownerID: UUID())

@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Authenticated evidence may be explicitly adopted into a revocable native
-/// review. Retained-request execution stays unavailable until anchored effects.
+/// review with separate explicit consent for exact retained scanner execution.
 struct AutomationFaceScanIntentReviewView: View {
     @State private var nativeInvocation = AutomationNativeInvocationController.shared
+    @Environment(FaceRecognitionViewModel.self) private var scanner
     @State private var model: MCPNativeFaceScanReviewModel?
     @State private var preparation: Task<Void, Never>?
     @State private var message: String?
@@ -36,13 +37,13 @@ struct AutomationFaceScanIntentReviewView: View {
                     .accessibilityIdentifier("automation.faceIntentReview.requestID")
                 HStack {
                     Button("Review Original Face Request") { adopt(presentation) }
-                        .disabled(model?.isPreparing == true)
+                        .disabled(model?.isPreparing == true || model?.isRunning == true)
                         .accessibilityIdentifier("automation.faceIntentReview.adopt")
                     Button("Dismiss Face Intent") { dismiss(); nativeInvocation.consumeFaceReview(review) }
                         .accessibilityIdentifier("automation.faceIntentReview.dismiss")
                 }
                 if let model {
-                    AutomationNativeFaceScanReviewView(model: model, retainedRequest: true)
+                    AutomationNativeFaceScanReviewView(model: model, scanner: scanner, retainedRequest: true)
                 }
                 if let message { Text(verbatim: message).font(.caption) }
             }
@@ -65,12 +66,12 @@ struct AutomationFaceScanIntentReviewView: View {
             }
             let requests = try fixture?.faceRequests ?? MCPFaceScanReviewRequestStore(
                 storageDirectory: MCPFaceScanReviewRequestStore.defaultStorageDirectory())
-            let model = try self.model ?? MCPNativeFaceScanReviewModel.retainedReview(
+            let model = try self.model ?? MCPNativeFaceScanReviewModel.native(
+                scanner: scanner,
                 authorizationStore: fixture?.authorizationStore ?? MCPAuthorizationStore(),
                 operationDirectory: try fixture?.rootURL.appendingPathComponent("native-face-review-operations")
                     ?? AutomationOperationRegistry.defaultStorageDirectory(),
-                receiptDirectory: try fixture?.rootURL.appendingPathComponent("native-face-review-receipts")
-                    ?? MCPFaceScanReceiptStore.defaultStorageDirectory())
+                receiptDirectory: try MCPFaceScanReceiptStore.defaultStorageDirectory())
             self.model = model
             preparation = Task { await model.prepare(record: presentation.record, requests: requests) }
         } catch { message = error.localizedDescription }
