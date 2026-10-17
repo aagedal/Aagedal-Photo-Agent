@@ -53,13 +53,14 @@ struct AutomationNativeFaceScanReviewView: View {
                             Text(verbatim: photo.lastPathComponent).font(.caption).textSelection(.enabled)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxHeight: 160).accessibilityIdentifier("automation.faceReview.inventory")
+                }.frame(height: min(160, CGFloat(max(1, review.intent.prepared.imageURLs.count)) * 24))
+                    .accessibilityIdentifier("automation.faceReview.inventory")
                 Text(review.intent.prepared.forceFullScan ? "Full scan; saved face results will be reset." : "Incremental scan.")
                 Text(review.intent.prepared.includeJerseyNumbers ? "Jersey number recognition included." : "Jersey number recognition excluded.")
-                ForEach(review.consequences.filter { !$0.hasPrefix("Physical scanner writes") }, id: \.self) { Text(verbatim: $0).font(.caption) }
+                ForEach(review.consequences, id: \.self) { Text(verbatim: $0).font(.caption) }
                 Text("Review expires at \(review.intent.expiresAt.formatted(date: .omitted, time: .standard)). Changed inventory, authorization, model readiness or dismissal requires a new review.")
                     .font(.caption).foregroundStyle(.secondary)
-                if review.intent.durableRequest == nil {
+                Group {
                     Toggle("I approve scanning exactly these photos and saving local face data", isOn: $model.acknowledgesScan)
                         .accessibilityIdentifier("automation.faceReview.consent")
                     if review.intent.prepared.forceFullScan {
@@ -67,12 +68,11 @@ struct AutomationNativeFaceScanReviewView: View {
                             .accessibilityIdentifier("automation.faceReview.resetConsent")
                     }
                     Button("Start Reviewed Face Scan") { Task { await model.start() } }
+                        .buttonStyle(.borderedProminent)
                         .disabled(!model.canStart).accessibilityIdentifier("automation.faceReview.start")
-                } else {
-                    Text("Scanning from retained client requests is not available yet. This review grants no scan consent.")
-                        .font(.caption).accessibilityIdentifier("automation.faceReview.retainedReviewOnly")
                 }
                 Button("Dismiss Review") { model.dismiss() }
+                    .buttonStyle(.bordered)
             }
             if model.isPreparing { ProgressView("Preparing exact inventory…").controlSize(.small) }
             if model.isRunning {

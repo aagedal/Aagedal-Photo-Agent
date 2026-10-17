@@ -128,6 +128,9 @@ struct AutomationOperationHistoryView: View {
     }
 
     nonisolated static func recoveryGuidance(_ record: AutomationOperationRegistry.Record) -> String {
+        if record.kind == .faceScan {
+            return "Preserve the face scan receipt and inspect saved face data, thumbnails and any partial reset before retrying. Cancellation does not undo committed effects. History does not grant scan consent or automatic repair."
+        }
         if record.kind == .voiceTranscription, record.batchProgress != nil {
             return "Saved transcript drafts are retained. Inspect photos marked recovery required or last recorded as running before retrying; unfinished items are not confirmed as saved. Automatic repair is unavailable."
         }

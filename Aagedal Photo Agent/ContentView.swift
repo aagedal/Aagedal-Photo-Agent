@@ -247,18 +247,13 @@ struct ContentView: View {
     /// moment so the alert and sheet describe exactly what was flagged.
     @State private var listRecoveryAffectedNames: [String] = []
 
-    init(settingsViewModel: SettingsViewModel, commandRouter: AppCommandRouter) {
+    init(settingsViewModel: SettingsViewModel, commandRouter: AppCommandRouter,
+         faceRecognition: FaceRecognitionViewModel, history: ActivityHistoryStore) {
         let uiTestLaunchConfiguration = UITestLaunchConfiguration.current
         let deliverySession = DeadlineDeliveryProductionSession()
         let thumbnailService = ThumbnailService()
         let fullScreenImageCache = FullScreenImageCache()
         let browser = BrowserViewModel(thumbnailService: thumbnailService, fullScreenImageCache: fullScreenImageCache)
-        let history = ActivityHistoryStore()
-        let faceRecognition = FaceRecognitionViewModel(
-            readService: browser.metadataReadService,
-            writeEngine: browser.writeEngine,
-            activityHistory: history
-        )
         // Wire face deletion onto every pane (primary now, the split pane when created).
         let configurePane: (BrowserViewModel) -> Void = { [weak faceRecognition, weak commandRouter] vm in
             vm.onImagesDeleted = { urls in faceRecognition?.deleteFaces(forImageURLs: urls) }

@@ -2,8 +2,7 @@ import Foundation
 import Observation
 
 /// A visible native review owns this revocable session. It is never reconstructed
-/// from retained receipts or helper arguments. Actual writes retain the scanner's
-/// existing path-based publication limits.
+/// from retained receipts or helper arguments.
 @MainActor @Observable
 final class MCPNativeFaceScanReviewModel {
     /// Model loading, inventory checks and receipt reads may block. Retain the
@@ -21,13 +20,12 @@ final class MCPNativeFaceScanReviewModel {
     }
 
     nonisolated enum Failure: LocalizedError {
-        case sessionWithdrawn, modelChanged, operationInProgress, durableExecutionUnavailable
+        case sessionWithdrawn, modelChanged, operationInProgress
         var errorDescription: String? {
             switch self {
             case .sessionWithdrawn: "The native review was dismissed. Prepare a new review."
             case .modelChanged: "Face model readiness changed. Prepare a new review after the model is available."
             case .operationInProgress: "Wait for the retained face scan to finish before preparing another review."
-            case .durableExecutionUnavailable: "Scanning from retained client requests is not available yet."
             }
         }
     }
@@ -101,24 +99,8 @@ final class MCPNativeFaceScanReviewModel {
         })
     }
 
-    /// Settings may adopt authenticated client evidence for native review. This
-    /// factory deliberately has no scanner until durable effects are anchored.
-    static func retainedReview(authorizationStore: MCPAuthorizationStore,
-                               operationDirectory: URL, receiptDirectory: URL) -> MCPNativeFaceScanReviewModel {
-        let intents = MCPFaceScanIntentStore(admission: .init(authorizationStore: authorizationStore))
-        let receipts = MCPFaceScanReceiptStore(storageDirectory: receiptDirectory)
-        let operations = MCPFaceScanOperationService(intents: intents,
-            registry: .init(storageDirectory: operationDirectory), receipts: receipts,
-            schedule: { _, _, _ in throw Failure.durableExecutionUnavailable })
-        return .init(intents: intents, operations: operations, receipts: receipts, modelPreflight: {
-            let embedder = CoreMLFaceEmbedder.shared
-            let capability = try embedder.prepareNativeScanModel()
-            return { try embedder.validateNativeScanModel(capability) }
-        })
-    }
-
     var canStart: Bool {
-        review != nil && review?.intent.durableRequest == nil && !isRunning && !isPreparing && acknowledgesScan
+        review != nil && !isRunning && !isPreparing && acknowledgesScan
             && (review?.intent.prepared.forceFullScan != true || acknowledgesReset)
     }
 
@@ -196,12 +178,12 @@ final class MCPNativeFaceScanReviewModel {
             guard current == generation else { return }
             operation = completed
             message = "Loading the completed face scan receipt…"
-            let readReceipt = self.readReceipt
+            let readReceipt = self.readReceipt, operations = self.operations
             let retainedReceipt = try await worker.run {
                 guard let retainedReceipt = try readReceipt(completed.id) else {
                     throw MCPFaceScanOperationService.Failure.missingCompletion
                 }
-                try retainedReceipt.requireCompletion(intent: review.intent, operation: completed)
+                try operations.requireCompletion(retainedReceipt, review: review, operation: completed)
                 return retainedReceipt
             }
             guard current == generation else { return }

@@ -1,8 +1,11 @@
 import Foundation
 import CryptoKit
+import CoreGraphics
+import ImageIO
 
 /// Explicit UI-test seam. Real durable intent and source validation, isolated from
-/// production authorization, provider state and archives. Execution uses only synthetic recognition.
+/// production authorization, provider state and archives. Transcription uses synthetic
+/// recognition; optional face review supplies generated images to the real scanner.
 enum UITestTranscriptionReviewFixture {
     /// Bootstrap disposable retained intent before the real signed listener starts.
     /// This does not select a review, grant consent or inject a channel authenticator.
@@ -65,6 +68,22 @@ enum UITestTranscriptionReviewFixture {
         append(UInt32(32000)); append(UInt16(2)); append(UInt16(16)); data.append(Data("data".utf8))
         append(size); data.append(Data(repeating: 0, count: Int(size)))
         return data
+    }
+
+    private nonisolated static func faceReviewJPEG() throws -> Data {
+        guard let context = CGContext(data: nil, width: 200, height: 100,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw Failure.invalidPlan }
+        context.setFillColor(CGColor(red: 0.3, green: 0.5, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        guard let image = context.makeImage() else { throw Failure.invalidPlan }
+        let bytes = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else {
+            throw Failure.invalidPlan
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw Failure.invalidPlan }
+        return bytes as Data
     }
 
     nonisolated final class ConfigurationBox: @unchecked Sendable {
@@ -145,7 +164,9 @@ enum UITestTranscriptionReviewFixture {
                 for index in 1...2 {
                     let photo = root.appendingPathComponent("transcription-review-\(index)-å.jpg")
                     let memo = root.appendingPathComponent("transcription-review-\(index).wav")
-                    try Data("isolated photo \(index)".utf8).write(to: photo, options: .withoutOverwriting)
+                    let photoBytes = includesFaceReview ? try UITestTranscriptionReviewFixture.faceReviewJPEG()
+                        : Data("isolated photo \(index)".utf8)
+                    try photoBytes.write(to: photo, options: .withoutOverwriting)
                     try UITestTranscriptionReviewFixture.silentWAV().write(to: memo, options: .withoutOverwriting)
                     let relationship = root.appendingPathComponent(".\(photo.lastPathComponent).voice-memo.json")
                     try JSONSerialization.data(withJSONObject: ["schemaVersion": 2,

@@ -86,7 +86,7 @@ struct MCPNativeFaceScanReviewModelTests {
         return (requests, record)
     }
 
-    @Test("Explicit durable adoption reviews exact original evidence without enabling execution") @MainActor
+    @Test("Explicit durable adoption preserves original evidence and requires fresh native consent") @MainActor
     func durableReviewOnly() async throws {
         let f = try fixture(schedule: refuse)
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -99,10 +99,15 @@ struct MCPNativeFaceScanReviewModelTests {
         #expect(review.intent.expiresAt == record.intent.expiresAt)
         #expect(review.intent.prepared.forceFullScan && review.intent.prepared.includeJerseyNumbers)
         #expect(!f.model.acknowledgesScan && !f.model.acknowledgesReset)
-        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
         #expect(!f.model.canStart)
         await f.model.start()
         #expect(f.model.operation == nil && f.model.receipt == nil)
+        f.model.acknowledgesScan = true
+        #expect(!f.model.canStart)
+        await f.model.start()
+        #expect(f.model.operation == nil)
+        f.model.acknowledgesReset = true
+        #expect(f.model.canStart)
         await f.model.prepare(record: record, requests: requests)
         #expect(f.model.review?.intent.id == review.intent.id)
         #expect(!f.model.acknowledgesScan && !f.model.acknowledgesReset)
@@ -110,6 +115,133 @@ struct MCPNativeFaceScanReviewModelTests {
         #expect(f.model.review == nil)
         #expect(try requests.records() == [record])
         #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("operations").path))
+    }
+
+    private func completedSubmission(_ retained: MCPFaceScanAdmissionService.RetainedFolder,
+                                     _: UUID, _ validate: @escaping @Sendable () throws -> Void) async throws -> FaceFolderScanSubmission {
+        let prepared = retained.prepared
+        let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL,
+            forceFullScan: prepared.forceFullScan, includeJerseyNumbers: prepared.includeJerseyNumbers)
+        try validate()
+        return .init(admission: .scheduled(request), task: Task {
+            .init(folderURL: request.folderURL, outcome: .completed)
+        })
+    }
+
+    @Test("Durable native Start links the original request and presents its exact terminal receipt once") @MainActor
+    func durableTerminalReceipt() async throws {
+        let f = try fixture(schedule: completedSubmission)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, original) = try durableRequest(f)
+        await f.model.prepare(record: original, requests: requests)
+        let intent = try #require(f.model.review?.intent)
+        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
+        await f.model.start()
+        let operation = try #require(f.model.operation)
+        let receipt = try #require(f.model.receipt)
+        let linked = try #require(try requests.records().first)
+        #expect(operation.outcome == .verified)
+        #expect(linked.state == .linked)
+        #expect(linked.requestID == original.requestID && linked.requestEpoch == original.requestEpoch)
+        #expect(linked.intent == original.intent && linked.intentSHA256 == original.intentSHA256)
+        #expect(receipt.durableAdmission == linked.admission)
+        let registry = AutomationOperationRegistry(storageDirectory: f.root.appendingPathComponent("operations"))
+        try receipt.requireCompletion(intent: intent, operation: operation, durableRecord: linked, registry: registry)
+        #expect(!f.model.canStart && !f.model.canCancel)
+        await f.model.start()
+        await f.model.prepare(record: original, requests: requests)
+        #expect(f.model.review == nil && !f.model.canStart)
+        #expect(try registry.records().count == 1)
+        #expect(try f.receipts.receipts().count == 1)
+    }
+
+    @Test("Durable dismissal and cancellation retain the exact operation until worker drain", arguments: [true, false]) @MainActor
+    func durableWithdrawalDuringWork(dismiss: Bool) async throws {
+        let entered = Gate(), release = Gate()
+        let f = try fixture(schedule: { retained, _, validate in
+            let prepared = retained.prepared
+            let request = FaceFolderScanRequest(imageURLs: prepared.imageURLs, folderURL: prepared.folderURL,
+                forceFullScan: prepared.forceFullScan, includeJerseyNumbers: prepared.includeJerseyNumbers)
+            try validate()
+            return .init(admission: .scheduled(request), task: Task {
+                await entered.open(); await release.wait()
+                do { try validate(); Issue.record("Withdrawn durable effect authority remained usable") }
+                catch {}
+                return .init(folderURL: request.folderURL, outcome: .cancelled)
+            })
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, original) = try durableRequest(f)
+        await f.model.prepare(record: original, requests: requests)
+        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
+        let task = Task { await f.model.start() }
+        await entered.wait()
+        let operationID = try #require(f.model.operation?.id)
+        if dismiss { f.model.dismiss() }
+        else { await f.model.cancel() }
+        #expect(f.model.isRunning)
+        await f.model.prepare(record: original, requests: requests)
+        #expect(f.model.review == nil)
+        await release.open(); await task.value
+        #expect(!f.model.isRunning)
+        #expect(f.model.operation?.id == operationID)
+        let receipt = try #require(try f.receipts.receipts().first)
+        #expect(receipt.operationID == operationID && receipt.phase == .completed)
+        #expect(try requests.records().first?.admission?.operationID == operationID.uuidString.lowercased())
+        if dismiss { #expect(f.model.receipt == nil) }
+        else {
+            #expect(f.model.operation?.outcome == .cancelled)
+            #expect(f.model.receipt == receipt)
+        }
+    }
+
+    @Test("Durable receipt substitutions cannot present terminal completion", arguments: ["admissionID", "ownerID", "requestEpoch", "operationStoragePath"]) @MainActor
+    func durableMismatchedReceipt(field: String) async throws {
+        let f = try fixture(schedule: completedSubmission, readReceipt: { receipts, id in
+            let original = try #require(receipts.receipts().first { $0.operationID == id })
+            var value = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+            var admission = try #require(value["durableAdmission"] as? [String: Any])
+            admission[field] = field == "operationStoragePath" ? "/private/tmp/unrelated-face-history" : UUID().uuidString.lowercased()
+            value["durableAdmission"] = admission
+            return try JSONDecoder().decode(MCPFaceScanReceiptStore.Receipt.self,
+                from: JSONSerialization.data(withJSONObject: value))
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, record) = try durableRequest(f)
+        await f.model.prepare(record: record, requests: requests)
+        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
+        await f.model.start()
+        #expect(f.model.operation?.outcome == .verified)
+        #expect(f.model.receipt == nil && !f.model.canStart)
+        #expect(f.model.message?.contains("receipt could not be loaded") == true)
+        #expect(try f.receipts.receipts().first?.phase == .completed)
+        #expect(try requests.records().first?.state == .linked)
+    }
+
+    @Test("Durable completion requires original request storage and actual terminal history", arguments: [true, false]) @MainActor
+    func durableMissingCompletionContext(removeRequest: Bool) async throws {
+        let f = try fixture(schedule: completedSubmission, readReceipt: { receipts, id in
+            let receipt = try #require(receipts.receipts().first { $0.operationID == id })
+            let admission = try #require(receipt.durableAdmission)
+            let registry = AutomationOperationRegistry(storageDirectory: URL(fileURLWithPath: admission.operationStoragePath))
+            if removeRequest {
+                let root = registry.storageDirectory.deletingLastPathComponent()
+                try FileManager.default.removeItem(at: root.appendingPathComponent("requests/operations.json"))
+            } else {
+                let operation = try registry.inspect(id)
+                try registry.removeTerminal(id, ownerID: operation.ownerID)
+            }
+            return receipt
+        })
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let (requests, original) = try durableRequest(f)
+        await f.model.prepare(record: original, requests: requests)
+        f.model.acknowledgesScan = true; f.model.acknowledgesReset = true
+        await f.model.start()
+        #expect(f.model.operation?.outcome == .verified)
+        #expect(f.model.receipt == nil && !f.model.canStart)
+        #expect(f.model.message?.contains("receipt could not be loaded") == true)
+        #expect(try f.receipts.receipts().first?.phase == .completed)
     }
 
     @Test("Dismissal during durable preflight prevents delayed adoption publication") @MainActor

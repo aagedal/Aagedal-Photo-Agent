@@ -5,7 +5,8 @@ XCTest's generated runner remains sandboxed. This standalone CLI launches the
 actual nested helper normally; a private token-bound fixture rendezvous only
 coordinates requests/results. Production signature and kernel peer checks apply.
 Review mode never submits the provider. --execution additionally qualifies one-use
-native consent consumption and synthetic editable drafts; host settings stay intact.
+native consent consumption and synthetic editable drafts; host settings stay intact. --face-execution qualifies separate native face consent,
+anchored populated reset, exact completion and receipt history after relaunch.
 """
 
 import argparse
@@ -24,6 +25,7 @@ import uuid
 SHARED_ROOT = Path("/private/tmp/apa-installed-qualification")
 TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperOpensExactTranscriptionReviewWithoutExecution"
 EXECUTION_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperConsumesExactNativeConsentAndCompletesDrafts"
+FACE_EXECUTION_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperFaceScanRequiresNativeConsentAndRetainsCompletion"
 FACE_REVIEW_TEST = "Aagedal Photo Agent UI Smoke Tests/CoreWorkflowSmokeTests/testSignedBundledHelperOpensExactFaceReviewWithoutExecution"
 MAX_MESSAGE = 65_536
 REQUEST_KEYS = {"schemaVersion", "token", "call", "helperURL", "applicationPID", "rootURL", "socketDirectory", "requestID", "requestEpoch", "tool"}
@@ -305,18 +307,20 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--execution", action="store_true", help="Also qualify exact native grant consumption, synthetic drafts and non-replay")
     mode.add_argument("--face-review", action="store_true", help="Qualify only exact face review presentation, refusing scan execution and preserving original evidence")
+    mode.add_argument("--face-execution", action="store_true", help="Qualify authenticated face review followed by separate native scan/reset consent, completion and relaunch")
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--derived-data-path", type=Path, required=True)
     parser.add_argument("--result-bundle", type=Path, required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    args.face_review = args.face_review or args.face_execution
     repo = Path(__file__).resolve().parents[2]
     token = str(uuid.uuid4())
     report = {"schemaVersion": 1, "passed": False, "authentication": "production signature requirements and kernel audit-token peers",
               "helperLaunch": "normal standalone subprocess outside XCTest runner sandbox", "runnerSandboxEnabled": None,
               "productionSandboxChanged": False, "testRunnerWritableFixtureRoot": str(SHARED_ROOT), "sharedParentRetained": True,
-              "hostPreferencesChanged": False, "executionSubmitted": False, "executionModeRequested": args.execution, "faceReviewModeRequested": args.face_review, "nativeExecutionRequested": False, "verifiedCompletion": False,
+              "hostPreferencesChanged": False, "executionSubmitted": False, "executionModeRequested": args.execution, "faceReviewModeRequested": args.face_review, "faceNativeExecutionModeRequested": args.face_execution, "nativeExecutionRequested": False, "verifiedCompletion": False,
               "executionSubmissionStatus": "not-observed", "cases": [], "cleanupComplete": False,
               "limitations": ["Debug disposable stores and deterministic synthetic provider; no real Apple/Whisper inference",
                               "Does not qualify distribution signing or notarization"]}
@@ -366,7 +370,7 @@ def main():
                    "-scheme", "Aagedal Photo Agent UI Smoke Tests", "-configuration", "Debug", "-destination", "platform=macOS",
                    "-derivedDataPath", str(derived), "-disableAutomaticPackageResolution", "-parallel-testing-enabled", "NO", "-jobs", "2",
                    "-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "120",
-                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{FACE_REVIEW_TEST if args.face_review else EXECUTION_TEST if args.execution else TEST}",
+                   "-maximum-test-execution-time-allowance", "180", f"-only-testing:{FACE_EXECUTION_TEST if args.face_execution else FACE_REVIEW_TEST if args.face_review else EXECUTION_TEST if args.execution else TEST}",
                    "-resultBundlePath", str(args.result_bundle.resolve())]
         pinned = None
         runner_checked = False
@@ -442,7 +446,7 @@ def main():
         report["tests"] = counts
         executed = counts == {"totalTestCount": 1, "passedTests": 1, "failedTests": 0, "skippedTests": 0}
         report["helperInvocationCount"] = len(report["cases"])
-        report["nativeExecutionRequested"] = False
+        report["nativeExecutionRequested"] = bool(args.face_execution and executed)
         if args.execution and len(report["cases"]) >= 8:
             try:
                 scheduled = json.loads(report["cases"][7]["stdout"].splitlines()[1])["result"]["structuredContent"]
@@ -455,6 +459,15 @@ def main():
             else "scheduled-admission-unconfirmed" if report["nativeExecutionRequested"] else "not-observed")
         report["verifiedCompletion"] = bool(report.get("completedOperation"))
         report["passed"] = process.returncode == 0 and executed and validate_results(report["cases"], args.execution, args.face_review) and (not args.execution or "completedOperation" in report)
+        if args.face_execution and report["passed"]:
+            # The native XCTest checks the exact linked request/admission/receipt,
+            # anchored reset, photo bytes and unchanged receipt/data after relaunch.
+            report["executionSubmitted"] = True
+            report["executionSubmissionStatus"] = "native-consent-linked-completed-and-relaunched"
+            report["verifiedCompletion"] = True
+            report["completionEvidence"] = "Native XCTest validates exact durable receipt and relaunch; no helper start route"
+        if args.face_review:
+            report["limitations"][0] = "Disposable Debug stores; real native face scanner, no transcription provider inference"
         if not report["passed"]:
             report["failure"] = "installed_native_review_qualification_failed"
     except (ProbeFailure, OSError, ValueError, subprocess.TimeoutExpired) as error:
@@ -491,6 +504,11 @@ def main():
         if not report["cleanupComplete"]:
             report["passed"] = False
             report.setdefault("failure", "fixture_cleanup_incomplete")
+        if args.face_execution and not report["passed"] and report.get("executionSubmitted") is not True:
+            # UI failures, timeouts and missing result summaries cannot prove no effects.
+            report["executionSubmitted"] = None
+            report["nativeExecutionRequested"] = None
+            report["executionSubmissionStatus"] = "native-workflow-incomplete-inspect-retained-evidence"
         if validated_output is not None:
             atomic_json(validated_output, report)
     print("Installed native review qualification: " + ("PASS" if report["passed"] else "FAIL"))
