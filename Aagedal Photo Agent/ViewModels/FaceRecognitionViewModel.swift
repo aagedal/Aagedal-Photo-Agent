@@ -1091,6 +1091,23 @@ final class FaceRecognitionViewModel {
             do { try effectAuthority?(folderURL) }
             catch { return refuseAuthority(error) }
 
+            // Reset traversal has a separate descriptor-anchoring gate. Retained requests
+            // must never reach the legacy path-based recursive deletion implementation.
+            if retainedAuthority != nil && forceFullScan {
+                return refuseAuthority(CocoaError(.featureUnsupported, userInfo: [
+                    NSLocalizedDescriptionKey: "Retained face resets require descriptor-based deletion, which is not available yet."
+                ]))
+            }
+            let writeCapability: FaceDataWriteCapability?
+            do {
+                if let effectAuthority {
+                    writeCapability = try await folderLoadService.prepareWriteCapability(
+                        folderURL: folderURL, effectAuthority: effectAuthority)
+                } else {
+                    writeCapability = nil
+                }
+            } catch { return refuseAuthority(error) }
+
             var resetPersistence: FaceDataDeletionResult?
             let initialSnapshot: FaceDataFolderLoadEvidence?
             if forceFullScan {
@@ -1365,7 +1382,8 @@ final class FaceRecognitionViewModel {
                             result.thumbnail,
                             faceID: result.face.id,
                             folderURL: folderURL,
-                            effectAuthority: effectAuthority
+                            effectAuthority: effectAuthority,
+                            writeCapability: writeCapability
                         )
                         switch thumbnailPersistence {
                         case .committed:
@@ -1423,7 +1441,7 @@ final class FaceRecognitionViewModel {
                             embeddingVersion: FaceRecognitionDefaults.embeddingVersion,
                             numberDetections: allNumbers
                         )
-                        let persistence = await folderLoadService.persist(progressData, effectAuthority: effectAuthority)
+                        let persistence = await folderLoadService.persist(progressData, effectAuthority: effectAuthority, writeCapability: writeCapability)
                         documentPersistenceResults.append(persistence)
                         if let failure = persistence.failureMessage {
                             await reportSaveError("Failed to save face data: \(failure)")
@@ -1462,7 +1480,7 @@ final class FaceRecognitionViewModel {
                                 bytes = try detectionService.regenerateThumbnail(for: face)
                             }
                             switch await folderLoadService.persistThumbnail(bytes, faceID: face.id, folderURL: folderURL,
-                                effectAuthority: effectAuthority) {
+                                effectAuthority: effectAuthority, writeCapability: writeCapability) {
                             case .committed:
                                 committedThumbnailIDs.append(face.id)
                                 await reportThumbnail(face.id, bytes)
@@ -1596,7 +1614,7 @@ final class FaceRecognitionViewModel {
             // prevents the persistence service from treating the parent cancellation as a
             // pre-commit cancellation request.
             let finalPersistence = await Task.detached(priority: .utility) {
-                await folderLoadService.persist(folderData, effectAuthority: effectAuthority)
+                await folderLoadService.persist(folderData, effectAuthority: effectAuthority, writeCapability: writeCapability)
             }.value
             // A detached child is intentional here: a cancelled scan still saves and presents
             // its exact partial result, so its just-committed thumbnails must be loaded even

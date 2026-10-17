@@ -1,5 +1,16 @@
 # Project planning overview
 
+**Durable face anchored writes (2026-10-17):** Retained incremental scans now
+bind one descriptor capability across thumbnail repair, detection, periodic saves and
+final publication. Directory/byte/inode and authority checks preserve physical commit
+and partial-directory evidence; retained reset refuses before legacy deletion.
+Independent review, 56 focused tests, the 4,245-test regression (two existing skips,
+zero failures), repository, 41-tool helper, model and development-signature checks pass.
+Descriptor reset/deletion and native durable consent/start/completion wiring remain
+next. State stays IMPLEMENTING; see the
+[dated continuation](release/durable-face-anchored-writes-2026-10-17.md).
+
+
 **Durable face native adoption (2026-10-16):** Settings explicitly adopts the
 original authenticated client request into a revocable native review without renewing
 its inventory/options or expiry. Replacements and dismissal revoke previous capabilities.
@@ -53,7 +64,7 @@ inspection preserves terminal operation evidence. Authenticated helper handoff a
 broader qualification remain open; see the [dated continuation](release/native-face-review-worker-2026-10-15.md).
 
 **Status:** living planning index  
-**Last reviewed:** 2026-10-16
+**Last reviewed:** 2026-10-17
 
 **Exact retained face-intent review (2026-10-15):** Native review can inspect the
 original retained intent by ID without replacing its inventory/options or renewing

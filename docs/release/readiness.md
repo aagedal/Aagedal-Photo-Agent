@@ -1,5 +1,16 @@
 # 3.0 coordinator state
 
+**Durable face anchored writes (2026-10-17):** Retained incremental scans now
+bind one descriptor capability across thumbnail repair, detection, periodic saves and
+final publication. Directory/byte/inode and authority checks preserve physical commit
+and partial-directory evidence; retained reset refuses before legacy deletion.
+Independent review, 56 focused tests, the 4,245-test regression (two existing skips,
+zero failures), repository, 41-tool helper, model and development-signature checks pass.
+Descriptor reset/deletion and native durable consent/start/completion wiring remain
+next. State stays IMPLEMENTING; see the
+[dated continuation](durable-face-anchored-writes-2026-10-17.md).
+
+
 **Durable face native adoption (2026-10-16):** Settings explicitly adopts the
 original authenticated client request into a revocable native review without renewing
 its inventory/options or expiry. Replacements and dismissal revoke previous capabilities.
@@ -1260,6 +1271,14 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
+**Current after the 2026-10-17 anchored face-write continuation:** Descriptor-based
+incremental document/thumbnail publication is integrated and verified. Next implement
+descriptor-based reset/deletion traversal with exact partial-removal evidence, then
+connect explicit native durable scan/reset consent, Start and completion-record/history
+context. Retained reset currently refuses and Settings durable execution stays disabled.
+See the [dated record](durable-face-anchored-writes-2026-10-17.md).
+
+
 **Current after the 2026-10-15 retained face-intent continuation:** Native review now
 accepts the exact original retained face intent without creating a replacement or
 renewing expiry; capture and admission share a fixed monotonic lifetime. Next wire
@@ -1469,6 +1488,17 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+**2026-10-17 continuation:** Clean baseline `f18c395`; descriptor face-write source,
+tests and project changes are recorded in
+[the dated report](durable-face-anchored-writes-2026-10-17.md). The final 3.0.0/build 742
+Debug app passes 4,243 tests with zero failures and two existing skips, repository checks,
+41-tool helper probing, model validation and development-signature verification. Final
+source/artifact hashes are under `build/face-anchored-writes/`. Independent review is
+resolved. Descriptor reset/deletion is the next implementation boundary; native durable
+execution and broad release qualification remain open. No whole gate closes; nothing
+was pushed or published. State stays IMPLEMENTING.
+
 
 **2026-10-11 continuation:** Source baseline `deefa37`, initially clean. MCP inspection is
 committed as `0cbbcc9`; signed model removal as `4989fba`. Native GPU-request qualification
