@@ -267,6 +267,7 @@
 		BEA510000000000000000002 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000002 /* MLXVLM */; };
 		BEA510000000000000000003 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = BEA520000000000000000003 /* MLXLMCommon */; };
 		D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */; };
+		8E9A3C0157E8494DAA12E490 /* DevelopTemplateRootedWriteServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04CF244962F5449E9DF0D676 /* DevelopTemplateRootedWriteServiceTests.swift */; };
 		D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */; };
 		D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */; };
 		D13400000000000000000102 /* MCPNativeFaceScanReviewServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */; };
@@ -573,6 +574,7 @@
 		C12400000000000000000101 /* CaptionVoiceMemoAssociationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoAssociationServiceTests.swift; sourceTree = "<group>"; };
 		C12600000000000000000101 /* CaptionVoiceMemoMediaKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptionVoiceMemoMediaKeyTests.swift; sourceTree = "<group>"; };
 		D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchCaptureServiceTests.swift; sourceTree = "<group>"; };
+		04CF244962F5449E9DF0D676 /* DevelopTemplateRootedWriteServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateRootedWriteServiceTests.swift; sourceTree = "<group>"; };
 		D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevelopTemplateBatchStorageTests.swift; sourceTree = "<group>"; };
 		D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPFaceScanOperationServiceTests.swift; sourceTree = "<group>"; };
 		D13400000000000000000101 /* MCPNativeFaceScanReviewServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPNativeFaceScanReviewServiceTests.swift; sourceTree = "<group>"; };
@@ -787,6 +789,7 @@
 				D3C015000000000000000001 /* DevelopPrimaryLifecycleCoordinatorTests.swift */,
 				D3C016000000000000000001 /* PrimaryDevelopWriteServiceTests.swift */,
 				D13300000000000000000101 /* DevelopTemplateBatchCaptureServiceTests.swift */,
+				04CF244962F5449E9DF0D676 /* DevelopTemplateRootedWriteServiceTests.swift */,
 				D13300000000000000000201 /* DevelopTemplateBatchStorageTests.swift */,
 				D13300000000000000000301 /* MCPFaceScanOperationServiceTests.swift */,
 				D13400000000000000000201 /* MCPFaceScanReceiptInspectionTests.swift */,
@@ -1290,6 +1293,7 @@
 				D3C015000000000000000002 /* DevelopPrimaryLifecycleCoordinatorTests.swift in Sources */,
 				D3C016000000000000000002 /* PrimaryDevelopWriteServiceTests.swift in Sources */,
 				D13300000000000000000102 /* DevelopTemplateBatchCaptureServiceTests.swift in Sources */,
+				8E9A3C0157E8494DAA12E490 /* DevelopTemplateRootedWriteServiceTests.swift in Sources */,
 				D13300000000000000000202 /* DevelopTemplateBatchStorageTests.swift in Sources */,
 				D13300000000000000000302 /* MCPFaceScanOperationServiceTests.swift in Sources */,
 				D13400000000000000000202 /* MCPFaceScanReceiptInspectionTests.swift in Sources */,

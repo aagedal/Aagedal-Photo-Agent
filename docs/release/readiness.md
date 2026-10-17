@@ -1,5 +1,15 @@
 # 3.0 coordinator state
 
+**Develop rooted sidecar writer (2026-10-17):** An app-internal physical prerequisite
+stages production Develop XMP/app metadata from captured bytes and publishes through
+rooted descriptor-relative installs. Mandatory authority and prepared-inode/candidate
+retention callbacks cover both carriers; stage-aware snapshots and exact legacy paths
+preserve partial-write evidence. Shared installers now recheck staged identity and bytes
+after durable callbacks. Native consent/Start, managed linkage and batch recovery integration
+remain open; 95 focused tests and the 4,298-test regression pass (two existing skips,
+zero failures). State stays IMPLEMENTING. See the
+[dated continuation](develop-rooted-sidecar-writer-2026-10-17.md).
+
 **Develop native review presentation (2026-10-17):** Automation Settings now
 captures up to eight explicit authorized photos against an exact local Develop template
 revision and displays the ordered review evidence. Fixed sidecar policy and production
