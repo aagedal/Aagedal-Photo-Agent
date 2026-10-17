@@ -439,6 +439,8 @@ actor FaceDataFolderLoadService {
     /// Synchronous full-scope validation at each publication boundary; grants no consent.
     typealias EffectAuthority = @Sendable (URL) throws -> Void
 
+    typealias WriteCapabilityFactory = @Sendable (URL, @escaping EffectAuthority) throws -> FaceDataWriteCapability
+
     typealias FaceDataLoader = @Sendable (URL) -> FolderFaceData?
     typealias FaceDataExistenceChecker = @Sendable (URL) -> Bool
     typealias ThumbnailLoader = @Sendable (UUID, URL) -> Data?
@@ -448,6 +450,7 @@ actor FaceDataFolderLoadService {
     typealias ThumbnailDeleter = @Sendable (UUID, URL) throws -> Void
     typealias CurrentDate = @Sendable () -> Date
 
+    private let writeCapabilityFactory: WriteCapabilityFactory
     private let loadDocumentFaceData: FaceDataLoader
     private let loadFaceData: FaceDataLoader
     private let faceDataExists: FaceDataExistenceChecker
@@ -464,6 +467,9 @@ actor FaceDataFolderLoadService {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.face-data-storage", qos: .utility
         ),
+        writeCapabilityFactory: @escaping WriteCapabilityFactory = { folder, authority in
+            try FaceDataWriteCapability(folderURL: folder, effectAuthority: authority)
+        },
         loadFaceData: FaceDataLoader? = nil,
         faceDataExists: @escaping FaceDataExistenceChecker = { folderURL in
             FaceDataStorageService().faceDataExists(for: folderURL)
@@ -482,6 +488,7 @@ actor FaceDataFolderLoadService {
         currentDate: @escaping CurrentDate = Date.init
     ) {
         self.filesystemQueue = filesystemQueue
+        self.writeCapabilityFactory = writeCapabilityFactory
         self.loadDocumentFaceData = loadFaceData ?? { folderURL in
             FaceDataStorageService().loadFaceData(for: folderURL)
         }
@@ -497,6 +504,19 @@ actor FaceDataFolderLoadService {
         self.saveThumbnail = saveThumbnail ?? { try FaceDataStorageService().saveThumbnail($0, for: $1, folderURL: $2) }
         self.deleteThumbnail = deleteThumbnail
         self.currentDate = currentDate
+    }
+
+    /// Bind the retained scan's write destination on the filesystem worker before any
+    /// detection suspension. Browsing and corruption recovery remain read-only here.
+    func prepareWriteCapability(
+        folderURL: URL,
+        effectAuthority: @escaping EffectAuthority
+    ) throws -> FaceDataWriteCapability {
+        try Task.checkCancellation()
+        try effectAuthority(folderURL)
+        let capability = try writeCapabilityFactory(folderURL, effectAuthority)
+        try effectAuthority(folderURL)
+        return capability
     }
 
     func loadDocument(folderURL: URL) -> FaceDataDocumentLoadResult {
@@ -566,7 +586,8 @@ actor FaceDataFolderLoadService {
     func persist(
         _ faceData: FolderFaceData,
         deletingThumbnailIDs thumbnailIDs: [UUID] = [],
-        effectAuthority: EffectAuthority? = nil
+        effectAuthority: EffectAuthority? = nil,
+        writeCapability: FaceDataWriteCapability? = nil
     ) -> FaceDataPersistenceResult {
         let folderURL = faceData.folderURL.standardizedFileURL
         guard !Task.isCancelled else {
@@ -575,11 +596,23 @@ actor FaceDataFolderLoadService {
 
         do {
             try effectAuthority?(folderURL)
-            if usesDefaultFaceDataSaver {
+            if let writeCapability {
+                // Anchored scan publication must never fall back to an injected/path saver.
+                guard thumbnailIDs.isEmpty else { throw CocoaError(.featureUnsupported) }
+                try writeCapability.saveFaceData(faceData)
+            } else if usesDefaultFaceDataSaver {
                 try FaceDataStorageService().saveFaceData(faceData, effectAuthority: effectAuthority)
             } else {
                 try saveFaceData(faceData)
             }
+        } catch let error as FaceDataWriteError where error.committed {
+            return .committed(FaceDataPersistenceEvidence(
+                folderURL: folderURL, documentCommitted: true,
+                requestedThumbnailDeletionCount: thumbnailIDs.count,
+                deletedThumbnailIDs: [], thumbnailFailures: [],
+                cancellationRequestedAfterCommit: Task.isCancelled,
+                authorityFailure: error.localizedDescription
+            ))
         } catch {
             return .failedBeforeCommit(
                 folderURL: folderURL,
@@ -624,14 +657,20 @@ actor FaceDataFolderLoadService {
         _ data: Data,
         faceID: UUID,
         folderURL: URL,
-        effectAuthority: EffectAuthority? = nil
+        effectAuthority: EffectAuthority? = nil,
+        writeCapability: FaceDataWriteCapability? = nil
     ) -> FaceThumbnailPersistenceResult {
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(faceID: faceID)
         }
         do {
             try effectAuthority?(folderURL)
-            if usesDefaultThumbnailSaver {
+            if let writeCapability {
+                guard writeCapability.folderURL == folderURL.standardizedFileURL else {
+                    throw CocoaError(.fileWriteInvalidFileName)
+                }
+                try writeCapability.saveThumbnail(data, for: faceID)
+            } else if usesDefaultThumbnailSaver {
                 try FaceDataStorageService().saveThumbnail(data, for: faceID, folderURL: folderURL, effectAuthority: effectAuthority)
             } else {
                 try saveThumbnail(data, faceID, folderURL)
@@ -643,6 +682,9 @@ actor FaceDataFolderLoadService {
                 faceID: faceID,
                 cancellationRequestedAfterCommit: Task.isCancelled
             )
+        } catch let error as FaceDataWriteError where error.committed {
+            return .committedButUnverified(faceID: faceID, message: error.localizedDescription,
+                cancellationRequestedAfterCommit: Task.isCancelled)
         } catch {
             return .failed(faceID: faceID, message: error.localizedDescription)
         }

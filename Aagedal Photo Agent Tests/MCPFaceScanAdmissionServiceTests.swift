@@ -513,9 +513,10 @@ struct MCPFaceScanAdmissionServiceTests {
         let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: .zero,
             featurePrintData: Data(), detectedAt: Date())
         let bytes = Data("exact scanner thumbnail".utf8)
-        let service = FaceDataFolderLoadService(saveThumbnail: { data, id, url in
-            try FaceDataStorageService().saveThumbnail(data, for: id, folderURL: url)
-            try f.authority.setEnabled(false)
+        let service = FaceDataFolderLoadService(writeCapabilityFactory: { folder, authority in
+            try FaceDataWriteCapability(folderURL: folder, effectAuthority: authority, checkpoint: { point in
+                if case .didCommit = point { try f.authority.setEnabled(false) }
+            })
         })
         let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
@@ -528,6 +529,63 @@ struct MCPFaceScanAdmissionServiceTests {
         #expect(completion.persistenceError != nil)
         #expect(FaceDataStorageService().loadThumbnail(for: face.id, folderURL: intent.prepared.folderURL) == bytes)
         #expect(!FaceDataStorageService().faceDataExists(for: intent.prepared.folderURL))
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+    @Test("Retained scanner refuses replaced storage across detection without redirected writes") @MainActor
+    func retainedScanStorageReplacement() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let storage = f.root.appendingPathComponent(".face_data")
+        let moved = f.root.appendingPathComponent("original-face-storage")
+        let outside = f.root.appendingPathComponent("replacement-face-storage")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        let original = FolderFaceData(folderURL: f.root, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: false)
+        try FaceDataStorageService().saveFaceData(original)
+        let originalBytes = try Data(contentsOf: storage.appendingPathComponent("face_data.json"))
+        let store = MCPFaceScanIntentStore(admission: f.service)
+        let intent = try store.prepare(arguments: f.arguments)
+        let replacementPhoto = intent.prepared.imageURLs[0]
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { url, _ in
+                if url == replacementPhoto {
+                    do {
+                        try FileManager.default.moveItem(at: storage, to: moved)
+                        try FileManager.default.createSymbolicLink(at: storage, withDestinationURL: outside)
+                    } catch { Issue.record("Fixture replacement failed: \(error)") }
+                }
+                return .init(faces: [])
+            })
+        let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id)
+        let completion = try #require(await submission.completion())
+        #expect(!completion.succeeded)
+        #expect(completion.persistenceError != nil)
+        #expect(try Data(contentsOf: moved.appendingPathComponent("face_data.json")) == originalBytes)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+    @Test("Retained reset refuses before legacy recursive deletion or detection") @MainActor
+    func retainedResetWaitsForAnchoredTraversal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let original = FolderFaceData(folderURL: f.root, faces: [], groups: [],
+            lastScanDate: Date(), scanComplete: true)
+        try FaceDataStorageService().saveFaceData(original)
+        let document = f.root.appendingPathComponent(".face_data/face_data.json")
+        let bytes = try Data(contentsOf: document)
+        let store = MCPFaceScanIntentStore(admission: f.service)
+        var arguments = f.arguments
+        arguments["forceFullScan"] = .bool(true)
+        let intent = try store.prepare(arguments: arguments)
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            scanDetector: { _, _ in Issue.record("Reset refusal reached detection"); return .init(faces: []) })
+        let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id)
+        let completion = try #require(await submission.completion())
+        #expect(!completion.succeeded)
+        #expect(completion.resetPersistence == nil)
+        #expect(try Data(contentsOf: document) == bytes)
         let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
     }
 
