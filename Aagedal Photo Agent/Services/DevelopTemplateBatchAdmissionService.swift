@@ -3,6 +3,7 @@ import Foundation
 
 nonisolated enum DevelopTemplateBatchAdmissionFailure: Error, Equatable, Sendable {
     case invalidEvidence, changedEvidence, unavailableReview, alreadyConsumed, corruptJournal, unsupportedEmbeddedAdmission
+    case cancellationCleanupRequired(UUID)
 }
 
 /// Durable review evidence is deliberately not a deserializable write request. Restart
@@ -110,7 +111,18 @@ actor DevelopTemplateBatchAdmissionStore {
         var tombstones: [DevelopTemplateBatchAdmissionCleanupPreview.Record]
     }
     private let directory: URL
-    init(directory: URL) { self.directory = directory }
+    private let afterRetain: @Sendable () throws -> Void
+    private let afterFinishReview: @Sendable () throws -> Void
+    init(directory: URL, afterRetain: @escaping @Sendable () throws -> Void = {},
+         afterFinishReview: @escaping @Sendable () throws -> Void = {}) {
+        self.directory = directory
+        self.afterRetain = afterRetain; self.afterFinishReview = afterFinishReview
+    }
+
+    nonisolated static func evidenceDigest(_ evidence: DevelopTemplateBatchAdmissionEvidence) throws -> String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return hash(try encoder.encode(evidence))
+    }
 
     static func defaultStorageDirectory(applicationSupportDirectory: URL? = nil,
                                         arguments: [String] = ProcessInfo.processInfo.arguments) throws -> URL {
@@ -213,6 +225,7 @@ actor DevelopTemplateBatchAdmissionStore {
             registry.journals.append(journal)
             return ((), try Self.encode(registry))
         }
+        try afterRetain()
         return digest
     }
 
@@ -244,6 +257,30 @@ actor DevelopTemplateBatchAdmissionStore {
             registry.journals[index] = next
             return ((), try Self.encode(registry))
         }
+        try afterFinishReview()
+    }
+
+    /// Cancellation owns no execution authority. Exact terminal evidence (including
+    /// a consumed admission whose write returned an error) is preserved, never reset.
+    /// Missing evidence means a failed retain did not leave a journal to retire.
+    func retireReview(_ id: UUID, digest: String) throws {
+        try persistence().transaction { existing in
+            var registry = try Self.registry(existing)
+            if let retired = registry.tombstones.first(where: { $0.batchID == id }) {
+                guard retired.evidenceSHA256 == digest else { throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
+                return ((), existing ?? Data())
+            }
+            guard let index = registry.journals.firstIndex(where: { $0.batchID == id }) else {
+                return ((), try existing ?? Self.encode(registry))
+            }
+            let journal = registry.journals[index]
+            guard journal.evidenceSHA256 == digest else { throw DevelopTemplateBatchAdmissionFailure.changedEvidence }
+            guard journal.state == .awaitingReview else { return ((), existing ?? Data()) }
+            registry.journals[index] = .init(formatVersion: 1, batchID: id,
+                evidenceData: journal.evidenceData, evidenceSHA256: digest, state: .cancelled)
+            return ((), try Self.encode(registry))
+        }
+        try afterFinishReview()
     }
 
     private func persistence() -> AutomationOperationPersistence {
@@ -333,17 +370,24 @@ actor DevelopTemplateBatchAdmissionService {
         let token: UUID
     }
     private var pending: [UUID: Pending] = [:]
+    /// Failed compensation retains ownership, but never an executable review token.
+    private var cancelledCleanup: [UUID: String] = [:]
+    private var cleanupInFlight: Set<UUID> = []
+    private var executionInFlight: Set<UUID> = []
     private let captureService: DevelopTemplateBatchCaptureService
     private let store: DevelopTemplateBatchAdmissionStore
     private let configurationRevision: ConfigurationRevision
     private let validateSession: SessionValidation
+    private let afterRetention: @Sendable () async throws -> Void
 
     init(captureService: DevelopTemplateBatchCaptureService, store: DevelopTemplateBatchAdmissionStore,
          configurationRevision: @escaping ConfigurationRevision,
-         validateSession: @escaping SessionValidation) {
+         validateSession: @escaping SessionValidation,
+         afterRetention: @escaping @Sendable () async throws -> Void = {}) {
         self.captureService = captureService; self.store = store
         self.configurationRevision = configurationRevision
         self.validateSession = validateSession
+        self.afterRetention = afterRetention
     }
 
     func review(_ capture: DevelopTemplateBatchCapture) async throws -> Review {
@@ -354,7 +398,8 @@ actor DevelopTemplateBatchAdmissionService {
             !DescriptiveMetadataWriteTargetResolver().resolve(sourceURL: $0.imageURL,
                 requestedMode: $0.mode).writesEmbedded
         }) else { throw DevelopTemplateBatchAdmissionFailure.unsupportedEmbeddedAdmission }
-        guard pending.count < 16, pending[capture.intent.id] == nil else {
+        guard pending.count + executionInFlight.count < 16,
+              pending[capture.intent.id] == nil, !executionInFlight.contains(capture.intent.id) else {
             throw DevelopTemplateBatchAdmissionFailure.unavailableReview
         }
         let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: capture,
@@ -362,31 +407,100 @@ actor DevelopTemplateBatchAdmissionService {
         try validateAuthority(capture, evidence: evidence)
         try validateCarriers(capture)
         let token = UUID()
+        // Compute before suspension: retain can commit and still throw while syncing
+        // or revalidating its directory. Cleanup must cover that uncertain return too.
+        let retainedDigest = try DevelopTemplateBatchAdmissionStore.evidenceDigest(evidence)
         // Reserve actor ownership before durable retention yields.
         pending[capture.intent.id] = Pending(capture: capture, digest: "", token: token)
+        var didRetain = false
         do {
             let digest = try await store.retain(evidence)
+            didRetain = true
+            try await afterRetention()
+            // Retention suspends the actor. Never publish a capability from evidence
+            // that changed while its journal was being committed.
+            try validateAuthority(capture, evidence: evidence)
+            try validateCarriers(capture)
             try Task.checkCancellation()
             pending[capture.intent.id] = Pending(capture: capture, digest: digest, token: token)
             return Review(id: capture.intent.id, evidence: evidence, token: token)
         } catch {
+            // These are validation refusals before the persistence commit. They do
+            // not entitle this attempt to retire somebody else's conflicting evidence.
+            if !didRetain, error is DevelopTemplateBatchAdmissionFailure || error is DevelopTemplateBatchFailure {
+                pending.removeValue(forKey: capture.intent.id)
+                throw error
+            }
+            do {
+                // Mandatory compensation also runs on a cancelled task. The store
+                // changes only this exact awaiting-review digest, never physical receipts.
+                try await store.retireReview(capture.intent.id, digest: retainedDigest)
+            } catch {
+                cancelledCleanup[capture.intent.id] = retainedDigest
+                throw DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(capture.intent.id)
+            }
             pending.removeValue(forKey: capture.intent.id)
             throw error
         }
     }
 
+    var cancelledReviewCleanupIDs: Set<UUID> { Set(cancelledCleanup.keys).union(cleanupInFlight) }
+
+    /// Retries only failed review retirement. No Review or consent can be
+    /// reconstructed from these entries. Capacity remains reserved until it succeeds.
+    func retryCancelledReviewCleanup() async throws {
+        for id in Array(cancelledCleanup.keys) {
+            guard let digest = cancelledCleanup.removeValue(forKey: id) else { continue }
+            cleanupInFlight.insert(id)
+            do {
+                try await store.retireReview(id, digest: digest)
+                pending.removeValue(forKey: id)
+                cleanupInFlight.remove(id)
+            } catch {
+                cleanupInFlight.remove(id)
+                cancelledCleanup[id] = digest
+                throw DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(id)
+            }
+        }
+    }
+
     func cancel(_ review: Review) async throws {
-        let entry = try take(review)
-        try await store.finishReview(review.id, digest: entry.digest, cancelled: true)
+        guard let entry = pending[review.id], entry.token == review.token,
+              !entry.digest.isEmpty, !cleanupInFlight.contains(review.id) else {
+            throw DevelopTemplateBatchAdmissionFailure.unavailableReview
+        }
+        // Withdraw execution before storage suspends. A failed cancellation retains
+        // only cleanup authority, so native dismissal can safely retry the same review.
+        cleanupInFlight.insert(review.id)
+        defer { cleanupInFlight.remove(review.id) }
+        do {
+            try await store.retireReview(review.id, digest: entry.digest)
+            cancelledCleanup.removeValue(forKey: review.id)
+            pending.removeValue(forKey: review.id)
+        } catch {
+            cancelledCleanup[review.id] = entry.digest
+            throw DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(review.id)
+        }
     }
 
     func execute(_ review: Review, consent: @escaping NativeConsent,
                  executionService: DevelopTemplateBatchExecutionService,
                  checkpointStore: DevelopTemplateBatchCheckpointStore) async throws -> DevelopTemplateBatchExecutionResult {
         let entry = try take(review)
+        executionInFlight.insert(review.id)
+        defer { executionInFlight.remove(review.id) }
         // Consume first: cancelled consent, drift and process teardown cannot replay this
         // reviewed capture. A new attempt requires an independent capture and review.
-        try await store.finishReview(review.id, digest: entry.digest, cancelled: false)
+        do {
+            try await store.finishReview(review.id, digest: entry.digest, cancelled: false)
+        } catch {
+            // A refused/uncertain durable admission cannot restore Start authority.
+            // Preserve the original digest for cleanup rather than orphaning an
+            // awaiting-review journal when storage was temporarily unavailable.
+            pending[review.id] = entry
+            cancelledCleanup[review.id] = entry.digest
+            throw DevelopTemplateBatchAdmissionFailure.cancellationCleanupRequired(review.id)
+        }
         try Task.checkCancellation()
         try validateAuthority(entry.capture, evidence: review.evidence)
         try validateCarriers(entry.capture)
@@ -406,7 +520,8 @@ actor DevelopTemplateBatchAdmissionService {
     }
 
     private func take(_ review: Review) throws -> Pending {
-        guard let entry = pending[review.id], entry.token == review.token, !entry.digest.isEmpty else {
+        guard let entry = pending[review.id], entry.token == review.token, !entry.digest.isEmpty,
+              cancelledCleanup[review.id] == nil, !cleanupInFlight.contains(review.id) else {
             throw DevelopTemplateBatchAdmissionFailure.unavailableReview
         }
         pending.removeValue(forKey: review.id)

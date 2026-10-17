@@ -18,6 +18,37 @@ struct AutomationOperationRegistryTests {
             .appendingPathComponent("operation-registry-\(UUID().uuidString)", isDirectory: true)
     }
 
+    @Test("Unchanged writable retries flush the journal directory before acknowledging durability")
+    func unchangedRetryDirectoryDurability() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let persistence = AutomationOperationPersistence(directory: root, maximumBytes: 1_024)
+        let bytes = Data("committed evidence".utf8)
+        try persistence.transaction { _ in ((), bytes) }
+        var rootInfo = stat()
+        #expect(lstat(root.path, &rootInfo) == 0)
+        let device = rootInfo.st_dev, inode = rootInfo.st_ino
+        let refused = AutomationOperationPersistence(directory: root, maximumBytes: 1_024,
+            syncDirectoryParent: { descriptor in
+                var info = stat()
+                if fstat(descriptor, &info) == 0, info.st_dev == device, info.st_ino == inode { return -1 }
+                return fsync(descriptor)
+            })
+        // Read-only inspection does not pretend to establish new durability.
+        let inspected = try refused.transaction(readOnly: true) { existing in (existing, bytes) }
+        #expect(inspected == bytes)
+        #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) {
+            try refused.transaction { existing in ((), try #require(existing)) }
+        }
+        let archive = root.appendingPathComponent("operations.json")
+        var before = stat(), after = stat()
+        #expect(lstat(archive.path, &before) == 0)
+        try persistence.transaction { existing in ((), try #require(existing)) }
+        #expect(lstat(archive.path, &after) == 0)
+        #expect(before.st_ino == after.st_ino)
+        #expect(try Data(contentsOf: archive) == bytes)
+    }
+
     @Test("Reserved operation IDs reject reuse without replacing retained history")
     func reservedOperationIdentity() throws {
         let root = try directory()
