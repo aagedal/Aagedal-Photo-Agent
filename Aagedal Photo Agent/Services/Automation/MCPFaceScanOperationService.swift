@@ -236,14 +236,19 @@ actor MCPFaceScanOperationService {
         let resetCommitted: Bool
         switch completion.resetPersistence {
         case .committed?, .committedButUnverified?: resetCommitted = true
+        case .anchored(let evidence)?: resetCommitted = evidence.completed || !evidence.removedRelativePaths.isEmpty
         default: resetCommitted = false
         }
         let persistenceFailed = completion.persistenceError != nil
             || completion.documentPersistenceResults.contains { $0.failureMessage != nil }
             || completion.resetPersistence?.failureMessage != nil
         let hasEffects = resetCommitted || committedDocuments > 0 || !completion.committedThumbnailIDs.isEmpty
+        let resetIncomplete = completion.resetPersistence.map { reset in
+            if case .anchored(let evidence) = reset { return !evidence.completed }
+            return false
+        } ?? false
         let outcome: AutomationOperationRegistry.Outcome
-        if completion.succeeded, !persistenceFailed { outcome = .verified }
+        if completion.succeeded, !persistenceFailed, !resetIncomplete { outcome = .verified }
         else if case .cancelled = completion.outcome, !hasEffects,
                 !persistenceFailed, cancellationRequested { outcome = .cancelled }
         else { outcome = hasEffects || persistenceFailed ? .recoveryRequired : .failed }
@@ -264,6 +269,16 @@ actor MCPFaceScanOperationService {
         }
         let reset: MCPFaceScanReceiptStore.ResetEvidence?
         switch completion.resetPersistence {
+        case .anchored(let evidence)?:
+            let result: MCPFaceScanReceiptStore.ResetEvidence.Result
+            if evidence.completed { result = .committed }
+            else if !evidence.removedRelativePaths.isEmpty { result = .partial }
+            else if evidence.cancellationRequested, evidence.failureMessage == nil { result = .cancelledBeforeCommit }
+            else { result = .failed }
+            reset = .init(result: result,
+                cancellationRequestedAfterCommit: evidence.cancellationRequested && !evidence.removedRelativePaths.isEmpty,
+                removedRelativePaths: evidence.removedRelativePaths, completed: evidence.completed,
+                cancellationRequested: evidence.cancellationRequested)
         case .committed(_, let cancelled)?: reset = .init(result: .committed, cancellationRequestedAfterCommit: cancelled)
         case .committedButUnverified(_, _, let cancelled)?: reset = .init(result: .committedButUnverified, cancellationRequestedAfterCommit: cancelled)
         case .cancelledBeforeCommit?: reset = .init(result: .cancelledBeforeCommit, cancellationRequestedAfterCommit: false)

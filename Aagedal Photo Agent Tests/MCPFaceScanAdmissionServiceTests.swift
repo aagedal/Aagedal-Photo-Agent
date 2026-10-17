@@ -566,26 +566,68 @@ struct MCPFaceScanAdmissionServiceTests {
         let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
     }
 
-    @Test("Retained reset refuses before legacy recursive deletion or detection") @MainActor
-    func retainedResetWaitsForAnchoredTraversal() async throws {
+    @Test("Retained reset uses anchored deletion before detection and later saves") @MainActor
+    func retainedResetUsesAnchoredTraversal() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let original = FolderFaceData(folderURL: f.root, faces: [], groups: [],
             lastScanDate: Date(), scanComplete: true)
         try FaceDataStorageService().saveFaceData(original)
         let document = f.root.appendingPathComponent(".face_data/face_data.json")
-        let bytes = try Data(contentsOf: document)
         let store = MCPFaceScanIntentStore(admission: f.service)
         var arguments = f.arguments
         arguments["forceFullScan"] = .bool(true)
         let intent = try store.prepare(arguments: arguments)
         let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
-            scanDetector: { _, _ in Issue.record("Reset refusal reached detection"); return .init(faces: []) })
+            scanDetector: { _, _ in .init(faces: []) })
         let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id)
         let completion = try #require(await submission.completion())
-        #expect(!completion.succeeded)
-        #expect(completion.resetPersistence == nil)
-        #expect(try Data(contentsOf: document) == bytes)
+        #expect(completion.succeeded)
+        guard case .anchored(let reset) = completion.resetPersistence else { Issue.record("Anchored reset missing"); return }
+        #expect(reset.completed)
+        #expect(reset.removedRelativePaths.contains(".face_data/face_data.json"))
+        #expect(FileManager.default.fileExists(atPath: document.path))
+        let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
+    }
+
+    @Test("Retained reset failure preserves physical prefix and never detects or overwrites", arguments: [false, true], [false, true]) @MainActor
+    func retainedResetFailure(afterRemoval: Bool, cancelled: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let saved = FolderFaceData(folderURL: f.root, faces: [], groups: [], lastScanDate: Date(), scanComplete: true)
+        try FaceDataStorageService().saveFaceData(saved)
+        let document = f.root.appendingPathComponent(".face_data/face_data.json")
+        let bytes = try Data(contentsOf: document)
+        let store = MCPFaceScanIntentStore(admission: f.service)
+        var arguments = f.arguments
+        arguments["forceFullScan"] = .bool(true)
+        let intent = try store.prepare(arguments: arguments)
+        let filesystem = FaceDataFolderLoadService(writeCapabilityFactory: { folder, authority in
+            try FaceDataWriteCapability(folderURL: folder, effectAuthority: authority, checkpoint: { point in
+                switch point {
+                case .willRemove where !afterRemoval:
+                    if cancelled { throw CancellationError() }
+                    throw CocoaError(.fileWriteNoPermission)
+                case .didRemove where afterRemoval:
+                    if cancelled { throw CancellationError() }
+                    throw CocoaError(.fileWriteNoPermission)
+                default: break
+                }
+            })
+        }, deleteFaceData: { _ in Issue.record("Retained reset used legacy deletion") })
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
+            writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .available,
+            folderLoadService: filesystem,
+            scanDetector: { _, _ in Issue.record("Failed reset reached detection"); return .init(faces: []) })
+        let submission = try model.scheduleRetainedFolderScan(intents: store, id: intent.id)
+        let completion = try #require(await submission.completion())
+        #expect(!completion.succeeded && completion.documentPersistenceResults.isEmpty)
+        guard case .anchored(let reset) = completion.resetPersistence else { Issue.record("Missing exact reset evidence"); return }
+        #expect(!reset.completed)
+        #expect(reset.cancellationRequested == cancelled)
+        if cancelled { #expect(completion.outcome == .cancelled && completion.persistenceError == nil) }
+        #expect(reset.removedRelativePaths == (afterRemoval ? [".face_data/face_data.json"] : []))
+        #expect(FileManager.default.fileExists(atPath: document.path) != afterRemoval)
+        if !afterRemoval { #expect(try Data(contentsOf: document) == bytes) }
         let lease = try MCPProcessReservation.acquireFolder(f.root); lease.release()
     }
 

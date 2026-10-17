@@ -93,7 +93,13 @@ struct AutomationNativeFaceScanReviewView: View {
                 Text("Receipt: \(receipt.operationID.uuidString.lowercased())").font(.caption).textSelection(.enabled)
                 Text("Processed \(completion.processedCount); failed \(completion.failureCount). Committed thumbnails \(completion.committedThumbnailCount); documents \(completion.committedDocumentCount).")
                     .font(.caption)
-                if completion.resetCommitted { Text("Saved face results reset was committed.").font(.caption) }
+                if let reset = completion.reset, reset.completed == false,
+                   let removed = reset.removedRelativePaths, !removed.isEmpty {
+                    Text("Reset stopped after removing \(removed.count) saved face-data entries. Review the folder before retrying.")
+                        .font(.caption)
+                } else if completion.resetCommitted {
+                    Text("Saved face results reset was committed.").font(.caption)
+                }
             }
         }
         .onChange(of: forceFullScan) { _, _ in model.dismiss() }

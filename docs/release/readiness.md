@@ -1,5 +1,15 @@
 # 3.0 coordinator state
 
+**Durable face anchored reset (2026-10-17):** Retained full scans now reset through
+the same descriptor capability used for later publication. Exact physical removal prefixes
+survive cancellation, authority withdrawal and verification failure; partial resets stop
+before detection/saves and require recovery in operation/receipt presentation. Independent
+review, 72 focused tests, the 4,261-test regression (two existing skips, zero failures),
+repository validation, 41-tool helper, model and development-signature checks pass.
+Native durable consent/Start/completion wiring remains next. State stays IMPLEMENTING;
+see the [dated continuation](durable-face-anchored-reset-2026-10-17.md).
+
+
 **Durable face anchored writes (2026-10-17):** Retained incremental scans now
 bind one descriptor capability across thumbnail repair, detection, periodic saves and
 final publication. Directory/byte/inode and authority checks preserve physical commit
@@ -1271,12 +1281,13 @@ cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
 
-**Current after the 2026-10-17 anchored face-write continuation:** Descriptor-based
-incremental document/thumbnail publication is integrated and verified. Next implement
-descriptor-based reset/deletion traversal with exact partial-removal evidence, then
-connect explicit native durable scan/reset consent, Start and completion-record/history
-context. Retained reset currently refuses and Settings durable execution stays disabled.
-See the [dated record](durable-face-anchored-writes-2026-10-17.md).
+**Current after the 2026-10-17 anchored face-reset continuation:** Descriptor-based
+reset and document/thumbnail publication are integrated and verified. Exact removal prefixes
+preserve partial-reset recovery evidence. Next connect explicit native durable scan/reset
+consent, Start and completion-record/history context. Inject the shared scanner/operation
+service and pass original durable record/registry context into completion validation;
+preserve original expiry, one-way admission and dismissal/cancellation drain. Settings durable
+execution stays disabled. See the [dated record](durable-face-anchored-reset-2026-10-17.md).
 
 
 **Current after the 2026-10-15 retained face-intent continuation:** Native review now
@@ -1488,6 +1499,15 @@ Consecutive runs with no possible progress: 0. Substantive implementation and ve
 progress occurred. Automation remains active; no readiness notification is warranted.
 
 ## Latest handoff
+
+**2026-10-17 anchored reset continuation:** Clean baseline `178116e`; source/tests and
+verification are recorded in [the dated report](durable-face-anchored-reset-2026-10-17.md).
+The completed development app passes 4,259 tests with zero failures and two existing skips,
+repository validation, 41-tool helper probing, model validation and signature verification.
+Independent review is resolved; evidence/hashes are in `build/face-anchored-reset/`.
+Native durable consent/Start/completion wiring and release qualification remain open.
+Nothing was pushed or published. State stays IMPLEMENTING.
+
 
 **2026-10-17 continuation:** Clean baseline `f18c395`; descriptor face-write source,
 tests and project changes are recorded in

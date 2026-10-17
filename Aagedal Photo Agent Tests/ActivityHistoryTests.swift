@@ -818,6 +818,7 @@ struct ActivityHistoryTests {
         }.value
         switch deletion {
         case .committed: #expect(outcome != "deleteFailure" && outcome != "cancelBeforeCommit")
+        case .anchored: Issue.record("Native deletion unexpectedly used retained reset")
         case .committedButUnverified: Issue.record("Native deletion unexpectedly required authority verification")
         case .failed: #expect(outcome == "deleteFailure")
         case .cancelledBeforeCommit: #expect(outcome == "cancelBeforeCommit")

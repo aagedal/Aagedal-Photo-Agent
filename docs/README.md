@@ -1,5 +1,15 @@
 # Project planning overview
 
+**Durable face anchored reset (2026-10-17):** Retained full scans now reset through
+the same descriptor capability used for later publication. Exact physical removal prefixes
+survive cancellation, authority withdrawal and verification failure; partial resets stop
+before detection/saves and require recovery in operation/receipt presentation. Independent
+review, 72 focused tests, the 4,261-test regression (two existing skips, zero failures),
+repository validation, 41-tool helper, model and development-signature checks pass.
+Native durable consent/Start/completion wiring remains next. State stays IMPLEMENTING;
+see the [dated continuation](release/durable-face-anchored-reset-2026-10-17.md).
+
+
 **Durable face anchored writes (2026-10-17):** Retained incremental scans now
 bind one descriptor capability across thumbnail repair, detection, periodic saves and
 final publication. Directory/byte/inode and authority checks preserve physical commit

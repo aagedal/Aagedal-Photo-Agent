@@ -237,14 +237,33 @@ nonisolated enum FaceThumbnailPersistenceResult: Sendable, Equatable {
     case failed(faceID: UUID, message: String)
 }
 
+/// Exact physical removal prefix, retained even when verification or authority fails.
+nonisolated struct FaceDataResetEvidence: Sendable, Equatable {
+    let folderURL: URL
+    let removedRelativePaths: [String]
+    let completed: Bool
+    let failureMessage: String?
+    let cancellationRequested: Bool
+}
+
 nonisolated enum FaceDataDeletionResult: Sendable, Equatable {
+    case anchored(FaceDataResetEvidence)
     case committed(folderURL: URL, cancellationRequestedAfterCommit: Bool)
     case committedButUnverified(folderURL: URL, message: String, cancellationRequestedAfterCommit: Bool)
     case cancelledBeforeCommit(folderURL: URL)
     case failed(folderURL: URL, message: String)
 
+    var deletionCompleted: Bool {
+        switch self {
+        case .committed: return true
+        case .anchored(let evidence): return evidence.completed
+        default: return false
+        }
+    }
+
     var failureMessage: String? {
         switch self {
+        case .anchored(let evidence): return evidence.failureMessage
         case .failed(_, let message), .committedButUnverified(_, let message, _): return message
         default: return nil
         }
@@ -704,7 +723,14 @@ actor FaceDataFolderLoadService {
         }
     }
 
-    func deleteAll(for folderURL: URL, effectAuthority: EffectAuthority? = nil) -> FaceDataDeletionResult {
+    func deleteAll(for folderURL: URL, effectAuthority: EffectAuthority? = nil,
+                   writeCapability: FaceDataWriteCapability? = nil) -> FaceDataDeletionResult {
+        if let writeCapability {
+            guard writeCapability.folderURL == folderURL.standardizedFileURL else {
+                return .failed(folderURL: folderURL, message: "Reset capability does not match the approved folder.")
+            }
+            return .anchored(writeCapability.reset())
+        }
         let standardizedFolderURL = folderURL.standardizedFileURL
         guard !Task.isCancelled else {
             return .cancelledBeforeCommit(folderURL: standardizedFolderURL)

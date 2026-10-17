@@ -46,9 +46,13 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
         let authorityRefused: Bool
     }
     struct ResetEvidence: Codable, Equatable, Sendable {
-        enum Result: String, Codable, Sendable { case committed, committedButUnverified, cancelledBeforeCommit, failed }
+        enum Result: String, Codable, Sendable { case committed, committedButUnverified, partial, cancelledBeforeCommit, failed }
         let result: Result
         let cancellationRequestedAfterCommit: Bool
+        /// Absent in legacy receipts whose recursive deletion did not record each effect.
+        var removedRelativePaths: [String]? = nil
+        var completed: Bool? = nil
+        var cancellationRequested: Bool? = nil
     }
     struct Receipt: Codable, Equatable, Sendable {
         let intentID: UUID
@@ -216,7 +220,9 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
                             }
                             if let reset = fields["reset"] {
                                 guard let reset = reset as? [String: Any],
-                                      Set(reset.keys) == ["result", "cancellationRequestedAfterCommit"] else { throw Failure.invalidStorage }
+                                      Set(reset.keys) == ["result", "cancellationRequestedAfterCommit"]
+                                        || Set(reset.keys) == ["result", "cancellationRequestedAfterCommit", "removedRelativePaths", "completed", "cancellationRequested"],
+                                      !reset.values.contains(where: { $0 is NSNull }) else { throw Failure.invalidStorage }
                             }
                         }
                     }
@@ -279,6 +285,33 @@ nonisolated final class MCPFaceScanReceiptStore: Sendable {
                               && document.deletedThumbnailIDs.isEmpty && document.failedThumbnailIDs.isEmpty
                               && !document.cancellationRequestedAfterCommit && !document.authorityRefused) else {
                         throw Failure.invalidStorage
+                    }
+                }
+                if let reset = completion.reset {
+                    if let paths = reset.removedRelativePaths,
+                       let completed = reset.completed, let cancelled = reset.cancellationRequested {
+                        guard paths.count <= 1_000_000, Set(paths).count == paths.count,
+                              !paths.contains(".face_data") || paths.last == ".face_data",
+                              !completed || paths.isEmpty || paths.last == ".face_data",
+                              paths.allSatisfy({ path in
+                                  !path.isEmpty && !path.hasPrefix("/") && !path.contains("\0")
+                                      && (path == ".face_data" || path.hasPrefix(".face_data/"))
+                                      && path.utf8.count <= 4096
+                                      && path.split(separator: "/", omittingEmptySubsequences: false)
+                                        .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+                              }),
+                              reset.cancellationRequestedAfterCommit == (cancelled && !paths.isEmpty),
+                              completion.resetCommitted == (completed || !paths.isEmpty),
+                              completed ? reset.result == .committed
+                                : (!paths.isEmpty ? reset.result == .partial
+                                    : (reset.result == .failed || (reset.result == .cancelledBeforeCommit && cancelled))) else {
+                            throw Failure.invalidStorage
+                        }
+                    } else {
+                        guard reset.removedRelativePaths == nil, reset.completed == nil,
+                              reset.cancellationRequested == nil, reset.result != .partial else {
+                            throw Failure.invalidStorage
+                        }
                     }
                 }
             }

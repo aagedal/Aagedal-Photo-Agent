@@ -276,6 +276,91 @@ struct MCPFaceScanOperationServiceTests {
         #expect(MCPFaceScanOperationService.evidence(completion, cancellationRequested: false).outcome == .failed)
     }
 
+    @Test("Anchored reset receipts preserve exact partial effects through cancellation", arguments: [false, true])
+    func anchoredResetEffects(completed: Bool) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let paths = [".face_data/thumbnails/removed.jpg", ".face_data/thumbnails"] + (completed ? [".face_data"] : [])
+        let completion = FaceScanCompletion(folderURL: f.intent.prepared.folderURL, outcome: .cancelled,
+            resetPersistence: .anchored(.init(folderURL: f.intent.prepared.folderURL,
+                removedRelativePaths: paths, completed: completed,
+                failureMessage: completed ? nil : "Consent withdrawn", cancellationRequested: true)))
+        let evidence = MCPFaceScanOperationService.evidence(completion, cancellationRequested: true)
+        #expect(evidence.outcome == .recoveryRequired)
+        #expect(evidence.resetCommitted)
+        #expect(evidence.persistenceFailed == !completed)
+        let reset = try #require(evidence.reset)
+        #expect(reset.result == (completed ? .committed : .partial))
+        #expect(reset.removedRelativePaths == paths)
+        #expect(reset.completed == completed)
+        #expect(reset.cancellationRequested == true)
+        #expect(reset.cancellationRequestedAfterCommit)
+        let operationID = UUID()
+        try f.receipts.admit(intent: f.intent, operationID: operationID)
+        try f.receipts.markExecutionPossible(operationID)
+        try f.receipts.complete(operationID, evidence: evidence)
+        #expect(try f.receipts.receipts().first?.completion == evidence)
+    }
+
+    @Test("Anchored reset cancellation before removal retains an empty effect list")
+    func anchoredResetCancelledBeforeRemoval() throws {
+        let folder = URL(fileURLWithPath: "/private/tmp")
+        let completion = FaceScanCompletion(folderURL: folder, outcome: .cancelled,
+            resetPersistence: .anchored(.init(folderURL: folder, removedRelativePaths: [],
+                completed: false, failureMessage: nil, cancellationRequested: true)))
+        let evidence = MCPFaceScanOperationService.evidence(completion, cancellationRequested: true)
+        #expect(evidence.outcome == .cancelled)
+        #expect(!evidence.resetCommitted)
+        let reset = try #require(evidence.reset)
+        #expect(reset.result == .cancelledBeforeCommit)
+        #expect(reset.removedRelativePaths == [])
+        #expect(reset.completed == false)
+        #expect(reset.cancellationRequested == true)
+        #expect(!reset.cancellationRequestedAfterCommit)
+    }
+
+    @Test("Legacy reset evidence remains readable without exact deletion fields")
+    func legacyResetEvidence() throws {
+        let data = Data(#"{"result":"committed","cancellationRequestedAfterCommit":false}"#.utf8)
+        let evidence = try JSONDecoder().decode(MCPFaceScanReceiptStore.ResetEvidence.self, from: data)
+        #expect(evidence.result == .committed)
+        #expect(evidence.removedRelativePaths == nil)
+        #expect(evidence.completed == nil)
+        #expect(evidence.cancellationRequested == nil)
+    }
+
+    @Test("Malformed exact reset evidence is refused", arguments: ["traversal", "outside", "duplicate", "incomplete-fields", "result", "cancellation", "completed-prefix", "root-order"])
+    func malformedExactResetEvidence(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let completion = FaceScanCompletion(folderURL: f.intent.prepared.folderURL, outcome: .cancelled,
+            resetPersistence: .anchored(.init(folderURL: f.intent.prepared.folderURL,
+                removedRelativePaths: [".face_data/face_data.json"], completed: false,
+                failureMessage: nil, cancellationRequested: true)))
+        var evidence = MCPFaceScanOperationService.evidence(completion, cancellationRequested: true)
+        let original = try #require(evidence.reset)
+        switch kind {
+        case "traversal": evidence.reset?.removedRelativePaths = [".face_data/../photo.jpg"]
+        case "outside": evidence.reset?.removedRelativePaths = ["photo.jpg"]
+        case "duplicate": evidence.reset?.removedRelativePaths = [".face_data/face_data.json", ".face_data/face_data.json"]
+        case "incomplete-fields": evidence.reset?.completed = nil
+        case "result": evidence.reset = .init(result: .committed,
+            cancellationRequestedAfterCommit: original.cancellationRequestedAfterCommit,
+            removedRelativePaths: original.removedRelativePaths, completed: false, cancellationRequested: true)
+        case "completed-prefix": evidence.reset = .init(result: .committed,
+            cancellationRequestedAfterCommit: true, removedRelativePaths: original.removedRelativePaths,
+            completed: true, cancellationRequested: true)
+        case "root-order": evidence.reset?.removedRelativePaths = [".face_data", ".face_data/face_data.json"]
+        default: evidence.reset = .init(result: .partial, cancellationRequestedAfterCommit: false,
+            removedRelativePaths: original.removedRelativePaths, completed: false, cancellationRequested: true)
+        }
+        let operationID = UUID()
+        try f.receipts.admit(intent: f.intent, operationID: operationID)
+        try f.receipts.markExecutionPossible(operationID)
+        #expect(throws: MCPFaceScanReceiptStore.Failure.invalidStorage) {
+            try f.receipts.complete(operationID, evidence: evidence)
+        }
+        #expect(try f.receipts.receipts().first?.phase == .executionPossible)
+    }
+
     @Test("Abandoned owner recovery preserves receipt identity without replay")
     func recoveryDoesNotReplay() async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

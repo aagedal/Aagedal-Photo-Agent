@@ -23,6 +23,8 @@ nonisolated final class FaceDataWriteCapability: @unchecked Sendable {
         case staged(URL)
         case willCommit
         case didCommit
+        case willRemove(String)
+        case didRemove(String)
     }
 
     private enum Failure: LocalizedError {
@@ -111,6 +113,150 @@ nonisolated final class FaceDataWriteCapability: @unchecked Sendable {
         try publish(jpegData, name: "\(faceID.uuidString).jpg", thumbnail: true)
     }
 
+    private final class RetainedFile {
+        let descriptor: Int32
+        init(_ descriptor: Int32) { self.descriptor = descriptor }
+        deinit { close(descriptor) }
+    }
+
+    private struct Removal {
+        let parent: Directory
+        let name: String
+        let path: String
+        let identity: stat
+        let lineage: [(Directory, String, Directory)]
+        let directory: Bool
+        // Keep regular inodes alive throughout reset, preventing inode-number reuse.
+        let file: RetainedFile?
+    }
+
+    /// Snapshot the complete tree before the first effect, then unlink only those entries.
+    /// Links and special files are refused; no traversal uses a path-based recursive remover.
+    func reset() -> FaceDataResetEvidence {
+        lock.lock()
+        defer { lock.unlock() }
+        var removed: [String] = []
+        do {
+            try Task.checkCancellation()
+            try validate()
+            guard let originalStorage = storage else {
+                try Self.requireAbsent(parent: ancestors.last!, name: ".face_data")
+                return .init(folderURL: folderURL, removedRelativePaths: [], completed: true,
+                             failureMessage: nil, cancellationRequested: Task.isCancelled)
+            }
+            guard originalStorage.identity.st_dev == originalDevice else { throw Failure.unsafeDirectory }
+            var removals: [Removal] = []
+            var entryCount = 0
+            try snapshotRemoval(parent: ancestors.last!, name: ".face_data", path: ".face_data",
+                                directory: originalStorage, lineage: [], depth: 0,
+                                entryCount: &entryCount, removals: &removals)
+            for removal in removals {
+                try Task.checkCancellation()
+                try checkpoint(.willRemove(removal.path))
+                try Task.checkCancellation()
+                try validate()
+                for (parent, name, child) in removal.lineage {
+                    try Self.requireEntry(parent: parent, name: name, child: child)
+                }
+                var live = stat()
+                guard fstatat(removal.parent.descriptor, removal.name, &live, AT_SYMLINK_NOFOLLOW) == 0,
+                      live.st_dev == removal.identity.st_dev, live.st_ino == removal.identity.st_ino,
+                      live.st_mode & S_IFMT == removal.identity.st_mode & S_IFMT else {
+                    throw Failure.changedIdentity
+                }
+                let status = withExtendedLifetime(removal.file) {
+                    unlinkat(removal.parent.descriptor, removal.name, removal.directory ? AT_REMOVEDIR : 0)
+                }
+                guard status == 0 else { throw Failure.io(errno) }
+                // Record the physical effect before any fallible synchronization or callback.
+                removed.append(removal.path)
+                if removal.path == ".face_data/thumbnails" { thumbnails = nil }
+                if removal.path == ".face_data" { storage = nil; thumbnails = nil }
+                try checkpoint(.didRemove(removal.path))
+                guard fsync(removal.parent.descriptor) == 0 else { throw Failure.io(errno) }
+                try Self.requireAbsent(parent: removal.parent, name: removal.name)
+                try validate()
+            }
+            return .init(folderURL: folderURL, removedRelativePaths: removed, completed: true,
+                         failureMessage: nil, cancellationRequested: Task.isCancelled)
+        } catch {
+            return .init(folderURL: folderURL, removedRelativePaths: removed, completed: false,
+                         failureMessage: error is CancellationError ? nil : error.localizedDescription,
+                         cancellationRequested: Task.isCancelled || error is CancellationError)
+        }
+    }
+
+    private func snapshotRemoval(parent: Directory, name: String, path: String, directory: Directory,
+                                 lineage: [(Directory, String, Directory)], depth: Int,
+                                 entryCount: inout Int, removals: inout [Removal]) throws {
+        try Task.checkCancellation()
+        try validate()
+        guard depth < 64 else { throw Failure.unsafeDirectory }
+        try Self.requireEntry(parent: parent, name: name, child: directory)
+        let childLineage = lineage + [(parent, name, directory)]
+        // A fresh open has its own directory cursor; dup would share the retained offset.
+        let scanFD = openat(directory.descriptor, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard scanFD >= 0 else { throw Failure.io(errno) }
+        guard let stream = fdopendir(scanFD) else { close(scanFD); throw Failure.io(errno) }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw Failure.io(errno) }
+                break
+            }
+            let childName = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) {
+                    String(validatingCString: $0)
+                }
+            }
+            guard let childName else { throw Failure.unsafeDirectory }
+            if childName == "." || childName == ".." { continue }
+            entryCount += 1
+            guard entryCount <= 100_000 else { throw Failure.unsafeDirectory }
+            names.append(childName)
+            try Task.checkCancellation()
+        }
+        for childName in names.sorted() {
+            try Task.checkCancellation()
+            var info = stat()
+            guard fstatat(directory.descriptor, childName, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw Failure.changedIdentity
+            }
+            let childPath = path + "/" + childName
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR:
+                guard let child = try Self.openExistingDirectory(parent: directory, name: childName),
+                      child.identity.st_dev == info.st_dev, child.identity.st_ino == info.st_ino,
+                      child.identity.st_dev == originalDevice else { throw Failure.changedIdentity }
+                try snapshotRemoval(parent: directory, name: childName, path: childPath,
+                                    directory: child, lineage: childLineage, depth: depth + 1,
+                                    entryCount: &entryCount, removals: &removals)
+            case S_IFREG:
+                let fd = openat(directory.descriptor, childName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard fd >= 0 else { throw Failure.io(errno) }
+                let file = RetainedFile(fd)
+                var opened = stat()
+                guard fstat(fd, &opened) == 0, opened.st_mode & S_IFMT == S_IFREG,
+                      opened.st_dev == info.st_dev, opened.st_ino == info.st_ino else { throw Failure.changedIdentity }
+                removals.append(.init(parent: directory, name: childName, path: childPath,
+                                      identity: info, lineage: childLineage, directory: false, file: file))
+            default: throw Failure.unsafeDirectory
+            }
+        }
+        removals.append(.init(parent: parent, name: name, path: path, identity: directory.identity,
+                              lineage: lineage, directory: true, file: nil))
+    }
+
+    private var originalDevice: dev_t { ancestors.last!.identity.st_dev }
+
+    private static func requireAbsent(parent: Directory, name: String) throws {
+        var live = stat()
+        guard fstatat(parent.descriptor, name, &live, AT_SYMLINK_NOFOLLOW) != 0,
+              errno == ENOENT else { throw Failure.changedIdentity }
+    }
+
     private static func openExistingDirectory(parent: Directory, name: String) throws -> Directory? {
         let fd = openat(parent.descriptor, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if fd >= 0 { return try Directory(fd) }
@@ -126,7 +272,8 @@ nonisolated final class FaceDataWriteCapability: @unchecked Sendable {
         if let storage {
             try Self.requireEntry(parent: ancestors.last!, name: ".face_data", child: storage)
             if let thumbnails { try Self.requireEntry(parent: storage, name: "thumbnails", child: thumbnails) }
-        }
+            else { try Self.requireAbsent(parent: storage, name: "thumbnails") }
+        } else { try Self.requireAbsent(parent: ancestors.last!, name: ".face_data") }
     }
 
     private static func requireEntry(parent: Directory, name: String, child: Directory) throws {
