@@ -4,7 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
-- Add a keyboard preview and key recording for rating and label shortcuts in Settings, with visible free keys, alternate bindings, confirmed reassignment and restore defaults.
+- Add a keyboard preview and key recording in Settings for file, browsing, metadata, export, scopes, upload, rating and label shortcuts. Show free keys across modifier layers, confirm occupied-key reassignment, retain culling aliases and keep native menus in sync. Preserve existing custom culling bindings when upgrading profiles.
+- Keep Develop keyboard handling within its own window; honor reassigned or removed keys in Browser, Comparison and Caption. Normalize shifted keys and distinguish backward/forward Delete while recording.
 - Export the newest pending metadata draft when an older XMP sidecar exists, including explicitly cleared editorial fields.
 
 - Refresh browser metadata in place when order and filter membership are unchanged, reducing repeated sorting and preview warming during folder reads.

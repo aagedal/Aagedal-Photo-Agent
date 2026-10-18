@@ -248,11 +248,11 @@ private class FullScreenWindow: NSWindow {
         }
 
         let inputState = keyboardTextInputState(in: self)
-        if let key = event.charactersIgnoringModifiers?.first,
+        if let chord = KeyboardShortcutChord(event: event),
            let action = KeyboardShortcutRouter.resolve(
             KeyboardShortcutRouteInput(
-                key: String(key),
-                modifiers: KeyboardShortcutModifiers(flags),
+                key: chord.key,
+                modifiers: chord.modifiers,
                 textEditorOwnsInput: inputState.textEditorOwnsInput,
                 imeHasMarkedText: inputState.imeHasMarkedText,
                 isRepeat: event.isARepeat

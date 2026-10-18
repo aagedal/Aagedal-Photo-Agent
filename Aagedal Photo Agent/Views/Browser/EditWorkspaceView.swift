@@ -180,6 +180,7 @@ struct EditWorkspaceView: View {
     /// Owns local AppKit monitor registration and transient hover/Space-hand navigation state.
     /// Event interpretation remains at the view boundary.
     @State private var workspaceInput = DevelopWorkspaceInputCoordinator()
+    @State private var keyboardWindow = DevelopKeyboardWindowReference()
     /// Owns workspace-wide named-version flush registration and replaceable transient notices.
     @State private var workspaceSession = DevelopWorkspaceSessionCoordinator()
     /// Owns press-and-hold before/Develop/current-layer comparisons and projects them onto
@@ -896,6 +897,7 @@ struct EditWorkspaceView: View {
 
     var body: some View {
         workspaceWithPreviewObservers
+        .background(DevelopKeyboardWindowReader(reference: keyboardWindow))
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
             guard let delivery else { return }
             switch delivery.command {
@@ -7970,12 +7972,48 @@ struct EditWorkspaceView: View {
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
         // Recovery and save panels own their key events. The workspace's application-wide
         // monitor must not turn typing or Escape in a sheet into another Develop mutation.
-        guard NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
+        guard keyboardWindow.ownsKeyEvent(in: event.window),
+              NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
               event.window?.sheetParent == nil else { return event }
-        let chars = event.charactersIgnoringModifiers ?? ""
+        let chord = KeyboardShortcutChord(event: event) ?? KeyboardShortcutChord(
+            key: event.charactersIgnoringModifiers ?? "", modifiers: KeyboardShortcutModifiers(event.modifierFlags))
+        let chars = chord.key
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let isKeyDown = event.type == .keyDown
         let isKeyUp = event.type == .keyUp
+
+        let inputState = keyboardTextInputState(in: event.window)
+        let profile = KeyboardShortcutProfileRegistry.shared.selectedProfile
+        if let command = profile.command(for: chord) {
+            if command.isCulling, isKeyDown {
+                guard !inputState.textEditorOwnsInput, !inputState.imeHasMarkedText else { return event }
+                // Consume repeats before D/M/tool handlers can interpret a held culling key.
+                guard !event.isARepeat else { return nil }
+                if !browserViewModel.selectedImageIDs.isEmpty, let action = command.action {
+                    switch action {
+                    case let .rating(value):
+                        if let rating = StarRating(rawValue: value) { browserViewModel.setRating(rating) }
+                    case let .colorLabel(index):
+                        if let label = ColorLabel.fromShortcutIndex(index) { browserViewModel.setLabel(label) }
+                    }
+                }
+                return nil
+            }
+            if !command.isCulling, isKeyDown, !command.hasDevelopContextOverride(for: chord) {
+                // Remapped app commands must reach their native menu item before any
+                // contextual Develop hold, paste, zoom, or crop handler can consume them.
+                return event.isARepeat ? nil : event
+            }
+        }
+
+        // Preserve the historical Forward Delete layer-removal alias only when it
+        // has no explicit binding. An explicit assignment (even a disabled conflict)
+        // always takes precedence over this compatibility fallback.
+        if isKeyDown, profile.hasDevelopForwardDeleteFallback(for: chord) {
+            guard !inputState.textEditorOwnsInput, !inputState.imeHasMarkedText else { return event }
+            if !event.isARepeat, canEditSingleImage { removeOrResetSelectedEditLayer() }
+            return nil
+        }
 
         // Escape
         if event.keyCode == 53, isKeyDown {
@@ -8009,7 +8047,7 @@ struct EditWorkspaceView: View {
         }
 
         // M key — hold to show before, release to hide
-        if chars == "m" {
+        if chars == "m", isKeyUp || modifiers.isDisjoint(with: [.command, .option, .control]) {
             if isKeyUp {
                 transientPreview.endBeforeComparison()
                 return nil
@@ -8034,7 +8072,7 @@ struct EditWorkspaceView: View {
         }
 
         // Cmd+D — hold to mute only the current layer (global or selected mask)
-        if chars == "d" && modifiers.contains(.command) {
+        if chord == KeyboardShortcutChord(key: "d", modifiers: .command) {
             guard !isTextFieldActive(), canEditSingleImage else { return nil }
             if let idx = selectedMaskIndex {
                 // Mute selected mask
@@ -8062,45 +8100,7 @@ struct EditWorkspaceView: View {
         // All remaining handlers are key-down only
         guard isKeyDown else { return event }
 
-        // Control+Option+Delete removes the selected local layer or resets Global without
-        // overriding the system Close Window command. Ignore repeat so holding Delete cannot
-        // remove a run of adjacent layers.
-        if [51, 117].contains(Int(event.keyCode)),
-           modifiers.contains([.control, .option]),
-           modifiers.isDisjoint(with: [.command, .shift]) {
-            guard !event.isARepeat else { return nil }
-            if canEditSingleImage {
-                removeOrResetSelectedEditLayer()
-            }
-            return nil
-        }
-
         guard !isTextFieldActive() else { return event }
-
-        if !browserViewModel.selectedImageIDs.isEmpty,
-           let key = chars.first,
-           let action = KeyboardShortcutRouter.resolve(
-            KeyboardShortcutRouteInput(
-                key: String(key),
-                modifiers: KeyboardShortcutModifiers(event.modifierFlags),
-                textEditorOwnsInput: isTextFieldActive(),
-                imeHasMarkedText: keyboardTextInputState(in: event.window).imeHasMarkedText,
-                isRepeat: event.isARepeat
-            ),
-            profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
-           ) {
-            switch action {
-            case let .rating(value):
-                if let rating = StarRating(rawValue: value) {
-                    browserViewModel.setRating(rating)
-                }
-            case let .colorLabel(index):
-                if let label = ColorLabel.fromShortcutIndex(index) {
-                    browserViewModel.setLabel(label)
-                }
-            }
-            return nil
-        }
 
         // Arrow keys
         if event.keyCode == 123 { // left arrow
@@ -8113,7 +8113,7 @@ struct EditWorkspaceView: View {
         }
 
         // Cmd+C — copy develop settings
-        if chars == "c" && modifiers.contains(.command) {
+        if chord == KeyboardShortcutChord(key: "c", modifiers: .command) {
             guard canEditSingleImage else { return event }
             browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
             showCopyPasteFeedback("Copied")
@@ -8155,7 +8155,8 @@ struct EditWorkspaceView: View {
         }
 
         // Cmd+V / Cmd+Shift+V — paste develop settings
-        if chars == "v" && modifiers.contains(.command) {
+        if chord == KeyboardShortcutChord(key: "v", modifiers: .command)
+            || chord == KeyboardShortcutChord(key: "v", modifiers: [.command, .shift]) {
             guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
             let withCrop = modifiers.contains(.shift)
             let selectedURLs = browserViewModel.selectedImageIDs
@@ -8174,7 +8175,7 @@ struct EditWorkspaceView: View {
         // Option+V — paste develop settings including crop (crop is opt-in,
         // matching Adobe's copy-dialog default of leaving crop unchecked).
         // Exclude Cmd+Option+V, which is reserved for Paste IPTC Metadata.
-        if chars == "v" && modifiers.contains(.option) && !modifiers.contains(.command) {
+        if chord == KeyboardShortcutChord(key: "v", modifiers: .option) {
             guard let copied = browserViewModel.copiedCameraRawSettings else { return event }
             let selectedURLs = browserViewModel.selectedImageIDs
             guard !selectedURLs.isEmpty else { return event }
@@ -8190,7 +8191,8 @@ struct EditWorkspaceView: View {
         }
 
         // Cmd+Z / Cmd+Shift+Z — undo/redo
-        if chars == "z" && modifiers.contains(.command) {
+        if chord == KeyboardShortcutChord(key: "z", modifiers: .command)
+            || chord == KeyboardShortcutChord(key: "z", modifiers: [.command, .shift]) {
             if modifiers.contains(.shift) {
                 persistenceSession.redo()
             } else {
@@ -8461,5 +8463,39 @@ private struct CrosshairCursorView: NSViewRepresentable {
 
         override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
         override func mouseEntered(with event: NSEvent) { NSCursor.crosshair.set() }
+    }
+}
+
+
+@MainActor
+final class DevelopKeyboardWindowReference {
+    weak var window: NSWindow?
+
+    func ownsKeyEvent(in candidate: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return candidate === window && window.isKeyWindow
+    }
+}
+
+private struct DevelopKeyboardWindowReader: NSViewRepresentable {
+    let reference: DevelopKeyboardWindowReference
+
+    func makeNSView(context: Context) -> WindowReaderView {
+        let view = WindowReaderView()
+        view.reference = reference
+        return view
+    }
+
+    func updateNSView(_ view: WindowReaderView, context: Context) {
+        view.reference = reference
+        reference.window = view.window
+    }
+
+    final class WindowReaderView: NSView {
+        var reference: DevelopKeyboardWindowReference?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reference?.window = window
+        }
     }
 }

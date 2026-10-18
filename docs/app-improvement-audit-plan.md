@@ -1,5 +1,14 @@
 # App improvement audit plan
 
+**Core command shortcut editor (2026-10-18):** The shared editable profile now covers
+core application menus as well as culling. Settings adds categorized commands, all modifier
+layers and reliable scrolling. Native menu matching has isolated SwiftUI coverage;
+Develop input is restricted to its owning key window. Native layout/recording inspection
+passed; final live invocation remains unverified because the native automation backend is
+unavailable. The final 4,327-test regression and repository validation pass (two existing
+skips, zero failures). Release gates remain open. See the
+[dated continuation](plan-status-core-shortcut-editor-continuation-2026-10-18.md).
+
 **Shortcut editor and export metadata (2026-10-18):** Settings gains a keyboard preview,
 local recording, alias editing and confirmed reassignment. Native culling menus follow the
 selected profile; pending metadata drafts now take precedence over older XMP during export.

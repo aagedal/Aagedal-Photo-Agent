@@ -716,7 +716,6 @@ struct CaptionWorkspaceView: View {
                 Button("Previous", systemImage: "chevron.left") {
                     navigate(previous: true)
                 }
-                .keyboardShortcut("b", modifiers: .command)
                 .disabled(!session.canGoPrevious || isEditorTransitioning)
                 .focused($focusedAction, equals: .previous)
 

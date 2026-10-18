@@ -95,11 +95,12 @@ struct ComparisonWorkspaceView: View {
             replaceFocusedSource(.next)
             return .handled
         }
-        .onKeyPress(.delete) {
+        .onKeyPress(.delete, phases: .down) { press in
+            guard press.modifiers.isEmpty else { return .ignored }
             requestDeleteFocusedSource()
             return .handled
         }
-        .onKeyPress(keys: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "s"]) {
+        .onKeyPress(phases: .down) {
             handleCullingShortcut($0)
         }
         .accessibilityElement(children: .contain)
@@ -856,12 +857,23 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {
+        let inputState = keyboardTextInputState(in: NSApp.keyWindow)
+        let modifiers = KeyboardShortcutModifiers(press.modifiers)
+        var key = press.characters
+        if let event = NSApp.currentEvent, event.type == .keyDown,
+           let window = NSApp.keyWindow, event.window === window,
+           KeyboardShortcutModifiers(event.modifierFlags) == modifiers,
+           let chord = KeyboardShortcutChord(event: event),
+           event.characters == press.characters || event.charactersIgnoringModifiers == press.characters
+                || chord.key == press.characters.lowercased() {
+            key = chord.key
+        }
         guard let action = KeyboardShortcutRouter.resolve(
             KeyboardShortcutRouteInput(
-                key: press.characters,
-                modifiers: KeyboardShortcutModifiers(press.modifiers),
-                textEditorOwnsInput: false,
-                imeHasMarkedText: false,
+                key: key,
+                modifiers: modifiers,
+                textEditorOwnsInput: inputState.textEditorOwnsInput,
+                imeHasMarkedText: inputState.imeHasMarkedText,
                 isRepeat: false
             ),
             profile: KeyboardShortcutProfileRegistry.shared.selectedProfile

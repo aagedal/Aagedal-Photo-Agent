@@ -244,6 +244,23 @@ final class ThumbnailCollectionView: NSCollectionView {
         let shift = event.modifierFlags.contains(.shift)
         let cmd = event.modifierFlags.contains(.command)
 
+        let profile = KeyboardShortcutProfileRegistry.shared.selectedProfile
+        let inputState = keyboardTextInputState(in: window)
+        if let chord = KeyboardShortcutChord(event: event), let command = profile.command(for: chord) {
+            if command.isCulling {
+                if viewModel.firstSelectedImage != nil,
+                   !inputState.textEditorOwnsInput, !inputState.imeHasMarkedText {
+                    if !event.isARepeat, let action = command.action { applyCullingShortcut(action) }
+                    return
+                }
+            } else {
+                // Native menu equivalents own all modified app commands, including
+                // template slots. Never revive an unassigned Control+digit shortcut.
+                if !event.isARepeat { super.keyDown(with: event) }
+                return
+            }
+        }
+
         switch Int(event.keyCode) {
         case 123: // Left arrow
             guard let sel = viewModel.computePreviousSelection(extending: shift) else { break }
@@ -304,32 +321,6 @@ final class ThumbnailCollectionView: NSCollectionView {
                 super.keyDown(with: event)
             }
         default:
-            // Ctrl+1…9: apply template shortcut
-            if event.modifierFlags.contains(.control),
-               let chars = event.charactersIgnoringModifiers,
-               let digit = chars.first,
-               let slot = Int(String(digit)),
-               (1...9).contains(slot) {
-                commandRouter?.send(.applyTemplateShortcut(slot))
-                return
-            }
-
-            let inputState = keyboardTextInputState(in: window)
-            if viewModel.firstSelectedImage != nil,
-               let key = event.charactersIgnoringModifiers?.first,
-               let action = KeyboardShortcutRouter.resolve(
-                KeyboardShortcutRouteInput(
-                    key: String(key),
-                    modifiers: KeyboardShortcutModifiers(event.modifierFlags),
-                    textEditorOwnsInput: inputState.textEditorOwnsInput,
-                    imeHasMarkedText: inputState.imeHasMarkedText,
-                    isRepeat: event.isARepeat
-                ),
-                profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
-               ) {
-                applyCullingShortcut(action)
-                return
-            }
 
             super.keyDown(with: event)
         }

@@ -9,98 +9,63 @@ struct KeyboardShortcutsSettingsView: View {
     @State private var captionAdvanceRegistry = CaptionAdvanceShortcutRegistry.shared
 
     private static let allShortcuts: [(category: String, shortcuts: [(keys: String, description: String)])] = [
-        ("File", [
-            ("\u{2318}O", "Open Folder"),
-            ("\u{2318}\u{21E7}I", "Import Photos"),
-            ("\u{2318}E", "Open in Editor"),
+        ("Browser gestures", [
+            ("← → ↑ ↓", "Navigate Selection"),
+            ("⇧+Arrow", "Extend Selection"),
+            ("Space / ⌘F", "Toggle Full Screen"),
+            ("⌘A", "Select All"),
+            ("⌥M", "Switch Embedded / XMP Reference"),
         ]),
-        ("Browser", [
-            ("\u{2190}\u{2192}\u{2191}\u{2193}", "Navigate Selection"),
-            ("\u{21E7}+Arrow", "Extend Selection"),
-            ("Space", "Enter Full Screen"),
-            ("\u{2318}A", "Select All"),
-            ("\u{2318}F", "Toggle Full Screen"),
-            ("\u{2325}M", "Toggle Metadata Panel"),
-        ]),
-        ("Image", [
-            ("\u{2318}B", "Previous Image"),
-            ("\u{2318}N", "Next Image"),
-            ("\u{2318}R", "Rotate Right"),
-            ("\u{2318}\u{21E7}R", "Rotate Left"),
-            ("\u{2318}S", "Render Selected"),
-            ("\u{2318}\u{21E7}S", "Render All"),
-            ("\u{2318}D", "Duplicate"),
-            ("\u{2318}\u{232B}", "Move to Trash"),
-            ("\u{2318}J", "Add New Mask"),
-            ("\u{2303}\u{2325}\u{232B}", "Remove or Reset Selected Edit Layer"),
-        ]),
-        ("Metadata", [
-            ("\u{2318}P", "Process Variables"),
-            ("\u{2318}\u{21E7}P", "Process Variables (All)"),
-            ("\u{2318}\u{21E7}W", "Write All Pending Metadata"),
-            ("\u{2318}T", "Apply Metadata Template (outside Develop)"),
-            ("\u{2303}1\u{2013}9", "Apply Metadata Template Slot (outside Develop)"),
-            ("\u{2318}I", "Show Raw Metadata"),
-        ]),
-        ("Edit Workspace", [
+        ("Develop gestures", [
             ("Escape", "Exit Edit Workspace"),
-            ("M (hold)", "Before / After Toggle"),
-            ("\u{2318}D (hold)", "Mute Selected Mask / Global"),
+            ("Space (hold)", "Pan Image"),
+            ("M (hold)", "Before / After Preview"),
+            ("⌘D (hold)", "Mute Selected Mask / Global"),
             ("D (hold)", "Disable Develop Adjustments"),
-            ("\u{2190}\u{2192}", "Previous / Next Image"),
-            ("\u{2318}C", "Copy Develop Settings"),
-            ("\u{2318}T", "Apply Develop Template"),
-            ("\u{2303}1\u{2013}9", "Apply Develop Template Slot"),
+            ("← →", "Previous / Next Image"),
+            ("⌘C", "Copy Develop Settings"),
+            ("⌘V", "Paste Develop Settings"),
+            ("⌥V", "Paste with Crop"),
+            ("⌘⇧V", "Paste with Crop"),
+            ("⌘Z / ⌘⇧Z", "Undo / Redo"),
             ("C", "Toggle Crop Controls"),
-            ("\u{2318}V", "Paste Develop Settings"),
-            ("\u{2325}V", "Paste with Crop"),
-            ("\u{2318}\u{21E7}V", "Paste with Crop"),
-            ("\u{2318}Z", "Undo"),
-            ("\u{2318}\u{21E7}Z", "Redo"),
+            ("J", "Add Radial Mask"),
+            ("B", "Toggle Brush Tool"),
             ("Z", "Toggle Zoom Fit / 100%"),
-            ("H", "Toggle HDR"),
         ]),
-        ("Full Screen", [
-            ("Escape / Space", "Dismiss"),
+        ("Full Screen gestures", [
+            ("Escape / Space", "Dismiss Full Screen"),
             ("C", "Open Comparison"),
             ("Z", "Toggle Zoom at Cursor"),
             ("H", "Toggle UI Visibility"),
             ("⌥S", "Toggle Scaling Filter"),
             ("F", "Toggle Face Rectangles"),
             ("E", "Toggle Edit Rendering"),
-            ("Selected profile", "Set Rating or Color Label"),
             ("Arrow Keys", "Navigate Images"),
             ("Scroll Wheel", "Zoom at Cursor"),
         ]),
-        ("Comparison", [
+        ("List editor gestures", [
+            ("⌘N", "Add Keyword (Keyword Editor)"),
+        ]),
+        ("Comparison gestures", [
             ("Escape", "Close Comparison"),
             ("Tab", "Focus Other Image"),
-            ("\u{2190}\u{2192}", "Replace Focused Image"),
+            ("← →", "Replace Focused Image"),
             ("Delete", "Move Focused Image to Trash"),
-            ("Selected profile", "Rate or Label Focused Image"),
-        ]),
-        ("Clean Feed", [
-            ("\u{2318}\u{21E7}F", "Toggle Clean Feed"),
-        ]),
-        ("Scopes", [
-            ("\u{2303}\u{2325}1", "Waveform"),
-            ("\u{2303}\u{2325}2", "Parade"),
-            ("\u{2303}\u{2325}3", "Vectorscope"),
-            ("\u{2303}\u{2325}4", "Gamut"),
-            ("\u{2303}\u{2325}G", "Toggle Gamut Clipping"),
-            ("\u{2303}\u{2325}H", "Toggle HDR"),
-        ]),
-        ("Upload", [
-            ("\u{2318}U", "Upload Selected"),
-            ("\u{2318}\u{21E7}U", "Upload All"),
         ]),
     ]
 
     private var filteredShortcuts: [(category: String, shortcuts: [(keys: String, description: String)])] {
-        guard !searchText.isEmpty else { return Self.allShortcuts }
         let query = searchText.lowercased()
         return Self.allShortcuts.compactMap { section in
             let matches = section.shortcuts.filter {
+                if $0.keys == "⌘D (hold)",
+                   let owner = profileRegistry.selectedProfile.command(for: .init(key: "d", modifiers: .command)),
+                   owner != .duplicateSelected { return false }
+                if $0.keys == "⌥V",
+                   let owner = profileRegistry.selectedProfile.command(for: .init(key: "v", modifiers: .option)),
+                   owner != .showVariableReference { return false }
+                return searchText.isEmpty ||
                 $0.description.lowercased().contains(query) ||
                 $0.keys.lowercased().contains(query) ||
                 section.category.lowercased().contains(query)
@@ -111,186 +76,203 @@ struct KeyboardShortcutsSettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Picker("Culling shortcut profile", selection: Binding(
-                    get: { profileRegistry.selectedPreset },
-                    set: { profileRegistry.select($0) }
-                )) {
-                    ForEach(KeyboardShortcutPreset.allCases) { preset in
-                        Text(preset.displayName).tag(preset)
+        ScrollView {
+            VStack(spacing: 0) {
+                HStack {
+                    Picker("Shortcut profile", selection: Binding(
+                        get: { profileRegistry.selectedPreset },
+                        set: { profileRegistry.select($0) }
+                    )) {
+                        ForEach(KeyboardShortcutPreset.allCases) { preset in
+                            Text(preset.displayName).tag(preset)
+                        }
+                    }
+                    .accessibilityIdentifier("settings.shortcuts.profile")
+
+                    Spacer()
+
+                    Button("Restore Defaults") { showResetConfirmation = true }
+                        .help("Restore the Photo Agent shortcut profile")
+
+                    if !profileRegistry.selectedProfile.conflicts.isEmpty {
+                        Button("Resolve \(profileRegistry.selectedProfile.conflicts.count) Conflicts") {
+                            profileRegistry.resolveConflictsKeepingFirstCommand()
+                        }
+                        .help("Keep the first command for each duplicate chord and unassign the others")
+                        .accessibilityIdentifier("settings.shortcuts.resolveConflicts")
                     }
                 }
-                .accessibilityIdentifier("settings.shortcuts.profile")
-
-                Spacer()
-
-                Button("Restore Defaults") { showResetConfirmation = true }
-                    .help("Restore the Photo Agent rating and label shortcuts")
-
-                if !profileRegistry.selectedProfile.conflicts.isEmpty {
-                    Button("Resolve \(profileRegistry.selectedProfile.conflicts.count) Conflicts") {
-                        profileRegistry.resolveConflictsKeepingFirstCommand()
-                    }
-                    .help("Keep the first command for each duplicate chord and unassign the others")
-                    .accessibilityIdentifier("settings.shortcuts.resolveConflicts")
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top, 12)
-
-            Text("The selected profile controls rating and color-label keys in Browser, Comparison, Develop, and Full Screen. Bare keys are suppressed while a text editor or input method owns typing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
-                .padding(.top, 6)
+                .padding(.top, 12)
 
-            ShortcutKeyboardPreview(profile: profileRegistry.selectedProfile, onChooseChord: { chord in
-                editorSelection = ShortcutEditorSelection(
-                    command: profileRegistry.selectedProfile.command(for: chord) ?? .clearRating,
-                    suggestedChord: chord
-                )
-            })
-            .padding(.horizontal)
-            .padding(.top, 10)
-
-            HStack {
-                Image(systemName: "magnifyingglass")
+                Text("Choose a key to see or change its main-window action. Profiles include file, browsing, metadata, export, rating and label commands. Bare culling keys stay inactive during text entry; dialogs and settings editors keep their local controls.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("Filter shortcuts", text: $searchText)
-                    .textFieldStyle(.plain)
-                if !searchText.isEmpty {
-                    Button {
-                        searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Clear shortcut search")
-                }
-            }
-            .padding(8)
-            .background(.quaternary.opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.top, 6)
 
-            List {
-                if showsCaptionShortcuts {
-                    Section("Caption Workspace") {
-                        ForEach(CaptionAdvanceShortcutCommand.allCases, id: \.self) { command in
-                            HStack {
-                                Text(command.displayName)
-                                Spacer()
-                                Picker("Shortcut for \(command.displayName)", selection: Binding(
-                                    get: { captionAdvanceRegistry.chord(for: command) },
-                                    set: { chord in
-                                        if let chord {
-                                            captionAdvanceRegistry.assign(chord, to: command)
-                                        } else {
-                                            captionAdvanceRegistry.unassign(command)
+                ShortcutKeyboardPreview(profile: profileRegistry.selectedProfile, onChooseChord: { chord in
+                    editorSelection = ShortcutEditorSelection(
+                        command: profileRegistry.selectedProfile.command(for: chord)
+                            ?? (profileRegistry.selectedProfile.hasDevelopForwardDeleteFallback(for: chord)
+                                ? .removeOrResetSelectedEditLayer : .clearRating),
+                        suggestedChord: chord
+                    )
+                })
+                .padding(.horizontal)
+                .padding(.top, 10)
+
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter shortcuts", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear shortcut search")
+                    }
+                }
+                .padding(8)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if showsCaptionShortcuts {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Caption Workspace").font(.headline)
+                            ForEach(CaptionAdvanceShortcutCommand.allCases, id: \.self) { command in
+                                HStack {
+                                    Text(command.displayName)
+                                    Spacer()
+                                    Picker("Shortcut for \(command.displayName)", selection: Binding(
+                                        get: { captionAdvanceRegistry.chord(for: command) },
+                                        set: { chord in
+                                            if let chord {
+                                                captionAdvanceRegistry.assign(chord, to: command)
+                                            } else {
+                                                captionAdvanceRegistry.unassign(command)
+                                            }
+                                        }
+                                    )) {
+                                        Text("Unassigned").tag(nil as KeyboardShortcutChord?)
+                                        ForEach(CaptionAdvanceShortcutRegistry.editableChordChoices, id: \.self) { chord in
+                                            Text(chord.displayName).tag(Optional(chord))
                                         }
                                     }
-                                )) {
-                                    Text("Unassigned").tag(nil as KeyboardShortcutChord?)
-                                    ForEach(CaptionAdvanceShortcutRegistry.editableChordChoices, id: \.self) { chord in
-                                        Text(chord.displayName).tag(Optional(chord))
+                                    .labelsHidden()
+                                    .frame(width: 120)
+                                    .accessibilityLabel("Shortcut for \(command.displayName)")
+                                    .accessibilityValue(
+                                        captionAdvanceRegistry.chord(for: command)?.displayName
+                                            ?? "Unassigned"
+                                    )
+                                }
+                            }
+                            Text("Assigning a chord already used here moves it to the selected command, so Save & Next and Write & Next cannot be ambiguous.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    ForEach(filteredCommandCategories, id: \.self) { category in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(category).font(.headline)
+                            ForEach(filteredCommands.filter { $0.category == category }, id: \.self) { command in
+                                HStack {
+                                    Text(command.displayName)
+                                    Spacer()
+                                    Button {
+                                        editorSelection = ShortcutEditorSelection(command: command)
+                                    } label: {
+                                        let chords = profileRegistry.selectedProfile.bindings
+                                            .filter { $0.command == command }.map(\.chord.displayName)
+                                        Text(chords.isEmpty ? "Unassigned" : chords.joined(separator: " / "))
+                                            .monospaced()
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .frame(maxWidth: 220, alignment: .trailing)
                                     }
+                                    .accessibilityLabel("Edit shortcut for \(command.displayName)")
+                                    .accessibilityValue(profileRegistry.selectedProfile.bindings
+                                        .filter { $0.command == command }.map(\.chord.displayName).joined(separator: ", "))
+                                    .help(command.isCulling ? "Change shortcuts or add an alternate key" : "Change or unassign this shortcut")
                                 }
-                                .labelsHidden()
-                                .frame(width: 120)
-                                .accessibilityLabel("Shortcut for \(command.displayName)")
-                                .accessibilityValue(
-                                    captionAdvanceRegistry.chord(for: command)?.displayName
-                                        ?? "Unassigned"
-                                )
+                                .padding(.vertical, 3)
                             }
-                        }
-                        Text("Assigning a chord already used here moves it to the selected command, so Save & Next and Write & Next cannot be ambiguous.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
 
-                if !filteredCullingCommands.isEmpty {
-                    Section("Rating & Label — \(profileRegistry.selectedProfile.name)") {
-                        ForEach(filteredCullingCommands, id: \.self) { command in
-                            HStack {
-                                Text(command.displayName)
-                                Spacer()
-                                Button {
-                                    editorSelection = ShortcutEditorSelection(command: command)
-                                } label: {
-                                    let chords = profileRegistry.selectedProfile.bindings
-                                        .filter { $0.command == command }.map(\.chord.displayName)
-                                    Text(chords.isEmpty ? "Unassigned" : chords.joined(separator: " / "))
-                                        .monospaced()
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .frame(maxWidth: 220, alignment: .trailing)
+                        }
+                    }
+                    ForEach(profileRegistry.selectedProfile.conflicts, id: \.chord) { conflict in
+                        Label(
+                            "\(conflict.chord.displayName) is disabled because it is assigned to \(conflict.commands.map(\.displayName).joined(separator: ", "))",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                        .accessibilityIdentifier("settings.shortcuts.conflict")
+                    }
+                    ForEach(filteredShortcuts, id: \.category) { section in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(section.category).font(.headline)
+                            ForEach(section.shortcuts, id: \.keys) { shortcut in
+                                HStack {
+                                    Text(shortcut.description)
+                                    Spacer()
+                                    Text(shortcut.keys)
+                                        .foregroundStyle(.secondary)
+                                        .font(.system(.body, design: .rounded))
                                 }
-                                .accessibilityLabel("Edit shortcut for \(command.displayName)")
-                                .accessibilityValue(profileRegistry.selectedProfile.bindings
-                                    .filter { $0.command == command }.map(\.chord.displayName).joined(separator: ", "))
-                                .help("Change shortcuts or add an alternate key")
-                            }
-                        }
-
-                        ForEach(profileRegistry.selectedProfile.conflicts, id: \.chord) { conflict in
-                            Label(
-                                "\(conflict.chord.displayName) is disabled because it is assigned to \(conflict.commands.map(\.displayName).joined(separator: ", "))",
-                                systemImage: "exclamationmark.triangle.fill"
-                            )
-                            .foregroundStyle(.orange)
-                            .font(.caption)
-                            .accessibilityIdentifier("settings.shortcuts.conflict")
-                        }
-                    }
-                }
-                ForEach(filteredShortcuts, id: \.category) { section in
-                    Section(section.category) {
-                        ForEach(section.shortcuts, id: \.description) { shortcut in
-                            HStack {
-                                Text(shortcut.description)
-                                Spacer()
-                                Text(shortcut.keys)
-                                    .foregroundStyle(.secondary)
-                                    .font(.system(.body, design: .rounded))
                             }
                         }
                     }
                 }
-            }
-            .listStyle(.inset)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
 
-            if filteredShortcuts.isEmpty && filteredCullingCommands.isEmpty && !showsCaptionShortcuts {
-                Spacer()
-                Text("No matching shortcuts")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                if filteredShortcuts.isEmpty && filteredCommands.isEmpty && !showsCaptionShortcuts {
+                    Spacer()
+                    Text("No matching shortcuts")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .sheet(item: $editorSelection) { selection in
-            CullingShortcutEditor(command: selection.command, registry: profileRegistry, suggestedChord: selection.suggestedChord)
+            KeyboardShortcutEditor(command: selection.command, registry: profileRegistry, suggestedChord: selection.suggestedChord)
         }
-        .confirmationDialog("Restore default rating and label shortcuts?", isPresented: $showResetConfirmation) {
+        .confirmationDialog("Restore the default shortcut profile?", isPresented: $showResetConfirmation) {
             Button("Restore Defaults", role: .destructive) { profileRegistry.resetCustom() }
         } message: {
-            Text("This replaces your custom rating and label shortcuts. Caption shortcuts are unchanged.")
+            Text("This replaces your custom profile with Photo Agent defaults. Caption advance shortcuts are unchanged.")
         }
     }
 
-    private var filteredCullingCommands: [KeyboardShortcutCommand] {
+    fileprivate static let commandCategories = ["Rating & Label", "File", "Browser", "Image", "Metadata", "Templates", "Develop", "Export", "View", "Scopes", "Upload"]
+
+    private var filteredCommands: [KeyboardShortcutCommand] {
         KeyboardShortcutCommand.allCases.filter { command in
-            searchText.isEmpty || "rating label culling".localizedCaseInsensitiveContains(searchText)
+            searchText.isEmpty || command.category.localizedCaseInsensitiveContains(searchText)
+                || (command.isCulling && "culling".localizedCaseInsensitiveContains(searchText))
                 || command.displayName.localizedCaseInsensitiveContains(searchText)
                 || profileRegistry.selectedProfile.bindings.contains {
                     $0.command == command && $0.chord.displayName.localizedCaseInsensitiveContains(searchText)
                 }
         }
+    }
+
+    private var filteredCommandCategories: [String] {
+        Self.commandCategories.filter { category in filteredCommands.contains { $0.category == category } }
     }
 
     private var showsCaptionShortcuts: Bool {
@@ -316,22 +298,28 @@ private struct ShortcutKeyboardPreview: View {
     let profile: KeyboardShortcutProfile
     var onChooseChord: (KeyboardShortcutChord) -> Void
     @State private var modifiers: KeyboardShortcutModifiers = []
+    @State private var captionRegistry = CaptionAdvanceShortcutRegistry.shared
 
     private static let rows = [
-        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "delete", "forwarddelete"],
         ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
-        ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+        ["a", "s", "d", "f", "g", "h", "j", "k", "l", "return"],
         ["z", "x", "c", "v", "b", "n", "m"],
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Picker("Keyboard layer", selection: $modifiers) {
-                Text("No modifiers").tag(KeyboardShortcutModifiers())
-                Text("⌘").tag(KeyboardShortcutModifiers.command)
-                Text("⌘⌥").tag(KeyboardShortcutModifiers([.command, .option]))
+            HStack(spacing: 8) {
+                Text("Modifiers").foregroundStyle(.secondary)
+                modifierToggle("⌃", modifier: .control, name: "Control")
+                modifierToggle("⌥", modifier: .option, name: "Option")
+                modifierToggle("⇧", modifier: .shift, name: "Shift")
+                modifierToggle("⌘", modifier: .command, name: "Command")
+                Spacer()
+                if !modifiers.isEmpty {
+                    Button("Clear") { modifiers = [] }.font(.caption)
+                }
             }
-            .pickerStyle(.segmented)
             .accessibilityIdentifier("settings.shortcuts.keyboardLayer")
 
             ForEach(Self.rows, id: \.self) { row in
@@ -348,7 +336,7 @@ private struct ShortcutKeyboardPreview: View {
                 Label("Reserved", systemImage: "lock.fill").foregroundStyle(.secondary)
             }
             .font(.caption)
-            Text("Rating and label keys. Choose a key to inspect or assign it. Other keys are reserved for workspace and system commands. Layout shows key names, not physical positions.")
+            Text("Hover over a key to see its action. Turn modifiers on or off to inspect another layer. Locked keys remain with macOS, text entry or workspace gestures. Layout shows key names rather than physical positions.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -356,22 +344,45 @@ private struct ShortcutKeyboardPreview: View {
         .accessibilityIdentifier("settings.shortcuts.keyboardPreview")
     }
 
+    private func modifierToggle(_ title: String, modifier: KeyboardShortcutModifiers, name: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { modifiers.contains(modifier) },
+            set: { enabled in
+                if enabled { modifiers.insert(modifier) } else { modifiers.remove(modifier) }
+            }
+        ))
+        .toggleStyle(.button)
+        .help(name)
+        .accessibilityLabel(name)
+    }
+
     private func keycap(_ chord: KeyboardShortcutChord) -> some View {
         let supported = KeyboardShortcutProfiles.editableChordChoices.contains(chord)
         let commands = Array(Set(profile.bindings.filter { $0.chord == chord }.map(\.command)))
             .sorted { $0.rawValue < $1.rawValue }
-        let description = commands.isEmpty ? (supported ? "Free" : "Reserved")
-            : commands.map(\.displayName).joined(separator: ", ")
+        let developDeleteFallback = profile.hasDevelopForwardDeleteFallback(for: chord)
+        let captionOwners = CaptionAdvanceShortcutCommand.allCases.filter { captionRegistry.chord(for: $0) == chord }
+        let description = !commands.isEmpty
+            ? commands.map { command in
+                command.displayName + (chord == .init(key: "n", modifiers: .command)
+                    ? " (Keyword Editor: add keyword)" : "") + (command.hasDevelopContextOverride(for: chord)
+                    ? (command == .duplicateSelected ? " (Develop: hold to mute selected layer)" : " (Develop: paste with crop)") : "")
+            }.joined(separator: ", ")
+            : developDeleteFallback ? "Develop: Remove or Reset Selected Edit Layer (Delete compatibility shortcut; assigning this key overrides it)"
+            : !captionOwners.isEmpty ? captionOwners.map { "Caption: " + $0.displayName }.joined(separator: ", ")
+                + "; edit in the Caption Workspace section"
+            : (supported ? "Free" : (KeyboardShortcutProfiles.reservation(for: chord) ?? "Reserved for text entry or workspace gestures"))
+        let assigned = !commands.isEmpty || !captionOwners.isEmpty || developDeleteFallback
         return Button {
             onChooseChord(chord)
         } label: {
             VStack(spacing: 1) {
-                Text(chord.key.uppercased()).font(.system(.body, design: .monospaced))
-                Image(systemName: supported ? (commands.isEmpty ? "circle" : "circle.fill") : "lock.fill")
+                Text(chord.key == "delete" ? "⌫" : chord.key == "forwarddelete" ? "⌦" : chord.key == "return" ? "↩" : chord.key.uppercased()).font(.system(.body, design: .monospaced))
+                Image(systemName: supported ? (assigned ? "circle.fill" : "circle") : "lock.fill")
                     .font(.system(size: 7))
             }
             .frame(maxWidth: .infinity, minHeight: 28)
-            .background(commands.isEmpty ? Color.secondary.opacity(0.07) : Color.accentColor.opacity(0.2))
+            .background(assigned ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.07))
             .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
@@ -382,7 +393,7 @@ private struct ShortcutKeyboardPreview: View {
 
 }
 
-private struct CullingShortcutEditor: View {
+private struct KeyboardShortcutEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State var command: KeyboardShortcutCommand
     let registry: KeyboardShortcutProfileRegistry
@@ -394,8 +405,12 @@ private struct CullingShortcutEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker("Action", selection: $command) {
-                ForEach(KeyboardShortcutCommand.allCases) { command in
-                    Text(command.displayName).tag(command)
+                ForEach(KeyboardShortcutsSettingsView.commandCategories, id: \.self) { category in
+                    Section(category) {
+                        ForEach(KeyboardShortcutCommand.allCases.filter { $0.category == category }) { command in
+                            Text(command.displayName).tag(command)
+                        }
+                    }
                 }
             }
             if let suggestedChord {
@@ -403,16 +418,27 @@ private struct CullingShortcutEditor: View {
             }
             let chords = registry.selectedProfile.bindings.filter { $0.command == command }.map(\.chord)
             if chords.isEmpty { Text("Unassigned").foregroundStyle(.secondary) }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), alignment: .leading)], alignment: .leading) {
-                ForEach(chords, id: \.self) { chord in
-                    Button {
-                        registry.remove(chord, from: command)
-                    } label: {
-                        Label(chord.displayName, systemImage: "xmark.circle")
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), alignment: .leading)], alignment: .leading) {
+                    ForEach(chords, id: \.self) { chord in
+                        Button {
+                            registry.remove(chord, from: command)
+                        } label: {
+                            Label(chord.displayName, systemImage: "xmark.circle")
+                        }
+                        .help("Remove \(chord.displayName) from \(command.displayName)")
+                        .accessibilityLabel("Remove \(chord.displayName) from \(command.displayName)")
                     }
-                    .help("Remove \(chord.displayName) from \(command.displayName)")
-                    .accessibilityLabel("Remove \(chord.displayName) from \(command.displayName)")
                 }
+            }
+            .frame(height: min(112, CGFloat((chords.count + 3) / 4) * 28))
+            if let chord = chords.first(where: { command.hasDevelopContextOverride(for: $0) }) {
+                Text(command == .duplicateSelected
+                    ? "At \(chord.displayName), Develop holds the selected layer muted; Browser duplicates. Assign a different key to duplicate from Develop."
+                    : "At \(chord.displayName), Develop pastes edits with crop. Assign a different key for Variable Reference in Develop.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Button(recording ? "Cancel Recording" : "Record Shortcut") {
                 recording.toggle()
@@ -428,9 +454,12 @@ private struct CullingShortcutEditor: View {
                 .accessibilityLabel("Press a shortcut. Escape cancels.")
             }
             ShortcutKeyboardPreview(profile: registry.selectedProfile, onChooseChord: choose)
-            Text(feedback.isEmpty ? "Choose a free key or record a shortcut to add it. Use × to remove an existing shortcut." : feedback)
+            Text(feedback.isEmpty ? (command.isCulling
+                ? "Choose a key or record a shortcut to add an alternate. Use × to remove a shortcut."
+                : "Choose a key or record a shortcut to replace this command’s assignment. Use × to unassign it.") : feedback)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
@@ -458,8 +487,10 @@ private struct CullingShortcutEditor: View {
     }
 
     private func choose(_ chord: KeyboardShortcutChord) {
-        guard KeyboardShortcutProfiles.editableChordChoices.contains(chord) else {
-            feedback = "\(chord.displayName) is reserved. Choose an unlocked key on the keyboard preview."
+        guard KeyboardShortcutProfiles.canAssign(chord, to: command) else {
+            feedback = KeyboardShortcutProfiles.reservation(for: chord)
+                ?? (command.isCulling ? "Use bare numbers, S or X, or a Command shortcut for ratings and labels."
+                    : "Use a modified shortcut so this command does not interrupt typing.")
             return
         }
         recording = false
@@ -490,16 +521,28 @@ private struct ShortcutKeyRecorder: NSViewRepresentable {
             super.viewDidMoveToWindow()
             window?.makeFirstResponder(self)
         }
+        override func resignFirstResponder() -> Bool {
+            let resigned = super.resignFirstResponder()
+            if resigned {
+                // A modifier-layer or action-picker click ends recording. Removed views
+                // must not cancel a newly mounted recorder on a later UI update.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let window = self.window, window.firstResponder !== self else { return }
+                    self.onKey?(nil)
+                }
+            }
+            return resigned
+        }
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
-            guard window?.firstResponder === self else { return false }
+            guard let window, window.isKeyWindow, window.firstResponder === self else { return false }
             keyDown(with: event)
             return true
         }
         override func keyDown(with event: NSEvent) {
             guard !event.isARepeat else { return }
             if event.keyCode == 53 { onKey?(nil); return }
-            guard let key = event.charactersIgnoringModifiers, !key.isEmpty else { return }
-            onKey?(KeyboardShortcutChord(key: key, modifiers: KeyboardShortcutModifiers(event.modifierFlags)))
+            guard let chord = KeyboardShortcutChord(event: event) else { return }
+            onKey?(chord)
         }
     }
 }
