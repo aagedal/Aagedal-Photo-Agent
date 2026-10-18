@@ -4,7 +4,7 @@ import CryptoKit
 /// An immutable caption-sidecar write captured before navigation changes the metadata selection.
 ///
 /// Capturing the complete document lets navigation publish its new focus immediately while the
-/// small JSON/XMP writes run on a serial background queue. Repeating `persist()` is safe and is
+/// small JSON/XMP writes run on a serial background queue. Repeating `persistAsync()` is safe and is
 /// used by the durable barrier to retry a previously failed write.
 nonisolated struct CaptionDraftPersistence: Sendable {
     let request: MetadataSidecarReplayRequest
@@ -13,20 +13,6 @@ nonisolated struct CaptionDraftPersistence: Sendable {
     var sidecar: MetadataSidecar { request.sidecar }
 
     @discardableResult
-    func persist() throws -> MetadataSidecar {
-        // Compatibility for callers that require a synchronous durability barrier. Normal
-        // queued writes and async barriers use persistAsync() without blocking a thread.
-        let completion = DispatchSemaphore(value: 0)
-        let result = CaptionPersistenceResult()
-        Task.detached(priority: .userInitiated) {
-            do { result.set(.success(try await persistAsync())) }
-            catch { result.set(.failure(error)) }
-            completion.signal()
-        }
-        completion.wait()
-        return try result.get().get()
-    }
-
     func persistAsync() async throws -> MetadataSidecar {
         let persistence = await MetadataSidecarService().replayHistoryAndMirrorXMP(request)
         guard persistence.completed else {
@@ -42,33 +28,6 @@ nonisolated struct CaptionDraftPersistence: Sendable {
         }
         return installed
     }
-}
-
-nonisolated private final class CaptionPersistenceResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Result<MetadataSidecar, any Error>?
-
-    nonisolated func set(_ newValue: Result<MetadataSidecar, any Error>) {
-        lock.withLock { value = newValue }
-    }
-
-    nonisolated func get() -> Result<MetadataSidecar, any Error> {
-        lock.withLock { value! }
-    }
-}
-
-nonisolated private final class CaptionDrainResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Result<Void, any Error>?
-    func set(_ result: Result<Void, any Error>) { lock.withLock { value = result } }
-    func get() -> Result<Void, any Error> { lock.withLock { value! } }
-}
-
-nonisolated private final class CaptionPendingCountResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func set(_ count: Int) { lock.withLock { value = count } }
-    func get() -> Int { lock.withLock { value } }
 }
 
 nonisolated struct CaptionQueueFailure: Identifiable, Sendable, Equatable {
@@ -210,6 +169,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     }
     private let queue: DispatchQueue
     private let failureDelivery: CaptionQueueFailureDelivery
+    private let canonicalPhotoURL: @Sendable (URL) -> URL
     private let operationQueue = DispatchQueue(label: "com.aagedal.photo-agent.caption-injected-operation", qos: .userInitiated)
     private var isProcessing = false
     private var idleActions: [@Sendable () -> Void] = []
@@ -225,9 +185,13 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
     private var stateHandler: (@MainActor @Sendable (CaptionQueueFailure?) -> Void)?
 
     init(label: String = "com.aagedal.photo-agent.caption-persistence",
-         failureDelivery: CaptionQueueFailureDelivery = .init()) {
+         failureDelivery: CaptionQueueFailureDelivery = .init(),
+         canonicalPhotoURL: @escaping @Sendable (URL) -> URL = {
+             $0.standardizedFileURL.resolvingSymlinksInPath()
+         }) {
         queue = DispatchQueue(label: label, qos: .userInitiated)
         self.failureDelivery = failureDelivery
+        self.canonicalPhotoURL = canonicalPhotoURL
     }
 
     func observeFailure(_ handler: @escaping @MainActor @Sendable (CaptionQueueFailure?) -> Void) {
@@ -267,10 +231,14 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
                  operation: @escaping @Sendable () async throws -> MetadataSidecar?,
                  onFailure: @escaping @MainActor @Sendable (String) -> Void,
                  onSuccess: @escaping @MainActor @Sendable (UUID, MetadataSidecar) -> Void) -> UUID {
-        let item = Item(id: UUID(), persistence: persistence, operation: operation, onSuccess: onSuccess, onFailure: onFailure,
-            photoURL: persistence.map { $0.imageURL.standardizedFileURL.resolvingSymlinksInPath() })
+        let id = UUID()
         publicationLock.withLock { admittedPendingCount += 1 }
         queue.async { [self] in
+            // Provider-backed identity lookup may block. Admission returns immediately; keep
+            // lookup in FIFO order with recovery commands on the retained background queue.
+            let item = Item(id: id, persistence: persistence, operation: operation,
+                onSuccess: onSuccess, onFailure: onFailure,
+                photoURL: persistence.map { canonicalPhotoURL($0.imageURL) })
             // Normal admission is frozen before editor capture by the coordinator. A previously
             // captured request arriving late must still be retained; it invalidates the export set.
             items.append(item)
@@ -279,21 +247,7 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
             process(retryingFailure: false)
             publish()
         }
-        return item.id
-    }
-
-    /// Compatibility barrier for synchronous mutation callers. Replay itself runs at the
-    /// same user-initiated priority as this serial state queue, without a default-priority bridge.
-    func drain() throws {
-        let completion = DispatchSemaphore(value: 0)
-        let result = CaptionDrainResult()
-        queue.async { [self] in
-            whenIdle { [self] in
-                beginDrain { outcome in result.set(outcome); completion.signal() }
-            }
-        }
-        completion.wait()
-        try result.get().get()
+        return id
     }
 
     /// Cancellation abandons the caller's transition, never an admitted durable write. Awaiting
@@ -313,12 +267,14 @@ nonisolated final class CaptionDraftPersistenceQueue: @unchecked Sendable {
         completeAfterProcessing { [self] in completion(failure.map(Result.failure) ?? .success(())) }
     }
 
-    var pendingCount: Int {
-        let completion = DispatchSemaphore(value: 0)
-        let result = CaptionPendingCountResult()
-        queue.async { [self] in whenIdle { [self] in result.set(items.count); completion.signal() } }
-        completion.wait()
-        return result.get()
+    /// Waits for the current admitted work to settle without blocking its caller's actor.
+    /// Unlike `hasPendingWork`, this is an ordered queue observation, including a failed head.
+    func pendingCountWhenIdle() async -> Int {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                whenIdle { [self] in continuation.resume(returning: items.count) }
+            }
+        }
     }
     /// Includes work admitted before its queue block starts and the in-flight head, without waiting for I/O.
     var hasPendingWork: Bool { publicationLock.withLock { admittedPendingCount > 0 } }
@@ -846,6 +802,7 @@ final class CaptionWorkspaceFlushCoordinator {
     }
 
     func isReviewing(_ imageURL: URL) -> Bool {
+        guard pendingReviewPhoto != nil || activeConflictReview != nil else { return false }
         let photo = imageURL.standardizedFileURL.resolvingSymlinksInPath()
         return pendingReviewPhoto == photo || activeConflictReview?.photoURL == photo
     }
@@ -891,12 +848,6 @@ final class CaptionWorkspaceFlushCoordinator {
         return persistenceQueue.enqueue(persistence, onFailure: onFailure, onSuccess: onSuccess)
     }
 
-    /// Drain already captured work when no editor handler is mounted (for example, after leaving Review).
-    func flushQueuedPersistence() throws {
-        try requireVariableDraftsPersisted()
-        try persistenceQueue.drain()
-    }
-
     func register(
         owner: UUID,
         currentImageURL: @escaping () -> URL? = { nil },
@@ -923,14 +874,6 @@ final class CaptionWorkspaceFlushCoordinator {
         handler = nil
     }
 
-    /// Durable flush used by explicit mutations and workspace exit. It crosses the in-memory text
-    /// barrier, captures the current draft, and waits for all queued drafts in FIFO order.
-    func flush() throws {
-        try requireVariableDraftsPersisted()
-        try enqueueFlush()
-        try persistenceQueue.drain()
-    }
-
     /// Async durable barrier for transitions that can suspend while JSON/XMP is verified.
     func flushAsync() async throws {
         try requireVariableDraftsPersisted()
@@ -944,6 +887,7 @@ final class CaptionWorkspaceFlushCoordinator {
         else { try await flushQueuedPersistenceAsync() }
     }
 
+    /// Drain already captured work when no editor handler is mounted (for example, after leaving Review).
     func flushQueuedPersistenceAsync() async throws {
         try requireVariableDraftsPersisted()
         try await persistenceQueue.drainAsync()

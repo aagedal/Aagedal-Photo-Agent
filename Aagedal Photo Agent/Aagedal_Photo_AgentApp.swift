@@ -11,6 +11,7 @@ struct Aagedal_Photo_AgentApp: App {
     @ObservedObject private var imageScaling = ImageScalingController.shared
     @State private var settingsViewModel = SettingsViewModel()
     @State private var commandRouter = AppCommandRouter()
+    @State private var keyboardProfiles = KeyboardShortcutProfileRegistry.shared
     @State private var activityHistory: ActivityHistoryStore
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var knownPeopleInterchangeController: KnownPeopleInterchangeController
@@ -52,6 +53,7 @@ struct Aagedal_Photo_AgentApp: App {
     }
 
     var body: some Scene {
+        let keyboardProfile = keyboardProfiles.selectedProfile
         Window("Aagedal Photo Agent", id: "main") {
             ContentView(settingsViewModel: settingsViewModel, commandRouter: commandRouter,
                         faceRecognition: faceRecognitionViewModel, history: activityHistory)
@@ -120,7 +122,7 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Open Folder...") {
                     commandRouter.send(.openFolder)
                 }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .openFolder))
 
                 Menu("Open Recent") {
                     ForEach(recentFolders.folders) { recent in
@@ -142,89 +144,63 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Import from Web URL…") {
                     commandRouter.send(.showWebImport)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showWebImport))
 
                 Button("Import Photos...") {
                     commandRouter.send(.showImport)
                 }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showImport))
 
                 Button("Back Up Edited Files...") {
                     commandRouter.send(.backupEditedFiles)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .backupEditedFiles))
 
                 Divider()
 
                 Button("Render Selected") {
                     commandRouter.send(.renderSelected)
                 }
-                .keyboardShortcut("s", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .renderSelected))
 
                 Button("Advanced Export Selected...") {
                     commandRouter.send(.advancedExportSelected)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .advancedExportSelected))
 
                 Button("Render All") {
                     commandRouter.send(.renderAll)
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .renderAll))
 
                 Divider()
 
                 Button("Save as JPEG") {
                     commandRouter.send(.saveAsJPEG)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .saveAsJPEG))
 
                 Button("Save as PNG") {
                     commandRouter.send(.saveAsPNG)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .saveAsPNG))
 
                 Divider()
 
                 Button("Rename...") {
                     commandRouter.send(.renameSelected)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .renameSelected))
 
                 Button("Duplicate") {
                     commandRouter.send(.duplicateSelected)
                 }
-                .keyboardShortcut("d", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .duplicateSelected))
             }
 
             CommandGroup(replacing: .printItem) { }
 
-            CommandMenu("Rating & Label") {
-                // Ratings carry no menu key equivalents: the bare 1–5 keys are
-                // handled in the grid / full-screen views (focus-aware, so they
-                // don't fire while a metadata field is being edited). CMD+digits
-                // are reserved for the color labels below.
-                Button("No Rating") {
-                    commandRouter.send(.setRating(.none))
-                }
-
-                ForEach(1...5, id: \.self) { rating in
-                    Button("\(rating) Star\(rating > 1 ? "s" : "")") {
-                        guard let rating = StarRating(rawValue: rating) else { return }
-                        commandRouter.send(.setRating(rating))
-                    }
-                }
-
-                Divider()
-
-                Button("No Label") {
-                    commandRouter.send(.setLabel(.none))
-                }
-                .keyboardShortcut("0", modifiers: .command)
-
-                ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
-                    Button(label.displayName) {
-                        commandRouter.send(.setLabel(label))
-                    }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character(String(index + 1))),
-                        modifiers: .command
-                    )
-                }
-            }
+            RatingLabelCommands(commandRouter: commandRouter)
 
             CommandGroup(after: .newItem) {
                 Button("Open in Editor") {
@@ -237,7 +213,7 @@ struct Aagedal_Photo_AgentApp: App {
                         commandRouter.send(.openInExternalEditor)
                     }
                 }
-                .keyboardShortcut("e", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .openInEditor))
             }
 
             CommandGroup(after: .pasteboard) {
@@ -245,43 +221,46 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Move to Trash") {
                     commandRouter.send(.deleteSelected)
                 }
-                .keyboardShortcut(.delete, modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .deleteSelected))
 
                 Button("Move Rejected to Folder…") {
                     commandRouter.send(.moveRejectedToFolder)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .moveRejectedToFolder))
 
                 Divider()
 
                 Button("Rotate Right") {
                     commandRouter.send(.rotateClockwise)
                 }
-                .keyboardShortcut("r", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .rotateClockwise))
 
                 Button("Rotate Left") {
                     commandRouter.send(.rotateCounterclockwise)
                 }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .rotateCounterclockwise))
 
                 Button("Add New Mask") {
                     commandRouter.send(.addNewMask)
                 }
-                .keyboardShortcut("j", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .addNewMask))
 
                 Button("Remove or Reset Selected Edit Layer") {
                     commandRouter.send(.removeOrResetSelectedEditLayer)
                 }
-                .keyboardShortcut(.delete, modifiers: [.control, .option])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .removeOrResetSelectedEditLayer))
 
                 Divider()
 
                 Button("Reset All Edits") {
                     commandRouter.send(.resetAllEdits)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .resetAllEdits))
 
                 Button("Remove All IPTC Metadata") {
                     commandRouter.send(.removeAllIPTC)
                 }
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .removeAllIPTC))
             }
 
 
@@ -291,26 +270,26 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Process Variables") {
                     commandRouter.send(.processVariablesSelected)
                 }
-                .keyboardShortcut("p", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .processVariablesSelected))
 
                 Button("Process Variables in All Images") {
                     commandRouter.send(.processVariablesAll)
                 }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .processVariablesAll))
 
                 Divider()
 
                 Button("Write All Pending Metadata") {
                     commandRouter.send(.writeAllPendingMetadata)
                 }
-                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .writeAllPendingMetadata))
 
                 Divider()
 
                 Button("Apply Template...") {
                     commandRouter.send(.showTemplatePalette)
                 }
-                .keyboardShortcut("t", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showTemplatePalette))
 
                 Divider()
 
@@ -318,7 +297,7 @@ struct Aagedal_Photo_AgentApp: App {
                     Button("Apply Template \(slot)") {
                         commandRouter.send(.applyTemplateShortcut(slot))
                     }
-                    .keyboardShortcut(KeyEquivalent(Character(String(slot))), modifiers: .control)
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: KeyboardShortcutCommand.templateCommand(slot: slot)))
                 }
 
                 Divider()
@@ -326,36 +305,36 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Variable Reference") {
                     commandRouter.send(.showVariableReference)
                 }
-                .keyboardShortcut("v", modifiers: .option)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showVariableReference))
 
                 Button("Show Raw Metadata") {
                     commandRouter.send(.showRawMetadata)
                 }
-                .keyboardShortcut("i", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showRawMetadata))
 
                 Button("Structured Keywords") {
                     commandRouter.send(.showStructuredKeywords)
                 }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .showStructuredKeywords))
 
                 Divider()
 
                 Button("Render and Sign Selected") {
                     commandRouter.send(.renderAndSignSelected)
                 }
-                .keyboardShortcut("s", modifiers: [.command, .option])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .renderAndSignSelected))
 
                 Divider()
 
                 Button("Copy IPTC Metadata") {
                     commandRouter.send(.copyIPTCMetadata)
                 }
-                .keyboardShortcut("c", modifiers: [.command, .option])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .copyIPTCMetadata))
 
                 Button("Paste IPTC Metadata") {
                     commandRouter.send(.pasteIPTCMetadata)
                 }
-                .keyboardShortcut("v", modifiers: [.command, .option])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .pasteIPTCMetadata))
             }
 
             // Grouped to stay within the @CommandsBuilder 10-child limit.
@@ -370,26 +349,26 @@ struct Aagedal_Photo_AgentApp: App {
                     Button("Caption Workspace") {
                         commandRouter.send(.openCaptionWorkspace)
                     }
-                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .openCaptionWorkspace))
 
                     Divider()
 
                     Button("Previous Image") {
                         commandRouter.send(.selectPreviousImage)
                     }
-                    .keyboardShortcut("b", modifiers: .command)
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .selectPreviousImage))
 
                     Button("Next Image") {
                         commandRouter.send(.selectNextImage)
                     }
-                    .keyboardShortcut("n", modifiers: .command)
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .selectNextImage))
 
                     Divider()
 
                     Button("Toggle HDR") {
                         commandRouter.send(.toggleHDR)
                     }
-                    .keyboardShortcut("h", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .toggleHDR))
 
                     Section("Image Scaling") {
                         Toggle("Nearest-Neighbor Scaling", isOn: $imageScaling.useNearestNeighbor)
@@ -400,29 +379,29 @@ struct Aagedal_Photo_AgentApp: App {
                     Button("Waveform") {
                         commandRouter.send(.setScopeMode(.waveform))
                     }
-                    .keyboardShortcut("1", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .scopeWaveform))
 
                     Button("Parade") {
                         commandRouter.send(.setScopeMode(.parade))
                     }
-                    .keyboardShortcut("2", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .scopeParade))
 
                     Button("Vectorscope") {
                         commandRouter.send(.setScopeMode(.vectorscope))
                     }
-                    .keyboardShortcut("3", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .scopeVectorscope))
 
                     Button("Gamut") {
                         commandRouter.send(.setScopeMode(.chromaticity))
                     }
-                    .keyboardShortcut("4", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .scopeGamut))
 
                     Divider()
 
                     Button("Toggle Gamut Clipping") {
                         commandRouter.send(.toggleGamutClipping)
                     }
-                    .keyboardShortcut("g", modifiers: [.control, .option])
+                    .keyboardShortcut(keyboardProfile.menuShortcut(for: .toggleGamutClipping))
                 }
 
                 // The inline Picker's label is itself the section header — wrapping it
@@ -463,7 +442,7 @@ struct Aagedal_Photo_AgentApp: App {
                        : "Turn On Clean Feed") {
                     CleanFeedController.shared.toggleEnabled()
                 }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .toggleCleanFeed))
                 .disabled(!CleanFeedController.shared.hasExternalDisplay)
             }
 
@@ -471,12 +450,12 @@ struct Aagedal_Photo_AgentApp: App {
                 Button("Upload Selected") {
                     commandRouter.send(.uploadSelected)
                 }
-                .keyboardShortcut("u", modifiers: .command)
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .uploadSelected))
 
                 Button("Upload All") {
                     commandRouter.send(.uploadAll)
                 }
-                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .keyboardShortcut(keyboardProfile.menuShortcut(for: .uploadAll))
             }
             } // end Group (View additions / Upload)
         }
@@ -611,4 +590,48 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+}
+
+
+/// Observes profile edits directly so native menu key equivalents update with the editor.
+private struct RatingLabelCommands: Commands {
+    let commandRouter: AppCommandRouter
+    @State private var profiles = KeyboardShortcutProfileRegistry.shared
+
+    var body: some Commands {
+        let profile = profiles.selectedProfile
+        CommandMenu("Rating & Label") {
+            Button("No Rating") {
+                commandRouter.send(.setRating(.none))
+            }
+            .keyboardShortcut(shortcut(for: .rating(0), in: profile))
+
+            ForEach(1...5, id: \.self) { value in
+                Button("\(value) Star\(value > 1 ? "s" : "")") {
+                    guard let rating = StarRating(rawValue: value) else { return }
+                    commandRouter.send(.setRating(rating))
+                }
+                .keyboardShortcut(shortcut(for: .rating(value), in: profile))
+            }
+
+            Divider()
+
+            Button("No Label") {
+                commandRouter.send(.setLabel(.none))
+            }
+            .keyboardShortcut(shortcut(for: .colorLabel(0), in: profile))
+
+            ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
+                Button(label.displayName) {
+                    commandRouter.send(.setLabel(label))
+                }
+                .keyboardShortcut(shortcut(for: .colorLabel(index + 1), in: profile))
+            }
+        }
+    }
+
+    private func shortcut(for action: KeyboardCullingAction,
+                          in profile: KeyboardShortcutProfile) -> KeyboardShortcut? {
+        profile.menuChord(for: action)?.swiftUIShortcut
+    }
 }

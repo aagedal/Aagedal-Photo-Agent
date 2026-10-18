@@ -42,7 +42,7 @@ struct DescriptionAssistantBatchApplyTests {
         #expect(retained.previous == before.previous)
         #expect(retained.textBuffers == before.textBuffers)
         #expect(retained.latestRequestID == before.latestRequestID)
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
 
         model.images = [ImageFile(url: photo)]
         #expect(try model.queueReviewedDescription(proposal, text: "Reviewed suggestion"))
@@ -51,7 +51,7 @@ struct DescriptionAssistantBatchApplyTests {
         #expect(admitted.sidecar?.metadata.description == "Reviewed suggestion")
         #expect(admitted.sidecar?.metadata.title == "Unsaved headline")
         #expect(admitted.textBuffers.isEmpty)
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
     }
 
     @Test("Newer description edits reject a captured proposal without changing the live draft")
@@ -62,6 +62,6 @@ struct DescriptionAssistantBatchApplyTests {
         model.updateMetadataReviewText("Newer user description", field: .description, for: photo, editorID: editorID)
         #expect(try !model.queueReviewedDescription(proposal, text: "Reviewed suggestion"))
         #expect(model.metadataReviewText(for: .description, imageURL: photo) == "Newer user description")
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
     }
 }

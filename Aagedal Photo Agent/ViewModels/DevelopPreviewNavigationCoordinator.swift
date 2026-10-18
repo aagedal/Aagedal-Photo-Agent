@@ -70,6 +70,13 @@ final class DevelopPreviewNavigationCoordinator {
         }
     }
 
+    /// Ends interrupted gestures at their visible viewport when focus leaves the workspace.
+    /// The next drag or pinch starts here rather than jumping to an old committed anchor.
+    func finishInteraction() {
+        finishMagnification()
+        committedOffset = offset
+    }
+
     /// Commits a discrete zoom (scroll or keyboard toggle) and its cursor-anchored offset.
     /// Supplying no offset retains the current pan, matching the no-geometry fallback path.
     func applyZoom(scale: CGFloat, anchoredOffset: CGSize? = nil) {

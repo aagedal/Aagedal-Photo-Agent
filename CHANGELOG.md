@@ -4,6 +4,14 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Keep export-side JSON/XMP inspection and stale-sidecar checks off the UI thread. Serialize the source snapshot with metadata writes and avoid redundant embedded reads for rating/label-only sidecars.
+
+- Preserve comma-containing IPTC keywords, people and organisation values during edited export and sidecar sync. Include pending JSON/XMP metadata when saving from Develop.
+
+- Add a keyboard preview and key recording in Settings for file, browsing, metadata, export, scopes, upload, rating and label shortcuts. Show free keys across modifier layers, confirm occupied-key reassignment, retain culling aliases and keep native menus in sync. Preserve existing custom culling bindings when upgrading profiles.
+- Keep Develop keyboard handling within its own window; honor reassigned or removed keys in Browser, Comparison and Caption. Normalize shifted keys and distinguish backward/forward Delete while recording.
+- Export the newest pending metadata draft when an older XMP sidecar exists, including explicitly cleared editorial fields.
+
 - Refresh browser metadata in place when order and filter membership are unchanged, reducing repeated sorting and preview warming during folder reads.
 - Preserve newly selected ratings and color labels when older background metadata reads finish during or after their writes.
 - Keep the right-hand metadata panel responsive across single/batch selection changes and stop cancelled selections before they enqueue another metadata read.

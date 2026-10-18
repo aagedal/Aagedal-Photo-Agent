@@ -99,6 +99,7 @@ nonisolated enum EditedImageRenderer {
     /// Renders the image to the configured format. Returns the output URL.
     /// `metadataCopier` is required to populate IPTC/XMP/EXIF on the rendered file.
     @discardableResult
+    @concurrent
     static func render(
         from sourceURL: URL,
         cameraRaw: CameraRawSettings?,
@@ -107,8 +108,11 @@ nonisolated enum EditedImageRenderer {
         configuration: AdvancedExportConfiguration? = nil,
         outputFilenameSuffix: String = "",
         collisionPolicy: OutputCollisionPolicy = .replaceExisting,
-        metadataCopier: MetadataCopier? = nil
+        metadataCopier: MetadataCopier? = nil,
+        reservationOwner: ExportOutputReservationOwner? = nil
     ) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let output = limitedForExport(
             processed,
@@ -124,7 +128,8 @@ nonisolated enum EditedImageRenderer {
                 outputFolder: outputFolder,
                 configuration: configuration,
                 outputFilenameSuffix: outputFilenameSuffix,
-                collisionPolicy: collisionPolicy
+                collisionPolicy: collisionPolicy,
+                reservationOwner: owner
             )
         } else {
             destURL = try await renderSDRFormat(
@@ -133,7 +138,8 @@ nonisolated enum EditedImageRenderer {
                 outputFolder: outputFolder,
                 configuration: configuration,
                 outputFilenameSuffix: outputFilenameSuffix,
-                collisionPolicy: collisionPolicy
+                collisionPolicy: collisionPolicy,
+                reservationOwner: owner
             )
         }
         if let metadataCopier {
@@ -152,6 +158,7 @@ nonisolated enum EditedImageRenderer {
     /// destination: an uncompressed, developed reference and a real encoded artifact.
     /// The artifact is full resolution so its file size and compression behavior match
     /// the final export; only the in-memory reference is reduced for display.
+    @concurrent
     static func renderAdvancedPreview(
         from sourceURL: URL,
         cameraRaw: CameraRawSettings?,
@@ -159,8 +166,11 @@ nonisolated enum EditedImageRenderer {
         configuration: AdvancedExportConfiguration,
         outputFolder: URL,
         maxReferencePixelSize: CGFloat,
-        cachedReferenceImage: CGImage? = nil
+        cachedReferenceImage: CGImage? = nil,
+        reservationOwner: ExportOutputReservationOwner? = nil
     ) async throws -> AdvancedExportRenderedArtifact {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
         let output = limitedForExport(
             processed,
@@ -184,14 +194,16 @@ nonisolated enum EditedImageRenderer {
                 output,
                 sourceURL: sourceURL,
                 outputFolder: outputFolder,
-                configuration: configuration
+                configuration: configuration,
+                reservationOwner: owner
             )
         } else {
             outputURL = try await renderSDRFormat(
                 output,
                 sourceURL: sourceURL,
                 outputFolder: outputFolder,
-                configuration: configuration
+                configuration: configuration,
+                reservationOwner: owner
             )
         }
         return AdvancedExportRenderedArtifact(
@@ -331,7 +343,8 @@ nonisolated enum EditedImageRenderer {
         outputFolder: URL,
         configuration: AdvancedExportConfiguration? = nil,
         outputFilenameSuffix: String = "",
-        collisionPolicy: OutputCollisionPolicy = .replaceExisting
+        collisionPolicy: OutputCollisionPolicy = .replaceExisting,
+        reservationOwner: ExportOutputReservationOwner
     ) async throws -> URL {
         let format = configuration?.sdrFormat
             ?? ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
@@ -343,23 +356,9 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
             ?? .sRGB
 
-        let destURL: URL
-        switch collisionPolicy {
-        case .replaceExisting:
-            destURL = outputURL(
-                for: sourceURL,
-                in: outputFolder,
-                extension: format.fileExtension,
-                filenameSuffix: outputFilenameSuffix
-            )
-        case .appendNumber:
-            destURL = uniqueOutputURL(
-                for: sourceURL,
-                in: outputFolder,
-                extension: format.fileExtension,
-                filenameSuffix: outputFilenameSuffix
-            )
-        }
+        let destURL = try reservationOwner.reserveOutput(for: sourceURL, in: outputFolder,
+            extension: format.fileExtension, filenameSuffix: outputFilenameSuffix,
+            collisionPolicy: collisionPolicy)
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -490,7 +489,8 @@ nonisolated enum EditedImageRenderer {
         outputFolder: URL,
         configuration: AdvancedExportConfiguration? = nil,
         outputFilenameSuffix: String = "",
-        collisionPolicy: OutputCollisionPolicy = .replaceExisting
+        collisionPolicy: OutputCollisionPolicy = .replaceExisting,
+        reservationOwner: ExportOutputReservationOwner
     ) async throws -> URL {
         let format = configuration?.hdrFormat
             ?? ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
@@ -502,23 +502,9 @@ nonisolated enum EditedImageRenderer {
             ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
             ?? .displayP3
 
-        let destURL: URL
-        switch collisionPolicy {
-        case .replaceExisting:
-            destURL = outputURL(
-                for: sourceURL,
-                in: outputFolder,
-                extension: format.fileExtension,
-                filenameSuffix: outputFilenameSuffix
-            )
-        case .appendNumber:
-            destURL = uniqueOutputURL(
-                for: sourceURL,
-                in: outputFolder,
-                extension: format.fileExtension,
-                filenameSuffix: outputFilenameSuffix
-            )
-        }
+        let destURL = try reservationOwner.reserveOutput(for: sourceURL, in: outputFolder,
+            extension: format.fileExtension, filenameSuffix: outputFilenameSuffix,
+            collisionPolicy: collisionPolicy)
         let hdrColorSpace = gamut.hdrHLGColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -1009,6 +995,27 @@ nonisolated enum EditedImageRenderer {
             .appendingPathExtension(ext)
     }
 
+    /// A metadata-copy check is too late: pixel encoders may already have replaced
+    /// the source by then. Reject known lexical, symlink and hard-link aliases before
+    /// invoking any encoder, while allowing replacement of independent output files.
+    static func requireDistinctDestination(_ destination: URL, from source: URL) throws {
+        let original = source.standardizedFileURL.resolvingSymlinksInPath()
+        let output = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard original.path != output.path else { throw RenderError.sourceDestinationAlias }
+        let manager = FileManager.default
+        // New numbered outputs have no inode to alias. Probe the destination first
+        // so the usual fresh-output path does not fetch source attributes again.
+        if let outputAttributes = try? manager.attributesOfItem(atPath: output.path),
+           let sourceAttributes = try? manager.attributesOfItem(atPath: original.path),
+           let sourceDevice = sourceAttributes[.systemNumber] as? NSNumber,
+           let outputDevice = outputAttributes[.systemNumber] as? NSNumber,
+           let sourceInode = sourceAttributes[.systemFileNumber] as? NSNumber,
+           let outputInode = outputAttributes[.systemFileNumber] as? NSNumber,
+           sourceDevice == outputDevice, sourceInode == outputInode {
+            throw RenderError.sourceDestinationAlias
+        }
+    }
+
     /// Returns a non-existing output URL by appending " 2", " 3", … when needed.
     static func uniqueOutputURL(
         for sourceURL: URL,
@@ -1035,7 +1042,14 @@ nonisolated enum EditedImageRenderer {
 
     // MARK: - Legacy API
 
-    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL, metadataCopier: MetadataCopier? = nil) async throws {
+    @discardableResult
+    @concurrent
+    static func renderJPEG(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL,
+                           metadataCopier: MetadataCopier? = nil,
+                           collisionPolicy: OutputCollisionPolicy = .replaceExisting,
+                           reservationOwner: ExportOutputReservationOwner? = nil) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         // JPEG output is always SDR — force SDR render mode so the tone pipeline
         // rolls HDR headroom off into display range instead of clipping it.
         var sdrSettings = cameraRaw
@@ -1044,7 +1058,8 @@ nonisolated enum EditedImageRenderer {
         let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
-        let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
+        let destinationURL = try owner.reserveOutput(for: sourceURL, in: outputFolder,
+            extension: "jpg", collisionPolicy: collisionPolicy)
         try writeJPEGWithSourceProperties(
             ciImage: output,
             sourceURL: sourceURL,
@@ -1062,27 +1077,37 @@ nonisolated enum EditedImageRenderer {
                 )
             }
         }
+        return destinationURL
     }
 
     @discardableResult
-    static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL) async throws -> URL {
+    @concurrent
+    static func renderHDR(from sourceURL: URL, cameraRaw: CameraRawSettings?, outputFolder: URL,
+                          reservationOwner: ExportOutputReservationOwner? = nil) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         // Force HDR render mode so headroom passes through to the HDR encode.
         var hdrSettings = cameraRaw ?? CameraRawSettings()
         hdrSettings.hdrEditMode = 1
         let output = try loadAndProcess(from: sourceURL, cameraRaw: hdrSettings)
-        return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder)
+        return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder,
+                                         reservationOwner: owner)
     }
 
     /// Converts a RAW source to an unedited Rec. 2020 PQ HDR, 16-bit-per-channel JPEG XL.
     /// Only the selected RAW decode profile is applied; current develop settings and the
     /// general SDR/HDR gamut settings do not affect the archive.
     @discardableResult
+    @concurrent
     static func convertRAWTo16BitJXL(
         from sourceURL: URL,
         decodeProfile: RAWDecodeProfile,
         destinationFolder: URL,
-        metadataCopier: MetadataCopier? = nil
+        metadataCopier: MetadataCopier? = nil,
+        reservationOwner: ExportOutputReservationOwner? = nil
     ) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         guard SupportedImageFormats.isRaw(url: sourceURL) else {
             throw RenderError.rawSourceRequired
         }
@@ -1099,10 +1124,10 @@ nonisolated enum EditedImageRenderer {
         let quality = UserDefaults.standard.object(
             forKey: UserDefaultsKeys.exportQualityHDR
         ) as? Double ?? 0.92
-        let destinationURL = RAWArchiveService.uniqueDestinationURL(
+        let destinationURL = try reserveRAWArchiveOutput(
             for: sourceURL,
             in: destinationFolder,
-            extension: "jxl"
+            extension: "jxl", owner: owner
         )
 
         try await encode16BitJXL(
@@ -1127,12 +1152,16 @@ nonisolated enum EditedImageRenderer {
     /// Converts a RAW source to a losslessly compressed, unedited 16-bit Rec. 2020 PQ
     /// TIFF. Only the requested RAW decode profile is applied.
     @discardableResult
+    @concurrent
     static func convertRAWTo16BitTIFF(
         from sourceURL: URL,
         decodeProfile: RAWDecodeProfile,
         destinationFolder: URL,
-        metadataCopier: MetadataCopier? = nil
+        metadataCopier: MetadataCopier? = nil,
+        reservationOwner: ExportOutputReservationOwner? = nil
     ) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         guard SupportedImageFormats.isRaw(url: sourceURL) else {
             throw RenderError.rawSourceRequired
         }
@@ -1144,10 +1173,10 @@ nonisolated enum EditedImageRenderer {
             cameraRaw: archiveSettings,
             rawDecodeProfile: decodeProfile
         )
-        let destinationURL = RAWArchiveService.uniqueDestinationURL(
+        let destinationURL = try reserveRAWArchiveOutput(
             for: sourceURL,
             in: destinationFolder,
-            extension: "tiff"
+            extension: "tiff", owner: owner
         )
         let context = CameraRawApproximation.ciContext
         guard let cgImage = context.createCGImage(
@@ -1172,6 +1201,21 @@ nonisolated enum EditedImageRenderer {
         return destinationURL
     }
 
+    private static func reserveRAWArchiveOutput(for sourceURL: URL, in folder: URL,
+                                               extension ext: String, owner: ExportOutputReservationOwner) throws -> URL {
+        let candidate = RAWArchiveService.uniqueDestinationURL(for: sourceURL, in: folder, extension: ext)
+        let originalBase = sourceURL.deletingPathExtension().lastPathComponent
+        let candidateBase = candidate.deletingPathExtension().lastPathComponent
+        let suffix = String(candidateBase.dropFirst(originalBase.count))
+        let reserved = try owner.reserveOutput(for: sourceURL, in: folder, extension: ext,
+            filenameSuffix: suffix, collisionPolicy: .appendNumber)
+        // An archive sidecar must not adopt a foreign packet that arrived during naming.
+        guard !FileManager.default.fileExists(atPath: XMPSidecarService().sidecarURL(for: reserved).path) else {
+            throw RenderError.destinationBusy
+        }
+        return reserved
+    }
+
     enum SaveAsFormat {
         case jpeg
         case png
@@ -1187,7 +1231,12 @@ nonisolated enum EditedImageRenderer {
     /// Render and save next to the original file in a specific format (JPEG or PNG).
     /// Returns the output URL. Handles name collisions by appending a number.
     @discardableResult
-    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat, destinationFolder: URL? = nil, metadataCopier: MetadataCopier? = nil) async throws -> URL {
+    @concurrent
+    static func saveAs(from sourceURL: URL, cameraRaw: CameraRawSettings?, format: SaveAsFormat,
+                       destinationFolder: URL? = nil, metadataCopier: MetadataCopier? = nil,
+                       reservationOwner: ExportOutputReservationOwner? = nil) async throws -> URL {
+        let owner = reservationOwner ?? ExportOutputReservationOwner()
+        defer { withExtendedLifetime(owner) {} }
         // Save As always renders SDR (JPEG/PNG) — force SDR render mode so HDR-edited
         // images tonemap into display range instead of clipping.
         var sdrSettings = cameraRaw
@@ -1198,15 +1247,8 @@ nonisolated enum EditedImageRenderer {
         let ctx = CameraRawApproximation.ciContext
 
         let parentFolder = destinationFolder ?? sourceURL.deletingLastPathComponent()
-        let baseName = sourceURL.deletingPathExtension().lastPathComponent
-        var destURL = parentFolder.appendingPathComponent(baseName).appendingPathExtension(format.fileExtension)
-
-        // Handle name collision
-        var counter = 2
-        while FileManager.default.fileExists(atPath: destURL.path) {
-            destURL = parentFolder.appendingPathComponent("\(baseName) \(counter)").appendingPathExtension(format.fileExtension)
-            counter += 1
-        }
+        let destURL = try owner.reserveOutput(for: sourceURL, in: parentFolder,
+            extension: format.fileExtension, collisionPolicy: .appendNumber)
 
         switch format {
         case .jpeg:
@@ -1243,6 +1285,8 @@ nonisolated enum EditedImageRenderer {
         case unreadableImage
         case encodeFailed
         case rawSourceRequired
+        case sourceDestinationAlias
+        case destinationBusy
 
         var errorDescription: String? {
             switch self {
@@ -1252,6 +1296,10 @@ nonisolated enum EditedImageRenderer {
                 return "Could not encode output image."
             case .rawSourceRequired:
                 return "The 16-bit JPEG XL conversion requires a RAW source image."
+            case .sourceDestinationAlias:
+                return "The export destination refers to the source image. Choose a different destination or filename."
+            case .destinationBusy:
+                return "Another export is still writing this destination. Try again when it finishes."
             }
         }
     }

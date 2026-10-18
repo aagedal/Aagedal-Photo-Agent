@@ -326,12 +326,46 @@ enum RenderKind: Sendable {
     case jpeg
 }
 
+nonisolated enum ExportMetadataFailurePolicy: Sendable {
+    /// Retain useful local pixels and report metadata failures through the batch tracker.
+    case keepLocalCopy
+    /// A known metadata failure must not authorize signing or remote delivery.
+    case rejectForDelivery
+}
+
+nonisolated struct ExportMetadataIncompleteError: LocalizedError, Sendable {
+    let renderedURL: URL
+    let copyFailed: Bool
+    let overlayFailed: Bool
+
+    var errorDescription: String? {
+        "Metadata could not be completed for \(renderedURL.lastPathComponent). The rendered file was kept locally and was not signed or uploaded."
+    }
+}
+
 /// The shared "render one edited photo" pipeline used by every export/publish call site
 /// (C2PA sign, Save As, export folder, FTP publish). Centralizing the steps — CameraRaw
 /// resolution, render, source-metadata copy, and pending-IPTC sidecar overlay — keeps the
 /// four call sites from drifting apart (which previously left the FTP path missing the
 /// in-memory CameraRaw read and the IPTC overlay entirely).
 enum EditExportPipeline {
+
+    /// Delivery and signing must not consume pixels whose metadata stage reported failure.
+    /// Local Save/Export retains its existing useful-file-plus-warning behavior.
+    static func renderForDelivery(sourceURL: URL,
+                                  cameraRaw: CameraRawSettings?,
+                                  kind: RenderKind,
+                                  outputFolder: URL,
+                                  folderURL: URL?,
+                                  writeEngine: any MetadataWriteEngine,
+                                  failureTracker: MetadataFailureTracker,
+                                  configuration: AdvancedExportConfiguration? = nil,
+                                  collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .appendNumber) async throws -> URL {
+        try await renderItem(sourceURL: sourceURL, cameraRaw: cameraRaw, kind: kind,
+            outputFolder: outputFolder, folderURL: folderURL, writeEngine: writeEngine,
+            failureTracker: failureTracker, configuration: configuration,
+            collisionPolicy: collisionPolicy, metadataFailurePolicy: .rejectForDelivery)
+    }
 
     /// Populates `cameraRaw` on each entry in `map`, preferring the live in-memory edit
     /// settings (kept in sync by the edit workspace) and falling back to the XMP sidecar
@@ -370,8 +404,8 @@ enum EditExportPipeline {
 
     /// Renders one source file to `outputFolder` using `kind`, copies the source's
     /// EXIF/IPTC/XMP onto the result, and overlays any pending IPTC sidecar edits. Copy and
-    /// overlay failures are recorded in `failureTracker` (they don't abort the file).
-    /// Returns the rendered file URL.
+    /// overlay failures are recorded in `failureTracker`. Delivery rejects known metadata
+    /// failures after finalizing the local artifact; ordinary local exports return it with warnings.
     static func renderItem(sourceURL: URL,
                            cameraRaw: CameraRawSettings?,
                            kind: RenderKind,
@@ -382,7 +416,8 @@ enum EditExportPipeline {
                            configuration: AdvancedExportConfiguration? = nil,
                            outputFilenameSuffix: String = "",
                            collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
-                           finalizationService: ExportArtifactFinalizationService = .shared) async throws -> URL {
+                           finalizationService: ExportArtifactFinalizationService = .shared,
+                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy) async throws -> URL {
         try await MetadataSidecarService().requireNoPendingOrientation(
             for: sourceURL, in: folderURL ?? sourceURL.deletingLastPathComponent())
         if case .rawDNG(let compression, let executableURL) = kind {
@@ -406,85 +441,113 @@ enum EditExportPipeline {
             return renderedURL
         }
 
-        let bakedCameraRaw: CameraRawSettings?
-        switch kind {
-        case .rawJXL16, .rawTIFF16:
-            // RAW archives intentionally ignore the live develop stack. The renderer
-            // performs only the selected decode, so do not document any Camera Raw
-            // settings as baked into the output metadata.
-            bakedCameraRaw = nil
-        case .format, .saveAs, .jpeg, .rawDNG:
-            bakedCameraRaw = cameraRaw
-        }
-        let metadataCameraRaw = bakedCameraRaw
-        let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
-        let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-            do {
-                try await writeEngine.copyMetadataToRenderedFile(
-                    from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
-            } catch {
-                await failureTracker.recordCopyFailure(src.lastPathComponent)
-            }
-        }
+        // The renderer owns encoding, but pending IPTC and finalization still mutate the
+        // destination afterward. Keep its name claimed until the complete artifact finishes.
+        let reservationOwner = ExportOutputReservationOwner()
+        defer { withExtendedLifetime(reservationOwner) {} }
 
-        let renderedURL = try await Task.detached(priority: .userInitiated) {
+        do {
+            let bakedCameraRaw: CameraRawSettings?
             switch kind {
-            case .format:
-                return try await EditedImageRenderer.render(
-                    from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                    outputFolder: outputFolder,
-                    configuration: configuration,
-                    outputFilenameSuffix: outputFilenameSuffix,
-                    collisionPolicy: collisionPolicy,
-                    metadataCopier: copier)
-            case .saveAs(let format):
-                return try await EditedImageRenderer.saveAs(
-                    from: sourceURL, cameraRaw: cameraRaw, format: format,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawJXL16(let decodeProfile):
-                return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                    from: sourceURL, decodeProfile: decodeProfile,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawTIFF16(let decodeProfile):
-                return try await EditedImageRenderer.convertRAWTo16BitTIFF(
-                    from: sourceURL, decodeProfile: decodeProfile,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawDNG:
-                // Handled before constructing the rendered metadata copier above.
-                preconditionFailure("RAW DNG archives must use the converter path")
-            case .jpeg:
-                try await EditedImageRenderer.renderJPEG(
-                    from: sourceURL, cameraRaw: cameraRaw,
-                    outputFolder: outputFolder, metadataCopier: copier)
-                return EditedImageRenderer.outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
+            case .rawJXL16, .rawTIFF16:
+                // RAW archives intentionally ignore the live develop stack. The renderer
+                // performs only the selected decode, so do not document any Camera Raw
+                // settings as baked into the output metadata.
+                bakedCameraRaw = nil
+            case .format, .saveAs, .jpeg, .rawDNG:
+                bakedCameraRaw = cameraRaw
             }
-        }.value
+            let metadataCameraRaw = bakedCameraRaw
+            let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
+            // Keep the decision per item. A shared batch tracker may already contain failures
+            // from another image (including one with the same basename in a different folder).
+            let itemFailures = MetadataFailureTracker()
+            let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                do {
+                    try await writeEngine.copyMetadataToRenderedFile(
+                        from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
+                } catch {
+                    await failureTracker.recordCopyFailure(src.lastPathComponent)
+                    await itemFailures.recordCopyFailure(src.lastPathComponent)
+                }
+            }
 
-        switch await SidecarIPTCOverlay.apply(
-            sourceURL: sourceURL, renderedURL: renderedURL,
-            folderURL: folderURL, writeEngine: writeEngine) {
-        case .failed:
-            await failureTracker.recordOverlayFailure(sourceURL.lastPathComponent)
-        case .staleSidecarSkipped:
-            await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
-        case .applied, .noPendingEdits:
-            break
-        }
+            let renderedURL = try await Task.detached(priority: .userInitiated) {
+                switch kind {
+                case .format:
+                    return try await EditedImageRenderer.render(
+                        from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
+                        outputFolder: outputFolder,
+                        configuration: configuration,
+                        outputFilenameSuffix: outputFilenameSuffix,
+                        collisionPolicy: collisionPolicy,
+                        metadataCopier: copier, reservationOwner: reservationOwner)
+                case .saveAs(let format):
+                    return try await EditedImageRenderer.saveAs(
+                        from: sourceURL, cameraRaw: cameraRaw, format: format,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawJXL16(let decodeProfile):
+                    return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                        from: sourceURL, decodeProfile: decodeProfile,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawTIFF16(let decodeProfile):
+                    return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                        from: sourceURL, decodeProfile: decodeProfile,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawDNG:
+                    // Handled before constructing the rendered metadata copier above.
+                    preconditionFailure("RAW DNG archives must use the converter path")
+                case .jpeg:
+                    return try await EditedImageRenderer.renderJPEG(
+                        from: sourceURL, cameraRaw: cameraRaw,
+                        outputFolder: outputFolder, metadataCopier: copier,
+                        collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                }
+            }.value
 
-        let copiesRAWArchiveSidecar: Bool
-        switch kind {
-        case .rawJXL16, .rawTIFF16:
-            copiesRAWArchiveSidecar = true
-        case .format, .saveAs, .rawDNG, .jpeg:
-            copiesRAWArchiveSidecar = false
+            var overlayFailed = false
+            switch await SidecarIPTCOverlay.apply(
+                sourceURL: sourceURL, renderedURL: renderedURL,
+                folderURL: folderURL, writeEngine: writeEngine) {
+            case .failed:
+                overlayFailed = true
+                await failureTracker.recordOverlayFailure(sourceURL.lastPathComponent)
+            case .staleSidecarSkipped:
+                await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
+            case .applied, .noPendingEdits:
+                break
+            }
+
+            let copiesRAWArchiveSidecar: Bool
+            switch kind {
+            case .rawJXL16, .rawTIFF16:
+                copiesRAWArchiveSidecar = true
+            case .format, .saveAs, .rawDNG, .jpeg:
+                copiesRAWArchiveSidecar = false
+            }
+            _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: sourceURL,
+                renderedURL: renderedURL,
+                copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
+            ))
+            if case .rejectForDelivery = metadataFailurePolicy {
+                let copyFailures = await itemFailures.metadataCopyFailures
+                let copyFailed = !copyFailures.isEmpty
+                if copyFailed || overlayFailed {
+                    throw ExportMetadataIncompleteError(renderedURL: renderedURL,
+                        copyFailed: copyFailed, overlayFailed: overlayFailed)
+                }
+            }
+            await reservationOwner.release()
+            return renderedURL
+        } catch {
+            await reservationOwner.release()
+            throw error
         }
-        _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
-            requestID: UUID(),
-            sourceURL: sourceURL,
-            renderedURL: renderedURL,
-            copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
-        ))
-        return renderedURL
     }
 
     /// Export artifacts are user-facing files and must remain discoverable in Finder.
@@ -501,6 +564,92 @@ enum EditExportPipeline {
             renderedURL: url,
             copiesRAWArchiveSidecar: false
         ))
+    }
+}
+
+/// One captured source selection. A pending draft remains authoritative even if it has
+/// no writable fields; callers must not fall through to an older physical XMP record.
+nonisolated enum ExportIPTCSelection: Equatable, Sendable {
+    case pendingDraft(IPTCMetadata)
+    case xmp(IPTCMetadata)
+    case staleSidecarSkipped
+    case noPendingEdits
+}
+
+nonisolated struct ExportIPTCSelectionAccess: Sendable {
+    let loadDraft: @Sendable (URL, URL) -> MetadataSidecar?
+    let loadXMP: @Sendable (URL) -> IPTCMetadata?
+    let readEmbedded: @Sendable (URL) -> IPTCMetadata?
+    let reconcile: @Sendable (URL, IPTCMetadata?, IPTCMetadata) -> SidecarReconciliation.Verdict
+
+    static let system = ExportIPTCSelectionAccess(
+        loadDraft: { MetadataSidecarService().loadSidecar(for: $0, in: $1) },
+        loadXMP: { XMPSidecarService().loadSidecar(for: $0) },
+        readEmbedded: { url in
+            guard let metadata = try? ImageMetadata.read(from: url) else { return nil }
+            return iptcMetadataFromDict(metadata.asMetadataDict(fileURL: url))
+        },
+        reconcile: { url, embedded, sidecar in
+            SidecarReconciliation.verdict(imageURL: url,
+                sidecarURL: XMPSidecarService().sidecarURL(for: url),
+                embedded: embedded, sidecar: sidecar)
+        }
+    )
+}
+
+/// Retains slow/provider-backed reads on a Dispatch worker. Source JSON, XMP, embedded
+/// metadata and reconciliation dates are inspected within one per-photo lease, so app
+/// writers cannot interleave their carrier updates with this selection.
+actor ExportIPTCSelectionService {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    static let shared = ExportIPTCSelectionService()
+    private let access: ExportIPTCSelectionAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent", category: "ExportIPTCSelection"
+    )
+
+    init(access: ExportIPTCSelectionAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.export-iptc-selection", qos: .utility
+         )) {
+        self.access = access
+        self.filesystemQueue = filesystemQueue
+    }
+
+    func select(sourceURL: URL, folderURL: URL?) async -> ExportIPTCSelection {
+        let interval = signposter.beginInterval("Select", id: signposter.makeSignpostID())
+        // This is post-render finalization. Preserve selection despite caller cancellation;
+        // the existing writer/overlay outcome decides whether metadata was actually applied.
+        let selection = await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: sourceURL)) {
+            await self.capture(sourceURL: sourceURL, folderURL: folderURL)
+        }
+        signposter.endInterval("Select", interval)
+        return selection
+    }
+
+    /// Explicit actor hop from the coordinator's admitted task keeps all synchronous I/O
+    /// on this retained worker. Do not reacquire the source lock inside this method.
+    private func capture(sourceURL: URL, folderURL: URL?) -> ExportIPTCSelection {
+        if let folderURL, let draft = access.loadDraft(sourceURL, folderURL), draft.pendingChanges {
+            return .pendingDraft(draft.metadata)
+        }
+        guard let sidecar = access.loadXMP(sourceURL),
+              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else {
+            return .noPendingEdits
+        }
+        // The staleness policy only compares descriptive metadata. Rating/label-only
+        // records need no source-container read or modification-date probes.
+        if sidecar.hasDescriptiveContent {
+            let embedded = access.readEmbedded(sourceURL)
+            if access.reconcile(sourceURL, embedded, sidecar) == .fileNewerConflict {
+                return .staleSidecarSkipped
+            }
+        }
+        return .xmp(sidecar)
     }
 }
 
@@ -532,97 +681,53 @@ enum SidecarIPTCOverlay {
         return fields
     }
 
-    static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
-                      writeEngine: any MetadataWriteEngine) async -> Outcome {
-        // Prefer XMP sidecar IPTC (default write mode for RAW and C2PA files). A sidecar
-        // without descriptive content (develop-settings-only, written by saveCameraRawOnly
-        // or stripped by Remove IPTC) is not an IPTC record: running toOverwriteFields on
-        // it would wipe every descriptive field from the render. Skip it and fall through
-        // to the JSON sidecar, which may still hold pending history-only edits.
-        let xmpService = XMPSidecarService()
-        if let xmpMeta = xmpService.loadSidecar(for: sourceURL),
-           xmpMeta.hasDescriptiveContent || xmpMeta.rating != nil || xmpMeta.label != nil {
-            // Staleness guard: if the image file was modified more recently than the .xmp
-            // and their descriptive metadata differs, an external tool (e.g. Adobe Bridge,
-            // which writes into the file rather than a sidecar) likely edited the embedded
-            // metadata after the sidecar was written. Treat the file as master — the
-            // rendered output already carries the embedded values copied during render — so
-            // skip the sidecar overwrite and let the caller surface a warning.
-            let embedded = await readEmbeddedMetadata(from: sourceURL)
-            if SidecarReconciliation.verdict(
-                imageURL: sourceURL, sidecarURL: xmpService.sidecarURL(for: sourceURL),
-                embedded: embedded, sidecar: xmpMeta) == .fileNewerConflict {
-                exportPipelineLog.warning(
-                    "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) looks stale (image file newer and differs); exported embedded values instead"
-                )
-                return .staleSidecarSkipped
-            }
+    /// Carry list item boundaries separately from the legacy comma-delimited field map.
+    /// Partial rating/label records must not acquire authority over descriptive metadata.
+    nonisolated static func authoritativeStructuredData(from metadata: IPTCMetadata) -> StructuredWriteData {
+        guard metadata.hasDescriptiveContent else { return .empty }
+        return StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: metadata),
+                                   listValues: EditorialListWriteData(metadata: metadata))
+    }
 
-            // Overwrite (not overlay): the sidecar is the authoritative edited state, so a
-            // descriptive field the user cleared is emitted empty here to strip the source's
-            // stale embedded value from the rendered output. GPS stays additive (see
-            // toOverwriteFields). Guarded again here: a rating/label-only sidecar must not
-            // wipe the descriptive fields it never carried.
-            let fields = authoritativeFields(from: xmpMeta)
-            guard !fields.isEmpty else { return .noPendingEdits }
-            do {
-                try await writeEngine.writeFieldsToRenderedFiles(
-                    fields,
-                    to: [renderedURL],
-                    structuredData: StructuredWriteData(
-                        editorial: xmpMeta.hasDescriptiveContent
-                            ? EditorialStructuredWriteData(metadata: xmpMeta)
-                            : nil
-                    )
-                )
-                return .applied
-            } catch {
-                exportPipelineLog.error(
-                    "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
-                )
-                return .failed
-            }
+    static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
+                      writeEngine: any MetadataWriteEngine,
+                      service: ExportIPTCSelectionService = .shared) async -> Outcome {
+        let metadata: IPTCMetadata
+        let carrier: String
+        switch await service.select(sourceURL: sourceURL, folderURL: folderURL) {
+        case .pendingDraft(let draft):
+            metadata = draft
+            carrier = "JSON"
+        case .xmp(let sidecar):
+            metadata = sidecar
+            carrier = "XMP"
+        case .staleSidecarSkipped:
+            exportPipelineLog.warning(
+                "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) looks stale (image file newer and differs); exported embedded values instead"
+            )
+            return .staleSidecarSkipped
+        case .noPendingEdits:
+            return .noPendingEdits
         }
 
-        // Fall back to JSON sidecar (history-only mode). This sidecar is app-private and
-        // only overlaid when `pendingChanges` is set (edits not yet written to the file),
-        // so external-tool staleness doesn't apply here.
-        guard let folderURL else { return .noPendingEdits }
-        let sidecarService = MetadataSidecarService()
-        guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
-              sidecar.pendingChanges else { return .noPendingEdits }
-
-        // Same partial-record guard as the .xmp branch: a record with no descriptive
-        // content (e.g. a failed-seed fallback) must not wipe fields it never carried.
-        let fields = authoritativeFields(from: sidecar.metadata)
+        // Release the source lease before the output writer takes its destination lease.
+        // Keep partial-record safeguards and lossless list transport shared by both carriers.
+        let fields = authoritativeFields(from: metadata)
         guard !fields.isEmpty else { return .noPendingEdits }
 
         do {
             try await writeEngine.writeFieldsToRenderedFiles(
                 fields,
                 to: [renderedURL],
-                structuredData: StructuredWriteData(
-                    editorial: sidecar.metadata.hasDescriptiveContent
-                        ? EditorialStructuredWriteData(metadata: sidecar.metadata)
-                        : nil
-                )
+                structuredData: authoritativeStructuredData(from: metadata)
             )
             return .applied
         } catch {
             exportPipelineLog.error(
-                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
+                "overlaySidecarIPTC \(carrier, privacy: .private) writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
             )
             return .failed
         }
     }
 
-    /// Reads the source file's embedded descriptive metadata (no sidecar), serialized
-    /// against concurrent writes via `MetadataIOCoordinator`, for the staleness comparison.
-    /// Returns nil on read failure (the reconciler then defaults to trusting the sidecar).
-    private static func readEmbeddedMetadata(from url: URL) async -> IPTCMetadata? {
-        await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-            guard let md = try? ImageMetadata.read(from: url) else { return nil }
-            return iptcMetadataFromDict(md.asMetadataDict(fileURL: url))
-        }
-    }
 }

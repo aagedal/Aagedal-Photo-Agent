@@ -199,9 +199,9 @@ struct FieldMutationCallerTests {
         model.updateMetadataReviewText("Fresh text before another view render", field: .headline, for: photo, editorID: currentID)
         model.updateMetadataReviewText("Old row callback", field: .headline, for: photo, editorID: obsoleteID)
         model.commitMetadataReviewEditor(for: photo, editorID: obsoleteID)
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         model.commitMetadataReviewEditor(for: photo, editorID: currentID)
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         #expect(model.metadataReviewEditor(for: photo)?.previous.title == "Fresh text before another view render")
         #expect(model.metadataReviewEditor(for: photo)?.sidecar?.metadata.title == "Fresh text before another view render")
     }
@@ -226,7 +226,7 @@ struct FieldMutationCallerTests {
         #expect(model.isMetadataReviewFrozen(for: photo))
         model.updateMetadataReviewText("Unexported admission-gap text", field: .headline, for: photo, editorID: editorID)
         model.commitMetadataReviewEditor(for: photo, editorID: editorID)
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Included before review")
         model.endMetadataReviewRecovery(for: photo, owner: UUID())
         #expect(model.isMetadataReviewFrozen(for: photo))
@@ -321,11 +321,11 @@ struct FieldMutationCallerTests {
         try #require(MetadataHistoryEntry.changes(from: baseline.draft, to: first, timestamp: Date()).count > 20)
         model.saveMetadataReviewEdit(first, for: photo)
         do { try await coordinator.retryQueuedPersistence(); Issue.record("Expected the obstructed mirror to fail") } catch { }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         var second = first
         second.title = "Final dependent headline"
         model.saveMetadataReviewEdit(second, for: photo)
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         callbacks.deliver()
         #expect(model.metadataReviewEditor(for: photo)?.draft.title == second.title)
         #expect(model.metadataReviewEditor(for: photo)?.error == nil)
@@ -335,7 +335,7 @@ struct FieldMutationCallerTests {
         try FileManager.default.removeItem(at: xmpURL)
         try await coordinator.retryQueuedPersistence()
         callbacks.deliver()
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
         let final = try #require(sidecars.loadSidecar(for: photo, in: folder))
         for field in fields { #expect(field.historyValue(in: final.metadata) == field.historyValue(in: second)) }
         #expect(final.history.count == 20)
@@ -389,7 +389,7 @@ struct FieldMutationCallerTests {
         model.updateMetadataReviewText("Buffered before deletion", field: .headline, for: photo)
         model.deleteSelectedImages()
         await model.waitForPendingImageMutation()
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         #expect(model.images.first?.url == photo)
         #expect(model.errorMessage?.contains("Earlier queued failure") == true)
         #expect(model.metadataReviewEditor(for: photo)?.draft.title == "Buffered before deletion")

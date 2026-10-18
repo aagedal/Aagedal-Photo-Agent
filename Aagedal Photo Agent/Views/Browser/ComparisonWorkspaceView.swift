@@ -95,11 +95,12 @@ struct ComparisonWorkspaceView: View {
             replaceFocusedSource(.next)
             return .handled
         }
-        .onKeyPress(.delete) {
+        .onKeyPress(.delete, phases: .down) { press in
+            guard press.modifiers.isEmpty else { return .ignored }
             requestDeleteFocusedSource()
             return .handled
         }
-        .onKeyPress(keys: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "x", "s"]) {
+        .onKeyPress(phases: .down) {
             handleCullingShortcut($0)
         }
         .accessibilityElement(children: .contain)
@@ -856,12 +857,23 @@ struct ComparisonWorkspaceView: View {
     }
 
     private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {
+        let inputState = keyboardTextInputState(in: NSApp.keyWindow)
+        let modifiers = KeyboardShortcutModifiers(press.modifiers)
+        var key = press.characters
+        if let event = NSApp.currentEvent, event.type == .keyDown,
+           let window = NSApp.keyWindow, event.window === window,
+           KeyboardShortcutModifiers(event.modifierFlags) == modifiers,
+           let chord = KeyboardShortcutChord(event: event),
+           event.characters == press.characters || event.charactersIgnoringModifiers == press.characters
+                || chord.key == press.characters.lowercased() {
+            key = chord.key
+        }
         guard let action = KeyboardShortcutRouter.resolve(
             KeyboardShortcutRouteInput(
-                key: press.characters,
-                modifiers: KeyboardShortcutModifiers(press.modifiers),
-                textEditorOwnsInput: false,
-                imeHasMarkedText: false,
+                key: key,
+                modifiers: modifiers,
+                textEditorOwnsInput: inputState.textEditorOwnsInput,
+                imeHasMarkedText: inputState.imeHasMarkedText,
                 isRepeat: false
             ),
             profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
@@ -895,6 +907,7 @@ private struct ComparisonImagePane: View {
     @State private var latestGeometry: ComparisonPaneGeometry?
     @State private var latestViewport: ViewportState?
     @State private var scrollEventMonitor: Any?
+    @State private var inputWindow = WorkspaceEventWindowReference()
 
     var body: some View {
         GeometryReader { proxy in
@@ -943,6 +956,7 @@ private struct ComparisonImagePane: View {
                 installScrollEventMonitor()
             }
             .onDisappear { removeScrollEventMonitor() }
+            .background(WorkspaceEventWindowReader(reference: inputWindow))
             .onChange(of: proxy.size) { _, _ in
                 latestGeometry = paneGeometry
                 onGeometryChange(paneGeometry)
@@ -1041,7 +1055,7 @@ private struct ComparisonImagePane: View {
     private func installScrollEventMonitor() {
         guard scrollEventMonitor == nil else { return }
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let pointerLocation,
+            guard inputWindow.ownsEvent(in: event.window), let pointerLocation,
                   let geometry = latestGeometry,
                   let viewport = latestViewport else { return event }
             guard event.phase != [] || event.momentumPhase == [] else { return event }
@@ -1090,6 +1104,7 @@ private struct WipeComparisonPane: View {
     @State private var latestViewports: [ComparisonPane: ViewportState] = [:]
     @State private var latestFocusedPane: ComparisonPane = .left
     @State private var scrollEventMonitor: Any?
+    @State private var inputWindow = WorkspaceEventWindowReference()
 
     var body: some View {
         GeometryReader { proxy in
@@ -1202,6 +1217,7 @@ private struct WipeComparisonPane: View {
                 installScrollEventMonitor()
             }
             .onDisappear { removeScrollEventMonitor() }
+            .background(WorkspaceEventWindowReader(reference: inputWindow))
             .onChange(of: proxy.size) { _, _ in
                 updateGeometries(left: leftGeometry, right: rightGeometry)
             }
@@ -1317,7 +1333,7 @@ private struct WipeComparisonPane: View {
     private func installScrollEventMonitor() {
         guard scrollEventMonitor == nil else { return }
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let pointerLocation,
+            guard inputWindow.ownsEvent(in: event.window), let pointerLocation,
                   let geometry = latestGeometries[latestFocusedPane],
                   let viewport = latestViewports[latestFocusedPane] else { return event }
             guard event.phase != [] || event.momentumPhase == [] else { return event }

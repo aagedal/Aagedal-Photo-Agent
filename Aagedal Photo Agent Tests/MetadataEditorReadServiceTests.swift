@@ -10,13 +10,13 @@ private nonisolated final class CaptionBaselineRetryGate: @unchecked Sendable {
 
     var attemptCount: Int { lock.withLock { attempts } }
     func allowSuccess() { lock.withLock { maySucceed = true } }
-    func attempt(_ request: CaptionDraftPersistence) throws {
+    func attempt(_ request: CaptionDraftPersistence) async throws {
         let succeeds = lock.withLock {
             attempts += 1
             return maySucceed
         }
         guard succeeds else { throw Failure.injected }
-        try request.persist()
+        try await request.persistAsync()
     }
 }
 
@@ -233,7 +233,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata = updated
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         fixture.model.writeMetadataAndClearSidecar()
         let deadline = ContinuousClock.now + .seconds(5)
         while fixture.model.isSaving, ContinuousClock.now < deadline { await Task.yield() }
@@ -350,8 +350,8 @@ struct MetadataEditorReadServiceTests {
         try XMPSidecarService().saveSidecar(metadata: current.metadata, for: fixture.image)
         let jsonURL = fixture.folder.appendingPathComponent(".photo_metadata/draft.jpg.meta.json")
         let beforeRetry = try Data(contentsOf: jsonURL)
-        try coordinator.flush()
-        #expect(queue.pendingCount == 0)
+        try await coordinator.flushAsync()
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(try Data(contentsOf: jsonURL) == beforeRetry)
         let mirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
         #expect(mirror.title == "Newer headline C")
@@ -382,11 +382,11 @@ struct MetadataEditorReadServiceTests {
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
         #expect(captured.request.changes.count > 20)
         #expect(captured.sidecar.history.count == 20)
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         for field in fields { #expect(record.metadata[keyPath: field] == captured.sidecar.metadata[keyPath: field]) }
         // Retrying the same operation remains idempotent although its earliest event is trimmed.
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
     }
 
     @Test("Explicit Write after a durable Caption capture completes the exact captured revision")
@@ -398,7 +398,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Captured B"
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         let result = await withCheckedContinuation { continuation in
             fixture.model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
         }
@@ -421,7 +421,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Fresh captured B"
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         #expect(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder)?.metadata.title == "Fresh captured B")
         // This is the actual Caption Write/Write & Next entry, which intentionally removes JSON.
         fixture.model.writeMetadataAndClearSidecar()
@@ -452,7 +452,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Captured B"
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         fixture.model.writeMetadataAndClearSidecar()
         let admissionDeadline = ContinuousClock.now + .seconds(5)
         while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
@@ -475,7 +475,7 @@ struct MetadataEditorReadServiceTests {
         // The app's own successful cleanup must not look like an external discard to the new draft.
         let newer = try #require(try fixture.model.captureCaptionDraftPersistence())
         #expect(!newer.request.baselineRecordExisted)
-        try await Task.detached { try newer.persist() }.value
+        try await newer.persistAsync()
         let record = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(record.metadata.title == "New buffer D")
         #expect(record.imageMetadataSnapshot?.title == "Captured B")
@@ -498,7 +498,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Captured B"
         fixture.model.markChanged()
         let first = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try first.persist() }.value
+        try await first.persistAsync()
         fixture.model.writeMetadataAndClearSidecar()
         let admissionDeadline = ContinuousClock.now + .seconds(5)
         while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
@@ -518,7 +518,7 @@ struct MetadataEditorReadServiceTests {
         let retained = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(retained.metadata.title == "Captured B")
         #expect(retained.pendingChanges)
-        try await Task.detached { try delayed.persist() }.value
+        try await delayed.persistAsync()
         let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(installed.metadata.title == "Delayed D")
         #expect(installed.pendingChanges)
@@ -537,7 +537,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Captured B"
         fixture.model.markChanged()
         let first = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try first.persist() }.value
+        try await first.persistAsync()
         fixture.model.writeMetadataAndClearSidecar()
         let admissionDeadline = ContinuousClock.now + .seconds(5)
         while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
@@ -555,7 +555,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.markChanged()
         let newer = try #require(try fixture.model.captureCaptionDraftPersistence())
         #expect(newer.request.baselineRecordExisted)
-        try await Task.detached { try newer.persist() }.value
+        try await newer.persistAsync()
         let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(installed.metadata.title == "After reload D")
         #expect(installed.imageMetadataSnapshot?.title == "Original")
@@ -574,7 +574,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.editingMetadata.title = "Captured B"
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         fixture.model.writeMetadataAndClearSidecar()
         let admissionDeadline = ContinuousClock.now + .seconds(5)
         while !(await gate.isPaused), ContinuousClock.now < admissionDeadline { await Task.yield() }
@@ -697,7 +697,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.markChanged()
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
         #expect(captured.request.changes.count == 1)
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         let editorialMirror = try #require(XMPSidecarService().loadSidecar(for: fixture.image))
         #expect(editorialMirror.title == "B")
         #expect(editorialMirror.cameraRaw?.exposure2012 == 0.5)
@@ -899,7 +899,7 @@ struct MetadataEditorReadServiceTests {
         fixture.model.markChanged()
         let draft = try #require(try fixture.model.captureCaptionDraftPersistence())
         #expect(draft.sidecar.imageMetadataSnapshot == original)
-        try await Task.detached { try draft.persist() }.value
+        try await draft.persistAsync()
         await loadCaptionFixture(fixture.model, image: fixture.image, folder: fixture.folder)
         #expect(fixture.model.editingMetadata.title == "New edit after restore")
         #expect(fixture.model.pendingFieldNames.contains("Headline"))
@@ -1267,7 +1267,7 @@ struct MetadataEditorReadServiceTests {
         #expect(captured.sidecar.history.first?.newValue == "New headline")
         #expect(!fixture.model.hasUnpersistedEditorChanges)
         #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
-        try await Task.detached { try captured.persist() }.value
+        try await captured.persistAsync()
         let installed = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(installed.pendingChanges)
         #expect(installed.metadata.title == "New headline")
@@ -1316,8 +1316,8 @@ struct MetadataEditorReadServiceTests {
         let captured = try #require(try fixture.model.captureCaptionDraftPersistence())
         let gate = CaptionBaselineRetryGate()
         let queue = CaptionDraftPersistenceQueue(label: "caption-baseline.failed-retry")
-        queue.enqueue(operation: { try gate.attempt(captured) })
-        #expect(queue.pendingCount == 1)
+        queue.enqueueAsync(operation: { try await gate.attempt(captured) })
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(gate.attemptCount == 1)
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
         coordinator.register(owner: UUID(), capturePersistence: {
@@ -1325,8 +1325,8 @@ struct MetadataEditorReadServiceTests {
         }, handler: {})
         #expect(try fixture.model.captureCaptionDraftPersistence() == nil)
         gate.allowSuccess()
-        try coordinator.flush()
-        #expect(queue.pendingCount == 0)
+        try await coordinator.flushAsync()
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(gate.attemptCount == 2)
         let persisted = try #require(MetadataSidecarService().loadSidecar(for: fixture.image, in: fixture.folder))
         #expect(persisted.metadata.title == "Queued headline")

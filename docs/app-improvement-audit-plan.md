@@ -1,5 +1,84 @@
 # App improvement audit plan
 
+**FTP generation ownership (2026-10-18):** Cancelled/superseded transfer, render and
+signing results cannot publish errors, progress, counts, phase changes or completion into a
+replacement run. Late callbacks cannot regress completed-file or batch progress. Local fixture
+coverage includes direct restart into another render, with no production credentials or network.
+The final regression passes 4,375 tests in 424 suites (4,373 passed, two existing skips, zero
+failures); repository validation passes. Native interaction, representative performance, real-server
+behavior and signed-release qualification remain open. See the
+[dated continuation](plan-status-ftp-generation-continuation-2026-10-18.md).
+
+**Concurrent export ownership (2026-10-18):** Numbered destinations use exclusive creation;
+path/symlink/inode claims prevent concurrent replacement through pending IPTC overlay and artifact
+finalization. JPEG delivery returns its actual allocated URL, isolating cancelled detached renders
+from restarted uploads. Independent outputs remain concurrent, and cleanup is awaited off MainActor.
+The final 4,370-test regression passes (4,368 passed, two existing skips, zero failures), including
+real-file exact-IPTC overlap/cancellation and blocked-cleanup responsiveness cases; repository
+validation passes. Native, storage-performance, FTP generation-state and signed-release gates
+remain open. See the [dated continuation](plan-status-export-reservations-continuation-2026-10-18.md).
+
+**Export originals and Develop focus loss (2026-10-18):** Format delivery uses numbered
+collision handling beside originals; renderer preflights refuse existing source aliases before
+encoding, including symlinks and hard links. Independent output replacement remains available.
+Develop releases held comparisons/hand input when its window or application loses focus,
+retaining monitor registrations, image/section choices and the visible viewport anchor.
+All 62 focused tests and the 4,357-test full regression pass (4,355 passed, two existing skips,
+zero failures); final repository validation passes. Native, real-volume and signed release
+qualification remain open. See the
+[dated continuation](plan-status-source-preservation-focus-loss-continuation-2026-10-18.md).
+
+**Workspace input isolation (2026-10-18):** Caption and Analysis key monitors now
+require their owning key window and exclude modal/sheet input, protecting Settings recording
+and navigation. Comparison/Analysis/Develop scroll monitors and Develop middle-click copy
+also reject foreign-window events. Analysis clears transient gestures on ownership loss.
+The full regression passes 4,348 tests (4,346 passed, two existing skips, zero failures);
+repository validation passes. Unified logs attribute map-full messages to Metal, but the
+root cause and impact remain unresolved. Native QA reconnect still fails with a closed pipe;
+performance and release qualification remain open. See the
+[dated continuation](plan-status-workspace-event-isolation-continuation-2026-10-18.md).
+
+**Browsing cache and metadata delivery (2026-10-18):** Edited invalidation retires
+old in-flight renders; folder-return reconciliation detects XMP changes/removal using
+already-scanned revisions while preserving unchanged caches. Render & Sign and edited FTP
+reject known metadata-copy/overlay failures before signing or upload and retain local pixels
+for recovery. Local export warning behavior remains available. The 33-test focused run and
+4,346-test full regression pass (4,344 passed, two existing skips, zero failures); final
+export/thumbnail checks, 11 FTP boundary checks and repository validation also pass. Native,
+performance and release qualification remain open. See
+the [dated continuation](plan-status-browsing-delivery-continuation-2026-10-18.md).
+
+**Export IPTC filesystem worker (2026-10-18):** JSON/XMP selection, embedded metadata
+inspection and stale-sidecar date probes run on a retained serial Dispatch executor under
+one source photo lease. Rating/label-only XMP avoids redundant embedded reads. The 41-test
+focused run verifies worker ownership, MainActor responsiveness and selection policy. The
+4,342-test full regression and repository validation pass (two existing skips, zero failures);
+real-volume timing and full release qualification remain open. See the
+[dated continuation](plan-status-export-iptc-worker-continuation-2026-10-18.md).
+
+**Edited export IPTC integrity (2026-10-18):** Develop Save now uses the shared pending
+JSON/XMP overlay and artifact finalization pipeline. Typed keyword, person and organisation
+lists retain comma-containing item boundaries in rendered exports, sidecar sync and complete
+record writes. The 58-test focused run and 4,332-test full regression pass with real
+JPEG/PNG/TIFF coverage (two existing skips, zero failures); native Save interaction and
+real-volume performance qualification remain open. See the
+[dated continuation](plan-status-export-list-integrity-continuation-2026-10-18.md).
+
+**Core command shortcut editor (2026-10-18):** The shared editable profile now covers
+core application menus as well as culling. Settings adds categorized commands, all modifier
+layers and reliable scrolling. Native menu matching has isolated SwiftUI coverage;
+Develop input is restricted to its owning key window. Native layout/recording inspection
+passed; final live invocation remains unverified because the native automation backend is
+unavailable. The final 4,327-test regression and repository validation pass (two existing
+skips, zero failures). Release gates remain open. See the
+[dated continuation](plan-status-core-shortcut-editor-continuation-2026-10-18.md).
+
+**Shortcut editor and export metadata (2026-10-18):** Settings gains a keyboard preview,
+local recording, alias editing and confirmed reassignment. Native culling menus follow the
+selected profile; pending metadata drafts now take precedence over older XMP during export.
+The 4,313-test regression passes; release performance and packaging gates remain open.
+See the [dated continuation](plan-status-shortcut-editor-export-continuation-2026-10-18.md).
+
 **Develop rooted batch recovery (2026-10-18):** Checkpoint-owned photo journals
 bind exact admission evidence and recheck the active batch under the parent lock on
 every physical retention. Version-two bindings preserve older-writer refusal; read-only

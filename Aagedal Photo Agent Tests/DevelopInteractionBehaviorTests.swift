@@ -1439,6 +1439,30 @@ struct DevelopPreviewNavigationCoordinatorTests {
 @Suite("Develop transient preview coordinator")
 @MainActor
 struct DevelopTransientPreviewCoordinatorTests {
+    @Test("focus-loss release restores edited pixels without ending the image or sticky section choices")
+    func focusLossRestoresProjection() {
+        let coordinator = DevelopTransientPreviewCoordinator()
+        let image = URL(fileURLWithPath: "/virtual/focus-loss.raw")
+        coordinator.beginImageSession(image)
+        var editable = CameraRawSettings()
+        editable.exposure2012 = 1.25
+        editable.sharpness = 40
+        editable.localAdjustments = [MaskAdjustment(name: "Selected", enabled: true, exposure: 0.5)]
+        let sections = DevelopSectionMuteState(detail: true)
+        let expected = coordinator.settingsForPipeline(editable, isRawSource: false, sectionMutes: sections)
+        coordinator.beginBeforeComparison()
+        coordinator.beginDevelopMute()
+        #expect(coordinator.beginLayerMute(maskIndex: 0))
+        coordinator.releaseAll()
+        #expect(coordinator.activeImageURL == image)
+        #expect(!coordinator.isShowingBefore && !coordinator.isMutingDevelop && !coordinator.isMutingSelectedMask)
+        #expect(coordinator.settingsForPipeline(editable, isRawSource: false, sectionMutes: sections) == expected)
+        #expect(editable.sharpness == 40 && editable.localAdjustments?.first?.enabled == true)
+        #expect(coordinator.beginLayerMute(maskIndex: nil))
+        coordinator.releaseAll()
+        #expect(!coordinator.isMutingGlobal)
+    }
+
     @Test("image-session changes release every held comparison")
     func imageChangeReleasesHeldComparisons() {
         let coordinator = DevelopTransientPreviewCoordinator()
@@ -2537,5 +2561,66 @@ struct DevelopRenderPolicyCoordinatorTests {
         #expect(source.contains("renderPolicy.gamutClipMode("))
         #expect(!source.contains("switch scopeViewModel.targetGamut"))
         #expect(!source.contains("if lockedCropImageRect != nil {"))
+    }
+}
+
+@Suite("Develop Save export routing")
+struct DevelopSaveExportRoutingTests {
+    @Test("Develop Save uses the same metadata overlay and finalization boundary as other exports")
+    func sharedPipelineBoundary() throws {
+        let source = try saveImplementation()
+        #expect(source.contains("EditExportPipeline.renderItem("))
+        #expect(source.contains("kind: .format"))
+        #expect(source.contains("metadataViewModel.currentFolderURL"))
+        #expect(source.contains("folderURL: folderURL"))
+        // A source-only copier omits authoritative XMP and pending app metadata.
+        #expect(!source.contains("EditedImageRenderer.render("))
+        #expect(!source.contains("copyMetadataToRenderedFile("))
+        #expect(source.contains("failureTracker.sidecarOverlayFailures"))
+        #expect(source.contains("copyFailures.isEmpty && overlayFailures.isEmpty"))
+    }
+
+    @Test("Develop Save retains its single-session owner and cancellation admission")
+    func lifecycleBoundary() throws {
+        let source = try saveImplementation()
+        let request = try #require(source.range(of: "exportSession.requestExport {"))
+        let directory = try #require(source.range(of: "ExportDirectoryService.shared.ensureDirectory("))
+        let admission = try #require(source.range(of: "try Task.checkCancellation()"))
+        let render = try #require(source.range(of: "EditExportPipeline.renderItem("))
+        #expect(request.lowerBound < directory.lowerBound)
+        #expect(directory.lowerBound < admission.lowerBound)
+        #expect(admission.lowerBound < render.lowerBound)
+        #expect(source.contains("!directoryCommit.cancellationRequestedAfterCommit"))
+        #expect(source.contains("DevelopExportPersistenceResult("))
+    }
+
+    private func saveImplementation() throws -> String {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"), encoding: .utf8)
+        let start = try #require(source.range(of: "    private func saveCurrentRenderedImage() {"))
+        let end = try #require(source.range(of: "    private func signedIntString", range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+}
+
+@Suite("Develop interrupted viewport input")
+@MainActor
+struct DevelopInterruptedViewportTests {
+    @Test("focus loss commits the visible pan and zoom as the next gesture anchor")
+    func interruptedGesturesKeepVisibleViewport() {
+        let navigation = DevelopPreviewNavigationCoordinator()
+        navigation.applyZoom(scale: 2, anchoredOffset: CGSize(width: 10, height: 15))
+        navigation.updateMagnification(2)
+        #expect(navigation.updatePan(translation: CGSize(width: 20, height: -5)))
+        let zoom = navigation.zoomScale
+        let offset = navigation.offset
+        navigation.finishInteraction()
+        #expect(navigation.zoomScale == zoom && navigation.offset == offset)
+        #expect(navigation.committedZoomScale == zoom && navigation.committedOffset == offset)
+        navigation.updateMagnification(1)
+        #expect(navigation.zoomScale == zoom)
+        #expect(navigation.updatePan(translation: CGSize(width: 3, height: 4)))
+        #expect(navigation.offset == CGSize(width: offset.width + 3, height: offset.height + 4))
     }
 }

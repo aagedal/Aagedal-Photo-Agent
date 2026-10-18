@@ -641,3 +641,425 @@ private nonisolated enum ThumbnailRenderContext {
         #expect(Task.currentPriority >= .userInitiated)
     }
 }
+
+@Suite("Thumbnail stale-request and folder-return invalidation")
+@MainActor
+struct ThumbnailRevisionInvalidationTests {
+    @Test("A changed edit retires the gated old producer and renders current settings")
+    func changedSettingsRetireInflightRender() async throws {
+        let image = try makeThumbnailBitmap()
+        let gate = AsyncStream<Void>.makeStream()
+        let calls = ThumbnailRevisionLoadProbe()
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            let index = calls.next()
+            if index == 1 {
+                for await _ in gate.stream { break }
+            }
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        })
+        defer { gate.continuation.yield(()); gate.continuation.finish() }
+        let url = URL(fileURLWithPath: "/virtual/edited-invalidation-\(UUID()).jpg")
+        var oldSettings = CameraRawSettings()
+        oldSettings.exposure2012 = -2
+        var newSettings = CameraRawSettings()
+        newSettings.exposure2012 = 1
+        let old = Task { await service.renderEditedThumbnail(for: url, settings: oldSettings, exifOrientation: 1) }
+        defer { old.cancel() }
+        try await waitForThumbnail { calls.count > 0 }
+        service.invalidateEditedThumbnail(for: url)
+        let replacement = Task { await service.renderEditedThumbnail(for: url, settings: newSettings, exifOrientation: 1) }
+        defer { replacement.cancel() }
+        // Let both replacement admission and cancellation cleanup run before releasing old I/O.
+        await Task.yield()
+        gate.continuation.yield(())
+        gate.continuation.finish()
+        #expect(await old.value == nil)
+        let actual = try #require(await replacement.value)
+        let reference = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        })
+        let expected = try #require(await reference.renderEditedThumbnail(for: url, settings: newSettings, exifOrientation: 1))
+        #expect(try pixels(actual) == pixels(expected))
+        #expect(service.thumbnail(for: url) === actual)
+        #expect(service.hasEditedThumbnail(for: url))
+    }
+
+    @Test("Folder return invalidates only externally changed XMP while unchanged originals and edits stay cached",
+          arguments: [false, true])
+    func externalSidecarChangeAcrossFolderReturn(removesSidecar: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("thumbnail-return-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let changed = directory.appendingPathComponent("changed.jpg")
+        let untouched = directory.appendingPathComponent("untouched.jpg")
+        try Data("unchanged source pixels".utf8).write(to: changed)
+        try Data("other unchanged pixels".utf8).write(to: untouched)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let sidecars = XMPSidecarService()
+        try sidecars.saveCameraRawOnly(settings, orientation: 1, for: changed)
+        let sidecarURL = sidecars.sidecarURL(for: changed)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)],
+                                              ofItemAtPath: sidecarURL.path)
+        let bitmap = try makeThumbnailBitmap()
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: bitmap, size: NSSize(width: bitmap.width, height: bitmap.height))
+        })
+        let model = BrowserViewModel(thumbnailService: service)
+        let before = ImageFile(url: changed)
+        model.reconcileThumbnailCaches(against: [before, ImageFile(url: untouched)])
+        _ = try #require(await service.loadThumbnail(for: changed))
+        let unchangedOriginal = try #require(await service.loadThumbnail(for: untouched))
+        _ = try #require(await service.renderEditedThumbnail(for: changed, settings: settings, exifOrientation: 1))
+        let unchangedEdited = try #require(await service.renderEditedThumbnail(for: untouched, settings: settings, exifOrientation: 1))
+        // Empty folder admission models leaving A for B without evicting A's reusable images.
+        model.reconcileThumbnailCaches(against: [])
+        if removesSidecar {
+            try FileManager.default.removeItem(at: sidecarURL)
+        } else {
+            settings.exposure2012 = 2
+            try sidecars.saveCameraRawOnly(settings, orientation: 6, for: changed)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 200)],
+                                                  ofItemAtPath: sidecarURL.path)
+        }
+        let after = ImageFile(url: changed)
+        #expect(before.fileSize == after.fileSize)
+        #expect(before.dateModified == after.dateModified)
+        #expect(before.sidecarModified != after.sidecarModified)
+        model.reconcileThumbnailCaches(against: [after, ImageFile(url: untouched)])
+        #expect(service.thumbnail(for: changed) == nil)
+        #expect(!service.hasEditedThumbnail(for: changed))
+        #expect(service.thumbnail(for: untouched, preferOriginal: true) === unchangedOriginal)
+        #expect(service.thumbnail(for: untouched) === unchangedEdited)
+        // An unchanged repeated admission must preserve already refreshed previews too.
+        let refreshed = try #require(await service.loadThumbnail(for: changed))
+        model.reconcileThumbnailCaches(against: [ImageFile(url: changed), ImageFile(url: untouched)])
+        #expect(service.thumbnail(for: changed, preferOriginal: true) === refreshed)
+    }
+
+    private func makeMemoryCoordinator() -> ImageMemoryCoordinator {
+        ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
+    }
+
+    private func makeThumbnailBitmap() throws -> CGImage {
+        let image = CIImage(color: CIColor(red: 0.25, green: 0.35, blue: 0.45))
+            .cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16))
+        return try #require(CIContext().createCGImage(image, from: image.extent))
+    }
+
+    private func pixels(_ image: NSImage) throws -> Data {
+        let cg = try #require(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        return try #require(cg.dataProvider?.data) as Data
+    }
+
+    private func waitForThumbnail(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !predicate() {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+private nonisolated final class ThumbnailRevisionLoadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var countStorage = 0
+    var count: Int { lock.withLock { countStorage } }
+    func next() -> Int { lock.withLock { countStorage += 1; return countStorage } }
+}
+
+@Suite("Export output reservations")
+@MainActor
+struct ExportOutputReservationTests {
+    @Test("Concurrent numbered contenders own distinct occupied paths")
+    func concurrentNumberedReservations() async throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let owners = (0..<24).map { _ in ExportOutputReservationOwner() }
+        defer { withExtendedLifetime(owners) {} }
+        let outputs = try await withThrowingTaskGroup(of: URL.self) { group in
+            for owner in owners {
+                group.addTask {
+                    try owner.reserveOutput(for: fixture.source, in: fixture.output,
+                        extension: "jpg", collisionPolicy: .appendNumber)
+                }
+            }
+            var urls: [URL] = []
+            for try await url in group { urls.append(url) }
+            return urls
+        }
+        #expect(outputs.count == owners.count)
+        #expect(Set(outputs).count == owners.count)
+        #expect(outputs.contains(fixture.output.appendingPathComponent("photo.jpg")))
+        #expect(outputs.contains(fixture.output.appendingPathComponent("photo 24.jpg")))
+        for output in outputs { #expect(try Data(contentsOf: output).isEmpty) }
+        #expect(try Data(contentsOf: fixture.source) == Data("source".utf8))
+    }
+
+    @Test("Replacement respects an active claim even after atomic encoding, then becomes available on release")
+    func replacementClaimLifetime() throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var first: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        let destination = try #require(first).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        let encoded = Data("encoded pixels and metadata".utf8)
+        try encoded.write(to: destination, options: .atomic)
+        let second = ExportOutputReservationOwner()
+        do {
+            _ = try second.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "jpg", collisionPolicy: .replaceExisting)
+            Issue.record("An active output must not be replaced")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        first = nil
+        let available = try second.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        #expect(available == destination)
+        #expect(try Data(contentsOf: destination) == encoded)
+        withExtendedLifetime(second) {}
+    }
+
+    @Test("Directory aliases share admission without coupling distinct extensions")
+    func aliasDirectoryAndExtensions() throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let alias = fixture.root.appendingPathComponent("aliased-output")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.output)
+        let first = ExportOutputReservationOwner()
+        let second = ExportOutputReservationOwner()
+        defer { withExtendedLifetime((first, second)) {} }
+        _ = try first.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        do {
+            _ = try second.reserveOutput(for: fixture.source, in: alias,
+                extension: "jpg", collisionPolicy: .replaceExisting)
+            Issue.record("Alias spelling must share the active destination claim")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        let numbered = try second.reserveOutput(for: fixture.source, in: alias,
+            extension: "jpg", collisionPolicy: .appendNumber)
+        #expect(numbered.lastPathComponent == "photo 2.jpg")
+        let sibling = try second.reserveOutput(for: fixture.source, in: alias,
+            extension: "png", collisionPolicy: .replaceExisting)
+        #expect(sibling.lastPathComponent == "photo.png")
+    }
+
+    @Test("Only the unchanged empty owned placeholder is removed after abandonment")
+    func ownedPlaceholderCleanup() throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var owner: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        let destination = try #require(owner).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .appendNumber)
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        owner = nil
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        let replacement = ExportOutputReservationOwner()
+        #expect(try replacement.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .appendNumber) == destination)
+        withExtendedLifetime(replacement) {}
+    }
+
+    @Test("Foreign replacement is retained even if it is empty", arguments: [false, true])
+    func foreignReplacementPreserved(empty: Bool) throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var owner: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        let destination = try #require(owner).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .appendNumber)
+        try FileManager.default.removeItem(at: destination)
+        let foreign = empty ? Data() : Data("foreign replacement".utf8)
+        try foreign.write(to: destination, options: .withoutOverwriting)
+        owner = nil
+        #expect(FileManager.default.fileExists(atPath: destination.path))
+        #expect(try Data(contentsOf: destination) == foreign)
+    }
+
+    @Test("Successfully written pixels survive release with in-place and atomic encoders", arguments: [false, true])
+    func encodedPixelsRetained(atomic: Bool) throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var owner: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        let destination = try #require(owner).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .appendNumber)
+        let pixels = Data("rendered pixels".utf8)
+        try pixels.write(to: destination, options: atomic ? .atomic : [])
+        owner = nil
+        #expect(try Data(contentsOf: destination) == pixels)
+    }
+
+    @Test("A blocked filesystem admission does not serialize unrelated destinations")
+    func unrelatedDestinationProgress() async throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let probe = ExportOutputFilesystemGate()
+        let first = ExportOutputReservationOwner(beforeFilesystemAccess: { _ in probe.block() })
+        let second = ExportOutputReservationOwner()
+        defer { probe.release(); withExtendedLifetime((first, second)) {} }
+        let blocked = Task.detached {
+            try first.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "jpg", collisionPolicy: .appendNumber)
+        }
+        defer { blocked.cancel() }
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !probe.started {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let unrelated = try await Task.detached {
+            try second.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "png", collisionPolicy: .appendNumber)
+        }.value
+        #expect(unrelated.lastPathComponent == "photo.png")
+        #expect(!probe.finished)
+        probe.release()
+        _ = try await blocked.value
+        #expect(!probe.timedOut)
+    }
+
+    @Test("A failed creation releases its namespace claim for a later successful reservation")
+    func failedCreationReleasesClaim() throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let missing = fixture.output.appendingPathComponent("not-created")
+        let owner = ExportOutputReservationOwner()
+        #expect(throws: (any Error).self) {
+            _ = try owner.reserveOutput(for: fixture.source, in: missing,
+                extension: "jpg", collisionPolicy: .replaceExisting)
+        }
+        try FileManager.default.createDirectory(at: missing, withIntermediateDirectories: true)
+        let output = try owner.reserveOutput(for: fixture.source, in: missing,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        #expect(output.lastPathComponent == "photo.jpg")
+        withExtendedLifetime(owner) {}
+    }
+
+    @Test("Atomic replacement of a final symlink keeps both pathname and target claims active")
+    func atomicFinalSymlinkReplacement() throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let target = fixture.root.appendingPathComponent("independent-rendition.jpg")
+        try Data("independent output".utf8).write(to: target)
+        let destination = fixture.output.appendingPathComponent("photo.jpg")
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        var first: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        _ = try #require(first).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        let encodedSibling = fixture.output.appendingPathComponent("encoded-temp.jpg")
+        try Data("atomically encoded output".utf8).write(to: encodedSibling)
+        try #require(Darwin.rename(encodedSibling.path, destination.path) == 0)
+        let second = ExportOutputReservationOwner()
+        do {
+            _ = try second.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "jpg", collisionPolicy: .replaceExisting)
+            Issue.record("Atomic replacement must retain the original pathname claim")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        first = nil
+        _ = try second.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        #expect(try Data(contentsOf: target) == Data("independent output".utf8))
+        withExtendedLifetime(second) {}
+    }
+
+    @Test("Hard-linked outputs share inode admission until the original owner releases",
+          arguments: [false, true])
+    func hardLinkedOutputAdmission(freshPlaceholder: Bool) throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let destination = fixture.output.appendingPathComponent("photo.jpg")
+        let alias = fixture.output.appendingPathComponent("photo-copy.jpg")
+        let bytes = freshPlaceholder ? Data() : Data("independent existing output".utf8)
+        if !freshPlaceholder {
+            try bytes.write(to: destination)
+            try FileManager.default.linkItem(at: destination, to: alias)
+        }
+        var first: ExportOutputReservationOwner? = ExportOutputReservationOwner()
+        _ = try #require(first).reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        if freshPlaceholder { try FileManager.default.linkItem(at: destination, to: alias) }
+        let second = ExportOutputReservationOwner()
+        do {
+            _ = try second.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "jpg", filenameSuffix: "-copy", collisionPolicy: .replaceExisting)
+            Issue.record("A distinct pathname must not bypass an active inode claim")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        #expect(try Data(contentsOf: destination) == bytes)
+        #expect(try Data(contentsOf: alias) == bytes)
+        first = nil
+        let admitted = try second.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", filenameSuffix: "-copy", collisionPolicy: .replaceExisting)
+        #expect(admitted == alias)
+        #expect(try Data(contentsOf: alias) == bytes)
+        withExtendedLifetime(second) {}
+    }
+
+    @Test("Awaited cleanup keeps MainActor responsive and releases admission before returning")
+    func asynchronousCleanupReleasesAdmission() async throws {
+        let fixture = try workspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let gate = ExportOutputFilesystemGate()
+        defer { gate.release() }
+        let owner = ExportOutputReservationOwner(beforeCleanup: {
+            #expect(!Thread.isMainThread)
+            gate.block()
+        })
+        let destination = try owner.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        let cleanup = Task { await owner.release() }
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !gate.started {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        // Reaching this MainActor continuation while the worker is gated proves that
+        // cleanup does not block the UI executor. Its namespace lease is still active.
+        #expect(!gate.finished)
+        let replacement = ExportOutputReservationOwner()
+        do {
+            _ = try replacement.reserveOutput(for: fixture.source, in: fixture.output,
+                extension: "jpg", collisionPolicy: .replaceExisting)
+            Issue.record("Cleanup must retain admission until its filesystem work finishes")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        // Cleanup of an unrelated artifact must also proceed while the first is gated.
+        let unrelated = ExportOutputReservationOwner()
+        let sibling = try unrelated.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "png", collisionPolicy: .replaceExisting)
+        await unrelated.release()
+        #expect(!FileManager.default.fileExists(atPath: sibling.path))
+        #expect(!gate.finished)
+        gate.release()
+        await cleanup.value
+        #expect(!gate.timedOut)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        let available = try replacement.reserveOutput(for: fixture.source, in: fixture.output,
+            extension: "jpg", collisionPolicy: .replaceExisting)
+        #expect(available == destination)
+        await replacement.release()
+        await owner.release() // A drained owner is safe to release again.
+    }
+
+    private func workspace() throws -> (root: URL, source: URL, output: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("output-reservation-\(UUID())")
+        let output = root.appendingPathComponent("outputs", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("photo.jpg")
+        try Data("source".utf8).write(to: source)
+        return (root, source, output)
+    }
+}
+
+private nonisolated final class ExportOutputFilesystemGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var didStart = false
+    private var didFinish = false
+    private var didTimeOut = false
+    var started: Bool { lock.withLock { didStart } }
+    var finished: Bool { lock.withLock { didFinish } }
+    var timedOut: Bool { lock.withLock { didTimeOut } }
+    func block() {
+        lock.withLock { didStart = true }
+        let timeout = semaphore.wait(timeout: .now() + 10) != .success
+        lock.withLock { didFinish = true; didTimeOut = timeout }
+    }
+    func release() { semaphore.signal() }
+}

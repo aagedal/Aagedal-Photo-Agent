@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -3726,6 +3727,7 @@ private struct AnalysisSourceThumbnail: View {
     @State private var viewportSize: CGSize = .zero
     @State private var pointerLocationInViewport: CGPoint?
     @State private var loupeCorner: ImageInspectionLoupePlacement.Corner = .topTrailing
+    @State private var eventWindow = WorkspaceEventWindowReference()
     @State private var scrollEventMonitor: Any?
     @State private var keyEventMonitor: Any?
     @State private var isSpaceHandToolActive = false
@@ -4027,6 +4029,12 @@ private struct AnalysisSourceThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(WorkspaceEventWindowReader(reference: eventWindow))
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
+            guard let owner = eventWindow.window,
+                  let resigned = notification.object as? NSWindow, resigned === owner else { return }
+            resetTransientInput()
+        }
         .onAppear {
             installScrollEventMonitor()
             installKeyEventMonitor()
@@ -4428,6 +4436,10 @@ private struct AnalysisSourceThumbnail: View {
     private func installScrollEventMonitor() {
         guard scrollEventMonitor == nil else { return }
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard eventWindow.ownsEvent(in: event.window) else {
+                resetTransientInput()
+                return event
+            }
             guard let pointerLocationInViewport,
                   viewportSize.width > 0,
                   viewportSize.height > 0 else {
@@ -4467,10 +4479,23 @@ private struct AnalysisSourceThumbnail: View {
         guard let keyEventMonitor else { return }
         NSEvent.removeMonitor(keyEventMonitor)
         self.keyEventMonitor = nil
+        resetTransientInput()
+    }
+
+    private func resetTransientInput() {
         isSpaceHandToolActive = false
+        panDragStartOffset = nil
+        zoomGestureStartScale = nil
+        pointerLocationInViewport = nil
     }
 
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
+        // Reset a held gesture on ownership loss, but leave the foreign key-up
+        // untouched so its real window can finish its own interaction.
+        guard eventWindow.ownsEvent(in: event.window) else {
+            resetTransientInput()
+            return event
+        }
         let isKeyDown = event.type == .keyDown
         let isKeyUp = event.type == .keyUp
 

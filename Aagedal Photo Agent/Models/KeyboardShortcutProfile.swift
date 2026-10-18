@@ -45,8 +45,30 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
     let modifiers: KeyboardShortcutModifiers
 
     init(key: String, modifiers: KeyboardShortcutModifiers = []) {
-        self.key = ["\r", "\u{3}"].contains(key) ? "return" : key.lowercased()
+        switch key {
+        case "\r", "\u{3}": self.key = "return"
+        case "\u{7f}", "\u{8}": self.key = "delete"
+        case "\u{f728}": self.key = "forwarddelete"
+        default: self.key = key.lowercased()
+        }
         self.modifiers = modifiers
+    }
+
+    @MainActor
+    init?(event: NSEvent) {
+        // Layout retranslations can turn Forward Delete into backward Delete.
+        // These fixed hardware identities must survive normalization.
+        switch event.keyCode {
+        case 51: self.init(key: "delete", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
+        case 117: self.init(key: "forwarddelete", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
+        case 36, 76: self.init(key: "return", modifiers: KeyboardShortcutModifiers(event.modifierFlags)); return
+        default: break
+        }
+        // Unlike charactersIgnoringModifiers, this also removes Shift and Caps Lock.
+        // Keep modifier identity separate from the logical key on the active layout.
+        guard let key = event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers,
+              !key.isEmpty else { return nil }
+        self.init(key: key, modifiers: KeyboardShortcutModifiers(event.modifierFlags))
     }
 
     var displayName: String {
@@ -56,7 +78,7 @@ nonisolated struct KeyboardShortcutChord: Codable, Hashable, Sendable {
             modifiers.contains(.shift) ? "⇧" : "",
             modifiers.contains(.command) ? "⌘" : "",
         ].joined()
-        return prefix + (key == "return" ? "↩" : key.uppercased())
+        return prefix + (key == "return" ? "↩" : key == "delete" ? "⌫" : key == "forwarddelete" ? "⌦" : key.uppercased())
     }
 }
 
@@ -77,6 +99,58 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
     case labelBlack
     case labelTrash
 
+    case openFolder
+    case showImport
+    case showWebImport
+    case backupEditedFiles
+    case renderSelected
+    case advancedExportSelected
+    case renderAll
+    case saveAsJPEG
+    case saveAsPNG
+    case renameSelected
+    case duplicateSelected
+    case openInEditor
+    case deleteSelected
+    case moveRejectedToFolder
+    case rotateClockwise
+    case rotateCounterclockwise
+    case addNewMask
+    case removeOrResetSelectedEditLayer
+    case resetAllEdits
+    case removeAllIPTC
+    case processVariablesSelected
+    case processVariablesAll
+    case writeAllPendingMetadata
+    case showTemplatePalette
+    case showVariableReference
+    case showRawMetadata
+    case showStructuredKeywords
+    case renderAndSignSelected
+    case copyIPTCMetadata
+    case pasteIPTCMetadata
+    case openCaptionWorkspace
+    case selectPreviousImage
+    case selectNextImage
+    case toggleHDR
+    case scopeWaveform
+    case scopeParade
+    case scopeVectorscope
+    case scopeGamut
+    case toggleGamutClipping
+    case toggleCleanFeed
+    case uploadSelected
+    case uploadAll
+    case templateOne
+    case templateTwo
+    case templateThree
+    case templateFour
+    case templateFive
+    case templateSix
+    case templateSeven
+    case templateEight
+    case templateNine
+
     var displayName: String {
         switch self {
         case .clearRating: "Clear rating"
@@ -94,10 +168,61 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
         case .labelWhite: "Set white label"
         case .labelBlack: "Set black label"
         case .labelTrash: "Set trash label"
+        case .openFolder: "Open Folder"
+        case .showImport: "Import Photos"
+        case .showWebImport: "Import from Web URL"
+        case .backupEditedFiles: "Back Up Edited Files"
+        case .renderSelected: "Render Selected"
+        case .advancedExportSelected: "Advanced Export Selected"
+        case .renderAll: "Render All"
+        case .saveAsJPEG: "Save as JPEG"
+        case .saveAsPNG: "Save as PNG"
+        case .renameSelected: "Rename"
+        case .duplicateSelected: "Duplicate"
+        case .openInEditor: "Open in Editor"
+        case .deleteSelected: "Move to Trash"
+        case .moveRejectedToFolder: "Move Rejected to Folder"
+        case .rotateClockwise: "Rotate Right"
+        case .rotateCounterclockwise: "Rotate Left"
+        case .addNewMask: "Add New Mask"
+        case .removeOrResetSelectedEditLayer: "Remove or Reset Selected Edit Layer"
+        case .resetAllEdits: "Reset All Edits"
+        case .removeAllIPTC: "Remove All IPTC Metadata"
+        case .processVariablesSelected: "Process Variables"
+        case .processVariablesAll: "Process Variables in All Images"
+        case .writeAllPendingMetadata: "Write All Pending Metadata"
+        case .showTemplatePalette: "Apply Template"
+        case .showVariableReference: "Variable Reference"
+        case .showRawMetadata: "Show Raw Metadata"
+        case .showStructuredKeywords: "Structured Keywords"
+        case .renderAndSignSelected: "Render and Sign Selected"
+        case .copyIPTCMetadata: "Copy IPTC Metadata"
+        case .pasteIPTCMetadata: "Paste IPTC Metadata"
+        case .openCaptionWorkspace: "Caption Workspace"
+        case .selectPreviousImage: "Previous Image"
+        case .selectNextImage: "Next Image"
+        case .toggleHDR: "Toggle HDR"
+        case .scopeWaveform: "Waveform"
+        case .scopeParade: "Parade"
+        case .scopeVectorscope: "Vectorscope"
+        case .scopeGamut: "Gamut"
+        case .toggleGamutClipping: "Toggle Gamut Clipping"
+        case .toggleCleanFeed: "Toggle Clean Feed"
+        case .uploadSelected: "Upload Selected"
+        case .uploadAll: "Upload All"
+        case .templateOne: "Apply Template 1"
+        case .templateTwo: "Apply Template 2"
+        case .templateThree: "Apply Template 3"
+        case .templateFour: "Apply Template 4"
+        case .templateFive: "Apply Template 5"
+        case .templateSix: "Apply Template 6"
+        case .templateSeven: "Apply Template 7"
+        case .templateEight: "Apply Template 8"
+        case .templateNine: "Apply Template 9"
         }
     }
 
-    var action: KeyboardCullingAction {
+    var action: KeyboardCullingAction? {
         switch self {
         case .clearRating: .rating(0)
         case .rateOne: .rating(1)
@@ -114,7 +239,126 @@ nonisolated enum KeyboardShortcutCommand: String, CaseIterable, Codable, Sendabl
         case .labelWhite: .colorLabel(6)
         case .labelBlack: .colorLabel(7)
         case .labelTrash: .colorLabel(8)
+        default: nil
         }
+    }
+
+    var isCulling: Bool { action != nil }
+
+    var category: String {
+        switch self {
+        case .openFolder: "File"
+        case .showImport: "File"
+        case .showWebImport: "File"
+        case .backupEditedFiles: "File"
+        case .renderSelected: "Export"
+        case .advancedExportSelected: "Export"
+        case .renderAll: "Export"
+        case .saveAsJPEG: "Export"
+        case .saveAsPNG: "Export"
+        case .renameSelected: "Image"
+        case .duplicateSelected: "Image"
+        case .openInEditor: "Image"
+        case .deleteSelected: "Image"
+        case .moveRejectedToFolder: "Image"
+        case .rotateClockwise: "Image"
+        case .rotateCounterclockwise: "Image"
+        case .addNewMask: "Develop"
+        case .removeOrResetSelectedEditLayer: "Develop"
+        case .resetAllEdits: "Develop"
+        case .removeAllIPTC: "Metadata"
+        case .processVariablesSelected: "Metadata"
+        case .processVariablesAll: "Metadata"
+        case .writeAllPendingMetadata: "Metadata"
+        case .showTemplatePalette: "Metadata"
+        case .showVariableReference: "Metadata"
+        case .showRawMetadata: "Metadata"
+        case .showStructuredKeywords: "Metadata"
+        case .renderAndSignSelected: "Export"
+        case .copyIPTCMetadata: "Metadata"
+        case .pasteIPTCMetadata: "Metadata"
+        case .openCaptionWorkspace: "Browser"
+        case .selectPreviousImage: "Browser"
+        case .selectNextImage: "Browser"
+        case .toggleHDR: "View"
+        case .scopeWaveform: "Scopes"
+        case .scopeParade: "Scopes"
+        case .scopeVectorscope: "Scopes"
+        case .scopeGamut: "Scopes"
+        case .toggleGamutClipping: "Scopes"
+        case .toggleCleanFeed: "View"
+        case .uploadSelected: "Upload"
+        case .uploadAll: "Upload"
+        case .templateOne: "Templates"
+        case .templateTwo: "Templates"
+        case .templateThree: "Templates"
+        case .templateFour: "Templates"
+        case .templateFive: "Templates"
+        case .templateSix: "Templates"
+        case .templateSeven: "Templates"
+        case .templateEight: "Templates"
+        case .templateNine: "Templates"
+        default: "Rating & Label"
+        }
+    }
+
+    var defaultChord: KeyboardShortcutChord? {
+        switch self {
+        case .openFolder: .init(key: "o", modifiers: .command)
+        case .showImport: .init(key: "i", modifiers: [.command, .shift])
+        case .renderSelected: .init(key: "s", modifiers: .command)
+        case .renderAll: .init(key: "s", modifiers: [.command, .shift])
+        case .duplicateSelected: .init(key: "d", modifiers: .command)
+        case .openInEditor: .init(key: "e", modifiers: .command)
+        case .deleteSelected: .init(key: "delete", modifiers: .command)
+        case .rotateClockwise: .init(key: "r", modifiers: .command)
+        case .rotateCounterclockwise: .init(key: "r", modifiers: [.command, .shift])
+        case .addNewMask: .init(key: "j", modifiers: .command)
+        case .removeOrResetSelectedEditLayer: .init(key: "delete", modifiers: [.control, .option])
+        case .processVariablesSelected: .init(key: "p", modifiers: .command)
+        case .processVariablesAll: .init(key: "p", modifiers: [.command, .shift])
+        case .writeAllPendingMetadata: .init(key: "w", modifiers: [.command, .shift])
+        case .showTemplatePalette: .init(key: "t", modifiers: .command)
+        case .showVariableReference: .init(key: "v", modifiers: .option)
+        case .showRawMetadata: .init(key: "i", modifiers: .command)
+        case .showStructuredKeywords: .init(key: "k", modifiers: [.command, .shift])
+        case .renderAndSignSelected: .init(key: "s", modifiers: [.command, .option])
+        case .copyIPTCMetadata: .init(key: "c", modifiers: [.command, .option])
+        case .pasteIPTCMetadata: .init(key: "v", modifiers: [.command, .option])
+        case .openCaptionWorkspace: .init(key: "m", modifiers: [.command, .shift])
+        case .selectPreviousImage: .init(key: "b", modifiers: .command)
+        case .selectNextImage: .init(key: "n", modifiers: .command)
+        case .toggleHDR: .init(key: "h", modifiers: [.control, .option])
+        case .scopeWaveform: .init(key: "1", modifiers: [.control, .option])
+        case .scopeParade: .init(key: "2", modifiers: [.control, .option])
+        case .scopeVectorscope: .init(key: "3", modifiers: [.control, .option])
+        case .scopeGamut: .init(key: "4", modifiers: [.control, .option])
+        case .toggleGamutClipping: .init(key: "g", modifiers: [.control, .option])
+        case .toggleCleanFeed: .init(key: "f", modifiers: [.command, .shift])
+        case .uploadSelected: .init(key: "u", modifiers: .command)
+        case .uploadAll: .init(key: "u", modifiers: [.command, .shift])
+        case .templateOne: .init(key: "1", modifiers: .control)
+        case .templateTwo: .init(key: "2", modifiers: .control)
+        case .templateThree: .init(key: "3", modifiers: .control)
+        case .templateFour: .init(key: "4", modifiers: .control)
+        case .templateFive: .init(key: "5", modifiers: .control)
+        case .templateSix: .init(key: "6", modifiers: .control)
+        case .templateSeven: .init(key: "7", modifiers: .control)
+        case .templateEight: .init(key: "8", modifiers: .control)
+        case .templateNine: .init(key: "9", modifiers: .control)
+        default: nil
+        }
+    }
+
+    static func templateCommand(slot: Int) -> Self? {
+        let commands: [Self] = [.templateOne, .templateTwo, .templateThree, .templateFour, .templateFive, .templateSix, .templateSeven, .templateEight, .templateNine]
+        return (1...commands.count).contains(slot) ? commands[slot - 1] : nil
+    }
+
+    /// Preserve the existing Develop hold/paste behavior only at its original chord.
+    func hasDevelopContextOverride(for chord: KeyboardShortcutChord) -> Bool {
+        (self == .duplicateSelected && chord == .init(key: "d", modifiers: .command))
+            || (self == .showVariableReference && chord == .init(key: "v", modifiers: .option))
     }
 }
 
@@ -182,25 +426,61 @@ nonisolated enum KeyboardShortcutPreset: String, CaseIterable, Codable, Identifi
 }
 
 nonisolated enum KeyboardShortcutProfiles {
+    static let applicationBindings: [KeyboardShortcutBinding] = KeyboardShortcutCommand.allCases.compactMap { command in
+        guard !command.isCulling, let chord = command.defaultChord else { return nil }
+        return KeyboardShortcutBinding(command: command, chord: chord)
+    }
+
     static let editableChordChoices: [KeyboardShortcutChord] = {
-        let numbers = (0...9).map(String.init)
-        // Keep the editor's finite choices away from standard editing/menu chords such
-        // as Command-S/Command-X and the app's Control-Option scope commands.
-        return (numbers + ["s", "x"]).map { KeyboardShortcutChord(key: $0) }
-            + numbers.map { KeyboardShortcutChord(key: $0, modifiers: .command) }
-            + numbers.map { KeyboardShortcutChord(key: $0, modifiers: [.command, .option]) }
+        let bare = ((0...9).map(String.init) + ["s", "x"]).map { KeyboardShortcutChord(key: $0) }
+        let keys = Array("abcdefghijklmnopqrstuvwxyz0123456789").map(String.init) + ["delete", "forwarddelete"]
+        let commandChords = (0..<16).map(KeyboardShortcutModifiers.init(rawValue:))
+            .filter { $0.contains(.command) }
+            .flatMap { modifiers in keys.map { KeyboardShortcutChord(key: $0, modifiers: modifiers) } }
+            .filter { reservation(for: $0) == nil }
+        let legacy = applicationBindings.map(\.chord)
+        let controlOption = keys.map { KeyboardShortcutChord(key: $0, modifiers: [.control, .option]) }
+        return Array(Set(bare + commandChords + controlOption + legacy)).sorted { $0.displayName < $1.displayName }
     }()
+
+    /// System text editing, window controls and fixed workspace navigation keep their keys.
+    static func reservation(for chord: KeyboardShortcutChord) -> String? {
+        let modifiers = chord.modifiers
+        if chord.key == "return" { return "Reserved for text entry and Caption advance shortcuts" }
+        if modifiers.contains(.command) {
+            if chord.key == "q" { return "Reserved for Quit and macOS session controls" }
+            if modifiers == .command && ["a", "c", "x", "v", "z", "w", "h", "m", "f"].contains(chord.key) {
+                return "Reserved for text editing, window controls or full screen"
+            }
+            if modifiers == [.command, .shift] && ["z", "v"].contains(chord.key) {
+                return "Reserved for Redo and Develop paste with crop"
+            }
+            if modifiers == [.command, .option] && ["w", "h", "m"].contains(chord.key) {
+                return "Reserved for macOS window controls"
+            }
+        }
+        return nil
+    }
+
+    static func canAssign(_ chord: KeyboardShortcutChord, to command: KeyboardShortcutCommand) -> Bool {
+        guard editableChordChoices.contains(chord) else { return false }
+        // Menu commands must not consume ordinary typing. Culling's bare-key input is focus-aware.
+        if command.isCulling {
+            return chord.key.count == 1 && (chord.modifiers.isEmpty || chord.modifiers.contains(.command))
+        }
+        return !chord.modifiers.isEmpty
+    }
 
     static func profile(for preset: KeyboardShortcutPreset) -> KeyboardShortcutProfile {
         switch preset {
         case .photoAgent:
-            KeyboardShortcutProfile(name: preset.displayName, bindings: photoAgentBindings)
+            KeyboardShortcutProfile(name: preset.displayName, bindings: photoAgentBindings + applicationBindings)
         case .photoMechanicLike:
-            KeyboardShortcutProfile(name: preset.displayName, bindings: photoMechanicLikeBindings)
+            KeyboardShortcutProfile(name: preset.displayName, bindings: photoMechanicLikeBindings + applicationBindings)
         case .bridgeLike:
-            KeyboardShortcutProfile(name: preset.displayName, bindings: bridgeLikeBindings)
+            KeyboardShortcutProfile(name: preset.displayName, bindings: bridgeLikeBindings + applicationBindings)
         case .custom:
-            KeyboardShortcutProfile(name: preset.displayName, bindings: photoAgentBindings)
+            KeyboardShortcutProfile(name: preset.displayName, bindings: photoAgentBindings + applicationBindings)
         }
     }
 
@@ -224,6 +504,10 @@ nonisolated enum KeyboardShortcutProfiles {
             KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "s")),
             KeyboardShortcutBinding(command: .labelTrash, chord: .init(key: "x")),
         ]
+        bindings += labelCommands.enumerated().map {
+            KeyboardShortcutBinding(command: $0.element,
+                chord: .init(key: String($0.offset), modifiers: .command))
+        }
         return bindings
     }()
 
@@ -287,7 +571,7 @@ final class KeyboardShortcutProfileRegistry {
     static let shared = KeyboardShortcutProfileRegistry()
 
     private struct Document: Codable {
-        var schemaVersion = 1
+        var schemaVersion = 2
         var selectedPreset: KeyboardShortcutPreset
         var customBindings: [KeyboardShortcutBinding]
     }
@@ -305,9 +589,13 @@ final class KeyboardShortcutProfileRegistry {
         self.storageKey = storageKey
         if let data = defaults.data(forKey: storageKey),
            let document = try? JSONDecoder().decode(Document.self, from: data),
-           document.schemaVersion == 1 {
+           (1...2).contains(document.schemaVersion) {
             selectedPreset = document.selectedPreset
             customBindings = document.customBindings
+            if document.schemaVersion == 1 {
+                let occupied = Set(customBindings.map(\.chord))
+                customBindings += KeyboardShortcutProfiles.applicationBindings.filter { !occupied.contains($0.chord) }
+            }
         } else {
             selectedPreset = .photoAgent
             customBindings = KeyboardShortcutProfiles.profile(for: .photoAgent).bindings
@@ -334,6 +622,38 @@ final class KeyboardShortcutProfileRegistry {
         customBindings.removeAll { $0.command == command }
         customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
         customBindings.sort { $0.command.rawValue < $1.command.rawValue }
+        persist()
+    }
+
+    /// Refuse occupied chords until the editor explicitly confirms reassignment.
+    /// Existing aliases remain available when adding another shortcut.
+    @discardableResult
+    func reassign(
+        _ chord: KeyboardShortcutChord,
+        to command: KeyboardShortcutCommand,
+        replacingConflicts: Bool = false
+    ) -> Bool {
+        guard KeyboardShortcutProfiles.canAssign(chord, to: command) else { return false }
+        let occupied = selectedProfile.bindings.contains { $0.chord == chord && $0.command != command }
+        guard !occupied || replacingConflicts else { return false }
+        if selectedPreset != .custom {
+            customBindings = selectedProfile.bindings
+            selectedPreset = .custom
+        }
+        // App menus have one key equivalent per command. Culling retains alternate keys,
+        // routed by the focus-aware workspaces as well as the native menu.
+        customBindings.removeAll { $0.chord == chord || (!command.isCulling && $0.command == command) }
+        customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
+        persist()
+        return true
+    }
+
+    func remove(_ chord: KeyboardShortcutChord, from command: KeyboardShortcutCommand) {
+        if selectedPreset != .custom {
+            customBindings = selectedProfile.bindings
+            selectedPreset = .custom
+        }
+        customBindings.removeAll { $0.command == command && $0.chord == chord }
         persist()
     }
 
@@ -494,4 +814,59 @@ func keyboardTextInputState(in window: NSWindow?) -> (
         responder is NSText || responder is NSTextView || client != nil,
         client?.hasMarkedText() ?? false
     )
+}
+
+
+extension KeyboardShortcutProfile {
+    /// Menu equivalents must remain safe during text entry. Bare culling keys stay
+    /// with the focus-aware browser router; only unambiguous Command chords reach menus.
+    nonisolated func menuChord(for action: KeyboardCullingAction) -> KeyboardShortcutChord? {
+        bindings.first { binding in
+            binding.command.action == action && binding.chord.modifiers.contains(.command)
+                && binding.chord.key.count == 1 && command(for: binding.chord) == binding.command
+        }?.chord
+    }
+}
+
+
+extension KeyboardShortcutChord {
+    nonisolated var swiftUIShortcut: KeyboardShortcut? {
+        let equivalent: KeyEquivalent
+        switch key {
+        case "delete": equivalent = .delete
+        case "forwarddelete": equivalent = .deleteForward
+        case "return": equivalent = .return
+        default:
+            guard key.count == 1, let character = key.first else { return nil }
+            equivalent = KeyEquivalent(character)
+        }
+        return KeyboardShortcut(equivalent, modifiers: modifiers.eventModifiers)
+    }
+
+}
+
+extension KeyboardShortcutProfile {
+    nonisolated func menuChord(for command: KeyboardShortcutCommand) -> KeyboardShortcutChord? {
+        guard !command.isCulling else { return nil }
+        return bindings.first { binding in
+            binding.command == command && !binding.chord.modifiers.isEmpty
+                && self.command(for: binding.chord) == command
+        }?.chord
+    }
+}
+
+
+extension KeyboardShortcutProfile {
+    /// This is a Develop-only compatibility gesture, superseded by any explicit binding.
+    nonisolated func hasDevelopForwardDeleteFallback(for chord: KeyboardShortcutChord) -> Bool {
+        chord.key == "forwarddelete" && !bindings.contains { $0.chord == chord }
+            && command(for: .init(key: "delete", modifiers: chord.modifiers)) == .removeOrResetSelectedEditLayer
+    }
+}
+
+
+extension KeyboardShortcutProfile {
+    nonisolated func menuShortcut(for command: KeyboardShortcutCommand?) -> KeyboardShortcut? {
+        command.flatMap { menuChord(for: $0)?.swiftUIShortcut }
+    }
 }

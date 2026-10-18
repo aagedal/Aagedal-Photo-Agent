@@ -51,6 +51,7 @@ struct CaptionWorkspaceView: View {
     @State private var pendingWriteAndNextURL: URL?
     @State private var captionAdvanceShortcuts = CaptionAdvanceShortcutRegistry.shared
     @State private var captionShortcutMonitor: Any?
+    @State private var captionKeyboardWindow = WorkspaceEventWindowReference()
     @State private var activeEditorField: MetadataFieldID?
     @State private var lastEditorField: MetadataFieldID?
     @State private var isEditorTransientPresented = false
@@ -212,6 +213,7 @@ struct CaptionWorkspaceView: View {
                 .disabled(isEditorTransitioning)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(WorkspaceEventWindowReader(reference: captionKeyboardWindow))
         .accessibilityIdentifier("caption.workspace")
         .onAppear {
             isWorkspaceActive = true
@@ -716,7 +718,6 @@ struct CaptionWorkspaceView: View {
                 Button("Previous", systemImage: "chevron.left") {
                     navigate(previous: true)
                 }
-                .keyboardShortcut("b", modifiers: .command)
                 .disabled(!session.canGoPrevious || isEditorTransitioning)
                 .focused($focusedAction, equals: .previous)
 
@@ -1113,7 +1114,10 @@ struct CaptionWorkspaceView: View {
     private func installCaptionShortcutMonitor() {
         guard captionShortcutMonitor == nil else { return }
         captionShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }
+            // Local event monitors see every app window. Settings/shortcut recording,
+            // other workspaces and sheets must retain their own Tab and advance keys.
+            guard isWorkspaceActive, captionKeyboardWindow.ownsEvent(in: event.window),
+                  !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }
             let inputState = keyboardTextInputState(in: event.window)
             let modifiers = KeyboardShortcutModifiers(event.modifierFlags)
             if event.keyCode == 48,

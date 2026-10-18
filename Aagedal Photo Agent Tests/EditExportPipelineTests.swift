@@ -186,6 +186,73 @@ struct EditExportPipelineTests {
         return (dir, source)
     }
 
+    @Test("Delivery rejects known metadata failures and keeps recoverable pixels",
+          arguments: [(true, false), (false, true), (true, true)])
+    func deliveryRejectsIncompleteMetadata(failures: (Bool, Bool)) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pending = IPTCMetadata(title: "Pending delivery headline", keywords: ["Oslo, Norway"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending),
+            for: source, in: dir)
+        let sourceBytes = try Data(contentsOf: source)
+        let output = dir.appendingPathComponent("delivery")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let engine = ExportFailureEngine(failCopy: failures.0, failOverlay: failures.1)
+        let tracker = MetadataFailureTracker()
+        var authorizedURLs: [URL] = []
+        do {
+            let url = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+                kind: .jpeg, outputFolder: output, folderURL: dir,
+                writeEngine: engine, failureTracker: tracker)
+            authorizedURLs.append(url)
+            Issue.record("Metadata failure must prevent delivery authorization")
+        } catch let error as ExportMetadataIncompleteError {
+            #expect(error.copyFailed == failures.0)
+            #expect(error.overlayFailed == failures.1)
+            #expect(FileManager.default.fileExists(atPath: error.renderedURL.path))
+            let image = try #require(CGImageSourceCreateWithURL(error.renderedURL as CFURL, nil))
+            #expect(CGImageSourceCreateImageAtIndex(image, 0, nil) != nil)
+        }
+        #expect(authorizedURLs.isEmpty)
+        #expect(await tracker.metadataCopyFailures == (failures.0 ? [source.lastPathComponent] : []))
+        #expect(await tracker.sidecarOverlayFailures == (failures.1 ? [source.lastPathComponent] : []))
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(MetadataSidecarService().loadSidecar(for: source, in: dir)?.metadata.title == pending.title)
+
+        // Local exports preserve the same useful pixels and report failures to their caller.
+        let localTracker = MetadataFailureTracker()
+        let local = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir,
+            writeEngine: engine, failureTracker: localTracker)
+        #expect(FileManager.default.fileExists(atPath: local.path))
+        #expect(await localTracker.metadataCopyFailures.count == (failures.0 ? 1 : 0))
+        #expect(await localTracker.sidecarOverlayFailures.count == (failures.1 ? 1 : 0))
+    }
+
+    @Test("An earlier same-name batch failure does not reject a metadata-complete delivery")
+    func deliveryUsesOnlyCurrentItemFailures() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pending = IPTCMetadata(title: "Ready for delivery", keywords: ["Oslo, Norway", "ready"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending),
+            for: source, in: dir)
+        let output = dir.appendingPathComponent("delivery")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        await tracker.recordCopyFailure(source.lastPathComponent)
+        await tracker.recordOverlayFailure(source.lastPathComponent)
+        let rendered = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(actual.title == pending.title)
+        #expect(actual.keywords == pending.keywords)
+        #expect(await tracker.metadataCopyFailures.count == 1)
+        #expect(await tracker.sidecarOverlayFailures.count == 1)
+    }
+
     /// Creates a raster TIFF carrying a Sony Make tag. SwiftMediaMetadata 3 must keep the
     /// unambiguous `.tiff` URL classified as TIFF rather than treating camera Make as proof of ARW.
     private func makeSonyTIFFWorkspace() throws -> (dir: URL, source: URL) {
@@ -361,6 +428,148 @@ struct EditExportPipelineTests {
 
         #expect(await tracker.sidecarOverlayFailures.isEmpty)
         #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).localizedTitles == nil)
+    }
+
+    @Test("Pending app drafts override existing XMP on export, including descriptive clears",
+          arguments: [false, true])
+    func pendingDraftWinsOverExistingXMP(clearsDescription: Bool) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Embedded", .description: "Embedded caption",
+                                      .subject: "embedded"], to: [source])
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(
+            title: "Saved XMP", description: "Saved XMP caption", keywords: ["saved"]
+        ), for: source)
+        let pending = IPTCMetadata(title: clearsDescription ? nil : "Pending headline",
+            localizedTitles: clearsDescription ? [] : nil,
+            description: clearsDescription ? nil : "Pending caption",
+            keywords: clearsDescription ? [] : ["pending"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending
+        ), for: source, in: dir)
+        let sourceBytes = try Data(contentsOf: source)
+        let xmpURL = XMPSidecarService().sidecarURL(for: source)
+        let xmpBytes = try Data(contentsOf: xmpURL)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir, writeEngine: engine,
+            failureTracker: tracker)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect((actual.title ?? "") == (pending.title ?? ""))
+        #expect((actual.description ?? "") == (pending.description ?? ""))
+        #expect(actual.keywords == pending.keywords)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(try Data(contentsOf: xmpURL) == xmpBytes)
+        #expect(MetadataSidecarService().loadSidecar(for: source, in: dir)?.pendingChanges == true)
+    }
+
+    @Test("Edited exports preserve exact IPTC list values and clears from JSON and XMP",
+          arguments: [false, true], ["jpeg", "png", "tiff"])
+    func renderedListsRemainLossless(usesJSON: Bool, format: String) async throws {
+        for clearsLists in [false, true] {
+            try await assertRenderedLists(usesJSON: usesJSON, clearsLists: clearsLists, format: format)
+        }
+    }
+
+    private func assertRenderedLists(usesJSON: Bool, clearsLists: Bool, format: String) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Embedded", .subject: "old keyword",
+            .personInImage: "Old Person", .organisationInImageName: "Old Organisation",
+            .organisationInImageCode: "OLD"], to: [source])
+        let expected = IPTCMetadata(title: "Edited caption",
+            keywords: clearsLists ? [] : ["Washington, D.C.", "Côte d’Ivoire", "Norge, Oslo"],
+            personShown: clearsLists ? [] : ["Doe, Jane", "Ødegård, Åse"],
+            organisationsShownNames: clearsLists ? [] : ["Acme, Inc.", "Photo, News"],
+            organisationsShownCodes: clearsLists ? [] : ["Agency, NO", "Agency, US"])
+        if usesJSON {
+            try MetadataSidecarService().saveSidecar(MetadataSidecar(
+                sourceFile: source.lastPathComponent, pendingChanges: true, metadata: expected
+            ), for: source, in: dir)
+        } else {
+            try XMPSidecarService().saveSidecar(metadata: expected, for: source)
+        }
+        let sourceBytes = try Data(contentsOf: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let tracker = MetadataFailureTracker()
+        // Develop Save and ordinary format export share .format; Save As uses the same overlay.
+        let kind: RenderKind = switch format {
+        case "png": .saveAs(.png)
+        default: .format
+        }
+        var configuration = collisionSafeJPEGConfiguration
+        if format == "tiff" { configuration.sdrFormat = .tiff }
+        let rendered = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: settings,
+            kind: kind, outputFolder: output, folderURL: dir, writeEngine: engine,
+            failureTracker: tracker, configuration: configuration)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        let physical = try SwiftMediaMetadata.readMetadata(from: rendered)
+        #expect(actual.title == expected.title)
+        #expect(actual.keywords == expected.keywords)
+        #expect(actual.personShown == expected.personShown)
+        #expect(actual.organisationsShownNames == expected.organisationsShownNames)
+        #expect(actual.organisationsShownCodes == expected.organisationsShownCodes)
+        if format != "png" { #expect(physical.iptc.keywords == expected.keywords) }
+        #expect((physical.xmp?.subject ?? []) == expected.keywords)
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        if usesJSON {
+            let retained = try #require(MetadataSidecarService().loadSidecar(for: source, in: dir))
+            #expect(retained.pendingChanges)
+            #expect(retained.metadata.keywords == expected.keywords)
+        } else {
+            #expect(XMPSidecarService().loadSidecar(for: source)?.keywords == expected.keywords)
+        }
+    }
+
+    @Test("Typed list writes preserve field scope, explicit clears and legacy text parsing")
+    func typedListFieldScope() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Keep title", .personInImage: "Keep person",
+            .organisationInImageName: "Keep organisation"], to: [source])
+        let intended = IPTCMetadata(keywords: ["Washington, D.C."], personShown: ["Unselected person"])
+        try await engine.writeFields([.subject: "ignored legacy transport"], to: [source],
+            structuredData: StructuredWriteData(listValues: EditorialListWriteData(metadata: intended)))
+        let actual = try await SwiftExifReadService().readFullMetadata(url: source)
+        #expect(actual.keywords == intended.keywords)
+        #expect(actual.title == "Keep title")
+        #expect(actual.personShown == ["Keep person"])
+        #expect(actual.organisationsShownNames == ["Keep organisation"])
+        try await engine.writeFields([.subject: "stale value"], to: [source],
+            structuredData: StructuredWriteData(listValues: EditorialListWriteData(metadata: IPTCMetadata())))
+        #expect(try SwiftMediaMetadata.readMetadata(from: source).iptc.keywords.isEmpty)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).keywords.isEmpty)
+        try await engine.writeFields([.subject: "one, two"], to: [source])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).keywords == ["one", "two"])
+    }
+
+    @Test("Complete pending writes keep legacy IPTC and XMP keyword boundaries identical")
+    func completeRecordListCarriersAgree() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let intended = IPTCMetadata(title: "Complete editorial record",
+            keywords: ["Washington, D.C.", "Côte d’Ivoire"], personShown: ["Doe, Jane"],
+            organisationsShownNames: ["Acme, Inc."], organisationsShownCodes: ["Agency, NO"])
+        let receipt = try await SwiftExifWriteEngine().writePendingMetadata(intended, to: source,
+            validatePreparedIntent: {})
+        let physical = try SwiftMediaMetadata.readMetadata(from: source)
+        #expect(physical.iptc.keywords == intended.keywords)
+        #expect(physical.xmp?.subject == intended.keywords)
+        #expect(receipt.metadata.keywords == intended.keywords)
+        #expect(receipt.metadata.personShown == intended.personShown)
+        #expect(receipt.metadata.organisationsShownNames == intended.organisationsShownNames)
+        #expect(receipt.metadata.organisationsShownCodes == intended.organisationsShownCodes)
     }
 
     @Test("Rendered sidecar overlay preserves explicit label clears and missing-label inheritance", arguments: [false, true], [false, true])
@@ -715,7 +924,7 @@ struct EditExportPipelineTests {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         let tracker = MetadataFailureTracker()
-        let rendered = try await EditExportPipeline.renderItem(
+        let rendered = try await EditExportPipeline.renderForDelivery(
             sourceURL: source, cameraRaw: nil, kind: .jpeg,
             outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
             writeEngine: engine, failureTracker: tracker)
@@ -3807,5 +4016,598 @@ struct FFmpegLocalImageBoundaryTests {
                 try FFmpegService.localImageInvocation(arguments: arguments)
             }
         }
+    }
+}
+
+@Suite("Export IPTC selection worker")
+struct ExportIPTCSelectionTests {
+    @Test("Pending app drafts suppress older physical carriers, including empty and partial drafts",
+          arguments: [IPTCMetadata(), IPTCMetadata(rating: 3), IPTCMetadata(title: "Pending")])
+    func pendingDraftPrecedence(metadata: IPTCMetadata) async {
+        let probe = ExportIPTCSelectionProbe(draft: metadata, xmp: IPTCMetadata(title: "Older XMP"))
+        let result = await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        #expect(result == .pendingDraft(metadata))
+        #expect(probe.calls == ["draft"])
+    }
+
+    @Test("Saved app history does not hide the authoritative physical XMP record")
+    func savedDraftFallsThroughToXMP() async {
+        let metadata = IPTCMetadata(title: "Saved XMP")
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Old history"),
+            xmp: metadata, draftPending: false)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .xmp(metadata))
+        #expect(probe.calls == ["draft", "xmp", "embedded", "reconcile"])
+    }
+
+    @Test("Develop-only XMP and missing carriers avoid embedded reads and reconciliation")
+    func noDescriptiveRecord() async {
+        var develop = IPTCMetadata()
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        develop.cameraRaw = settings
+        let probe = ExportIPTCSelectionProbe(xmp: develop)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .noPendingEdits)
+        #expect(probe.calls == ["draft", "xmp"])
+        let absent = ExportIPTCSelectionProbe()
+        #expect(await absent.service.select(sourceURL: absent.sourceURL, folderURL: nil) == .noPendingEdits)
+        #expect(absent.calls == ["xmp"])
+    }
+
+    @Test("XMP selection preserves conflict and embedded-read-failure policy", arguments: [false, true])
+    func reconciliationPolicy(stale: Bool) async {
+        let metadata = IPTCMetadata(title: "XMP")
+        let probe = ExportIPTCSelectionProbe(xmp: metadata, embedded: stale ? IPTCMetadata(title: "New embedded") : nil,
+            verdict: stale ? .fileNewerConflict : .sidecarMaster)
+        let result = await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        #expect(result == (stale ? .staleSidecarSkipped : .xmp(metadata)))
+        #expect(probe.calls == ["draft", "xmp", "embedded", "reconcile"])
+    }
+
+    @Test("Rating and label-only XMP avoids unnecessary source-container reads",
+          arguments: [IPTCMetadata(rating: 3), IPTCMetadata(label: "Red"), IPTCMetadata(label: "")])
+    func partialXMPDoesNotReadEmbedded(metadata: IPTCMetadata) async {
+        let probe = ExportIPTCSelectionProbe(xmp: metadata)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .xmp(metadata))
+        #expect(probe.calls == ["draft", "xmp"])
+    }
+
+    @MainActor
+    @Test("Selection runs on its retained worker while MainActor stays responsive and reads serialize")
+    func workerContextAndSerialization() async throws {
+        let marker = UUID()
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Pending"), blocksFirstDraft: true)
+        let service = probe.service
+        let first = Task { @MainActor in
+            await ExportIPTCSelectionContext.$marker.withValue(marker) {
+                await service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+            }
+        }
+        defer { probe.releaseDraft(); first.cancel() }
+        try await waitForSelection { probe.calls == ["draft"] }
+        // This assertion executes on MainActor while the filesystem callback is blocked.
+        #expect(!probe.completedFirstDraft)
+        let second = Task { @MainActor in
+            await ExportIPTCSelectionContext.$marker.withValue(marker) {
+                await service.select(sourceURL: probe.sourceURL.appendingPathExtension("other"), folderURL: probe.folderURL)
+            }
+        }
+        defer { second.cancel() }
+        await Task.yield()
+        #expect(probe.calls == ["draft"])
+        probe.releaseDraft()
+        #expect(await first.value == .pendingDraft(IPTCMetadata(title: "Pending")))
+        #expect(await second.value == .pendingDraft(IPTCMetadata(title: "Pending")))
+        #expect(probe.calls == ["draft", "draft"])
+        #expect(probe.observedMarkers == [marker, marker])
+        #expect(probe.executedOnWorker)
+        #expect(!probe.executedOnMain)
+        #expect(!probe.gateTimedOut)
+    }
+
+    @Test("Selection waits for an admitted source transaction before reading its draft")
+    func orderedSourceLease() async throws {
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Before commit"))
+        let service = probe.service
+        let release = AsyncStream<Void>.makeStream()
+        let owner = Task {
+            await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: probe.sourceURL)) {
+                probe.markLeaseStarted()
+                for await _ in release.stream { break }
+                probe.replaceDraft(IPTCMetadata(title: "Committed"))
+            }
+        }
+        defer { release.continuation.yield(()); release.continuation.finish(); owner.cancel() }
+        try await waitForSelection { probe.leaseStarted }
+        let selection = Task { await service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) }
+        defer { selection.cancel() }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(probe.calls.isEmpty)
+        release.continuation.yield(())
+        release.continuation.finish()
+        await owner.value
+        #expect(await selection.value == .pendingDraft(IPTCMetadata(title: "Committed")))
+    }
+
+    @Test("A cancelled post-render caller still selects metadata rather than reporting no edits")
+    func cancelledCallerStillSelects() async {
+        let metadata = IPTCMetadata(title: "Pending after render")
+        let probe = ExportIPTCSelectionProbe(draft: metadata)
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        }.value
+        #expect(result == .pendingDraft(metadata))
+        #expect(probe.calls == ["draft"])
+    }
+
+    @Test("Selection releases the source lease before writing metadata onto that same URL")
+    func sameSourceDestinationCompletes() async throws {
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Selected caption"))
+        let (directory, source) = try selectionWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = probe.service
+        let operation = Task {
+            let result = await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: source,
+                folderURL: directory, writeEngine: SwiftExifWriteEngine(), service: service)
+            probe.recordOutcome(result)
+        }
+        defer { operation.cancel() }
+        // A regression that retains the source lease would otherwise hang the test process.
+        try await waitForSelection { probe.outcome != nil }
+        guard let outcome = probe.outcome, case .applied = outcome else {
+            Issue.record("Expected completed overlay"); return
+        }
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Selected caption")
+        await operation.value
+    }
+
+    @Test("Empty drafts stop fallback and cancelled metadata writes retain their failure outcome",
+          arguments: [false, true])
+    func postRenderOutcomePolicy(cancelled: Bool) async throws {
+        let (directory, source) = try selectionWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let draft = cancelled ? IPTCMetadata(title: "Pending") : IPTCMetadata()
+        let probe = ExportIPTCSelectionProbe(draft: draft, xmp: IPTCMetadata(title: "Older XMP"))
+        let service = probe.service
+        let outcome = await Task {
+            if cancelled { withUnsafeCurrentTask { $0?.cancel() } }
+            return await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: source,
+                folderURL: directory, writeEngine: SwiftExifWriteEngine(), service: service)
+        }.value
+        if cancelled {
+            guard case .failed = outcome else { Issue.record("Cancelled metadata write must remain a failure"); return }
+        } else {
+            guard case .noPendingEdits = outcome else { Issue.record("Empty pending draft must stop XMP fallback"); return }
+        }
+        #expect(probe.calls == ["draft"])
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    private func selectionWorkspace() throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("selection-file-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("photo.jpg")
+        let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(image.representation(using: .jpeg, properties: [:])).write(to: source)
+        return (directory, source)
+    }
+
+    private func waitForSelection(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !predicate() {
+            guard ContinuousClock.now < deadline else { throw ExportIPTCSelectionProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+private enum ExportIPTCSelectionProbeError: Error { case timedOut }
+
+private nonisolated enum ExportIPTCSelectionContext {
+    @TaskLocal static var marker: UUID?
+}
+
+private nonisolated final class ExportIPTCSelectionProbe: @unchecked Sendable {
+    let folderURL = URL(fileURLWithPath: "/virtual/selection-\(UUID())", isDirectory: true)
+    var sourceURL: URL { folderURL.appendingPathComponent("source.jpg") }
+    let queue = DispatchSerialQueue(label: "test.export-iptc-selection")
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private var draft: IPTCMetadata?
+    private let xmp: IPTCMetadata?
+    private let embedded: IPTCMetadata?
+    private let verdict: SidecarReconciliation.Verdict
+    private let blocksFirstDraft: Bool
+    private let draftPending: Bool
+    private var storedCalls: [String] = []
+    private var storedMarkers: [UUID?] = []
+    private var storedOnWorker = true
+    private var storedOnMain = false
+    private var storedGateTimedOut = false
+    private var storedDraftCompleted = false
+    private var storedLeaseStarted = false
+    private var storedOutcome: SidecarIPTCOverlay.Outcome?
+
+    init(draft: IPTCMetadata? = nil, xmp: IPTCMetadata? = nil, embedded: IPTCMetadata? = nil,
+         verdict: SidecarReconciliation.Verdict = .sidecarMaster, blocksFirstDraft: Bool = false,
+         draftPending: Bool = true) {
+        self.draft = draft; self.xmp = xmp; self.embedded = embedded
+        self.verdict = verdict; self.blocksFirstDraft = blocksFirstDraft; self.draftPending = draftPending
+    }
+
+    var service: ExportIPTCSelectionService {
+        ExportIPTCSelectionService(access: ExportIPTCSelectionAccess(
+            loadDraft: { [self] source, _ in
+                record("draft")
+                let shouldBlock = lock.withLock { storedCalls.filter { $0 == "draft" }.count == 1 && blocksFirstDraft }
+                if shouldBlock {
+                    let timedOut = gate.wait(timeout: .now() + 10) != .success
+                    lock.withLock { storedGateTimedOut = timedOut }
+                }
+                return lock.withLock {
+                    storedDraftCompleted = true
+                    return draft.map { MetadataSidecar(sourceFile: source.lastPathComponent, pendingChanges: draftPending, metadata: $0) }
+                }
+            },
+            loadXMP: { [self] _ in record("xmp"); return xmp },
+            readEmbedded: { [self] _ in record("embedded"); return embedded },
+            reconcile: { [self] _, capturedEmbedded, capturedXMP in
+                record("reconcile")
+                #expect(capturedEmbedded == embedded)
+                #expect(capturedXMP == xmp)
+                return verdict
+            }
+        ), filesystemQueue: queue)
+    }
+
+    private func record(_ call: String) {
+        lock.withLock {
+            storedCalls.append(call)
+            storedMarkers.append(ExportIPTCSelectionContext.marker)
+            storedOnWorker = storedOnWorker && queue.isIsolatingCurrentContext() == true
+            storedOnMain = storedOnMain || Thread.isMainThread
+        }
+    }
+    var calls: [String] { lock.withLock { storedCalls } }
+    var observedMarkers: [UUID?] { lock.withLock { storedMarkers } }
+    var executedOnWorker: Bool { lock.withLock { storedOnWorker } }
+    var executedOnMain: Bool { lock.withLock { storedOnMain } }
+    var completedFirstDraft: Bool { lock.withLock { storedDraftCompleted } }
+    var gateTimedOut: Bool { lock.withLock { storedGateTimedOut } }
+    var leaseStarted: Bool { lock.withLock { storedLeaseStarted } }
+    var outcome: SidecarIPTCOverlay.Outcome? { lock.withLock { storedOutcome } }
+    func releaseDraft() { gate.signal() }
+    func markLeaseStarted() { lock.withLock { storedLeaseStarted = true } }
+    func replaceDraft(_ metadata: IPTCMetadata) { lock.withLock { draft = metadata } }
+    func recordOutcome(_ outcome: SidecarIPTCOverlay.Outcome) { lock.withLock { storedOutcome = outcome } }
+}
+
+/// Injects failures at the real copy/overlay boundaries; all successful operations use
+/// the production backend and produce real, readable image metadata.
+private nonisolated final class ExportFailureEngine: MetadataWriteEngine {
+    let failCopy: Bool
+    let failOverlay: Bool
+    let underlying = SwiftExifWriteEngine()
+    init(failCopy: Bool, failOverlay: Bool) {
+        self.failCopy = failCopy
+        self.failOverlay = failOverlay
+    }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await underlying.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        if failOverlay { throw CocoaError(.fileWriteUnknown) }
+        try await underlying.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        try await underlying.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
+        try await underlying.writeRating(rating, to: urls)
+    }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
+        try await underlying.writeLabel(label, to: urls)
+    }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
+        try await underlying.writeOrientation(orientation, to: urls)
+    }
+    func stripIPTCAndXMP(from urls: [URL]) async throws {
+        try await underlying.stripIPTCAndXMP(from: urls)
+    }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        if failCopy { throw CocoaError(.fileWriteUnknown) }
+        try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
+}
+
+@Suite("Edited export source preservation")
+struct EditedExportSourcePreservationTests {
+    @Test("Delivery format export beside its JPEG source allocates a distinct file and preserves original metadata")
+    func deliveryBesideSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let tracker = MetadataFailureTracker()
+        let output = try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .format, outputFolder: directory, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker, configuration: configuration)
+        #expect(output.lastPathComponent == "photo 2.jpg")
+        #expect(output.standardizedFileURL != source.standardizedFileURL)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Original headline")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).description == "Original caption")
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+    }
+
+    @Test("Replacement refuses its own source before either SDR or HDR encoding", arguments: [false, true])
+    func replacementRejectsSource(isHDR: Bool) async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        do {
+            _ = try await EditedImageRenderer.render(from: source, cameraRaw: nil, isHDR: isHDR,
+                outputFolder: directory, configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("Source-alias encoding must be refused")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).description == "Original caption")
+    }
+
+    @Test("Legacy JPEG export also rejects an in-place encode")
+    func legacyJPEGRejectsSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        do {
+            try await EditedImageRenderer.renderJPEG(from: source, cameraRaw: nil, outputFolder: directory)
+            Issue.record("Legacy JPEG must not replace its source")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    @Test("Existing file, hard-link and directory-symlink aliases are refused or safely numbered",
+          arguments: ["symlink", "hardlink", "directory-symlink"])
+    func existingAliases(alias: String) async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let outputFolder = directory.appendingPathComponent("output", isDirectory: true)
+        if alias == "directory-symlink" {
+            try FileManager.default.createSymbolicLink(at: outputFolder, withDestinationURL: directory)
+        } else {
+            try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+            let target = outputFolder.appendingPathComponent("photo.jpg")
+            if alias == "hardlink" { try FileManager.default.linkItem(at: source, to: target) }
+            else { try FileManager.default.createSymbolicLink(at: target, withDestinationURL: source) }
+        }
+        let aliasURL = outputFolder.appendingPathComponent("photo.jpg")
+        do {
+            _ = try await EditedImageRenderer.render(from: source, cameraRaw: nil, isHDR: false,
+                outputFolder: outputFolder, configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("An existing alias must not be encoded over")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: aliasURL) == original)
+        let tracker = MetadataFailureTracker()
+        let safe = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+            kind: .format, outputFolder: outputFolder, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker, configuration: configuration)
+        #expect(safe.lastPathComponent == "photo 2.jpg")
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: aliasURL) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: safe).title == "Original headline")
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+    }
+
+    @Test("Explicit replacement of an independent output remains supported")
+    func independentReplacement() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let outputFolder = directory.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let expected = outputFolder.appendingPathComponent("photo.jpg")
+        try Data("older independent rendition".utf8).write(to: expected)
+        let output = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .format, outputFolder: outputFolder, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+            configuration: configuration, collisionPolicy: .replaceExisting)
+        #expect(output == expected)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).title == "Original headline")
+    }
+
+    @Test("Save As retains numbered same-folder naming and preserves source bytes")
+    func saveAsBesideSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let output = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .saveAs(.jpeg), outputFolder: directory, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(output.lastPathComponent == "photo 2.jpg")
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).description == "Original caption")
+    }
+
+    @Test("Concurrent exports keep their own IPTC while a prior overlay is still admitted",
+          arguments: ["format", "jpeg", "saveAs"])
+    func concurrentExportsOwnTheirMetadata(secondKind: String) async throws {
+        let (firstDirectory, firstSource) = try await workspace()
+        let (secondDirectory, secondSource) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: firstDirectory); try? FileManager.default.removeItem(at: secondDirectory) }
+        let firstBytes = try Data(contentsOf: firstSource)
+        let secondBytes = try Data(contentsOf: secondSource)
+        let output = firstDirectory.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let firstMetadata = IPTCMetadata(title: "First pending", keywords: ["First, place"])
+        let secondMetadata = IPTCMetadata(title: "Second pending", keywords: ["Second, place"])
+        for (source, directory, metadata) in [(firstSource, firstDirectory, firstMetadata), (secondSource, secondDirectory, secondMetadata)] {
+            try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: source.lastPathComponent,
+                pendingChanges: true, metadata: metadata), for: source, in: directory)
+        }
+        let gate = ExportWriteGate(phase: .overlay)
+        let engine = GatedExportWriteEngine(gate: gate)
+        let first = Task { try await EditExportPipeline.renderForDelivery(sourceURL: firstSource,
+            cameraRaw: nil, kind: .format, outputFolder: output, folderURL: firstDirectory,
+            writeEngine: engine, failureTracker: MetadataFailureTracker(), configuration: configuration) }
+        let watchdog = gate.watchdog()
+        defer { gate.release(); first.cancel(); watchdog.cancel() }
+        let firstOutput = try await gate.waitForDestination()
+        let beforeReplacement = try Data(contentsOf: firstOutput)
+        do {
+            _ = try await EditExportPipeline.renderItem(sourceURL: secondSource, cameraRaw: nil,
+                kind: .format, outputFolder: output, folderURL: secondDirectory,
+                writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+                configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("Replacement must not enter another artifact's pending IPTC stage")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        #expect(try Data(contentsOf: firstOutput) == beforeReplacement)
+        let kind: RenderKind = secondKind == "format" ? .format : secondKind == "jpeg" ? .jpeg : .saveAs(.jpeg)
+        let secondOutput = try await EditExportPipeline.renderForDelivery(sourceURL: secondSource,
+            cameraRaw: nil, kind: kind, outputFolder: output, folderURL: secondDirectory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(), configuration: configuration)
+        #expect(!gate.wasReleased && !gate.timedOut)
+        #expect(firstOutput.lastPathComponent == "photo.jpg")
+        #expect(secondOutput.lastPathComponent == "photo 2.jpg")
+        let actualSecond = try await SwiftExifReadService().readFullMetadata(url: secondOutput)
+        #expect(actualSecond.title == secondMetadata.title && actualSecond.keywords == secondMetadata.keywords)
+        gate.release()
+        #expect(try await first.value == firstOutput)
+        let actualFirst = try await SwiftExifReadService().readFullMetadata(url: firstOutput)
+        #expect(actualFirst.title == firstMetadata.title && actualFirst.keywords == firstMetadata.keywords)
+        #expect(try Data(contentsOf: firstSource) == firstBytes)
+        #expect(try Data(contentsOf: secondSource) == secondBytes)
+        // A completed artifact may still be explicitly replaced; ownership is not leaked.
+        let replacement = try await EditExportPipeline.renderItem(sourceURL: secondSource,
+            cameraRaw: nil, kind: .format, outputFolder: output, folderURL: secondDirectory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+            configuration: configuration, collisionPolicy: .replaceExisting)
+        #expect(replacement == firstOutput)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: replacement).title == secondMetadata.title)
+    }
+
+    @Test("Cancel and restart cannot reuse a JPEG filename still owned by detached rendering")
+    func cancelledJPEGProducerKeepsItsName() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let original = try Data(contentsOf: source)
+        let gate = ExportWriteGate(phase: .copy)
+        let first = Task { try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .jpeg, outputFolder: output, folderURL: directory,
+            writeEngine: GatedExportWriteEngine(gate: gate), failureTracker: MetadataFailureTracker()) }
+        let watchdog = gate.watchdog()
+        defer { gate.release(); first.cancel(); watchdog.cancel() }
+        let firstOutput = try await gate.waitForDestination()
+        first.cancel()
+        let restarted = try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .jpeg, outputFolder: output, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(!gate.wasReleased && !gate.timedOut)
+        #expect(firstOutput.lastPathComponent == "photo.jpg")
+        #expect(restarted.lastPathComponent == "photo 2.jpg")
+        gate.release()
+        _ = try await first.value
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: restarted).title == "Original headline")
+        #expect(FileManager.default.fileExists(atPath: firstOutput.path))
+    }
+
+    private var configuration: AdvancedExportConfiguration {
+        AdvancedExportConfiguration(sdrFormat: .jpeg, sdrQuality: 0.92, sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap, hdrQuality: 0.92, hdrGamut: .displayP3,
+            tiffCompression: .lzw, resolutionLimit: .original,
+            locationMode: .sameAsOriginal, customSubfolderName: "Exports")
+    }
+
+    private func workspace() async throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("export-source-safety-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("photo.jpg")
+        let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(image.representation(using: .jpeg, properties: [:])).write(to: source)
+        try await SwiftExifWriteEngine().writeFields([.headline: "Original headline", .description: "Original caption"], to: [source])
+        return (directory, source)
+    }
+}
+
+private nonisolated final class ExportWriteGate: @unchecked Sendable {
+    enum Phase: Sendable, Equatable { case copy, overlay }
+    let phase: Phase
+    private let lock = NSLock()
+    private var destination: URL?
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private var expired = false
+    init(phase: Phase) { self.phase = phase }
+    var wasReleased: Bool { lock.withLock { released } }
+    var timedOut: Bool { lock.withLock { expired } }
+    func block(_ url: URL) async {
+        await withCheckedContinuation { value in
+            let alreadyReleased = lock.withLock {
+                destination = url
+                if released { return true }
+                continuation = value
+                return false
+            }
+            if alreadyReleased { value.resume() }
+        }
+    }
+    func release(timedOut: Bool = false) {
+        let value = lock.withLock {
+            guard !released else { return Optional<CheckedContinuation<Void, Never>>.none }
+            released = true
+            expired = timedOut
+            let value = continuation
+            continuation = nil
+            return value
+        }
+        value?.resume()
+    }
+    func waitForDestination() async throws -> URL {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            if let result = lock.withLock({ destination }) { return result }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw CocoaError(.userCancelled)
+    }
+    func watchdog() -> Task<Void, Never> {
+        Task.detached { [self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            release(timedOut: true)
+        }
+    }
+}
+
+private nonisolated final class GatedExportWriteEngine: MetadataWriteEngine {
+    let gate: ExportWriteGate
+    let underlying = SwiftExifWriteEngine()
+    init(gate: ExportWriteGate) { self.gate = gate }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await underlying.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        if gate.phase == .overlay, let destination = urls.first { await gate.block(destination) }
+        try await underlying.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        try await underlying.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws { try await underlying.writeRating(rating, to: urls) }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws { try await underlying.writeLabel(label, to: urls) }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws { try await underlying.writeOrientation(orientation, to: urls) }
+    func stripIPTCAndXMP(from urls: [URL]) async throws { try await underlying.stripIPTCAndXMP(from: urls) }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        if gate.phase == .copy { await gate.block(destination) }
+        try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
     }
 }

@@ -101,7 +101,7 @@ struct ApplicationTerminationFlushCoordinatorTests {
         let queue = CaptionDraftPersistenceQueue(label: "caption-termination-test.retry")
         let persistence = TerminationPersistenceGate()
         queue.enqueue { try persistence.attempt() }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
 
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
         let owner = UUID()
@@ -116,12 +116,12 @@ struct ApplicationTerminationFlushCoordinatorTests {
         } catch {
             #expect(error.localizedDescription == InjectedTerminationFailure.sidecar.localizedDescription)
         }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(editorCaptures == 1)
 
         persistence.shouldFail = false
         try await operation.flush()
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(editorCaptures == 1)
         #expect(persistence.attempts == 3)
     }
@@ -145,7 +145,7 @@ struct ApplicationTerminationFlushCoordinatorTests {
         #expect(!flush.isCancelled)
         release.signal()
         try await flush.value
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
     }
 
     @Test("Transient presentation restores the owning workspace focus only when requested")

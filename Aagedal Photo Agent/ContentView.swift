@@ -3178,7 +3178,7 @@ struct ContentView: View {
 
                 do {
                     // Step 1: Render + copy source metadata + overlay pending IPTC edits
-                    let renderedURL = try await EditExportPipeline.renderItem(
+                    let renderedURL = try await EditExportPipeline.renderForDelivery(
                         sourceURL: image.url, cameraRaw: cameraRaw, kind: .format,
                         outputFolder: outputFolder, folderURL: folderURL,
                         writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
