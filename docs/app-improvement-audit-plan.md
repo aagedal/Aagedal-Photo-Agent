@@ -1,5 +1,14 @@
 # App improvement audit plan
 
+**Concurrent export ownership (2026-10-18):** Numbered destinations use exclusive creation;
+path/symlink/inode claims prevent concurrent replacement through pending IPTC overlay and artifact
+finalization. JPEG delivery returns its actual allocated URL, isolating cancelled detached renders
+from restarted uploads. Independent outputs remain concurrent, and cleanup is awaited off MainActor.
+The final 4,370-test regression passes (4,368 passed, two existing skips, zero failures), including
+real-file exact-IPTC overlap/cancellation and blocked-cleanup responsiveness cases; repository
+validation passes. Native, storage-performance, FTP generation-state and signed-release gates
+remain open. See the [dated continuation](plan-status-export-reservations-continuation-2026-10-18.md).
+
 **Export originals and Develop focus loss (2026-10-18):** Format delivery uses numbered
 collision handling beside originals; renderer preflights refuse existing source aliases before
 encoding, including symlinks and hard links. Independent output replacement remains available.

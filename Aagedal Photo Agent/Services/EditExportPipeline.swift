@@ -441,99 +441,113 @@ enum EditExportPipeline {
             return renderedURL
         }
 
-        let bakedCameraRaw: CameraRawSettings?
-        switch kind {
-        case .rawJXL16, .rawTIFF16:
-            // RAW archives intentionally ignore the live develop stack. The renderer
-            // performs only the selected decode, so do not document any Camera Raw
-            // settings as baked into the output metadata.
-            bakedCameraRaw = nil
-        case .format, .saveAs, .jpeg, .rawDNG:
-            bakedCameraRaw = cameraRaw
-        }
-        let metadataCameraRaw = bakedCameraRaw
-        let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
-        // Keep the decision per item. A shared batch tracker may already contain failures
-        // from another image (including one with the same basename in a different folder).
-        let itemFailures = MetadataFailureTracker()
-        let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-            do {
-                try await writeEngine.copyMetadataToRenderedFile(
-                    from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
-            } catch {
-                await failureTracker.recordCopyFailure(src.lastPathComponent)
-                await itemFailures.recordCopyFailure(src.lastPathComponent)
-            }
-        }
+        // The renderer owns encoding, but pending IPTC and finalization still mutate the
+        // destination afterward. Keep its name claimed until the complete artifact finishes.
+        let reservationOwner = ExportOutputReservationOwner()
+        defer { withExtendedLifetime(reservationOwner) {} }
 
-        let renderedURL = try await Task.detached(priority: .userInitiated) {
+        do {
+            let bakedCameraRaw: CameraRawSettings?
             switch kind {
-            case .format:
-                return try await EditedImageRenderer.render(
-                    from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
-                    outputFolder: outputFolder,
-                    configuration: configuration,
-                    outputFilenameSuffix: outputFilenameSuffix,
-                    collisionPolicy: collisionPolicy,
-                    metadataCopier: copier)
-            case .saveAs(let format):
-                return try await EditedImageRenderer.saveAs(
-                    from: sourceURL, cameraRaw: cameraRaw, format: format,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawJXL16(let decodeProfile):
-                return try await EditedImageRenderer.convertRAWTo16BitJXL(
-                    from: sourceURL, decodeProfile: decodeProfile,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawTIFF16(let decodeProfile):
-                return try await EditedImageRenderer.convertRAWTo16BitTIFF(
-                    from: sourceURL, decodeProfile: decodeProfile,
-                    destinationFolder: outputFolder, metadataCopier: copier)
-            case .rawDNG:
-                // Handled before constructing the rendered metadata copier above.
-                preconditionFailure("RAW DNG archives must use the converter path")
-            case .jpeg:
-                try await EditedImageRenderer.renderJPEG(
-                    from: sourceURL, cameraRaw: cameraRaw,
-                    outputFolder: outputFolder, metadataCopier: copier)
-                return EditedImageRenderer.outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
+            case .rawJXL16, .rawTIFF16:
+                // RAW archives intentionally ignore the live develop stack. The renderer
+                // performs only the selected decode, so do not document any Camera Raw
+                // settings as baked into the output metadata.
+                bakedCameraRaw = nil
+            case .format, .saveAs, .jpeg, .rawDNG:
+                bakedCameraRaw = cameraRaw
             }
-        }.value
-
-        var overlayFailed = false
-        switch await SidecarIPTCOverlay.apply(
-            sourceURL: sourceURL, renderedURL: renderedURL,
-            folderURL: folderURL, writeEngine: writeEngine) {
-        case .failed:
-            overlayFailed = true
-            await failureTracker.recordOverlayFailure(sourceURL.lastPathComponent)
-        case .staleSidecarSkipped:
-            await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
-        case .applied, .noPendingEdits:
-            break
-        }
-
-        let copiesRAWArchiveSidecar: Bool
-        switch kind {
-        case .rawJXL16, .rawTIFF16:
-            copiesRAWArchiveSidecar = true
-        case .format, .saveAs, .rawDNG, .jpeg:
-            copiesRAWArchiveSidecar = false
-        }
-        _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
-            requestID: UUID(),
-            sourceURL: sourceURL,
-            renderedURL: renderedURL,
-            copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
-        ))
-        if case .rejectForDelivery = metadataFailurePolicy {
-            let copyFailures = await itemFailures.metadataCopyFailures
-            let copyFailed = !copyFailures.isEmpty
-            if copyFailed || overlayFailed {
-                throw ExportMetadataIncompleteError(renderedURL: renderedURL,
-                    copyFailed: copyFailed, overlayFailed: overlayFailed)
+            let metadataCameraRaw = bakedCameraRaw
+            let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
+            // Keep the decision per item. A shared batch tracker may already contain failures
+            // from another image (including one with the same basename in a different folder).
+            let itemFailures = MetadataFailureTracker()
+            let copier: EditedImageRenderer.MetadataCopier = { src, dst in
+                do {
+                    try await writeEngine.copyMetadataToRenderedFile(
+                        from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
+                } catch {
+                    await failureTracker.recordCopyFailure(src.lastPathComponent)
+                    await itemFailures.recordCopyFailure(src.lastPathComponent)
+                }
             }
+
+            let renderedURL = try await Task.detached(priority: .userInitiated) {
+                switch kind {
+                case .format:
+                    return try await EditedImageRenderer.render(
+                        from: sourceURL, cameraRaw: cameraRaw, isHDR: isHDR,
+                        outputFolder: outputFolder,
+                        configuration: configuration,
+                        outputFilenameSuffix: outputFilenameSuffix,
+                        collisionPolicy: collisionPolicy,
+                        metadataCopier: copier, reservationOwner: reservationOwner)
+                case .saveAs(let format):
+                    return try await EditedImageRenderer.saveAs(
+                        from: sourceURL, cameraRaw: cameraRaw, format: format,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawJXL16(let decodeProfile):
+                    return try await EditedImageRenderer.convertRAWTo16BitJXL(
+                        from: sourceURL, decodeProfile: decodeProfile,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawTIFF16(let decodeProfile):
+                    return try await EditedImageRenderer.convertRAWTo16BitTIFF(
+                        from: sourceURL, decodeProfile: decodeProfile,
+                        destinationFolder: outputFolder, metadataCopier: copier,
+                        reservationOwner: reservationOwner)
+                case .rawDNG:
+                    // Handled before constructing the rendered metadata copier above.
+                    preconditionFailure("RAW DNG archives must use the converter path")
+                case .jpeg:
+                    return try await EditedImageRenderer.renderJPEG(
+                        from: sourceURL, cameraRaw: cameraRaw,
+                        outputFolder: outputFolder, metadataCopier: copier,
+                        collisionPolicy: collisionPolicy, reservationOwner: reservationOwner)
+                }
+            }.value
+
+            var overlayFailed = false
+            switch await SidecarIPTCOverlay.apply(
+                sourceURL: sourceURL, renderedURL: renderedURL,
+                folderURL: folderURL, writeEngine: writeEngine) {
+            case .failed:
+                overlayFailed = true
+                await failureTracker.recordOverlayFailure(sourceURL.lastPathComponent)
+            case .staleSidecarSkipped:
+                await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
+            case .applied, .noPendingEdits:
+                break
+            }
+
+            let copiesRAWArchiveSidecar: Bool
+            switch kind {
+            case .rawJXL16, .rawTIFF16:
+                copiesRAWArchiveSidecar = true
+            case .format, .saveAs, .rawDNG, .jpeg:
+                copiesRAWArchiveSidecar = false
+            }
+            _ = try await finalizationService.finalize(ExportArtifactFinalizationRequest(
+                requestID: UUID(),
+                sourceURL: sourceURL,
+                renderedURL: renderedURL,
+                copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
+            ))
+            if case .rejectForDelivery = metadataFailurePolicy {
+                let copyFailures = await itemFailures.metadataCopyFailures
+                let copyFailed = !copyFailures.isEmpty
+                if copyFailed || overlayFailed {
+                    throw ExportMetadataIncompleteError(renderedURL: renderedURL,
+                        copyFailed: copyFailed, overlayFailed: overlayFailed)
+                }
+            }
+            await reservationOwner.release()
+            return renderedURL
+        } catch {
+            await reservationOwner.release()
+            throw error
         }
-        return renderedURL
     }
 
     /// Export artifacts are user-facing files and must remain discoverable in Finder.

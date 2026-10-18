@@ -4434,6 +4434,91 @@ struct EditedExportSourcePreservationTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: output).description == "Original caption")
     }
 
+    @Test("Concurrent exports keep their own IPTC while a prior overlay is still admitted",
+          arguments: ["format", "jpeg", "saveAs"])
+    func concurrentExportsOwnTheirMetadata(secondKind: String) async throws {
+        let (firstDirectory, firstSource) = try await workspace()
+        let (secondDirectory, secondSource) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: firstDirectory); try? FileManager.default.removeItem(at: secondDirectory) }
+        let firstBytes = try Data(contentsOf: firstSource)
+        let secondBytes = try Data(contentsOf: secondSource)
+        let output = firstDirectory.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let firstMetadata = IPTCMetadata(title: "First pending", keywords: ["First, place"])
+        let secondMetadata = IPTCMetadata(title: "Second pending", keywords: ["Second, place"])
+        for (source, directory, metadata) in [(firstSource, firstDirectory, firstMetadata), (secondSource, secondDirectory, secondMetadata)] {
+            try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: source.lastPathComponent,
+                pendingChanges: true, metadata: metadata), for: source, in: directory)
+        }
+        let gate = ExportWriteGate(phase: .overlay)
+        let engine = GatedExportWriteEngine(gate: gate)
+        let first = Task { try await EditExportPipeline.renderForDelivery(sourceURL: firstSource,
+            cameraRaw: nil, kind: .format, outputFolder: output, folderURL: firstDirectory,
+            writeEngine: engine, failureTracker: MetadataFailureTracker(), configuration: configuration) }
+        let watchdog = gate.watchdog()
+        defer { gate.release(); first.cancel(); watchdog.cancel() }
+        let firstOutput = try await gate.waitForDestination()
+        let beforeReplacement = try Data(contentsOf: firstOutput)
+        do {
+            _ = try await EditExportPipeline.renderItem(sourceURL: secondSource, cameraRaw: nil,
+                kind: .format, outputFolder: output, folderURL: secondDirectory,
+                writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+                configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("Replacement must not enter another artifact's pending IPTC stage")
+        } catch EditedImageRenderer.RenderError.destinationBusy { }
+        #expect(try Data(contentsOf: firstOutput) == beforeReplacement)
+        let kind: RenderKind = secondKind == "format" ? .format : secondKind == "jpeg" ? .jpeg : .saveAs(.jpeg)
+        let secondOutput = try await EditExportPipeline.renderForDelivery(sourceURL: secondSource,
+            cameraRaw: nil, kind: kind, outputFolder: output, folderURL: secondDirectory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(), configuration: configuration)
+        #expect(!gate.wasReleased && !gate.timedOut)
+        #expect(firstOutput.lastPathComponent == "photo.jpg")
+        #expect(secondOutput.lastPathComponent == "photo 2.jpg")
+        let actualSecond = try await SwiftExifReadService().readFullMetadata(url: secondOutput)
+        #expect(actualSecond.title == secondMetadata.title && actualSecond.keywords == secondMetadata.keywords)
+        gate.release()
+        #expect(try await first.value == firstOutput)
+        let actualFirst = try await SwiftExifReadService().readFullMetadata(url: firstOutput)
+        #expect(actualFirst.title == firstMetadata.title && actualFirst.keywords == firstMetadata.keywords)
+        #expect(try Data(contentsOf: firstSource) == firstBytes)
+        #expect(try Data(contentsOf: secondSource) == secondBytes)
+        // A completed artifact may still be explicitly replaced; ownership is not leaked.
+        let replacement = try await EditExportPipeline.renderItem(sourceURL: secondSource,
+            cameraRaw: nil, kind: .format, outputFolder: output, folderURL: secondDirectory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+            configuration: configuration, collisionPolicy: .replaceExisting)
+        #expect(replacement == firstOutput)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: replacement).title == secondMetadata.title)
+    }
+
+    @Test("Cancel and restart cannot reuse a JPEG filename still owned by detached rendering")
+    func cancelledJPEGProducerKeepsItsName() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let original = try Data(contentsOf: source)
+        let gate = ExportWriteGate(phase: .copy)
+        let first = Task { try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .jpeg, outputFolder: output, folderURL: directory,
+            writeEngine: GatedExportWriteEngine(gate: gate), failureTracker: MetadataFailureTracker()) }
+        let watchdog = gate.watchdog()
+        defer { gate.release(); first.cancel(); watchdog.cancel() }
+        let firstOutput = try await gate.waitForDestination()
+        first.cancel()
+        let restarted = try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .jpeg, outputFolder: output, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(!gate.wasReleased && !gate.timedOut)
+        #expect(firstOutput.lastPathComponent == "photo.jpg")
+        #expect(restarted.lastPathComponent == "photo 2.jpg")
+        gate.release()
+        _ = try await first.value
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: restarted).title == "Original headline")
+        #expect(FileManager.default.fileExists(atPath: firstOutput.path))
+    }
+
     private var configuration: AdvancedExportConfiguration {
         AdvancedExportConfiguration(sdrFormat: .jpeg, sdrQuality: 0.92, sdrGamut: .sRGB,
             hdrFormat: .jpegGainMap, hdrQuality: 0.92, hdrGamut: .displayP3,
@@ -4451,5 +4536,78 @@ struct EditedExportSourcePreservationTests {
         try #require(image.representation(using: .jpeg, properties: [:])).write(to: source)
         try await SwiftExifWriteEngine().writeFields([.headline: "Original headline", .description: "Original caption"], to: [source])
         return (directory, source)
+    }
+}
+
+private nonisolated final class ExportWriteGate: @unchecked Sendable {
+    enum Phase: Sendable, Equatable { case copy, overlay }
+    let phase: Phase
+    private let lock = NSLock()
+    private var destination: URL?
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private var expired = false
+    init(phase: Phase) { self.phase = phase }
+    var wasReleased: Bool { lock.withLock { released } }
+    var timedOut: Bool { lock.withLock { expired } }
+    func block(_ url: URL) async {
+        await withCheckedContinuation { value in
+            let alreadyReleased = lock.withLock {
+                destination = url
+                if released { return true }
+                continuation = value
+                return false
+            }
+            if alreadyReleased { value.resume() }
+        }
+    }
+    func release(timedOut: Bool = false) {
+        let value = lock.withLock {
+            guard !released else { return Optional<CheckedContinuation<Void, Never>>.none }
+            released = true
+            expired = timedOut
+            let value = continuation
+            continuation = nil
+            return value
+        }
+        value?.resume()
+    }
+    func waitForDestination() async throws -> URL {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            if let result = lock.withLock({ destination }) { return result }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw CocoaError(.userCancelled)
+    }
+    func watchdog() -> Task<Void, Never> {
+        Task.detached { [self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            release(timedOut: true)
+        }
+    }
+}
+
+private nonisolated final class GatedExportWriteEngine: MetadataWriteEngine {
+    let gate: ExportWriteGate
+    let underlying = SwiftExifWriteEngine()
+    init(gate: ExportWriteGate) { self.gate = gate }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await underlying.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        if gate.phase == .overlay, let destination = urls.first { await gate.block(destination) }
+        try await underlying.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        try await underlying.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws { try await underlying.writeRating(rating, to: urls) }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws { try await underlying.writeLabel(label, to: urls) }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws { try await underlying.writeOrientation(orientation, to: urls) }
+    func stripIPTCAndXMP(from urls: [URL]) async throws { try await underlying.stripIPTCAndXMP(from: urls) }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        if gate.phase == .copy { await gate.block(destination) }
+        try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
     }
 }
