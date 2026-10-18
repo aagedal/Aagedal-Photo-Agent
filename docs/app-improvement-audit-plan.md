@@ -1,5 +1,15 @@
 # App improvement audit plan
 
+**Export originals and Develop focus loss (2026-10-18):** Format delivery uses numbered
+collision handling beside originals; renderer preflights refuse existing source aliases before
+encoding, including symlinks and hard links. Independent output replacement remains available.
+Develop releases held comparisons/hand input when its window or application loses focus,
+retaining monitor registrations, image/section choices and the visible viewport anchor.
+All 62 focused tests and the 4,357-test full regression pass (4,355 passed, two existing skips,
+zero failures); final repository validation passes. Native, real-volume and signed release
+qualification remain open. See the
+[dated continuation](plan-status-source-preservation-focus-loss-continuation-2026-10-18.md).
+
 **Workspace input isolation (2026-10-18):** Caption and Analysis key monitors now
 require their owning key window and exclude modal/sheet input, protecting Settings recording
 and navigation. Comparison/Analysis/Develop scroll monitors and Develop middle-click copy

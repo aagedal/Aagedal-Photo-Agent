@@ -359,11 +359,12 @@ enum EditExportPipeline {
                                   folderURL: URL?,
                                   writeEngine: any MetadataWriteEngine,
                                   failureTracker: MetadataFailureTracker,
-                                  configuration: AdvancedExportConfiguration? = nil) async throws -> URL {
+                                  configuration: AdvancedExportConfiguration? = nil,
+                                  collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .appendNumber) async throws -> URL {
         try await renderItem(sourceURL: sourceURL, cameraRaw: cameraRaw, kind: kind,
             outputFolder: outputFolder, folderURL: folderURL, writeEngine: writeEngine,
             failureTracker: failureTracker, configuration: configuration,
-            metadataFailurePolicy: .rejectForDelivery)
+            collisionPolicy: collisionPolicy, metadataFailurePolicy: .rejectForDelivery)
     }
 
     /// Populates `cameraRaw` on each entry in `map`, preferring the live in-memory edit

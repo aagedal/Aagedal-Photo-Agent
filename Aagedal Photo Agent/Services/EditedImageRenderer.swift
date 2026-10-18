@@ -360,6 +360,7 @@ nonisolated enum EditedImageRenderer {
                 filenameSuffix: outputFilenameSuffix
             )
         }
+        try requireDistinctDestination(destURL, from: sourceURL)
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -519,6 +520,7 @@ nonisolated enum EditedImageRenderer {
                 filenameSuffix: outputFilenameSuffix
             )
         }
+        try requireDistinctDestination(destURL, from: sourceURL)
         let hdrColorSpace = gamut.hdrHLGColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -1009,6 +1011,27 @@ nonisolated enum EditedImageRenderer {
             .appendingPathExtension(ext)
     }
 
+    /// A metadata-copy check is too late: pixel encoders may already have replaced
+    /// the source by then. Reject known lexical, symlink and hard-link aliases before
+    /// invoking any encoder, while allowing replacement of independent output files.
+    static func requireDistinctDestination(_ destination: URL, from source: URL) throws {
+        let original = source.standardizedFileURL.resolvingSymlinksInPath()
+        let output = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard original.path != output.path else { throw RenderError.sourceDestinationAlias }
+        let manager = FileManager.default
+        // New numbered outputs have no inode to alias. Probe the destination first
+        // so the usual fresh-output path does not fetch source attributes again.
+        if let outputAttributes = try? manager.attributesOfItem(atPath: output.path),
+           let sourceAttributes = try? manager.attributesOfItem(atPath: original.path),
+           let sourceDevice = sourceAttributes[.systemNumber] as? NSNumber,
+           let outputDevice = outputAttributes[.systemNumber] as? NSNumber,
+           let sourceInode = sourceAttributes[.systemFileNumber] as? NSNumber,
+           let outputInode = outputAttributes[.systemFileNumber] as? NSNumber,
+           sourceDevice == outputDevice, sourceInode == outputInode {
+            throw RenderError.sourceDestinationAlias
+        }
+    }
+
     /// Returns a non-existing output URL by appending " 2", " 3", … when needed.
     static func uniqueOutputURL(
         for sourceURL: URL,
@@ -1045,6 +1068,7 @@ nonisolated enum EditedImageRenderer {
         let colorSpace = gamut.sdrColorSpace
         let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
         let destinationURL = outputURL(for: sourceURL, in: outputFolder, extension: "jpg")
+        try requireDistinctDestination(destinationURL, from: sourceURL)
         try writeJPEGWithSourceProperties(
             ciImage: output,
             sourceURL: sourceURL,
@@ -1105,6 +1129,7 @@ nonisolated enum EditedImageRenderer {
             extension: "jxl"
         )
 
+        try requireDistinctDestination(destinationURL, from: sourceURL)
         try await encode16BitJXL(
             output,
             to: destinationURL,
@@ -1149,6 +1174,7 @@ nonisolated enum EditedImageRenderer {
             in: destinationFolder,
             extension: "tiff"
         )
+        try requireDistinctDestination(destinationURL, from: sourceURL)
         let context = CameraRawApproximation.ciContext
         guard let cgImage = context.createCGImage(
             output,
@@ -1208,6 +1234,7 @@ nonisolated enum EditedImageRenderer {
             counter += 1
         }
 
+        try requireDistinctDestination(destURL, from: sourceURL)
         switch format {
         case .jpeg:
             let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
@@ -1243,6 +1270,7 @@ nonisolated enum EditedImageRenderer {
         case unreadableImage
         case encodeFailed
         case rawSourceRequired
+        case sourceDestinationAlias
 
         var errorDescription: String? {
             switch self {
@@ -1252,6 +1280,8 @@ nonisolated enum EditedImageRenderer {
                 return "Could not encode output image."
             case .rawSourceRequired:
                 return "The 16-bit JPEG XL conversion requires a RAW source image."
+            case .sourceDestinationAlias:
+                return "The export destination refers to the source image. Choose a different destination or filename."
             }
         }
     }

@@ -4322,3 +4322,134 @@ private nonisolated final class ExportFailureEngine: MetadataWriteEngine {
         try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
     }
 }
+
+@Suite("Edited export source preservation")
+struct EditedExportSourcePreservationTests {
+    @Test("Delivery format export beside its JPEG source allocates a distinct file and preserves original metadata")
+    func deliveryBesideSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let tracker = MetadataFailureTracker()
+        let output = try await EditExportPipeline.renderForDelivery(sourceURL: source,
+            cameraRaw: nil, kind: .format, outputFolder: directory, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker, configuration: configuration)
+        #expect(output.lastPathComponent == "photo 2.jpg")
+        #expect(output.standardizedFileURL != source.standardizedFileURL)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Original headline")
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).description == "Original caption")
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+    }
+
+    @Test("Replacement refuses its own source before either SDR or HDR encoding", arguments: [false, true])
+    func replacementRejectsSource(isHDR: Bool) async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        do {
+            _ = try await EditedImageRenderer.render(from: source, cameraRaw: nil, isHDR: isHDR,
+                outputFolder: directory, configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("Source-alias encoding must be refused")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).description == "Original caption")
+    }
+
+    @Test("Legacy JPEG export also rejects an in-place encode")
+    func legacyJPEGRejectsSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        do {
+            try await EditedImageRenderer.renderJPEG(from: source, cameraRaw: nil, outputFolder: directory)
+            Issue.record("Legacy JPEG must not replace its source")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    @Test("Existing file, hard-link and directory-symlink aliases are refused or safely numbered",
+          arguments: ["symlink", "hardlink", "directory-symlink"])
+    func existingAliases(alias: String) async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let outputFolder = directory.appendingPathComponent("output", isDirectory: true)
+        if alias == "directory-symlink" {
+            try FileManager.default.createSymbolicLink(at: outputFolder, withDestinationURL: directory)
+        } else {
+            try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+            let target = outputFolder.appendingPathComponent("photo.jpg")
+            if alias == "hardlink" { try FileManager.default.linkItem(at: source, to: target) }
+            else { try FileManager.default.createSymbolicLink(at: target, withDestinationURL: source) }
+        }
+        let aliasURL = outputFolder.appendingPathComponent("photo.jpg")
+        do {
+            _ = try await EditedImageRenderer.render(from: source, cameraRaw: nil, isHDR: false,
+                outputFolder: outputFolder, configuration: configuration, collisionPolicy: .replaceExisting)
+            Issue.record("An existing alias must not be encoded over")
+        } catch EditedImageRenderer.RenderError.sourceDestinationAlias { }
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: aliasURL) == original)
+        let tracker = MetadataFailureTracker()
+        let safe = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+            kind: .format, outputFolder: outputFolder, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker, configuration: configuration)
+        #expect(safe.lastPathComponent == "photo 2.jpg")
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try Data(contentsOf: aliasURL) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: safe).title == "Original headline")
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+    }
+
+    @Test("Explicit replacement of an independent output remains supported")
+    func independentReplacement() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let outputFolder = directory.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let expected = outputFolder.appendingPathComponent("photo.jpg")
+        try Data("older independent rendition".utf8).write(to: expected)
+        let output = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .format, outputFolder: outputFolder, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker(),
+            configuration: configuration, collisionPolicy: .replaceExisting)
+        #expect(output == expected)
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).title == "Original headline")
+    }
+
+    @Test("Save As retains numbered same-folder naming and preserves source bytes")
+    func saveAsBesideSource() async throws {
+        let (directory, source) = try await workspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let output = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .saveAs(.jpeg), outputFolder: directory, folderURL: directory,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(output.lastPathComponent == "photo 2.jpg")
+        #expect(try Data(contentsOf: source) == original)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: output).description == "Original caption")
+    }
+
+    private var configuration: AdvancedExportConfiguration {
+        AdvancedExportConfiguration(sdrFormat: .jpeg, sdrQuality: 0.92, sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap, hdrQuality: 0.92, hdrGamut: .displayP3,
+            tiffCompression: .lzw, resolutionLimit: .original,
+            locationMode: .sameAsOriginal, customSubfolderName: "Exports")
+    }
+
+    private func workspace() async throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("export-source-safety-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("photo.jpg")
+        let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(image.representation(using: .jpeg, properties: [:])).write(to: source)
+        try await SwiftExifWriteEngine().writeFields([.headline: "Original headline", .description: "Original caption"], to: [source])
+        return (directory, source)
+    }
+}
