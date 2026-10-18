@@ -1530,7 +1530,10 @@ struct EditWorkspaceView: View {
             )
             .onAppear {
                 let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-                    guard isCursorOverPreview else { return event }
+                    guard keyboardWindow.ownsKeyEvent(in: event.window),
+                          NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
+                          event.window?.sheetParent == nil,
+                          isCursorOverPreview else { return event }
                     // Only handle direct scroll input, ignore momentum to avoid drift
                     guard event.phase != [] || event.momentumPhase == [] else { return event }
                     let delta = event.scrollingDeltaY
@@ -2863,7 +2866,10 @@ struct EditWorkspaceView: View {
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
         let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
-            guard event.buttonNumber == 2,
+            guard keyboardWindow.ownsKeyEvent(in: event.window),
+                  NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
+                  event.window?.sheetParent == nil,
+                  event.buttonNumber == 2,
                   let sourceURL = hoveredFilmstripURL,
                   let source = browserViewModel.images.first(where: { $0.url == sourceURL }) else {
                 return event

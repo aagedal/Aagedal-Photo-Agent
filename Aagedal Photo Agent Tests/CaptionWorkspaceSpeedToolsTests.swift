@@ -1805,7 +1805,7 @@ struct CaptionWorkspaceSpeedToolsTests {
         #expect(caption.contains("try await flushCoordinator.flushAsync()"))
         #expect(caption.contains("session.isTransitioning || flushCoordinator.isTransitioning"))
         #expect(caption.contains(".disabled(isCurrentPhotoUnderReview || isEditorTransitioning)"))
-        #expect(caption.contains("guard !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }"))
+        #expect(caption.contains("!isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return event }"))
         #expect(caption.contains("guard let delivery, !isEditorTransitioning, conflictReview == nil, pendingReviewPhoto == nil else { return }"))
         #expect(caption.contains("preservingEditorFocus"))
         #expect(caption.contains("CaptionAdvanceShortcutRouter.resolve"))

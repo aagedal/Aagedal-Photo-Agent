@@ -907,6 +907,7 @@ private struct ComparisonImagePane: View {
     @State private var latestGeometry: ComparisonPaneGeometry?
     @State private var latestViewport: ViewportState?
     @State private var scrollEventMonitor: Any?
+    @State private var inputWindow = WorkspaceEventWindowReference()
 
     var body: some View {
         GeometryReader { proxy in
@@ -955,6 +956,7 @@ private struct ComparisonImagePane: View {
                 installScrollEventMonitor()
             }
             .onDisappear { removeScrollEventMonitor() }
+            .background(WorkspaceEventWindowReader(reference: inputWindow))
             .onChange(of: proxy.size) { _, _ in
                 latestGeometry = paneGeometry
                 onGeometryChange(paneGeometry)
@@ -1053,7 +1055,7 @@ private struct ComparisonImagePane: View {
     private func installScrollEventMonitor() {
         guard scrollEventMonitor == nil else { return }
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let pointerLocation,
+            guard inputWindow.ownsEvent(in: event.window), let pointerLocation,
                   let geometry = latestGeometry,
                   let viewport = latestViewport else { return event }
             guard event.phase != [] || event.momentumPhase == [] else { return event }
@@ -1102,6 +1104,7 @@ private struct WipeComparisonPane: View {
     @State private var latestViewports: [ComparisonPane: ViewportState] = [:]
     @State private var latestFocusedPane: ComparisonPane = .left
     @State private var scrollEventMonitor: Any?
+    @State private var inputWindow = WorkspaceEventWindowReference()
 
     var body: some View {
         GeometryReader { proxy in
@@ -1214,6 +1217,7 @@ private struct WipeComparisonPane: View {
                 installScrollEventMonitor()
             }
             .onDisappear { removeScrollEventMonitor() }
+            .background(WorkspaceEventWindowReader(reference: inputWindow))
             .onChange(of: proxy.size) { _, _ in
                 updateGeometries(left: leftGeometry, right: rightGeometry)
             }
@@ -1329,7 +1333,7 @@ private struct WipeComparisonPane: View {
     private func installScrollEventMonitor() {
         guard scrollEventMonitor == nil else { return }
         scrollEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let pointerLocation,
+            guard inputWindow.ownsEvent(in: event.window), let pointerLocation,
                   let geometry = latestGeometries[latestFocusedPane],
                   let viewport = latestViewports[latestFocusedPane] else { return event }
             guard event.phase != [] || event.momentumPhase == [] else { return event }

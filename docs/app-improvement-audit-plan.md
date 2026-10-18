@@ -1,5 +1,15 @@
 # App improvement audit plan
 
+**Workspace input isolation (2026-10-18):** Caption and Analysis key monitors now
+require their owning key window and exclude modal/sheet input, protecting Settings recording
+and navigation. Comparison/Analysis/Develop scroll monitors and Develop middle-click copy
+also reject foreign-window events. Analysis clears transient gestures on ownership loss.
+The full regression passes 4,348 tests (4,346 passed, two existing skips, zero failures);
+repository validation passes. Unified logs attribute map-full messages to Metal, but the
+root cause and impact remain unresolved. Native QA reconnect still fails with a closed pipe;
+performance and release qualification remain open. See the
+[dated continuation](plan-status-workspace-event-isolation-continuation-2026-10-18.md).
+
 **Browsing cache and metadata delivery (2026-10-18):** Edited invalidation retires
 old in-flight renders; folder-return reconciliation detects XMP changes/removal using
 already-scanned revisions while preserving unchanged caches. Render & Sign and edited FTP

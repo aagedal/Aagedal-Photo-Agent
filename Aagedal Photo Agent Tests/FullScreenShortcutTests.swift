@@ -333,3 +333,55 @@ private final class IsolatedShortcutMenuTarget: NSObject {
         invocationCount += 1
     }
 }
+
+@Suite("Workspace event window ownership")
+@MainActor
+struct WorkspaceEventWindowOwnershipTests {
+    @Test("Workspace owns only its current key window, excluding Settings and unrelated workspaces")
+    func windowOwnership() {
+        let reference = WorkspaceEventWindowReference()
+        let owner = makeWindow()
+        let settings = makeWindow()
+        let unrelated = makeWindow()
+        #expect(!reference.ownsEvent(in: nil, modalWindow: nil))
+        #expect(!reference.ownsEvent(in: owner, modalWindow: nil))
+        reference.window = owner
+        #expect(reference.ownsEvent(in: owner, modalWindow: nil))
+        #expect(!reference.ownsEvent(in: settings, modalWindow: nil))
+        #expect(!reference.ownsEvent(in: unrelated, modalWindow: nil))
+        owner.simulatedKeyWindow = false
+        #expect(!reference.ownsEvent(in: owner, modalWindow: nil))
+    }
+
+    @Test("Modal panels, attached sheets and sheet-owned workspaces retain their key events")
+    func sheetAndModalOwnership() {
+        let reference = WorkspaceEventWindowReference()
+        let owner = makeWindow()
+        let sheet = makeWindow()
+        reference.window = owner
+        #expect(reference.ownsEvent(in: owner, modalWindow: nil))
+        #expect(!reference.ownsEvent(in: owner, modalWindow: sheet))
+        owner.simulatedAttachedSheet = sheet
+        #expect(!reference.ownsEvent(in: owner, modalWindow: nil))
+        #expect(!reference.ownsEvent(in: sheet, modalWindow: nil))
+        owner.simulatedAttachedSheet = nil
+        owner.simulatedSheetParent = sheet
+        #expect(!reference.ownsEvent(in: owner, modalWindow: nil))
+        owner.simulatedSheetParent = nil
+        #expect(reference.ownsEvent(in: owner, modalWindow: nil))
+    }
+
+    private func makeWindow() -> CaptionOwnershipTestWindow {
+        CaptionOwnershipTestWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+    }
+}
+
+@MainActor
+private final class CaptionOwnershipTestWindow: NSWindow {
+    var simulatedKeyWindow = true
+    var simulatedAttachedSheet: NSWindow?
+    var simulatedSheetParent: NSWindow?
+    override var isKeyWindow: Bool { simulatedKeyWindow }
+    override var attachedSheet: NSWindow? { simulatedAttachedSheet }
+    override var sheetParent: NSWindow? { simulatedSheetParent }
+}
