@@ -94,6 +94,30 @@ struct DevelopWorkspaceInputCoordinatorTests {
         #expect(!coordinator.isSpaceHandToolActive)
     }
 
+    @Test("focus loss releases held input but keeps the workspace and monitors ready for return")
+    func focusLossPreservesRegistrations() {
+        let coordinator = DevelopWorkspaceInputCoordinator()
+        var removals = 0
+        coordinator.beginWorkspace()
+        coordinator.installKeyMonitor(Token("key")) { _ in removals += 1 }
+        coordinator.installScrollMonitor(Token("scroll")) { _ in removals += 1 }
+        coordinator.installMiddleMouseMonitor(Token("middle")) { _ in removals += 1 }
+        coordinator.isCursorOverPreview = true
+        coordinator.hoveredFilmstripURL = URL(fileURLWithPath: "/virtual/hovered.jpg")
+        coordinator.isSpaceHandToolActive = true
+        coordinator.filmstripKeyboardScrollTarget = URL(fileURLWithPath: "/virtual/target.jpg")
+        coordinator.releaseTransientInput()
+        #expect(coordinator.isWorkspaceActive)
+        #expect(coordinator.hasKeyMonitor && coordinator.hasScrollMonitor && coordinator.hasMiddleMouseMonitor)
+        #expect(removals == 0)
+        #expect(!coordinator.isCursorOverPreview && !coordinator.isSpaceHandToolActive)
+        #expect(coordinator.hoveredFilmstripURL == nil && coordinator.filmstripKeyboardScrollTarget == nil)
+        coordinator.isSpaceHandToolActive = true
+        #expect(coordinator.isSpaceHandToolActive)
+        coordinator.endWorkspace()
+        #expect(removals == 3)
+    }
+
     @Test("edit workspace delegates monitor and transient input ownership")
     func sourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)

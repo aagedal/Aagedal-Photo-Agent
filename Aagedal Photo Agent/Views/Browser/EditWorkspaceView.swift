@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import Combine
 import os
 import SwiftUI
 import UniformTypeIdentifiers
@@ -898,6 +899,14 @@ struct EditWorkspaceView: View {
     var body: some View {
         workspaceWithPreviewObservers
         .background(DevelopKeyboardWindowReader(reference: keyboardWindow))
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
+            guard let owner = keyboardWindow.window,
+                  let resigned = notification.object as? NSWindow, resigned === owner else { return }
+            releaseHeldDevelopInput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            releaseHeldDevelopInput()
+        }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
             guard let delivery else { return }
             switch delivery.command {
@@ -7971,12 +7980,25 @@ struct EditWorkspaceView: View {
 
     // MARK: - Key Event Handling
 
+    /// Key-up may belong to Settings or arrive while another app is active. Restore
+    /// the editable preview without interpreting or consuming that other window's input.
+    private func releaseHeldDevelopInput() {
+        let needsLayerRender = transientPreview.isMutingGlobal || transientPreview.isMutingSelectedMask
+        workspaceInput.releaseTransientInput()
+        previewNavigation.finishInteraction()
+        transientPreview.releaseAll()
+        if needsLayerRender { renderPreview() }
+    }
+
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
         // Recovery and save panels own their key events. The workspace's application-wide
         // monitor must not turn typing or Escape in a sheet into another Develop mutation.
         guard keyboardWindow.ownsKeyEvent(in: event.window),
               NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
-              event.window?.sheetParent == nil else { return event }
+              event.window?.sheetParent == nil else {
+            releaseHeldDevelopInput()
+            return event
+        }
         let chord = KeyboardShortcutChord(event: event) ?? KeyboardShortcutChord(
             key: event.charactersIgnoringModifiers ?? "", modifiers: KeyboardShortcutModifiers(event.modifierFlags))
         let chars = chord.key

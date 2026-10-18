@@ -83,6 +83,12 @@ final class DevelopWorkspaceInputCoordinator {
         isWorkspaceActive = false
     }
 
+    /// Relinquishes held keys and hover state when another window or app owns input.
+    /// Registrations remain installed so returning to this workspace needs no reappearance.
+    func releaseTransientInput() {
+        resetTransientState()
+    }
+
     private func removeAllMonitors() {
         scrollMonitor?.cancel()
         keyMonitor?.cancel()
