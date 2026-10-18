@@ -504,6 +504,92 @@ enum EditExportPipeline {
     }
 }
 
+/// One captured source selection. A pending draft remains authoritative even if it has
+/// no writable fields; callers must not fall through to an older physical XMP record.
+nonisolated enum ExportIPTCSelection: Equatable, Sendable {
+    case pendingDraft(IPTCMetadata)
+    case xmp(IPTCMetadata)
+    case staleSidecarSkipped
+    case noPendingEdits
+}
+
+nonisolated struct ExportIPTCSelectionAccess: Sendable {
+    let loadDraft: @Sendable (URL, URL) -> MetadataSidecar?
+    let loadXMP: @Sendable (URL) -> IPTCMetadata?
+    let readEmbedded: @Sendable (URL) -> IPTCMetadata?
+    let reconcile: @Sendable (URL, IPTCMetadata?, IPTCMetadata) -> SidecarReconciliation.Verdict
+
+    static let system = ExportIPTCSelectionAccess(
+        loadDraft: { MetadataSidecarService().loadSidecar(for: $0, in: $1) },
+        loadXMP: { XMPSidecarService().loadSidecar(for: $0) },
+        readEmbedded: { url in
+            guard let metadata = try? ImageMetadata.read(from: url) else { return nil }
+            return iptcMetadataFromDict(metadata.asMetadataDict(fileURL: url))
+        },
+        reconcile: { url, embedded, sidecar in
+            SidecarReconciliation.verdict(imageURL: url,
+                sidecarURL: XMPSidecarService().sidecarURL(for: url),
+                embedded: embedded, sidecar: sidecar)
+        }
+    )
+}
+
+/// Retains slow/provider-backed reads on a Dispatch worker. Source JSON, XMP, embedded
+/// metadata and reconciliation dates are inspected within one per-photo lease, so app
+/// writers cannot interleave their carrier updates with this selection.
+actor ExportIPTCSelectionService {
+    nonisolated let filesystemQueue: DispatchSerialQueue
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        filesystemQueue.asUnownedSerialExecutor()
+    }
+
+    static let shared = ExportIPTCSelectionService()
+    private let access: ExportIPTCSelectionAccess
+    private let signposter = OSSignposter(
+        subsystem: "com.aagedal.photo-agent", category: "ExportIPTCSelection"
+    )
+
+    init(access: ExportIPTCSelectionAccess = .system,
+         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
+            label: "com.aagedal.photo-agent.export-iptc-selection", qos: .utility
+         )) {
+        self.access = access
+        self.filesystemQueue = filesystemQueue
+    }
+
+    func select(sourceURL: URL, folderURL: URL?) async -> ExportIPTCSelection {
+        let interval = signposter.beginInterval("Select", id: signposter.makeSignpostID())
+        // This is post-render finalization. Preserve selection despite caller cancellation;
+        // the existing writer/overlay outcome decides whether metadata was actually applied.
+        let selection = await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: sourceURL)) {
+            await self.capture(sourceURL: sourceURL, folderURL: folderURL)
+        }
+        signposter.endInterval("Select", interval)
+        return selection
+    }
+
+    /// Explicit actor hop from the coordinator's admitted task keeps all synchronous I/O
+    /// on this retained worker. Do not reacquire the source lock inside this method.
+    private func capture(sourceURL: URL, folderURL: URL?) -> ExportIPTCSelection {
+        if let folderURL, let draft = access.loadDraft(sourceURL, folderURL), draft.pendingChanges {
+            return .pendingDraft(draft.metadata)
+        }
+        guard let sidecar = access.loadXMP(sourceURL),
+              sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else {
+            return .noPendingEdits
+        }
+        // The staleness policy only compares descriptive metadata. Rating/label-only
+        // records need no source-container read or modification-date probes.
+        if sidecar.hasDescriptiveContent {
+            let embedded = access.readEmbedded(sourceURL)
+            if access.reconcile(sourceURL, embedded, sidecar) == .fileNewerConflict {
+                return .staleSidecarSkipped
+            }
+        }
+        return .xmp(sidecar)
+    }
+}
+
 /// Applies pending sidecar IPTC edits to a rendered output file. Checks both XMP sidecars
 /// (default for C2PA) and JSON sidecars (history-only mode). Called after render so the
 /// output includes edited metadata (keywords, caption, rating, label, …) that hasn't yet
@@ -541,96 +627,44 @@ enum SidecarIPTCOverlay {
     }
 
     static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
-                      writeEngine: any MetadataWriteEngine) async -> Outcome {
-        // Pending app drafts are the displayed editorial state, even when an older XMP
-        // record exists. Match EffectiveMetadataResolver: never let physical sidecar
-        // metadata hide a pending history-only caption, keyword edit, or clear.
-        if let folderURL,
-           let draft = MetadataSidecarService().loadSidecar(for: sourceURL, in: folderURL),
-           draft.pendingChanges {
-            return await applyPendingDraft(draft, sourceURL: sourceURL,
-                                           renderedURL: renderedURL, writeEngine: writeEngine)
+                      writeEngine: any MetadataWriteEngine,
+                      service: ExportIPTCSelectionService = .shared) async -> Outcome {
+        let metadata: IPTCMetadata
+        let carrier: String
+        switch await service.select(sourceURL: sourceURL, folderURL: folderURL) {
+        case .pendingDraft(let draft):
+            metadata = draft
+            carrier = "JSON"
+        case .xmp(let sidecar):
+            metadata = sidecar
+            carrier = "XMP"
+        case .staleSidecarSkipped:
+            exportPipelineLog.warning(
+                "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) looks stale (image file newer and differs); exported embedded values instead"
+            )
+            return .staleSidecarSkipped
+        case .noPendingEdits:
+            return .noPendingEdits
         }
 
-        // Prefer XMP sidecar IPTC (default write mode for RAW and C2PA files). A sidecar
-        // without descriptive content (develop-settings-only, written by saveCameraRawOnly
-        // or stripped by Remove IPTC) is not an IPTC record: running toOverwriteFields on
-        // it would wipe every descriptive field from the render. Ignore that physical
-        // sidecar when no pending app draft was selected above.
-        let xmpService = XMPSidecarService()
-        if let xmpMeta = xmpService.loadSidecar(for: sourceURL),
-           xmpMeta.hasDescriptiveContent || xmpMeta.rating != nil || xmpMeta.label != nil {
-            // Staleness guard: if the image file was modified more recently than the .xmp
-            // and their descriptive metadata differs, an external tool (e.g. Adobe Bridge,
-            // which writes into the file rather than a sidecar) likely edited the embedded
-            // metadata after the sidecar was written. Treat the file as master — the
-            // rendered output already carries the embedded values copied during render — so
-            // skip the sidecar overwrite and let the caller surface a warning.
-            let embedded = await readEmbeddedMetadata(from: sourceURL)
-            if SidecarReconciliation.verdict(
-                imageURL: sourceURL, sidecarURL: xmpService.sidecarURL(for: sourceURL),
-                embedded: embedded, sidecar: xmpMeta) == .fileNewerConflict {
-                exportPipelineLog.warning(
-                    "overlaySidecarIPTC: .xmp sidecar for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) looks stale (image file newer and differs); exported embedded values instead"
-                )
-                return .staleSidecarSkipped
-            }
-
-            // Overwrite (not overlay): the sidecar is the authoritative edited state, so a
-            // descriptive field the user cleared is emitted empty here to strip the source's
-            // stale embedded value from the rendered output. GPS stays additive (see
-            // toOverwriteFields). Guarded again here: a rating/label-only sidecar must not
-            // wipe the descriptive fields it never carried.
-            let fields = authoritativeFields(from: xmpMeta)
-            guard !fields.isEmpty else { return .noPendingEdits }
-            do {
-                try await writeEngine.writeFieldsToRenderedFiles(
-                    fields,
-                    to: [renderedURL],
-                    structuredData: authoritativeStructuredData(from: xmpMeta)
-                )
-                return .applied
-            } catch {
-                exportPipelineLog.error(
-                    "overlaySidecarIPTC XMP writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
-                )
-                return .failed
-            }
-        }
-
-        return .noPendingEdits
-    }
-
-    private static func applyPendingDraft(_ sidecar: MetadataSidecar, sourceURL: URL,
-                                          renderedURL: URL, writeEngine: any MetadataWriteEngine) async -> Outcome {
-
-        // Same partial-record guard as the .xmp branch: a record with no descriptive
-        // content (e.g. a failed-seed fallback) must not wipe fields it never carried.
-        let fields = authoritativeFields(from: sidecar.metadata)
+        // Release the source lease before the output writer takes its destination lease.
+        // Keep partial-record safeguards and lossless list transport shared by both carriers.
+        let fields = authoritativeFields(from: metadata)
         guard !fields.isEmpty else { return .noPendingEdits }
 
         do {
             try await writeEngine.writeFieldsToRenderedFiles(
                 fields,
                 to: [renderedURL],
-                structuredData: authoritativeStructuredData(from: sidecar.metadata)
+                structuredData: authoritativeStructuredData(from: metadata)
             )
             return .applied
         } catch {
             exportPipelineLog.error(
-                "overlaySidecarIPTC JSON writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
+                "overlaySidecarIPTC \(carrier, privacy: .private) writeFields failed for \(sourceURL.lastPathComponent, privacy: .private(mask: .hash)) → \(renderedURL.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)"
             )
             return .failed
         }
     }
 
-    /// Reads the source file's embedded descriptive metadata (no sidecar), serialized
-    /// against concurrent writes via `MetadataIOCoordinator`, for the staleness comparison.
-    /// Returns nil on read failure (the reconciler then defaults to trusting the sidecar).
-    private static func readEmbeddedMetadata(from url: URL) async -> IPTCMetadata? {
-        await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
-            guard let md = try? ImageMetadata.read(from: url) else { return nil }
-            return iptcMetadataFromDict(md.asMetadataDict(fileURL: url))
-        }
-    }
 }

@@ -4,6 +4,8 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Keep export-side JSON/XMP inspection and stale-sidecar checks off the UI thread. Serialize the source snapshot with metadata writes and avoid redundant embedded reads for rating/label-only sidecars.
+
 - Preserve comma-containing IPTC keywords, people and organisation values during edited export and sidecar sync. Include pending JSON/XMP metadata when saving from Develop.
 
 - Add a keyboard preview and key recording in Settings for file, browsing, metadata, export, scopes, upload, rating and label shortcuts. Show free keys across modifier layers, confirm occupied-key reassignment, retain culling aliases and keep native menus in sync. Preserve existing custom culling bindings when upgrading profiles.

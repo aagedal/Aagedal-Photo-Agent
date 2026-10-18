@@ -3951,3 +3951,269 @@ struct FFmpegLocalImageBoundaryTests {
         }
     }
 }
+
+@Suite("Export IPTC selection worker")
+struct ExportIPTCSelectionTests {
+    @Test("Pending app drafts suppress older physical carriers, including empty and partial drafts",
+          arguments: [IPTCMetadata(), IPTCMetadata(rating: 3), IPTCMetadata(title: "Pending")])
+    func pendingDraftPrecedence(metadata: IPTCMetadata) async {
+        let probe = ExportIPTCSelectionProbe(draft: metadata, xmp: IPTCMetadata(title: "Older XMP"))
+        let result = await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        #expect(result == .pendingDraft(metadata))
+        #expect(probe.calls == ["draft"])
+    }
+
+    @Test("Saved app history does not hide the authoritative physical XMP record")
+    func savedDraftFallsThroughToXMP() async {
+        let metadata = IPTCMetadata(title: "Saved XMP")
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Old history"),
+            xmp: metadata, draftPending: false)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .xmp(metadata))
+        #expect(probe.calls == ["draft", "xmp", "embedded", "reconcile"])
+    }
+
+    @Test("Develop-only XMP and missing carriers avoid embedded reads and reconciliation")
+    func noDescriptiveRecord() async {
+        var develop = IPTCMetadata()
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 1
+        develop.cameraRaw = settings
+        let probe = ExportIPTCSelectionProbe(xmp: develop)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .noPendingEdits)
+        #expect(probe.calls == ["draft", "xmp"])
+        let absent = ExportIPTCSelectionProbe()
+        #expect(await absent.service.select(sourceURL: absent.sourceURL, folderURL: nil) == .noPendingEdits)
+        #expect(absent.calls == ["xmp"])
+    }
+
+    @Test("XMP selection preserves conflict and embedded-read-failure policy", arguments: [false, true])
+    func reconciliationPolicy(stale: Bool) async {
+        let metadata = IPTCMetadata(title: "XMP")
+        let probe = ExportIPTCSelectionProbe(xmp: metadata, embedded: stale ? IPTCMetadata(title: "New embedded") : nil,
+            verdict: stale ? .fileNewerConflict : .sidecarMaster)
+        let result = await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        #expect(result == (stale ? .staleSidecarSkipped : .xmp(metadata)))
+        #expect(probe.calls == ["draft", "xmp", "embedded", "reconcile"])
+    }
+
+    @Test("Rating and label-only XMP avoids unnecessary source-container reads",
+          arguments: [IPTCMetadata(rating: 3), IPTCMetadata(label: "Red"), IPTCMetadata(label: "")])
+    func partialXMPDoesNotReadEmbedded(metadata: IPTCMetadata) async {
+        let probe = ExportIPTCSelectionProbe(xmp: metadata)
+        #expect(await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) == .xmp(metadata))
+        #expect(probe.calls == ["draft", "xmp"])
+    }
+
+    @MainActor
+    @Test("Selection runs on its retained worker while MainActor stays responsive and reads serialize")
+    func workerContextAndSerialization() async throws {
+        let marker = UUID()
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Pending"), blocksFirstDraft: true)
+        let service = probe.service
+        let first = Task { @MainActor in
+            await ExportIPTCSelectionContext.$marker.withValue(marker) {
+                await service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+            }
+        }
+        defer { probe.releaseDraft(); first.cancel() }
+        try await waitForSelection { probe.calls == ["draft"] }
+        // This assertion executes on MainActor while the filesystem callback is blocked.
+        #expect(!probe.completedFirstDraft)
+        let second = Task { @MainActor in
+            await ExportIPTCSelectionContext.$marker.withValue(marker) {
+                await service.select(sourceURL: probe.sourceURL.appendingPathExtension("other"), folderURL: probe.folderURL)
+            }
+        }
+        defer { second.cancel() }
+        await Task.yield()
+        #expect(probe.calls == ["draft"])
+        probe.releaseDraft()
+        #expect(await first.value == .pendingDraft(IPTCMetadata(title: "Pending")))
+        #expect(await second.value == .pendingDraft(IPTCMetadata(title: "Pending")))
+        #expect(probe.calls == ["draft", "draft"])
+        #expect(probe.observedMarkers == [marker, marker])
+        #expect(probe.executedOnWorker)
+        #expect(!probe.executedOnMain)
+        #expect(!probe.gateTimedOut)
+    }
+
+    @Test("Selection waits for an admitted source transaction before reading its draft")
+    func orderedSourceLease() async throws {
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Before commit"))
+        let service = probe.service
+        let release = AsyncStream<Void>.makeStream()
+        let owner = Task {
+            await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: probe.sourceURL)) {
+                probe.markLeaseStarted()
+                for await _ in release.stream { break }
+                probe.replaceDraft(IPTCMetadata(title: "Committed"))
+            }
+        }
+        defer { release.continuation.yield(()); release.continuation.finish(); owner.cancel() }
+        try await waitForSelection { probe.leaseStarted }
+        let selection = Task { await service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL) }
+        defer { selection.cancel() }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(probe.calls.isEmpty)
+        release.continuation.yield(())
+        release.continuation.finish()
+        await owner.value
+        #expect(await selection.value == .pendingDraft(IPTCMetadata(title: "Committed")))
+    }
+
+    @Test("A cancelled post-render caller still selects metadata rather than reporting no edits")
+    func cancelledCallerStillSelects() async {
+        let metadata = IPTCMetadata(title: "Pending after render")
+        let probe = ExportIPTCSelectionProbe(draft: metadata)
+        let result = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await probe.service.select(sourceURL: probe.sourceURL, folderURL: probe.folderURL)
+        }.value
+        #expect(result == .pendingDraft(metadata))
+        #expect(probe.calls == ["draft"])
+    }
+
+    @Test("Selection releases the source lease before writing metadata onto that same URL")
+    func sameSourceDestinationCompletes() async throws {
+        let probe = ExportIPTCSelectionProbe(draft: IPTCMetadata(title: "Selected caption"))
+        let (directory, source) = try selectionWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = probe.service
+        let operation = Task {
+            let result = await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: source,
+                folderURL: directory, writeEngine: SwiftExifWriteEngine(), service: service)
+            probe.recordOutcome(result)
+        }
+        defer { operation.cancel() }
+        // A regression that retains the source lease would otherwise hang the test process.
+        try await waitForSelection { probe.outcome != nil }
+        guard let outcome = probe.outcome, case .applied = outcome else {
+            Issue.record("Expected completed overlay"); return
+        }
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).title == "Selected caption")
+        await operation.value
+    }
+
+    @Test("Empty drafts stop fallback and cancelled metadata writes retain their failure outcome",
+          arguments: [false, true])
+    func postRenderOutcomePolicy(cancelled: Bool) async throws {
+        let (directory, source) = try selectionWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try Data(contentsOf: source)
+        let draft = cancelled ? IPTCMetadata(title: "Pending") : IPTCMetadata()
+        let probe = ExportIPTCSelectionProbe(draft: draft, xmp: IPTCMetadata(title: "Older XMP"))
+        let service = probe.service
+        let outcome = await Task {
+            if cancelled { withUnsafeCurrentTask { $0?.cancel() } }
+            return await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: source,
+                folderURL: directory, writeEngine: SwiftExifWriteEngine(), service: service)
+        }.value
+        if cancelled {
+            guard case .failed = outcome else { Issue.record("Cancelled metadata write must remain a failure"); return }
+        } else {
+            guard case .noPendingEdits = outcome else { Issue.record("Empty pending draft must stop XMP fallback"); return }
+        }
+        #expect(probe.calls == ["draft"])
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    private func selectionWorkspace() throws -> (URL, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("selection-file-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("photo.jpg")
+        let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(image.representation(using: .jpeg, properties: [:])).write(to: source)
+        return (directory, source)
+    }
+
+    private func waitForSelection(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !predicate() {
+            guard ContinuousClock.now < deadline else { throw ExportIPTCSelectionProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+private enum ExportIPTCSelectionProbeError: Error { case timedOut }
+
+private nonisolated enum ExportIPTCSelectionContext {
+    @TaskLocal static var marker: UUID?
+}
+
+private nonisolated final class ExportIPTCSelectionProbe: @unchecked Sendable {
+    let folderURL = URL(fileURLWithPath: "/virtual/selection-\(UUID())", isDirectory: true)
+    var sourceURL: URL { folderURL.appendingPathComponent("source.jpg") }
+    let queue = DispatchSerialQueue(label: "test.export-iptc-selection")
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private var draft: IPTCMetadata?
+    private let xmp: IPTCMetadata?
+    private let embedded: IPTCMetadata?
+    private let verdict: SidecarReconciliation.Verdict
+    private let blocksFirstDraft: Bool
+    private let draftPending: Bool
+    private var storedCalls: [String] = []
+    private var storedMarkers: [UUID?] = []
+    private var storedOnWorker = true
+    private var storedOnMain = false
+    private var storedGateTimedOut = false
+    private var storedDraftCompleted = false
+    private var storedLeaseStarted = false
+    private var storedOutcome: SidecarIPTCOverlay.Outcome?
+
+    init(draft: IPTCMetadata? = nil, xmp: IPTCMetadata? = nil, embedded: IPTCMetadata? = nil,
+         verdict: SidecarReconciliation.Verdict = .sidecarMaster, blocksFirstDraft: Bool = false,
+         draftPending: Bool = true) {
+        self.draft = draft; self.xmp = xmp; self.embedded = embedded
+        self.verdict = verdict; self.blocksFirstDraft = blocksFirstDraft; self.draftPending = draftPending
+    }
+
+    var service: ExportIPTCSelectionService {
+        ExportIPTCSelectionService(access: ExportIPTCSelectionAccess(
+            loadDraft: { [self] source, _ in
+                record("draft")
+                let shouldBlock = lock.withLock { storedCalls.filter { $0 == "draft" }.count == 1 && blocksFirstDraft }
+                if shouldBlock {
+                    let timedOut = gate.wait(timeout: .now() + 10) != .success
+                    lock.withLock { storedGateTimedOut = timedOut }
+                }
+                return lock.withLock {
+                    storedDraftCompleted = true
+                    return draft.map { MetadataSidecar(sourceFile: source.lastPathComponent, pendingChanges: draftPending, metadata: $0) }
+                }
+            },
+            loadXMP: { [self] _ in record("xmp"); return xmp },
+            readEmbedded: { [self] _ in record("embedded"); return embedded },
+            reconcile: { [self] _, capturedEmbedded, capturedXMP in
+                record("reconcile")
+                #expect(capturedEmbedded == embedded)
+                #expect(capturedXMP == xmp)
+                return verdict
+            }
+        ), filesystemQueue: queue)
+    }
+
+    private func record(_ call: String) {
+        lock.withLock {
+            storedCalls.append(call)
+            storedMarkers.append(ExportIPTCSelectionContext.marker)
+            storedOnWorker = storedOnWorker && queue.isIsolatingCurrentContext() == true
+            storedOnMain = storedOnMain || Thread.isMainThread
+        }
+    }
+    var calls: [String] { lock.withLock { storedCalls } }
+    var observedMarkers: [UUID?] { lock.withLock { storedMarkers } }
+    var executedOnWorker: Bool { lock.withLock { storedOnWorker } }
+    var executedOnMain: Bool { lock.withLock { storedOnMain } }
+    var completedFirstDraft: Bool { lock.withLock { storedDraftCompleted } }
+    var gateTimedOut: Bool { lock.withLock { storedGateTimedOut } }
+    var leaseStarted: Bool { lock.withLock { storedLeaseStarted } }
+    var outcome: SidecarIPTCOverlay.Outcome? { lock.withLock { storedOutcome } }
+    func releaseDraft() { gate.signal() }
+    func markLeaseStarted() { lock.withLock { storedLeaseStarted = true } }
+    func replaceDraft(_ metadata: IPTCMetadata) { lock.withLock { draft = metadata } }
+    func recordOutcome(_ outcome: SidecarIPTCOverlay.Outcome) { lock.withLock { storedOutcome = outcome } }
+}

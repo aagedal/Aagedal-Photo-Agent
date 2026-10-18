@@ -1,5 +1,13 @@
 # App improvement audit plan
 
+**Export IPTC filesystem worker (2026-10-18):** JSON/XMP selection, embedded metadata
+inspection and stale-sidecar date probes run on a retained serial Dispatch executor under
+one source photo lease. Rating/label-only XMP avoids redundant embedded reads. The 41-test
+focused run verifies worker ownership, MainActor responsiveness and selection policy. The
+4,342-test full regression and repository validation pass (two existing skips, zero failures);
+real-volume timing and full release qualification remain open. See the
+[dated continuation](plan-status-export-iptc-worker-continuation-2026-10-18.md).
+
 **Edited export IPTC integrity (2026-10-18):** Develop Save now uses the shared pending
 JSON/XMP overlay and artifact finalization pipeline. Typed keyword, person and organisation
 lists retain comma-containing item boundaries in rendered exports, sidecar sync and complete
