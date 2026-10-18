@@ -497,6 +497,10 @@ final class ThumbnailService {
     /// Invalidates only the edited thumbnail for a URL (original remains cached).
     func invalidateEditedThumbnail(for url: URL) {
         editedCache.removeObject(forKey: url as NSURL)
+        // A URL alone no longer identifies this render after settings/orientation
+        // change. Retire the old producer so a replacement cannot join it and its
+        // late pixels cannot repopulate the edited cache.
+        editedInFlightTasks.removeValue(forKey: url)?.task.cancel()
     }
 
     /// Invalidates both original and edited thumbnails for a URL.

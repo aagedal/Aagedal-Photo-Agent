@@ -641,3 +641,129 @@ private nonisolated enum ThumbnailRenderContext {
         #expect(Task.currentPriority >= .userInitiated)
     }
 }
+
+@Suite("Thumbnail stale-request and folder-return invalidation")
+@MainActor
+struct ThumbnailRevisionInvalidationTests {
+    @Test("A changed edit retires the gated old producer and renders current settings")
+    func changedSettingsRetireInflightRender() async throws {
+        let image = try makeThumbnailBitmap()
+        let gate = AsyncStream<Void>.makeStream()
+        let calls = ThumbnailRevisionLoadProbe()
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            let index = calls.next()
+            if index == 1 {
+                for await _ in gate.stream { break }
+            }
+            return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        })
+        defer { gate.continuation.yield(()); gate.continuation.finish() }
+        let url = URL(fileURLWithPath: "/virtual/edited-invalidation-\(UUID()).jpg")
+        var oldSettings = CameraRawSettings()
+        oldSettings.exposure2012 = -2
+        var newSettings = CameraRawSettings()
+        newSettings.exposure2012 = 1
+        let old = Task { await service.renderEditedThumbnail(for: url, settings: oldSettings, exifOrientation: 1) }
+        defer { old.cancel() }
+        try await waitForThumbnail { calls.count > 0 }
+        service.invalidateEditedThumbnail(for: url)
+        let replacement = Task { await service.renderEditedThumbnail(for: url, settings: newSettings, exifOrientation: 1) }
+        defer { replacement.cancel() }
+        // Let both replacement admission and cancellation cleanup run before releasing old I/O.
+        await Task.yield()
+        gate.continuation.yield(())
+        gate.continuation.finish()
+        #expect(await old.value == nil)
+        let actual = try #require(await replacement.value)
+        let reference = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        })
+        let expected = try #require(await reference.renderEditedThumbnail(for: url, settings: newSettings, exifOrientation: 1))
+        #expect(try pixels(actual) == pixels(expected))
+        #expect(service.thumbnail(for: url) === actual)
+        #expect(service.hasEditedThumbnail(for: url))
+    }
+
+    @Test("Folder return invalidates only externally changed XMP while unchanged originals and edits stay cached",
+          arguments: [false, true])
+    func externalSidecarChangeAcrossFolderReturn(removesSidecar: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("thumbnail-return-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let changed = directory.appendingPathComponent("changed.jpg")
+        let untouched = directory.appendingPathComponent("untouched.jpg")
+        try Data("unchanged source pixels".utf8).write(to: changed)
+        try Data("other unchanged pixels".utf8).write(to: untouched)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let sidecars = XMPSidecarService()
+        try sidecars.saveCameraRawOnly(settings, orientation: 1, for: changed)
+        let sidecarURL = sidecars.sidecarURL(for: changed)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)],
+                                              ofItemAtPath: sidecarURL.path)
+        let bitmap = try makeThumbnailBitmap()
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: bitmap, size: NSSize(width: bitmap.width, height: bitmap.height))
+        })
+        let model = BrowserViewModel(thumbnailService: service)
+        let before = ImageFile(url: changed)
+        model.reconcileThumbnailCaches(against: [before, ImageFile(url: untouched)])
+        _ = try #require(await service.loadThumbnail(for: changed))
+        let unchangedOriginal = try #require(await service.loadThumbnail(for: untouched))
+        _ = try #require(await service.renderEditedThumbnail(for: changed, settings: settings, exifOrientation: 1))
+        let unchangedEdited = try #require(await service.renderEditedThumbnail(for: untouched, settings: settings, exifOrientation: 1))
+        // Empty folder admission models leaving A for B without evicting A's reusable images.
+        model.reconcileThumbnailCaches(against: [])
+        if removesSidecar {
+            try FileManager.default.removeItem(at: sidecarURL)
+        } else {
+            settings.exposure2012 = 2
+            try sidecars.saveCameraRawOnly(settings, orientation: 6, for: changed)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 200)],
+                                                  ofItemAtPath: sidecarURL.path)
+        }
+        let after = ImageFile(url: changed)
+        #expect(before.fileSize == after.fileSize)
+        #expect(before.dateModified == after.dateModified)
+        #expect(before.sidecarModified != after.sidecarModified)
+        model.reconcileThumbnailCaches(against: [after, ImageFile(url: untouched)])
+        #expect(service.thumbnail(for: changed) == nil)
+        #expect(!service.hasEditedThumbnail(for: changed))
+        #expect(service.thumbnail(for: untouched, preferOriginal: true) === unchangedOriginal)
+        #expect(service.thumbnail(for: untouched) === unchangedEdited)
+        // An unchanged repeated admission must preserve already refreshed previews too.
+        let refreshed = try #require(await service.loadThumbnail(for: changed))
+        model.reconcileThumbnailCaches(against: [ImageFile(url: changed), ImageFile(url: untouched)])
+        #expect(service.thumbnail(for: changed, preferOriginal: true) === refreshed)
+    }
+
+    private func makeMemoryCoordinator() -> ImageMemoryCoordinator {
+        ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
+    }
+
+    private func makeThumbnailBitmap() throws -> CGImage {
+        let image = CIImage(color: CIColor(red: 0.25, green: 0.35, blue: 0.45))
+            .cropped(to: CGRect(x: 0, y: 0, width: 16, height: 16))
+        return try #require(CIContext().createCGImage(image, from: image.extent))
+    }
+
+    private func pixels(_ image: NSImage) throws -> Data {
+        let cg = try #require(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        return try #require(cg.dataProvider?.data) as Data
+    }
+
+    private func waitForThumbnail(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(8)
+        while !predicate() {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+private nonisolated final class ThumbnailRevisionLoadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var countStorage = 0
+    var count: Int { lock.withLock { countStorage } }
+    func next() -> Int { lock.withLock { countStorage += 1; return countStorage } }
+}

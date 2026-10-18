@@ -961,10 +961,11 @@ final class BrowserViewModel {
     }
 
     /// Stable identity of a file's bytes, from the scan's size+mtime (no extra I/O).
-    /// Note: an in-browser develop edit doesn't touch the file, so its token is
-    /// unchanged and its edited thumbnail survives navigation; a re-export changes it.
+    /// Source bytes and sidecar revisions both affect preview content. Reuse cached
+    /// variants across navigation only while their scanned revisions remain unchanged.
     nonisolated private static func thumbnailContentToken(for file: ImageFile) -> String {
-        "\(file.fileSize)|\(file.dateModified.timeIntervalSinceReferenceDate)"
+        let sidecar = file.sidecarModified.map { String($0.timeIntervalSinceReferenceDate) } ?? "none"
+        return "\(file.fileSize)|\(file.dateModified.timeIntervalSinceReferenceDate)|xmp=\(sidecar)"
     }
 
     nonisolated private static func iCloudDownloadMessage(for deferredItemCount: Int) -> String {
@@ -975,10 +976,11 @@ final class BrowserViewModel {
     }
 
     /// Drop URL-keyed thumbnail caches for files whose bytes changed since we last
-    /// cached them (e.g. a render deleted and re-exported to the same path while this
-    /// folder was inactive). Unchanged files keep their cache. Tokens persist across
-    /// navigation, so this catches changes the in-place auto-refresh diff never saw.
-    private func reconcileThumbnailCaches(against files: [ImageFile]) {
+    /// cached them (e.g. a render replaced at the same path, or an external XMP edit
+    /// while this folder was inactive). Sidecars can change both edited pixels and the
+    /// original thumbnail's display orientation. Unchanged files retain both variants.
+    /// Tokens persist across navigation, covering changes the active refresh never saw.
+    func reconcileThumbnailCaches(against files: [ImageFile]) {
         for file in files {
             let token = Self.thumbnailContentToken(for: file)
             let key = file.url as NSURL
