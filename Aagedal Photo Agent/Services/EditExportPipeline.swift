@@ -326,12 +326,45 @@ enum RenderKind: Sendable {
     case jpeg
 }
 
+nonisolated enum ExportMetadataFailurePolicy: Sendable {
+    /// Retain useful local pixels and report metadata failures through the batch tracker.
+    case keepLocalCopy
+    /// A known metadata failure must not authorize signing or remote delivery.
+    case rejectForDelivery
+}
+
+nonisolated struct ExportMetadataIncompleteError: LocalizedError, Sendable {
+    let renderedURL: URL
+    let copyFailed: Bool
+    let overlayFailed: Bool
+
+    var errorDescription: String? {
+        "Metadata could not be completed for \(renderedURL.lastPathComponent). The rendered file was kept locally and was not signed or uploaded."
+    }
+}
+
 /// The shared "render one edited photo" pipeline used by every export/publish call site
 /// (C2PA sign, Save As, export folder, FTP publish). Centralizing the steps — CameraRaw
 /// resolution, render, source-metadata copy, and pending-IPTC sidecar overlay — keeps the
 /// four call sites from drifting apart (which previously left the FTP path missing the
 /// in-memory CameraRaw read and the IPTC overlay entirely).
 enum EditExportPipeline {
+
+    /// Delivery and signing must not consume pixels whose metadata stage reported failure.
+    /// Local Save/Export retains its existing useful-file-plus-warning behavior.
+    static func renderForDelivery(sourceURL: URL,
+                                  cameraRaw: CameraRawSettings?,
+                                  kind: RenderKind,
+                                  outputFolder: URL,
+                                  folderURL: URL?,
+                                  writeEngine: any MetadataWriteEngine,
+                                  failureTracker: MetadataFailureTracker,
+                                  configuration: AdvancedExportConfiguration? = nil) async throws -> URL {
+        try await renderItem(sourceURL: sourceURL, cameraRaw: cameraRaw, kind: kind,
+            outputFolder: outputFolder, folderURL: folderURL, writeEngine: writeEngine,
+            failureTracker: failureTracker, configuration: configuration,
+            metadataFailurePolicy: .rejectForDelivery)
+    }
 
     /// Populates `cameraRaw` on each entry in `map`, preferring the live in-memory edit
     /// settings (kept in sync by the edit workspace) and falling back to the XMP sidecar
@@ -370,8 +403,8 @@ enum EditExportPipeline {
 
     /// Renders one source file to `outputFolder` using `kind`, copies the source's
     /// EXIF/IPTC/XMP onto the result, and overlays any pending IPTC sidecar edits. Copy and
-    /// overlay failures are recorded in `failureTracker` (they don't abort the file).
-    /// Returns the rendered file URL.
+    /// overlay failures are recorded in `failureTracker`. Delivery rejects known metadata
+    /// failures after finalizing the local artifact; ordinary local exports return it with warnings.
     static func renderItem(sourceURL: URL,
                            cameraRaw: CameraRawSettings?,
                            kind: RenderKind,
@@ -382,7 +415,8 @@ enum EditExportPipeline {
                            configuration: AdvancedExportConfiguration? = nil,
                            outputFilenameSuffix: String = "",
                            collisionPolicy: EditedImageRenderer.OutputCollisionPolicy = .replaceExisting,
-                           finalizationService: ExportArtifactFinalizationService = .shared) async throws -> URL {
+                           finalizationService: ExportArtifactFinalizationService = .shared,
+                           metadataFailurePolicy: ExportMetadataFailurePolicy = .keepLocalCopy) async throws -> URL {
         try await MetadataSidecarService().requireNoPendingOrientation(
             for: sourceURL, in: folderURL ?? sourceURL.deletingLastPathComponent())
         if case .rawDNG(let compression, let executableURL) = kind {
@@ -418,12 +452,16 @@ enum EditExportPipeline {
         }
         let metadataCameraRaw = bakedCameraRaw
         let isHDR = (metadataCameraRaw?.hdrEditMode == 1)
+        // Keep the decision per item. A shared batch tracker may already contain failures
+        // from another image (including one with the same basename in a different folder).
+        let itemFailures = MetadataFailureTracker()
         let copier: EditedImageRenderer.MetadataCopier = { src, dst in
             do {
                 try await writeEngine.copyMetadataToRenderedFile(
                     from: src, to: dst, bakedCameraRaw: metadataCameraRaw)
             } catch {
                 await failureTracker.recordCopyFailure(src.lastPathComponent)
+                await itemFailures.recordCopyFailure(src.lastPathComponent)
             }
         }
 
@@ -460,10 +498,12 @@ enum EditExportPipeline {
             }
         }.value
 
+        var overlayFailed = false
         switch await SidecarIPTCOverlay.apply(
             sourceURL: sourceURL, renderedURL: renderedURL,
             folderURL: folderURL, writeEngine: writeEngine) {
         case .failed:
+            overlayFailed = true
             await failureTracker.recordOverlayFailure(sourceURL.lastPathComponent)
         case .staleSidecarSkipped:
             await failureTracker.recordStaleSidecar(sourceURL.lastPathComponent)
@@ -484,6 +524,14 @@ enum EditExportPipeline {
             renderedURL: renderedURL,
             copiesRAWArchiveSidecar: copiesRAWArchiveSidecar
         ))
+        if case .rejectForDelivery = metadataFailurePolicy {
+            let copyFailures = await itemFailures.metadataCopyFailures
+            let copyFailed = !copyFailures.isEmpty
+            if copyFailed || overlayFailed {
+                throw ExportMetadataIncompleteError(renderedURL: renderedURL,
+                    copyFailed: copyFailed, overlayFailed: overlayFailed)
+            }
+        }
         return renderedURL
     }
 

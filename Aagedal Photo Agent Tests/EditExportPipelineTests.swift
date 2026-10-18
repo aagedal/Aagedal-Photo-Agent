@@ -186,6 +186,73 @@ struct EditExportPipelineTests {
         return (dir, source)
     }
 
+    @Test("Delivery rejects known metadata failures and keeps recoverable pixels",
+          arguments: [(true, false), (false, true), (true, true)])
+    func deliveryRejectsIncompleteMetadata(failures: (Bool, Bool)) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pending = IPTCMetadata(title: "Pending delivery headline", keywords: ["Oslo, Norway"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending),
+            for: source, in: dir)
+        let sourceBytes = try Data(contentsOf: source)
+        let output = dir.appendingPathComponent("delivery")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let engine = ExportFailureEngine(failCopy: failures.0, failOverlay: failures.1)
+        let tracker = MetadataFailureTracker()
+        var authorizedURLs: [URL] = []
+        do {
+            let url = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+                kind: .jpeg, outputFolder: output, folderURL: dir,
+                writeEngine: engine, failureTracker: tracker)
+            authorizedURLs.append(url)
+            Issue.record("Metadata failure must prevent delivery authorization")
+        } catch let error as ExportMetadataIncompleteError {
+            #expect(error.copyFailed == failures.0)
+            #expect(error.overlayFailed == failures.1)
+            #expect(FileManager.default.fileExists(atPath: error.renderedURL.path))
+            let image = try #require(CGImageSourceCreateWithURL(error.renderedURL as CFURL, nil))
+            #expect(CGImageSourceCreateImageAtIndex(image, 0, nil) != nil)
+        }
+        #expect(authorizedURLs.isEmpty)
+        #expect(await tracker.metadataCopyFailures == (failures.0 ? [source.lastPathComponent] : []))
+        #expect(await tracker.sidecarOverlayFailures == (failures.1 ? [source.lastPathComponent] : []))
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(MetadataSidecarService().loadSidecar(for: source, in: dir)?.metadata.title == pending.title)
+
+        // Local exports preserve the same useful pixels and report failures to their caller.
+        let localTracker = MetadataFailureTracker()
+        let local = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir,
+            writeEngine: engine, failureTracker: localTracker)
+        #expect(FileManager.default.fileExists(atPath: local.path))
+        #expect(await localTracker.metadataCopyFailures.count == (failures.0 ? 1 : 0))
+        #expect(await localTracker.sidecarOverlayFailures.count == (failures.1 ? 1 : 0))
+    }
+
+    @Test("An earlier same-name batch failure does not reject a metadata-complete delivery")
+    func deliveryUsesOnlyCurrentItemFailures() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let pending = IPTCMetadata(title: "Ready for delivery", keywords: ["Oslo, Norway", "ready"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending),
+            for: source, in: dir)
+        let output = dir.appendingPathComponent("delivery")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        await tracker.recordCopyFailure(source.lastPathComponent)
+        await tracker.recordOverlayFailure(source.lastPathComponent)
+        let rendered = try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir,
+            writeEngine: SwiftExifWriteEngine(), failureTracker: tracker)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect(actual.title == pending.title)
+        #expect(actual.keywords == pending.keywords)
+        #expect(await tracker.metadataCopyFailures.count == 1)
+        #expect(await tracker.sidecarOverlayFailures.count == 1)
+    }
+
     /// Creates a raster TIFF carrying a Sony Make tag. SwiftMediaMetadata 3 must keep the
     /// unambiguous `.tiff` URL classified as TIFF rather than treating camera Make as proof of ARW.
     private func makeSonyTIFFWorkspace() throws -> (dir: URL, source: URL) {
@@ -857,7 +924,7 @@ struct EditExportPipelineTests {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         let tracker = MetadataFailureTracker()
-        let rendered = try await EditExportPipeline.renderItem(
+        let rendered = try await EditExportPipeline.renderForDelivery(
             sourceURL: source, cameraRaw: nil, kind: .jpeg,
             outputFolder: outDir, folderURL: source.deletingLastPathComponent(),
             writeEngine: engine, failureTracker: tracker)
@@ -4216,4 +4283,42 @@ private nonisolated final class ExportIPTCSelectionProbe: @unchecked Sendable {
     func markLeaseStarted() { lock.withLock { storedLeaseStarted = true } }
     func replaceDraft(_ metadata: IPTCMetadata) { lock.withLock { draft = metadata } }
     func recordOutcome(_ outcome: SidecarIPTCOverlay.Outcome) { lock.withLock { storedOutcome = outcome } }
+}
+
+/// Injects failures at the real copy/overlay boundaries; all successful operations use
+/// the production backend and produce real, readable image metadata.
+private nonisolated final class ExportFailureEngine: MetadataWriteEngine {
+    let failCopy: Bool
+    let failOverlay: Bool
+    let underlying = SwiftExifWriteEngine()
+    init(failCopy: Bool, failOverlay: Bool) {
+        self.failCopy = failCopy
+        self.failOverlay = failOverlay
+    }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await underlying.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        if failOverlay { throw CocoaError(.fileWriteUnknown) }
+        try await underlying.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        try await underlying.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws {
+        try await underlying.writeRating(rating, to: urls)
+    }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws {
+        try await underlying.writeLabel(label, to: urls)
+    }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws {
+        try await underlying.writeOrientation(orientation, to: urls)
+    }
+    func stripIPTCAndXMP(from urls: [URL]) async throws {
+        try await underlying.stripIPTCAndXMP(from: urls)
+    }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        if failCopy { throw CocoaError(.fileWriteUnknown) }
+        try await underlying.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
 }

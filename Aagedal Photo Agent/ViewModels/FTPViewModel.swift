@@ -689,7 +689,7 @@ final class FTPViewModel {
                     let uploadedDir = url.deletingLastPathComponent()
                         .appendingPathComponent("Uploaded", isDirectory: true)
                     try await fileSystem.ensureDirectory(uploadedDir)
-                    let outputURL = try await EditExportPipeline.renderItem(
+                    let outputURL = try await EditExportPipeline.renderForDelivery(
                         sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
                         outputFolder: uploadedDir, folderURL: url.deletingLastPathComponent(),
                         writeEngine: writeEngine, failureTracker: failureTracker)
@@ -707,7 +707,7 @@ final class FTPViewModel {
                 } catch is CancellationError {
                     return
                 } catch {
-                    self.errorMessages.append("Failed to render \(url.lastPathComponent): \(error.localizedDescription)")
+                    self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
                 }
                 self.renderCompletedCount += 1
                 self.overallProgress = Double(self.renderCompletedCount) / Double(self.renderTotalCount) * 0.5
@@ -715,15 +715,15 @@ final class FTPViewModel {
 
             let copyFailures = await failureTracker.metadataCopyFailures
             if !copyFailures.isEmpty {
-                self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — uploaded without IPTC data")
+                self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
             }
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             if !overlayFailures.isEmpty {
-                self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — uploaded without pending edits")
+                self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
             }
             let staleWarnings = await failureTracker.staleSidecarWarnings
             if !staleWarnings.isEmpty {
-                self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image was" : "images were") uploaded from embedded metadata, not the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")
+                self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image" : "images") used embedded metadata instead of the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")
             }
 
             guard !Task.isCancelled else {

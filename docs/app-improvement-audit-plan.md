@@ -1,5 +1,15 @@
 # App improvement audit plan
 
+**Browsing cache and metadata delivery (2026-10-18):** Edited invalidation retires
+old in-flight renders; folder-return reconciliation detects XMP changes/removal using
+already-scanned revisions while preserving unchanged caches. Render & Sign and edited FTP
+reject known metadata-copy/overlay failures before signing or upload and retain local pixels
+for recovery. Local export warning behavior remains available. The 33-test focused run and
+4,346-test full regression pass (4,344 passed, two existing skips, zero failures); final
+export/thumbnail checks, 11 FTP boundary checks and repository validation also pass. Native,
+performance and release qualification remain open. See
+the [dated continuation](plan-status-browsing-delivery-continuation-2026-10-18.md).
+
 **Export IPTC filesystem worker (2026-10-18):** JSON/XMP selection, embedded metadata
 inspection and stale-sidecar date probes run on a retained serial Dispatch executor under
 one source photo lease. Rating/label-only XMP avoids redundant embedded reads. The 41-test
