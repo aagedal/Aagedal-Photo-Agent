@@ -16,7 +16,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         nonisolated var request: PrimaryDevelopWriteRequest { capture.intent.requests[0] }
     }
 
-    private func fixture(mode: MetadataWriteMode = .writeToXMPSidecar) throws -> Fixture {
+    private func fixture(mode: MetadataWriteMode = .writeToXMPSidecar, legacyApp: Bool = false) throws -> Fixture {
         let root = URL(fileURLWithPath: "/private/tmp/DevelopRooted-\(UUID())", isDirectory: true)
         let templates = root.appendingPathComponent("Develop", isDirectory: true)
         try FileManager.default.createDirectory(at: templates, withIntermediateDirectories: true)
@@ -42,6 +42,9 @@ struct DevelopTemplateRootedWriteServiceTests {
         var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: appURL)) as? [String: Any])
         object["futurePrivateEvidence"] = ["value": "retain"]
         try JSONSerialization.data(withJSONObject: object).write(to: appURL)
+        if legacyApp {
+            try FileManager.default.moveItem(at: appURL, to: appURL.deletingLastPathComponent().appendingPathComponent("first.meta.json"))
+        }
         var settings = CameraRawSettings(); settings.exposure2012 = 1.25
         let mask = MaskAdjustment(name: "Captured mask", exposure: 0.75)
         settings.localAdjustments = [mask]; settings.layerOrder = [.mask(mask.id), .global]
@@ -80,7 +83,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request, expected: f.snapshot,
             reservation: lease, validateCommitAuthority: { _, expected in
                 try validate(expected, facade: f.facade, reservation: lease)
-            }, retainPreparedMutation: { _, _, _ in count.write((count.read() ?? Data()) + Data([1])) })
+            }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in count.write((count.read() ?? Data()) + Data([1])) })
         #expect(result.writeResult.completed)
         #expect(count.read()?.count == 2)
         #expect(result.preparedXMP != nil && result.preparedAppSidecar != nil)
@@ -114,7 +117,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request, expected: f.snapshot,
             reservation: lease, validateCommitAuthority: { stage, _ in
                 if stage == (afterXMP ? .appSidecar : .xmp) { throw CancellationError() }
-            }, retainPreparedMutation: { _, _, _ in })
+            }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.wasCancelled)
         #expect(result.writeResult.requiresRecovery == afterXMP)
         #expect((result.installedXMP != nil) == afterXMP)
@@ -129,7 +132,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request, expected: f.snapshot,
-            reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { stage, _, _ in
+            reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { stage, _, _, _ in
                 if stage == (afterXMP ? .appSidecar : .xmp) { throw CocoaError(.fileWriteNoPermission) }
             })
         #expect(!result.writeResult.completed)
@@ -146,7 +149,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         var hooks = DevelopTemplateRootedWriteService.Hooks()
         hooks.beforeXMP = { try f.snapshot.sourceBytes.write(to: f.request.imageURL, options: .atomic) }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade, hooks: hooks).execute(f.request,
-            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && !result.writeResult.requiresRecovery)
         #expect(try Data(contentsOf: XMPSidecarService().sidecarURL(for: f.request.imageURL)) == f.snapshot.xmpBytes)
     }
@@ -163,7 +166,7 @@ struct DevelopTemplateRootedWriteServiceTests {
             expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, expected in
                 try validate(expected, facade: f.facade, reservation: lease)
                 try validate(f.later, facade: f.facade, reservation: laterLease)
-            }, retainPreparedMutation: { _, _, _ in })
+            }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.requiresRecovery == afterXMP)
         #expect(result.installedAppSidecar == nil)
     }
@@ -175,7 +178,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         var hooks = DevelopTemplateRootedWriteService.Hooks()
         hooks.afterJSON = { throw CocoaError(.fileReadCorruptFile) }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade, hooks: hooks).execute(f.request,
-            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.requiresRecovery)
         #expect(result.installedXMP != nil && result.installedAppSidecar != nil)
         #expect(result.writeResult.completion?.committedButUnverifiedSidecarURL != nil)
@@ -187,7 +190,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); lease.release()
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request, expected: f.snapshot,
-            reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && !result.writeResult.requiresRecovery)
         #expect(result.preparedXMP == nil && result.preparedAppSidecar == nil)
     }
@@ -207,7 +210,7 @@ struct DevelopTemplateRootedWriteServiceTests {
             try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: outside)
         }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade, hooks: hooks).execute(f.request,
-            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.requiresRecovery)
         #expect(result.installedXMP != nil && result.installedAppSidecar == nil)
         #expect(try Data(contentsOf: sentinel) == sentinelBytes)
@@ -220,7 +223,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         var hooks = DevelopTemplateRootedWriteService.Hooks()
         hooks.beforeXMP = { try f.facade.authorizationStore.setEnabled(false) }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade, hooks: hooks).execute(f.request,
-            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && !result.writeResult.requiresRecovery)
         #expect(try Data(contentsOf: XMPSidecarService().sidecarURL(for: f.request.imageURL)) == f.snapshot.xmpBytes)
     }
@@ -231,7 +234,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         defer { try? FileManager.default.removeItem(at: f.root) }
         let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
-            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && !result.writeResult.requiresRecovery)
         #expect(result.preparedXMP == nil && result.preparedAppSidecar == nil)
     }
@@ -252,7 +255,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let task = Task {
             defer { continuation.finish() }
             return await service.execute(f.request, expected: f.snapshot, reservation: lease,
-                validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+                validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         }
         var iterator = events.makeAsyncIterator()
         _ = await iterator.next()
@@ -274,7 +277,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         var hooks = DevelopTemplateRootedWriteService.Hooks()
         hooks.afterJSON = { throw CocoaError(.fileReadCorruptFile) }
         let result = await DevelopTemplateRootedWriteService(facade: f.facade, hooks: hooks).execute(f.request,
-            expected: snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainPreparedMutation: { _, _, _ in })
+            expected: snapshot, reservation: lease, validateCommitAuthority: { _, _ in }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.requiresRecovery)
         #expect(result.installedAppSidecar != nil)
         #expect(result.appSidecarURL == legacy)
@@ -290,7 +293,7 @@ struct DevelopTemplateRootedWriteServiceTests {
         let attacksApp = attack.hasPrefix("app")
         let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
             expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in },
-            retainPreparedMutation: { stage, _, candidate in
+            retainInstalledMutation: { _, _ in }, retainPreparedMutation: { stage, _, candidate, _ in
                 guard stage == (attacksApp ? .appSidecar : .xmp) else { return }
                 let directory = attacksApp ? f.request.folderURL.appendingPathComponent(".photo_metadata") : f.request.folderURL
                 let prefix = attacksApp ? ".automation-draft-" : ".automation-xmp-"
@@ -326,10 +329,171 @@ struct DevelopTemplateRootedWriteServiceTests {
                 if stage == .verification {
                     try #require(installed.xmpBytes).write(to: XMPSidecarService().sidecarURL(for: f.request.imageURL), options: .atomic)
                 }
-            }, retainPreparedMutation: { _, _, _ in })
+            }, retainInstalledMutation: { _, _ in }, retainPreparedMutation: { _, _, _, _ in })
         #expect(!result.writeResult.completed && result.writeResult.requiresRecovery)
         #expect(result.installedXMP != nil && result.installedAppSidecar != nil)
         #expect(result.writeResult.completion?.installedSidecar == nil)
+    }
+
+    @Test("Durable rooted journal retains exact ordered physical evidence across restart", arguments: [false, true])
+    func durableJournal(legacyApp: Bool) async throws {
+        let f = try fixture(legacyApp: legacyApp); defer { try? FileManager.default.removeItem(at: f.root) }
+        let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
+        let directory = f.root.appendingPathComponent("journal")
+        let store = DevelopTemplateRootedMutationStore(directory: directory)
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "sidecar-policy")
+        let result = try await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
+            expected: f.snapshot, reservation: lease, evidence: evidence, mutationStore: store,
+            validateCommitAuthority: { _, expected in try validate(expected, facade: f.facade, reservation: lease) })
+        #expect(result.writeResult.completed)
+        let restarted = DevelopTemplateRootedMutationStore(directory: directory)
+        let record = try #require(try restarted.load())
+        #expect(record.material.batchID == f.capture.intent.id)
+        #expect(record.material.requestID == f.request.id)
+        #expect(record.material.originalXMP == f.snapshot.xmpBytes)
+        #expect(record.material.originalApp == f.snapshot.appSidecarBytes)
+        #expect(record.mutations.map(\.carrier) == [.xmp, .appSidecar])
+        #expect(record.mutations[0].candidate == result.installedXMP?.xmpBytes)
+        #expect(record.mutations[1].candidate == result.installedAppSidecar?.appSidecarBytes)
+        #expect(record.mutations[0].identity == result.preparedXMP)
+        #expect(record.mutations[1].identity == result.preparedAppSidecar)
+        #expect(record.mutations[1].destination.lastPathComponent == (legacyApp ? "first.meta.json" : "first.png.meta.json"))
+        #expect(record.mutations[1].installedRevision == result.installedAppSidecar?.appSidecarRevision)
+        #expect(!record.hasUnresolvedPreparation)
+        try restarted.retain(record.material)
+        #expect(try restarted.load() == record)
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.invalidTransition) {
+            try restarted.recordPrepared(record.material, carrier: .xmp,
+                identity: record.mutations[0].identity, candidate: record.mutations[0].candidate, destination: record.mutations[0].destination)
+        }
+    }
+
+    @Test("Failed installed retention stops the next carrier and returns physical evidence", arguments: [false, true])
+    func installedRetentionFailure(afterApp: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
+        let store = DevelopTemplateRootedMutationStore(directory: f.root.appendingPathComponent("journal"))
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy")
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.snapshot)
+        try store.retain(material)
+        let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in },
+            retainInstalledMutation: { stage, snapshot in
+                if stage == (afterApp ? .appSidecar : .xmp) { throw CocoaError(.fileWriteNoPermission) }
+                try store.recordInstalled(material, carrier: .xmp, snapshot: snapshot)
+            }, retainPreparedMutation: { stage, identity, bytes, destination in
+                try store.recordPrepared(material, carrier: stage == .xmp ? .xmp : .appSidecar, identity: identity, candidate: bytes, destination: destination)
+            })
+        #expect(!result.writeResult.completed && result.writeResult.requiresRecovery)
+        #expect(result.installedXMP != nil)
+        #expect((result.installedAppSidecar != nil) == afterApp)
+        let record = try #require(try store.load())
+        #expect(record.hasUnresolvedPreparation)
+        #expect(record.mutations.count == (afterApp ? 2 : 1))
+        #expect(record.mutations.last?.installedRevision == nil)
+    }
+
+    @Test("Journal refuses reordered preparation, substituted review and installed identity")
+    func journalRefusals() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let store = DevelopTemplateRootedMutationStore(directory: f.root.appendingPathComponent("journal"))
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy")
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.snapshot)
+        let identity = MCPPreparedXMPIdentity(file: .init(device: 1, inode: 42), size: 3,
+            modificationSeconds: 1, modificationNanoseconds: 0)
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.invalidTransition) {
+            try store.recordPrepared(material, carrier: .xmp, identity: identity, candidate: Data("xmp".utf8), destination: f.request.imageURL.deletingPathExtension().appendingPathExtension("xmp"))
+        }
+        try store.retain(material)
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.invalidTransition) {
+            try store.recordPrepared(material, carrier: .appSidecar, identity: identity, candidate: Data("app".utf8), destination: f.request.folderURL.appendingPathComponent(".photo_metadata/first.png.meta.json"))
+        }
+        try store.recordPrepared(material, carrier: .xmp, identity: identity, candidate: Data("xmp".utf8), destination: f.request.imageURL.deletingPathExtension().appendingPathExtension("xmp"))
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.invalidTransition) {
+            try store.recordInstalled(material, carrier: .xmp, snapshot: f.snapshot)
+        }
+        let changed = try DevelopTemplateRootedMutationStore.Material(evidence:
+            DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "changed-policy"),
+            request: f.request, original: f.snapshot)
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.changedMaterial) { try store.retain(changed) }
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.invalidMaterial) {
+            try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.later)
+        }
+        #expect(try store.load()?.hasUnresolvedPreparation == true)
+    }
+
+    @Test("Checksummed invalid recovery material and prepared identities are refused",
+          arguments: ["material", "app-bytes", "app-absent", "timestamp", "device", "destination", "order", "checksum"])
+    func corruptJournal(kind: String) throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let directory = f.root.appendingPathComponent("journal")
+        let store = DevelopTemplateRootedMutationStore(directory: directory)
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy")
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.snapshot)
+        try store.retain(material)
+        try store.recordPrepared(material, carrier: .xmp,
+            identity: .init(file: .init(device: 1, inode: 42), size: 3, modificationSeconds: 1, modificationNanoseconds: 0),
+            candidate: Data("xmp".utf8), destination: f.request.imageURL.deletingPathExtension().appendingPathExtension("xmp"))
+        let url = directory.appendingPathComponent("operations.json")
+        var envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let payloadString = try #require(envelope["payload"] as? String)
+        let payload = try #require(Data(base64Encoded: payloadString))
+        var object = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        if kind == "material" || kind.hasPrefix("app-") {
+            var binding = try #require(object["material"] as? [String: Any])
+            if kind == "material" { binding["batchID"] = UUID().uuidString }
+            else if kind == "app-absent" { binding.removeValue(forKey: "originalApp") }
+            else { binding["originalApp"] = Data("invalid original app bytes".utf8).base64EncodedString() }
+            object["material"] = binding
+        } else if kind != "checksum" {
+            var mutations = try #require(object["mutations"] as? [[String: Any]])
+            if kind == "order" { mutations[0]["carrier"] = "appSidecar" }
+            else if kind == "destination" { mutations[0]["destination"] = f.later.target.url.absoluteString }
+            else {
+                var identity = try #require(mutations[0]["identity"] as? [String: Any])
+                if kind == "timestamp" { identity["modificationNanoseconds"] = -1 }
+                else {
+                    var file = try #require(identity["file"] as? [String: Any])
+                    file["device"] = 0; identity["file"] = file
+                }
+                mutations[0]["identity"] = identity
+            }
+            object["mutations"] = mutations
+        }
+        let changed = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        envelope["payload"] = changed.base64EncodedString()
+        envelope["sha256"] = kind == "checksum" ? "invalid" : SHA256.hash(data: changed).map { String(format: "%02x", $0) }.joined()
+        try JSONSerialization.data(withJSONObject: envelope).write(to: url)
+        let restarted = DevelopTemplateRootedMutationStore(directory: directory)
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.corruptJournal) { try restarted.load() }
+        #expect(throws: DevelopTemplateRootedMutationStore.Failure.corruptJournal) { try restarted.retain(material) }
+    }
+
+    @Test("Prepared journal survives refusal before rename without claiming installation", arguments: [false, true])
+    func interruptedJournal(afterXMP: Bool) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
+        let directory = f.root.appendingPathComponent("journal")
+        let store = DevelopTemplateRootedMutationStore(directory: directory)
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence:
+            DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy"),
+            request: f.request, original: f.snapshot)
+        try store.retain(material)
+        let result = await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
+            expected: f.snapshot, reservation: lease, validateCommitAuthority: { _, _ in },
+            retainInstalledMutation: { stage, snapshot in
+                try store.recordInstalled(material, carrier: stage == .xmp ? .xmp : .appSidecar, snapshot: snapshot)
+            }, retainPreparedMutation: { stage, identity, bytes, destination in
+                try store.recordPrepared(material, carrier: stage == .xmp ? .xmp : .appSidecar, identity: identity, candidate: bytes, destination: destination)
+                if stage == (afterXMP ? .appSidecar : .xmp) { throw CancellationError() }
+            })
+        #expect(!result.writeResult.completed)
+        #expect(result.writeResult.requiresRecovery == afterXMP)
+        let record = try #require(try DevelopTemplateRootedMutationStore(directory: directory).load())
+        #expect(record.hasUnresolvedPreparation)
+        #expect(record.mutations.count == (afterXMP ? 2 : 1))
+        #expect(record.mutations.last?.installedRevision == nil)
+        #expect(result.installedAppSidecar == nil)
     }
 
 }

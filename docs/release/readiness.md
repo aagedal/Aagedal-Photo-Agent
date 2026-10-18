@@ -1,5 +1,15 @@
 # 3.0 coordinator state
 
+**Develop rooted mutation evidence (2026-10-18):** A synchronous durable journal
+retains exact original review/carrier material, prepared candidate bytes/inodes/destinations
+and installed receipts. Installed-retention failure preserves physical evidence and stops
+the next carrier; read-only loading refuses inconsistent material and stage transitions.
+Current and legacy app paths are retained before rename. Native Start, managed linkage
+and batch recovery discovery remain open. The 100-test focused run and 4,303-test
+regression pass (two existing skips, zero failures); repository, helper, model and
+development-signature checks pass. State stays IMPLEMENTING. See the
+[dated continuation](develop-rooted-mutation-evidence-2026-10-18.md).
+
 **Develop rooted sidecar writer (2026-10-17):** An app-internal physical prerequisite
 stages production Develop XMP/app metadata from captured bytes and publishes through
 rooted descriptor-relative installs. Mandatory authority and prepared-inode/candidate
@@ -135,7 +145,7 @@ inspection preserves terminal operation evidence. Authenticated helper handoff a
 broader qualification remain open; see the [dated continuation](native-face-review-worker-2026-10-15.md).
 
 **State:** IMPLEMENTING — Known People interchange/cloud reconciliation, transactional voice-memo archive/recovery/reassociation, local transcription, durable reviewed approval, exact-approved transcript-variable resolution, accessible pre-mutation application preview, native single- and multi-image application/read-back with invalid-authority refusal, and explicit verified WAV delivery pass verification. Mandatory 3.0 MCP work now has a bundled hardened-runtime STDIO transport, default-off Settings/root authority, read-only tool annotations, strict path admission, shared photo-input-format discovery, an explicit-photo revision-evidence facade and a shared photo/folder reservation primitive used by retained field, variable/template, Write All, Primary Develop, Batch Rename, face-scan GUI execution, and queued interactive face-data saves/deletion. The helper now exposes bounded typed effective metadata reads and rooted persisted photo/WAV relationship inspection with separate current revision and historical recovery evidence. Immutable ordered transcription intent previews now retain exact photo/metadata/relationship/WAV evidence and requested provider options for five minutes, with whole-set final checks and durable revalidation. Helper-visible readiness and model/executable identity remain unresolved. Automation Settings now binds the exact retained request and ordered prepared photo set to concrete provider/options/model/executable identity, fresh readiness and explicit native consent. One durably admitted/linked operation retains original rooted reservations and carrier witnesses through inference, anchored transcript draft saves and terminal completion. Cancellation preserves completed drafts; retained linked requests cannot replay after relaunch. Epoch-bound intent inspection and confirmed cancelled-request capacity maintenance remain available. Authenticated exact-request transcription review presentation is available through the matching signed helper and running app; helper start now requires an exact one-use native grant. Native pending-draft and reviewed XMP publication now use exact consent, rooted installation and retained operation records; verified publication disposition permits a subsequent newly reviewed plan. The remaining production workflow facade/executors, guarded physical IPTC mutation tools and final FFmpeg/Whisper distribution qualification remain. The app now embeds the dedicated Photo Agent FFmpeg 9.0.2 variant and provides explicit verified Tiny/Base/Small model downloads. Managed model lifecycle/recovery and final offline/GPU acceptance remain open. Transcription Settings retain custom-provider executable/model bookmarks, provider choice and language/translation/GPU request settings; consent and identity admission remain session-only. MCP exposes a provider catalog with explicit unknown app-session readiness. llama.cpp/GGUF is explicitly deferred to 3.1. Installed-language offline completion, spoken VoiceOver, authentic Sony/real-server voice-memo evidence, cloud and broader release gates also remain.
-**Updated:** 2026-10-17
+**Updated:** 2026-10-18
 
 **Exact retained face-intent review (2026-10-15):** Native review can inspect the
 original retained intent by ID without replacing its inventory/options or renewing
@@ -1319,6 +1329,14 @@ The historical unrelated project ordering diff was committed separately as `fee5
 cycle 3. No unrelated dirty source was present when cycle 4 began.
 
 ## Ordered next actions
+
+**Current after the 2026-10-18 rooted mutation-evidence continuation:** Per-photo
+prepared/installed evidence and exact physical destinations are retained synchronously.
+Next connect these journals to batch checkpoint/recovery discovery and one-way managed
+operation linkage, then native consent/Start and exact terminal presentation. Preserve
+whole-set original witnesses for later photos while advancing only the current carrier.
+Embedded owned-effect stages and watermark admission remain separate requirements.
+See the [dated record](develop-rooted-mutation-evidence-2026-10-18.md).
 
 **Current after the 2026-10-17 Develop review-lifecycle continuation:** Retained
 app-side review preparation, dismissal and cleanup retry are implemented. Continue

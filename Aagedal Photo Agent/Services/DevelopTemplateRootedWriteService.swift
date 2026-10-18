@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// A physical prerequisite for reviewed Develop batches, deliberately unconnected to Start.
-/// Callers own consent, whole-batch authority and durable recovery. Both mandatory callbacks
+/// Callers own consent, whole-batch authority and durable recovery. The mandatory callbacks
 /// must bind those capabilities to the exact request; this primitive supplies confinement.
 nonisolated struct DevelopTemplateRootedWriteService: Sendable {
     enum Stage: Equatable, Sendable { case xmp, appSidecar, verification }
@@ -65,18 +65,21 @@ nonisolated struct DevelopTemplateRootedWriteService: Sendable {
     /// The supplied snapshot must come from the original reviewed capture. Callbacks run
     /// synchronously at the physical boundary; the snapshot advances only after an exact
     /// installed-generation receipt. Later-photo validation must retain original witnesses.
-    /// `retainPreparedMutation` must durably retain the exact candidate bytes and inode
+    /// `retainPreparedMutation` must durably retain the exact candidate bytes, destination and inode
     /// together with the original reviewed intent before returning.
+    /// Installed retention runs while descriptor evidence is held; a failure preserves
+    /// the returned physical snapshot and prevents the next carrier from being installed.
     func execute(_ request: PrimaryDevelopWriteRequest, expected: MCPPhotoCarrierSnapshot,
                  reservation: MCPProcessReservationLease,
                  validateCommitAuthority: @escaping @Sendable (Stage, MCPPhotoCarrierSnapshot) throws -> Void,
-                 retainPreparedMutation: @escaping @Sendable (Stage, MCPPreparedXMPIdentity, Data) throws -> Void) async -> Result {
+                 retainInstalledMutation: @escaping @Sendable (Stage, MCPPhotoCarrierSnapshot) throws -> Void,
+                 retainPreparedMutation: @escaping @Sendable (Stage, MCPPreparedXMPIdentity, Data, URL) throws -> Void) async -> Result {
         let cancellation = Cancellation()
         return await withTaskCancellationHandler {
             await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: request.imageURL)) { @MetadataSidecarFilesystemActor in
                 await self.perform(request, expected: expected, reservation: reservation,
                     cancellation: cancellation, validateCommitAuthority: validateCommitAuthority,
-                    retainPreparedMutation: retainPreparedMutation)
+                    retainInstalledMutation: retainInstalledMutation, retainPreparedMutation: retainPreparedMutation)
             }
         } onCancel: { cancellation.cancel() }
     }
@@ -85,7 +88,8 @@ nonisolated struct DevelopTemplateRootedWriteService: Sendable {
     private func perform(_ request: PrimaryDevelopWriteRequest, expected: MCPPhotoCarrierSnapshot,
                          reservation: MCPProcessReservationLease, cancellation: Cancellation,
                          validateCommitAuthority: @escaping @Sendable (Stage, MCPPhotoCarrierSnapshot) throws -> Void,
-                         retainPreparedMutation: @escaping @Sendable (Stage, MCPPreparedXMPIdentity, Data) throws -> Void) async -> Result {
+                         retainInstalledMutation: @escaping @Sendable (Stage, MCPPhotoCarrierSnapshot) throws -> Void,
+                         retainPreparedMutation: @escaping @Sendable (Stage, MCPPreparedXMPIdentity, Data, URL) throws -> Void) async -> Result {
         let progress = Progress()
         var result = PrimaryDevelopWriteResult(requestID: request.id)
         var xmpMetadata: IPTCMetadata?
@@ -177,12 +181,13 @@ nonisolated struct DevelopTemplateRootedWriteService: Sendable {
                 reservation: reservation, beforeInstall: { try authority(.xmp, expected) },
                 beforeMutation: { identity in
                     try authority(.xmp, expected)
-                    try retainPreparedMutation(.xmp, identity, candidateXMP)
+                    try retainPreparedMutation(.xmp, identity, candidateXMP, xmp.sidecarURL(for: request.imageURL))
                     progress.preparedXMP = identity
                     try authority(.xmp, expected)
                     progress.xmpMayHaveWritten = true
                 }, afterInstall: { installed in
                     progress.installedXMP = installed
+                    try retainInstalledMutation(.xmp, installed)
                 })
             try hooks.afterXMP()
             guard let installedXMP = progress.installedXMP else { throw Failure.verification }
@@ -198,12 +203,14 @@ nonisolated struct DevelopTemplateRootedWriteService: Sendable {
                 beforeInstall: { try authority(.appSidecar, installedXMP) },
                 beforeMutation: { identity in
                     try authority(.appSidecar, installedXMP)
-                    try retainPreparedMutation(.appSidecar, identity, candidateJSON)
+                    guard let destination = progress.appSidecarURL else { throw Failure.verification }
+                    try retainPreparedMutation(.appSidecar, identity, candidateJSON, destination)
                     progress.preparedApp = identity
                     try authority(.appSidecar, installedXMP)
                     progress.appMayHaveWritten = true
                 }, afterInstall: { installed in
                     progress.installedApp = installed
+                    try retainInstalledMutation(.appSidecar, installed)
                 })
             try hooks.afterJSON()
             guard let installedApp = progress.installedApp else { throw Failure.verification }

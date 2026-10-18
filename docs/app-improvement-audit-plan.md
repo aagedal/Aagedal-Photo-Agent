@@ -1,5 +1,15 @@
 # App improvement audit plan
 
+**Develop rooted mutation evidence (2026-10-18):** A synchronous durable journal
+retains exact original review/carrier material, prepared candidate bytes/inodes/destinations
+and installed receipts. Installed-retention failure preserves physical evidence and stops
+the next carrier; read-only loading refuses inconsistent material and stage transitions.
+Current and legacy app paths are retained before rename. Native Start, managed linkage
+and batch recovery discovery remain open. The 100-test focused run and 4,303-test
+regression pass (two existing skips, zero failures); repository, helper, model and
+development-signature checks pass. State stays IMPLEMENTING. See the
+[dated continuation](release/develop-rooted-mutation-evidence-2026-10-18.md).
+
 **Develop rooted sidecar writer (2026-10-17):** An app-internal physical prerequisite
 stages production Develop XMP/app metadata from captured bytes and publishes through
 rooted descriptor-relative installs. Mandatory authority and prepared-inode/candidate
