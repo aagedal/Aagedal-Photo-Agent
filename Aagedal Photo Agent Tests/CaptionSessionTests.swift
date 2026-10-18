@@ -272,9 +272,9 @@ struct CaptionSessionTests {
         #expect(order.values == ["first-start"])
 
         releaseFirst.signal()
-        try queue.drain()
+        try await queue.drainAsync()
         #expect(order.values == ["first-start", "first-end", "second"])
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
     }
 
     @Test("Async durable barriers suspend while writes retain FIFO ownership")
@@ -309,7 +309,7 @@ struct CaptionSessionTests {
         queue.enqueueAsync { try gate.attempt(); order.append("first") }
         queue.enqueueAsync { order.append("second") }
         await #expect(throws: PersistenceFailure.self) { try await queue.drainAsync() }
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         #expect(gate.attempts == 2)
         #expect(order.values.isEmpty)
         gate.shouldFail = false
@@ -317,6 +317,44 @@ struct CaptionSessionTests {
         #expect(gate.attempts == 3)
         #expect(order.values == ["first", "second"])
         #expect(!queue.hasPendingWork)
+    }
+
+    @Test("An idle pending-count query suspends without blocking independent MainActor work")
+    @MainActor
+    func pendingCountSuspendsUntilPersistenceIsIdle() async {
+        let queue = CaptionDraftPersistenceQueue(label: "caption-session-test.pending-count")
+        let started = AsyncSignal()
+        let release = AsyncSignal()
+        let queryEntered = AsyncSignal()
+        let safety = LockedStrings()
+        let watchdog = Task.detached {
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            safety.append("watchdog released persistence")
+            release.signal()
+        }
+        defer { watchdog.cancel(); release.signal() }
+        queue.enqueueAsync {
+            started.signal()
+            await release.wait()
+        }
+        await started.wait()
+        var queryFinished = false
+        let query = Task { @MainActor in
+            queryEntered.signal()
+            let count = await queue.pendingCountWhenIdle()
+            queryFinished = true
+            return count
+        }
+        await queryEntered.wait()
+        let sentinel = Task { @MainActor in
+            #expect(!queryFinished)
+            #expect(queue.hasPendingWork)
+        }
+        await sentinel.value
+        #expect(safety.values.isEmpty)
+        release.signal()
+        #expect(await query.value == 0)
+        #expect(queryFinished && !queue.hasPendingWork)
     }
 
     @Test("Cancelling a barrier retains and completes already admitted persistence")
@@ -363,7 +401,7 @@ struct CaptionSessionTests {
     }
 
     @Test("Failed persistence remains queued and durable drain retries in FIFO order")
-    func persistenceFailureIsRetainedForRetry() throws {
+    func persistenceFailureIsRetainedForRetry() async throws {
         let queue = CaptionDraftPersistenceQueue(label: "caption-session-test.retry")
         let gate = PersistenceFailureGate()
 
@@ -372,16 +410,16 @@ struct CaptionSessionTests {
         )
 
         // Synchronizing through pendingCount proves the first background attempt has finished.
-        #expect(queue.pendingCount == 1)
-        #expect(throws: PersistenceFailure.self) {
-            try queue.drain()
+        #expect(await queue.pendingCountWhenIdle() == 1)
+        await #expect(throws: PersistenceFailure.self) {
+            try await queue.drainAsync()
         }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(gate.attempts == 2)
 
         gate.shouldFail = false
-        try queue.drain()
-        #expect(queue.pendingCount == 0)
+        try await queue.drainAsync()
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(gate.attempts == 3)
     }
 
@@ -459,7 +497,7 @@ struct CaptionSessionTests {
     }
 
     @Test("Only the active caption panel can unregister the flush barrier")
-    func flushCoordinatorOwnership() throws {
+    func flushCoordinatorOwnership() async throws {
         let coordinator = CaptionWorkspaceFlushCoordinator()
         let firstOwner = UUID()
         let activeOwner = UUID()
@@ -468,13 +506,13 @@ struct CaptionSessionTests {
         coordinator.register(owner: firstOwner) { flushed = 1 }
         coordinator.register(owner: activeOwner) { flushed = 2 }
         coordinator.unregister(owner: firstOwner)
-        try coordinator.flush()
+        try await coordinator.flushAsync()
         #expect(flushed == 2)
 
         coordinator.unregister(owner: activeOwner)
         #expect(!coordinator.hasRegisteredHandler)
-        #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) {
-            try coordinator.flush()
+        await #expect(throws: CaptionWorkspaceFlushError.handlerUnavailable) {
+            try await coordinator.flushAsync()
         }
     }
 }
@@ -605,6 +643,32 @@ struct CaptionConflictRecoveryTests {
         return try Dictionary(uniqueKeysWithValues: names.map { ($0, try Data(contentsOf: folder.appendingPathComponent($0))) })
     }
 
+    @Test("A blocked photo-identity lookup does not block admission on MainActor")
+    @MainActor
+    func blockedIdentityLookupDoesNotBlockAdmission() async throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entered = AsyncSignal()
+        let release = DispatchSemaphore(value: 0)
+        let order = LockedStrings()
+        let queue = CaptionDraftPersistenceQueue(label: "recovery.blocked-lookup", canonicalPhotoURL: { url in
+            entered.signal()
+            // Bounded so a regression that blocks the caller fails instead of hanging the suite.
+            if release.wait(timeout: .now() + 8) == .timedOut { order.append("lookup timed out") }
+            return url.standardizedFileURL
+        })
+        defer { release.signal() }
+        queue.enqueue(persistence: draft(root.appendingPathComponent("a.JPG")), operation: { order.append("A") })
+        // Admission returned while the lookup is (or will be) held on the background queue.
+        #expect(queue.hasPendingWork)
+        await entered.wait()
+        #expect(order.values.isEmpty)
+        release.signal()
+        try await queue.drainAsync()
+        #expect(order.values == ["A"])
+        #expect(await queue.pendingCountWhenIdle() == 0)
+    }
+
     @Test("Export and scoped discard retain full dependencies and resume unrelated FIFO in order")
     func scopedRecovery() async throws {
         let root = try folder()
@@ -619,7 +683,7 @@ struct CaptionConflictRecoveryTests {
         let idDependent = queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { order.append("dependent must not run") })
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.JPG")), operation: { order.append("JPEG sibling") })
         queue.enqueue(persistence: draft(root.appendingPathComponent("c.JPG")), operation: { order.append("C") })
-        #expect(queue.pendingCount == 5)
+        #expect(await queue.pendingCountWhenIdle() == 5)
         let failure = try #require(queue.currentFailure)
         #expect(failure.kind == .replayConflict)
         #expect(failure.affectedRequestCount == 2)
@@ -643,7 +707,7 @@ struct CaptionConflictRecoveryTests {
         #expect(result.discardedCount == 2)
         #expect(result.remainingFailure == nil)
         #expect(order.values == ["B", "JPEG sibling", "C"])
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(try protectedBytes(root) == before)
         let permissions = try FileManager.default.attributesOfItem(atPath: receipt.exportURL.path)[.posixPermissions] as? Int
         #expect(permissions == 0o600)
@@ -656,7 +720,7 @@ struct CaptionConflictRecoveryTests {
         let before = try protectedBytes(root)
         let queue = CaptionDraftPersistenceQueue(label: "recovery.failure")
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { throw CaptionWorkspaceFlushError.replayConflict("A") })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         let snapshot = try await queue.beginReview(try #require(queue.currentFailure))
         if mode == 0 {
             await queue.endReview(snapshot)
@@ -669,7 +733,7 @@ struct CaptionConflictRecoveryTests {
                 _ = try await queue.exportConflict(snapshot, to: root.appendingPathComponent("recovery.json"), access: access)
             }
         }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(try protectedBytes(root) == before)
     }
 
@@ -679,13 +743,13 @@ struct CaptionConflictRecoveryTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let queue = CaptionDraftPersistenceQueue(label: "recovery.tamper")
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { throw CaptionWorkspaceFlushError.replayConflict("A") })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         let snapshot = try await queue.beginReview(try #require(queue.currentFailure))
         let receipt = try await queue.exportConflict(snapshot, to: root.appendingPathComponent("recovery.json"))
         if deleted { try FileManager.default.removeItem(at: receipt.exportURL) }
         else { try Data("replacement".utf8).write(to: receipt.exportURL) }
         await #expect(throws: (any Error).self) { _ = try await queue.discardExported(snapshot, receipt: receipt) }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
     }
 
     @Test("A late captured dependency invalidates export while unrelated arrivals preserve scope", arguments: [false, true])
@@ -695,14 +759,14 @@ struct CaptionConflictRecoveryTests {
         let queue = CaptionDraftPersistenceQueue(label: "recovery.late")
         let order = LockedStrings()
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { throw CaptionWorkspaceFlushError.replayConflict("A") })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         let snapshot = try await queue.beginReview(try #require(queue.currentFailure))
         let receipt = try await queue.exportConflict(snapshot, to: root.appendingPathComponent("recovery.json"))
         queue.enqueue(persistence: draft(root.appendingPathComponent(samePhoto ? "a.ARW" : "b.JPG")), operation: { order.append("later") })
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         if samePhoto {
             await #expect(throws: CaptionConflictRecoveryError.self) { _ = try await queue.discardExported(snapshot, receipt: receipt) }
-            #expect(queue.pendingCount == 2)
+            #expect(await queue.pendingCountWhenIdle() == 2)
             #expect(queue.currentFailure?.affectedRequestCount == 2)
             await queue.endReview(snapshot)
             let refreshed = try await queue.beginReview(try #require(queue.currentFailure))
@@ -721,7 +785,7 @@ struct CaptionConflictRecoveryTests {
         let before = try protectedBytes(root)
         let queue = CaptionDraftPersistenceQueue(label: "recovery.paths")
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { throw CaptionWorkspaceFlushError.replayConflict("A") })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         let snapshot = try await queue.beginReview(try #require(queue.currentFailure))
         let destination: URL
         if kind == 0 { destination = root.appendingPathComponent(".photo_metadata/a.ARW.meta.json") }
@@ -738,7 +802,7 @@ struct CaptionConflictRecoveryTests {
             destination = URL(fileURLWithPath: scratch.path + "/../.photo_metadata/a.ARW.meta.json")
         }
         await #expect(throws: CaptionConflictRecoveryError.self) { _ = try await queue.exportConflict(snapshot, to: destination) }
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(try protectedBytes(root) == before)
     }
 
@@ -750,17 +814,17 @@ struct CaptionConflictRecoveryTests {
         let gate = PersistenceFailureGate()
         queue.enqueue(persistence: draft(root.appendingPathComponent("a.ARW")), operation: { throw CaptionWorkspaceFlushError.replayConflict("A") })
         let idB = queue.enqueue(persistence: draft(root.appendingPathComponent("b.JPG")), operation: { try gate.attempt() })
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         let snapshot = try await queue.beginReview(try #require(queue.currentFailure))
         let receipt = try await queue.exportConflict(snapshot, to: root.appendingPathComponent("recovery.json"))
         let result = try await queue.discardExported(snapshot, receipt: receipt)
         #expect(result.discardedCount == 1)
         #expect(result.remainingFailure?.id == idB)
         #expect(result.remainingFailure?.kind == .transient)
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         gate.shouldFail = false
         try await queue.drainAsync()
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
         #expect(queue.currentFailure == nil)
     }
 
@@ -773,7 +837,7 @@ struct CaptionConflictRecoveryTests {
         let queue = CaptionDraftPersistenceQueue(label: "recovery.frozen")
         let attempts = LockedStrings()
         queue.enqueue(persistence: draft(image), operation: { attempts.append("attempt"); throw CaptionWorkspaceFlushError.replayConflict("A") })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
         let snapshot = try await coordinator.beginConflictReview(try #require(queue.currentFailure))
         var captures = 0
@@ -819,7 +883,7 @@ extension CaptionConflictRecoveryTests {
             onFailure: { messages.append($0) })
         let idB = queue.enqueue(persistence: draft(root.appendingPathComponent("b.JPG")),
             operation: { try gate.attempt() }, onFailure: { messages.append($0) })
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
         let snapshot = try await coordinator.beginConflictReview(try #require(queue.currentFailure))
         let receipt = try await coordinator.exportConflict(snapshot, to: root.appendingPathComponent("recovery.json"))
@@ -832,7 +896,7 @@ extension CaptionConflictRecoveryTests {
         try await coordinator.retryQueuedPersistence()
         deferred.deliver()
         #expect(coordinator.failure == nil)
-        #expect(queue.pendingCount == 0)
+        #expect(await queue.pendingCountWhenIdle() == 0)
     }
 }
 
@@ -849,7 +913,7 @@ extension CaptionConflictRecoveryTests {
         _ = try await service.updateMetadataSerialized(for: image, in: root, fallback: baseline.metadata,
             pendingChanges: true) { $0.title = "Newer C" }
         do {
-            try captured.persist()
+            try await captured.persistAsync()
             Issue.record("The real replay boundary must reject the stale overlapping draft")
         } catch let error as CaptionWorkspaceFlushError {
             guard case .replayConflict(let message) = error else {
@@ -860,7 +924,7 @@ extension CaptionConflictRecoveryTests {
         }
         let queue = CaptionDraftPersistenceQueue(label: "recovery.real-service")
         queue.enqueue(captured, onFailure: { _ in })
-        #expect(queue.pendingCount == 1)
+        #expect(await queue.pendingCountWhenIdle() == 1)
         #expect(queue.currentFailure?.kind == .replayConflict)
         #expect(queue.currentFailure?.photoURL == image.standardizedFileURL.resolvingSymlinksInPath())
         #expect(service.loadSidecar(for: image, in: root)?.metadata.title == "Newer C")
@@ -910,7 +974,7 @@ struct MetadataReviewPersistenceTests {
         #expect(captured.sidecar.history.count == MetadataSidecar.historyLimit)
         #expect(captured.sidecar.imageMetadataSnapshot == nil)
         #expect(captured.sidecar.orientationDraft == orientation)
-        let result = try captured.persist()
+        let result = try await captured.persistAsync()
         #expect(result.metadata == edited)
         #expect(result.imageMetadataSnapshot == nil)
         #expect(result.orientationDraft == orientation)
@@ -1011,14 +1075,14 @@ struct MetadataReviewPersistenceTests {
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
         var received: [UUID: MetadataSidecar] = [:]
         let firstID = try coordinator.enqueueCapturedDraft(captured, onSuccess: { received[$0] = $1 })
-        try coordinator.flushQueuedPersistence() // No mounted Caption handler is required.
+        try await coordinator.flushQueuedPersistenceAsync() // No mounted Caption handler is required.
         _ = try await MetadataSidecarService().updateMetadataSerialized(for: image, in: root,
             fallback: .init(), pendingChanges: true) { $0.credit = "Independent later credit" }
         callbacks.deliver()
         #expect(received[firstID]?.metadata.title == "B")
         #expect(received[firstID]?.metadata.credit == nil) // No unrelated fresh load masquerades as this receipt.
         let retryID = try coordinator.enqueueCapturedDraft(captured, onSuccess: { received[$0] = $1 })
-        try coordinator.flushQueuedPersistence()
+        try await coordinator.flushQueuedPersistenceAsync()
         callbacks.deliver()
         #expect(received[retryID]?.metadata.credit == "Independent later credit")
         #expect(!coordinator.hasPendingPersistence)
@@ -1039,13 +1103,13 @@ struct MetadataReviewPersistenceTests {
         let failedID = try coordinator.enqueueCapturedDraft(captured)
         _ = try coordinator.enqueueCapturedDraft(b)
         #expect(coordinator.hasPendingPersistence)
-        #expect(queue.pendingCount == 2)
+        #expect(await queue.pendingCountWhenIdle() == 2)
         let failure = try #require(queue.currentFailure)
         #expect(failure.id == failedID)
         #expect(failure.kind == .replayConflict)
         let review = try await coordinator.beginConflictReview(failure)
         #expect(throws: CaptionConflictRecoveryError.self) { _ = try coordinator.enqueueCapturedDraft(captured) }
-        #expect(throws: CaptionConflictRecoveryError.self) { try coordinator.flushQueuedPersistence() }
+        await #expect(throws: CaptionConflictRecoveryError.self) { try await coordinator.flushQueuedPersistenceAsync() }
         let exportURL = root.appendingPathComponent("review-recovery.json")
         let receipt = try await coordinator.exportConflict(review, to: exportURL)
         let graph = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: exportURL)) as? [String: Any])
@@ -1117,8 +1181,8 @@ struct VariableDraftLifecycleIntegrationTests {
         })
         defer { lifecycle.unregister(ownerID: owner) }
         #expect(coordinator.hasPendingPersistence)
-        #expect(throws: CaptionWorkspaceFlushError.self) { try coordinator.flush() }
-        #expect(throws: CaptionWorkspaceFlushError.self) { try coordinator.flushQueuedPersistence() }
+        await #expect(throws: CaptionWorkspaceFlushError.self) { try await coordinator.flushAsync() }
+        await #expect(throws: CaptionWorkspaceFlushError.self) { try await coordinator.flushQueuedPersistenceAsync() }
         let termination = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
         do {
             try await termination.flush()

@@ -156,7 +156,7 @@ struct MetadataEditorXMPBaselineTests {
         try await load(f.model, image: f.image, folder: f.folder)
         f.model.editingMetadata.title = "Caption saved headline"; f.model.markChanged()
         let capture = try #require(try f.model.captureCaptionDraftPersistence())
-        try await Task.detached { try capture.persist() }.value
+        try await capture.persistAsync()
         f.model.editingMetadata.cameraRaw?.exposure2012 = 0.8; f.model.markChanged()
         #expect(await save(f, route: .xmp) == .succeeded)
         #expect(XMPSidecarService().loadSidecar(for: f.image)?.cameraRaw?.exposure2012 == 0.8)
@@ -173,7 +173,7 @@ struct MetadataEditorXMPBaselineTests {
         try XMPSidecarService().saveSidecar(metadata: external, for: f.image)
         f.model.editingMetadata.title = "New caption"; f.model.markChanged()
         let capture = try #require(try f.model.captureCaptionDraftPersistence())
-        try await Task.detached { try capture.persist() }.value
+        try await capture.persistAsync()
         let preserved = try Data(contentsOf: f.xmp), json = try Data(contentsOf: f.json)
         f.model.editingMetadata.cameraRaw?.exposure2012 = 0.8; f.model.markChanged()
         guard case .failed(let message) = await save(f, route: .xmp) else { Issue.record("Expected old technical editor conflict"); return }
