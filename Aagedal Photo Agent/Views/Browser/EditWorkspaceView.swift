@@ -7409,7 +7409,7 @@ struct EditWorkspaceView: View {
                 editLog.info("  save mask[\(i)]: exp=\(m.exposure ?? 0) enabled=\(m.enabled)")
             }
         }
-        let hdr = isHDREnabled
+        let folderURL = metadataViewModel.currentFolderURL ?? selectedImageURL.deletingLastPathComponent()
         exportSession.requestExport {
             let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
             let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
@@ -7424,21 +7424,17 @@ struct EditWorkspaceView: View {
             try Task.checkCancellation()
             let engine = browserViewModel.writeEngine
             let failureTracker = MetadataFailureTracker()
-            let copier: EditedImageRenderer.MetadataCopier = { src, dst in
-                do {
-                    try await engine.copyMetadataToRenderedFile(
-                        from: src, to: dst, bakedCameraRaw: settings)
-                } catch {
-                    await failureTracker.recordCopyFailure(src.lastPathComponent)
-                }
-            }
-            let outputURL = try await Task.detached(priority: .userInitiated) {
-                try await EditedImageRenderer.render(from: selectedImageURL, cameraRaw: settings, isHDR: hdr, outputFolder: outputFolder, metadataCopier: copier)
-            }.value
+            let outputURL = try await EditExportPipeline.renderItem(
+                sourceURL: selectedImageURL, cameraRaw: settings, kind: .format,
+                outputFolder: outputFolder, folderURL: folderURL,
+                writeEngine: engine, failureTracker: failureTracker
+            )
+            let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
             browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             return DevelopExportPersistenceResult(
                 outputURL: outputURL,
-                metadataWasCopied: await failureTracker.metadataCopyFailures.isEmpty
+                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty
             )
         }
     }

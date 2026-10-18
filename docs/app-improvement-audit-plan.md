@@ -1,5 +1,13 @@
 # App improvement audit plan
 
+**Edited export IPTC integrity (2026-10-18):** Develop Save now uses the shared pending
+JSON/XMP overlay and artifact finalization pipeline. Typed keyword, person and organisation
+lists retain comma-containing item boundaries in rendered exports, sidecar sync and complete
+record writes. The 58-test focused run and 4,332-test full regression pass with real
+JPEG/PNG/TIFF coverage (two existing skips, zero failures); native Save interaction and
+real-volume performance qualification remain open. See the
+[dated continuation](plan-status-export-list-integrity-continuation-2026-10-18.md).
+
 **Core command shortcut editor (2026-10-18):** The shared editable profile now covers
 core application menus as well as culling. Settings adds categorized commands, all modifier
 layers and reliable scrolling. Native menu matching has isolated SwiftUI coverage;

@@ -400,6 +400,111 @@ struct EditExportPipelineTests {
         #expect(MetadataSidecarService().loadSidecar(for: source, in: dir)?.pendingChanges == true)
     }
 
+    @Test("Edited exports preserve exact IPTC list values and clears from JSON and XMP",
+          arguments: [false, true], ["jpeg", "png", "tiff"])
+    func renderedListsRemainLossless(usesJSON: Bool, format: String) async throws {
+        for clearsLists in [false, true] {
+            try await assertRenderedLists(usesJSON: usesJSON, clearsLists: clearsLists, format: format)
+        }
+    }
+
+    private func assertRenderedLists(usesJSON: Bool, clearsLists: Bool, format: String) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Embedded", .subject: "old keyword",
+            .personInImage: "Old Person", .organisationInImageName: "Old Organisation",
+            .organisationInImageCode: "OLD"], to: [source])
+        let expected = IPTCMetadata(title: "Edited caption",
+            keywords: clearsLists ? [] : ["Washington, D.C.", "Côte d’Ivoire", "Norge, Oslo"],
+            personShown: clearsLists ? [] : ["Doe, Jane", "Ødegård, Åse"],
+            organisationsShownNames: clearsLists ? [] : ["Acme, Inc.", "Photo, News"],
+            organisationsShownCodes: clearsLists ? [] : ["Agency, NO", "Agency, US"])
+        if usesJSON {
+            try MetadataSidecarService().saveSidecar(MetadataSidecar(
+                sourceFile: source.lastPathComponent, pendingChanges: true, metadata: expected
+            ), for: source, in: dir)
+        } else {
+            try XMPSidecarService().saveSidecar(metadata: expected, for: source)
+        }
+        let sourceBytes = try Data(contentsOf: source)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let tracker = MetadataFailureTracker()
+        // Develop Save and ordinary format export share .format; Save As uses the same overlay.
+        let kind: RenderKind = switch format {
+        case "png": .saveAs(.png)
+        default: .format
+        }
+        var configuration = collisionSafeJPEGConfiguration
+        if format == "tiff" { configuration.sdrFormat = .tiff }
+        let rendered = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: settings,
+            kind: kind, outputFolder: output, folderURL: dir, writeEngine: engine,
+            failureTracker: tracker, configuration: configuration)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        let physical = try SwiftMediaMetadata.readMetadata(from: rendered)
+        #expect(actual.title == expected.title)
+        #expect(actual.keywords == expected.keywords)
+        #expect(actual.personShown == expected.personShown)
+        #expect(actual.organisationsShownNames == expected.organisationsShownNames)
+        #expect(actual.organisationsShownCodes == expected.organisationsShownCodes)
+        if format != "png" { #expect(physical.iptc.keywords == expected.keywords) }
+        #expect((physical.xmp?.subject ?? []) == expected.keywords)
+        #expect(await tracker.metadataCopyFailures.isEmpty)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        if usesJSON {
+            let retained = try #require(MetadataSidecarService().loadSidecar(for: source, in: dir))
+            #expect(retained.pendingChanges)
+            #expect(retained.metadata.keywords == expected.keywords)
+        } else {
+            #expect(XMPSidecarService().loadSidecar(for: source)?.keywords == expected.keywords)
+        }
+    }
+
+    @Test("Typed list writes preserve field scope, explicit clears and legacy text parsing")
+    func typedListFieldScope() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Keep title", .personInImage: "Keep person",
+            .organisationInImageName: "Keep organisation"], to: [source])
+        let intended = IPTCMetadata(keywords: ["Washington, D.C."], personShown: ["Unselected person"])
+        try await engine.writeFields([.subject: "ignored legacy transport"], to: [source],
+            structuredData: StructuredWriteData(listValues: EditorialListWriteData(metadata: intended)))
+        let actual = try await SwiftExifReadService().readFullMetadata(url: source)
+        #expect(actual.keywords == intended.keywords)
+        #expect(actual.title == "Keep title")
+        #expect(actual.personShown == ["Keep person"])
+        #expect(actual.organisationsShownNames == ["Keep organisation"])
+        try await engine.writeFields([.subject: "stale value"], to: [source],
+            structuredData: StructuredWriteData(listValues: EditorialListWriteData(metadata: IPTCMetadata())))
+        #expect(try SwiftMediaMetadata.readMetadata(from: source).iptc.keywords.isEmpty)
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).keywords.isEmpty)
+        try await engine.writeFields([.subject: "one, two"], to: [source])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).keywords == ["one", "two"])
+    }
+
+    @Test("Complete pending writes keep legacy IPTC and XMP keyword boundaries identical")
+    func completeRecordListCarriersAgree() async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let intended = IPTCMetadata(title: "Complete editorial record",
+            keywords: ["Washington, D.C.", "Côte d’Ivoire"], personShown: ["Doe, Jane"],
+            organisationsShownNames: ["Acme, Inc."], organisationsShownCodes: ["Agency, NO"])
+        let receipt = try await SwiftExifWriteEngine().writePendingMetadata(intended, to: source,
+            validatePreparedIntent: {})
+        let physical = try SwiftMediaMetadata.readMetadata(from: source)
+        #expect(physical.iptc.keywords == intended.keywords)
+        #expect(physical.xmp?.subject == intended.keywords)
+        #expect(receipt.metadata.keywords == intended.keywords)
+        #expect(receipt.metadata.personShown == intended.personShown)
+        #expect(receipt.metadata.organisationsShownNames == intended.organisationsShownNames)
+        #expect(receipt.metadata.organisationsShownCodes == intended.organisationsShownCodes)
+    }
+
     @Test("Rendered sidecar overlay preserves explicit label clears and missing-label inheritance", arguments: [false, true], [false, true])
     func renderedLabelClearPropagation(usesJSON: Bool, explicitlyClears: Bool) async throws {
         let (dir, source) = try makeWorkspace()

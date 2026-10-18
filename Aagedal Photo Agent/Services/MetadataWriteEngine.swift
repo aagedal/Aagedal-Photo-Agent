@@ -1,5 +1,22 @@
 import Foundation
 
+/// Lossless values for human-readable IPTC lists. Commas inside an item are content,
+/// not separators. Only keys also present in a write's field map are replaced.
+nonisolated struct EditorialListWriteData: Sendable {
+    private let values: [MetadataFieldKey: [String]]
+
+    init(metadata: IPTCMetadata) {
+        values = [
+            .subject: metadata.keywords.uniqued(),
+            .personInImage: metadata.personShown.uniqued(),
+            .organisationInImageName: metadata.organisationsShownNames.uniqued(),
+            .organisationInImageCode: metadata.organisationsShownCodes.uniqued(),
+        ]
+    }
+
+    subscript(key: MetadataFieldKey) -> [String]? { values[key] }
+}
+
 /// The authoritative structured editorial portion of a descriptive write. Keeping this wrapper
 /// optional on `StructuredWriteData` distinguishes "leave these properties untouched" from an
 /// explicit record whose nil/empty values clear them.
@@ -49,6 +66,11 @@ nonisolated struct StructuredWriteData: Sendable {
     /// Creator Contact Info and Location Created/Shown. nil means "do not touch"; a present
     /// wrapper with empty values means clear the corresponding XMP properties.
     var editorial: EditorialStructuredWriteData?
+
+    /// Optional overrides for list fields supplied in the accompanying field map.
+    /// nil keeps legacy string parsing; a present empty array explicitly clears a list.
+    /// This payload does not create a write for a key absent from the field map.
+    var listValues: EditorialListWriteData?
 
     /// Replace the file's ENTIRE Camera Raw (crs) namespace block with this
     /// write's content — Adobe-faithful semantics: ACR drops settings it isn't

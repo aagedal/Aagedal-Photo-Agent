@@ -567,13 +567,14 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             metadata.removeGPS()
         }
 
+        let listValues = structuredData.listValues ?? completeEditorial.map { EditorialListWriteData(metadata: $0) }
         for (key, value) in fields {
             // GPS handled above; refs are derived in setGPS.
             switch key {
             case .gpsLatitude, .gpsLongitude, .gpsLatitudeRef, .gpsLongitudeRef:
                 continue
             default:
-                applyField(key: key, value: value, metadata: &metadata)
+                applyField(key: key, value: value, metadata: &metadata, listValues: listValues?[key])
             }
         }
 
@@ -670,7 +671,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     }
 
     /// Apply a single field to the metadata.
-    private func applyField(key: MetadataFieldKey, value: String, metadata: inout ImageMetadata) {
+    private func applyField(key: MetadataFieldKey, value: String, metadata: inout ImageMetadata,
+                            listValues: [String]? = nil) {
         let isEmpty = value.isEmpty
 
         switch key {
@@ -697,11 +699,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             }
 
         case .subject:
+            let keywords = listValues ?? (isEmpty ? [] : value.components(separatedBy: ", "))
             metadata.iptc.removeAll(for: .keywords)
-            if !isEmpty {
-                let keywords = value.components(separatedBy: ", ")
-                metadata.iptc.keywords = keywords
-            } else {
+            metadata.iptc.keywords = keywords
+            if keywords.isEmpty {
                 metadata.xmp?.removeValue(namespace: XMPNamespace.dc, property: "subject")
             }
 
@@ -899,10 +900,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                         value: isEmpty ? nil : .langAlternative(value))
 
         case .personInImage:
-            if isEmpty {
+            let persons = listValues ?? (isEmpty ? [] : value.components(separatedBy: ", "))
+            if persons.isEmpty {
                 metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: "PersonInImage")
             } else {
-                let persons = value.components(separatedBy: ", ")
                 if metadata.xmp == nil { metadata.xmp = XMPData() }
                 metadata.xmp?.setValue(.array(persons), namespace: XMPNamespace.iptcExt, property: "PersonInImage")
             }
@@ -912,7 +913,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 &metadata,
                 namespace: XMPNamespace.iptcExt,
                 property: "OrganisationInImageName",
-                commaSeparatedValue: value
+                commaSeparatedValue: value,
+                typedValues: listValues
             )
 
         case .organisationInImageCode:
@@ -920,7 +922,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 &metadata,
                 namespace: XMPNamespace.iptcExt,
                 property: "OrganisationInImageCode",
-                commaSeparatedValue: value
+                commaSeparatedValue: value,
+                typedValues: listValues
             )
 
         case .scene:
@@ -1283,9 +1286,10 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         namespace: String,
         property: String,
         commaSeparatedValue value: String,
+        typedValues: [String]? = nil,
         normalize: (String) -> String = { $0 }
     ) {
-        let values = value.components(separatedBy: ",")
+        let values = typedValues?.uniqued() ?? value.components(separatedBy: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .map(normalize)
             .filter { !$0.isEmpty }

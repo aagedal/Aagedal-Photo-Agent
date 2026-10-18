@@ -554,11 +554,7 @@ struct FTPUploadView: View {
                 try await writeEngine.writeFields(
                     fields,
                     to: [url],
-                    structuredData: StructuredWriteData(
-                        editorial: sidecar.hasDescriptiveContent
-                            ? EditorialStructuredWriteData(metadata: sidecar)
-                            : nil
-                    )
+                    structuredData: SidecarIPTCOverlay.authoritativeStructuredData(from: sidecar)
                 )
             } catch {
                 guard sidecarMergeRequestID == requestID,

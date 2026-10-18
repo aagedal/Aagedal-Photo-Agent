@@ -532,6 +532,14 @@ enum SidecarIPTCOverlay {
         return fields
     }
 
+    /// Carry list item boundaries separately from the legacy comma-delimited field map.
+    /// Partial rating/label records must not acquire authority over descriptive metadata.
+    nonisolated static func authoritativeStructuredData(from metadata: IPTCMetadata) -> StructuredWriteData {
+        guard metadata.hasDescriptiveContent else { return .empty }
+        return StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: metadata),
+                                   listValues: EditorialListWriteData(metadata: metadata))
+    }
+
     static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
                       writeEngine: any MetadataWriteEngine) async -> Outcome {
         // Pending app drafts are the displayed editorial state, even when an older XMP
@@ -579,11 +587,7 @@ enum SidecarIPTCOverlay {
                 try await writeEngine.writeFieldsToRenderedFiles(
                     fields,
                     to: [renderedURL],
-                    structuredData: StructuredWriteData(
-                        editorial: xmpMeta.hasDescriptiveContent
-                            ? EditorialStructuredWriteData(metadata: xmpMeta)
-                            : nil
-                    )
+                    structuredData: authoritativeStructuredData(from: xmpMeta)
                 )
                 return .applied
             } catch {
@@ -609,11 +613,7 @@ enum SidecarIPTCOverlay {
             try await writeEngine.writeFieldsToRenderedFiles(
                 fields,
                 to: [renderedURL],
-                structuredData: StructuredWriteData(
-                    editorial: sidecar.metadata.hasDescriptiveContent
-                        ? EditorialStructuredWriteData(metadata: sidecar.metadata)
-                        : nil
-                )
+                structuredData: authoritativeStructuredData(from: sidecar.metadata)
             )
             return .applied
         } catch {

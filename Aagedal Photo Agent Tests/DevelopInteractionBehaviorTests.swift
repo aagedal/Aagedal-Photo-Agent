@@ -2539,3 +2539,43 @@ struct DevelopRenderPolicyCoordinatorTests {
         #expect(!source.contains("if lockedCropImageRect != nil {"))
     }
 }
+
+@Suite("Develop Save export routing")
+struct DevelopSaveExportRoutingTests {
+    @Test("Develop Save uses the same metadata overlay and finalization boundary as other exports")
+    func sharedPipelineBoundary() throws {
+        let source = try saveImplementation()
+        #expect(source.contains("EditExportPipeline.renderItem("))
+        #expect(source.contains("kind: .format"))
+        #expect(source.contains("metadataViewModel.currentFolderURL"))
+        #expect(source.contains("folderURL: folderURL"))
+        // A source-only copier omits authoritative XMP and pending app metadata.
+        #expect(!source.contains("EditedImageRenderer.render("))
+        #expect(!source.contains("copyMetadataToRenderedFile("))
+        #expect(source.contains("failureTracker.sidecarOverlayFailures"))
+        #expect(source.contains("copyFailures.isEmpty && overlayFailures.isEmpty"))
+    }
+
+    @Test("Develop Save retains its single-session owner and cancellation admission")
+    func lifecycleBoundary() throws {
+        let source = try saveImplementation()
+        let request = try #require(source.range(of: "exportSession.requestExport {"))
+        let directory = try #require(source.range(of: "ExportDirectoryService.shared.ensureDirectory("))
+        let admission = try #require(source.range(of: "try Task.checkCancellation()"))
+        let render = try #require(source.range(of: "EditExportPipeline.renderItem("))
+        #expect(request.lowerBound < directory.lowerBound)
+        #expect(directory.lowerBound < admission.lowerBound)
+        #expect(admission.lowerBound < render.lowerBound)
+        #expect(source.contains("!directoryCommit.cancellationRequestedAfterCommit"))
+        #expect(source.contains("DevelopExportPersistenceResult("))
+    }
+
+    private func saveImplementation() throws -> String {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"), encoding: .utf8)
+        let start = try #require(source.range(of: "    private func saveCurrentRenderedImage() {"))
+        let end = try #require(source.range(of: "    private func signedIntString", range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+}
