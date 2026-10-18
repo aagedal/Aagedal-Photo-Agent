@@ -150,3 +150,55 @@ struct FullScreenLoadingRecoveryTests {
         #expect(originalFailure.details.contains("Preview mode: Original"))
     }
 }
+
+@Suite("Profile-derived rating and label menu shortcuts")
+struct ProfileMenuShortcutTests {
+    @Test("Built-in menus follow profile Command chords and leave bare typing to the browser")
+    func builtInMenus() {
+        let photoAgent = KeyboardShortcutProfiles.profile(for: .photoAgent)
+        #expect(photoAgent.menuChord(for: .rating(1)) == nil)
+        #expect(photoAgent.menuChord(for: .colorLabel(1)) == .init(key: "1", modifiers: .command))
+        #expect(photoAgent.menuChord(for: .colorLabel(0)) == .init(key: "0", modifiers: .command))
+        #expect(photoAgent.command(for: .init(key: "s")) == .labelRed)
+
+        let bridge = KeyboardShortcutProfiles.profile(for: .bridgeLike)
+        #expect(bridge.menuChord(for: .rating(1)) == .init(key: "1", modifiers: .command))
+        #expect(bridge.menuChord(for: .colorLabel(1)) == .init(key: "1", modifiers: [.command, .option]))
+        let photoMechanic = KeyboardShortcutProfiles.profile(for: .photoMechanicLike)
+        #expect(photoMechanic.menuChord(for: .rating(1)) == nil)
+        #expect(photoMechanic.menuChord(for: .colorLabel(1)) == .init(key: "1", modifiers: .command))
+    }
+
+    @Test("Ambiguous, bare and non-Command chords cannot become native menu equivalents")
+    func unsafeMenuChords() {
+        let commandOne = KeyboardShortcutChord(key: "1", modifiers: .command)
+        let profile = KeyboardShortcutProfile(name: "Conflict", bindings: [
+            .init(command: .rateOne, chord: .init(key: "1")),
+            .init(command: .labelRed, chord: .init(key: "r", modifiers: .option)),
+            .init(command: .rateOne, chord: commandOne),
+            .init(command: .labelRed, chord: commandOne),
+        ])
+        #expect(profile.menuChord(for: .rating(1)) == nil)
+        #expect(profile.menuChord(for: .colorLabel(1)) == nil)
+    }
+
+    @MainActor
+    @Test("Menus reflect edited, removed and switched profile bindings without fixed defaults")
+    func editedMenuChords() throws {
+        let suite = "ProfileMenuShortcutTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let registry = KeyboardShortcutProfileRegistry(defaults: defaults)
+        let commandOne = KeyboardShortcutChord(key: "1", modifiers: .command)
+        #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == commandOne)
+        #expect(registry.reassign(commandOne, to: .rateOne, replacingConflicts: true))
+        #expect(registry.selectedProfile.menuChord(for: .rating(1)) == commandOne)
+        #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == nil)
+        registry.remove(commandOne, from: .rateOne)
+        #expect(registry.selectedProfile.menuChord(for: .rating(1)) == nil)
+        registry.select(.bridgeLike)
+        #expect(registry.selectedProfile.menuChord(for: .rating(1)) == commandOne)
+        #expect(registry.selectedProfile.menuChord(for: .colorLabel(1)) == .init(
+            key: "1", modifiers: [.command, .option]))
+    }
+}

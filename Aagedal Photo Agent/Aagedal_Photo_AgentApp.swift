@@ -192,39 +192,7 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandGroup(replacing: .printItem) { }
 
-            CommandMenu("Rating & Label") {
-                // Ratings carry no menu key equivalents: the bare 1–5 keys are
-                // handled in the grid / full-screen views (focus-aware, so they
-                // don't fire while a metadata field is being edited). CMD+digits
-                // are reserved for the color labels below.
-                Button("No Rating") {
-                    commandRouter.send(.setRating(.none))
-                }
-
-                ForEach(1...5, id: \.self) { rating in
-                    Button("\(rating) Star\(rating > 1 ? "s" : "")") {
-                        guard let rating = StarRating(rawValue: rating) else { return }
-                        commandRouter.send(.setRating(rating))
-                    }
-                }
-
-                Divider()
-
-                Button("No Label") {
-                    commandRouter.send(.setLabel(.none))
-                }
-                .keyboardShortcut("0", modifiers: .command)
-
-                ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
-                    Button(label.displayName) {
-                        commandRouter.send(.setLabel(label))
-                    }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character(String(index + 1))),
-                        modifiers: .command
-                    )
-                }
-            }
+            RatingLabelCommands(commandRouter: commandRouter)
 
             CommandGroup(after: .newItem) {
                 Button("Open in Editor") {
@@ -611,4 +579,49 @@ extension Notification.Name {
     static let scopeSourceImageDidChange = Notification.Name("scopeSourceImageDidChange")
     static let editSliderDragStateChanged = Notification.Name("editSliderDragStateChanged")
     static let showAllFilesChanged = Notification.Name("showAllFilesChanged")
+}
+
+
+/// Observes profile edits directly so native menu key equivalents update with the editor.
+private struct RatingLabelCommands: Commands {
+    let commandRouter: AppCommandRouter
+    @State private var profiles = KeyboardShortcutProfileRegistry.shared
+
+    var body: some Commands {
+        let profile = profiles.selectedProfile
+        CommandMenu("Rating & Label") {
+            Button("No Rating") {
+                commandRouter.send(.setRating(.none))
+            }
+            .keyboardShortcut(shortcut(for: .rating(0), in: profile))
+
+            ForEach(1...5, id: \.self) { value in
+                Button("\(value) Star\(value > 1 ? "s" : "")") {
+                    guard let rating = StarRating(rawValue: value) else { return }
+                    commandRouter.send(.setRating(rating))
+                }
+                .keyboardShortcut(shortcut(for: .rating(value), in: profile))
+            }
+
+            Divider()
+
+            Button("No Label") {
+                commandRouter.send(.setLabel(.none))
+            }
+            .keyboardShortcut(shortcut(for: .colorLabel(0), in: profile))
+
+            ForEach(Array(ColorLabel.allCases.dropFirst().enumerated()), id: \.element) { index, label in
+                Button(label.displayName) {
+                    commandRouter.send(.setLabel(label))
+                }
+                .keyboardShortcut(shortcut(for: .colorLabel(index + 1), in: profile))
+            }
+        }
+    }
+
+    private func shortcut(for action: KeyboardCullingAction,
+                          in profile: KeyboardShortcutProfile) -> KeyboardShortcut? {
+        guard let chord = profile.menuChord(for: action), let key = chord.key.first else { return nil }
+        return KeyboardShortcut(KeyEquivalent(key), modifiers: chord.modifiers.eventModifiers)
+    }
 }

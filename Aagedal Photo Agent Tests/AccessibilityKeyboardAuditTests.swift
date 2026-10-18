@@ -147,9 +147,9 @@ struct AccessibilityKeyboardAuditTests {
     func completeEditableCommandSurface() throws {
         let source = try source("Aagedal Photo Agent/Views/Settings/KeyboardShortcutsSettingsView.swift")
         #expect(source.contains("ForEach(KeyboardShortcutCommand.allCases"))
-        #expect(source.contains("Text(\"Unassigned\").tag(nil as KeyboardShortcutChord?)"))
-        #expect(source.contains("profileRegistry.assign(chord, to: command)"))
-        #expect(source.contains("profileRegistry.unassign(command)"))
+        #expect(source.contains("settings.shortcuts.keyboardPreview"))
+        #expect(source.contains("registry.reassign(chord, to: command)"))
+        #expect(source.contains("registry.remove(chord, from: command)"))
         #expect(source.contains("profileRegistry.resolveConflictsKeepingFirstCommand()"))
 
         let reservedMenuChords: Set<KeyboardShortcutChord> = [
@@ -275,6 +275,39 @@ struct AccessibilityKeyboardAuditTests {
             storageKey: "shortcut-conflict"
         )
         #expect(reopened.selectedProfile.chord(for: .labelYellow) == nil)
+    }
+
+    @Test("editor reassignment refuses conflicts without changing persisted state and preserves aliases")
+    func editorReassignment() throws {
+        let suiteName = "ShortcutEditor.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "editor")
+        let original = registry.selectedProfile
+        let occupied = KeyboardShortcutChord(key: "1")
+        #expect(!registry.reassign(occupied, to: .labelRed))
+        #expect(registry.selectedPreset == .photoAgent)
+        #expect(registry.selectedProfile == original)
+        #expect(defaults.data(forKey: "editor") == nil)
+        #expect(!registry.reassign(.init(key: "s", modifiers: .command), to: .labelRed))
+        #expect(registry.selectedProfile == original)
+
+        #expect(registry.reassign(occupied, to: .labelRed, replacingConflicts: true))
+        #expect(registry.selectedProfile.command(for: occupied) == .labelRed)
+        #expect(registry.selectedProfile.chord(for: .rateOne) == nil)
+        #expect(registry.selectedProfile.command(for: .init(key: "s")) == .labelRed)
+        #expect(registry.selectedProfile.command(for: .init(key: "6")) == .labelRed)
+        #expect(registry.selectedProfile.conflicts.isEmpty)
+        #expect(registry.reassign(occupied, to: .labelRed))
+        #expect(registry.selectedProfile.bindings.filter { $0.chord == occupied }.count == 1)
+        registry.remove(.init(key: "s"), from: .labelRed)
+        let reopened = KeyboardShortcutProfileRegistry(defaults: defaults, storageKey: "editor")
+        #expect(reopened.selectedProfile == registry.selectedProfile)
+        #expect(reopened.selectedProfile.command(for: .init(key: "s")) == nil)
+        #expect(reopened.selectedProfile.command(for: .init(key: "6")) == .labelRed)
+        #expect(reopened.selectedProfile.command(for: occupied) == .labelRed)
+        reopened.resetCustom()
+        #expect(reopened.selectedProfile.bindings == original.bindings)
     }
 
     @Test("global shortcuts preserve Close Window and avoid bare text-entry keys")

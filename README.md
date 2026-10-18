@@ -356,21 +356,28 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 
 ## Keyboard Shortcuts
 
+Open **Settings → Shortcuts** to inspect the keyboard, switch rating/label profiles,
+record a shortcut, add alternate keys, or remove a binding. The preview distinguishes
+assigned, free, and reserved keys for each modifier layer; moving an occupied key requires
+confirmation. Rating/label menu shortcuts follow the selected profile. Caption Save & Next
+and Write & Next have separate assignments. Other workspace and system shortcuts are
+listed for reference and remain reserved. The table below uses the default Photo Agent profile.
+
 | Shortcut | Action |
 |---|---|
 | Cmd+O | Open folder |
 | Shift+Cmd+I | Import photos |
 | Cmd+B / Cmd+N | Previous / Next image |
-| Cmd+0-5 | Set star rating |
-| Option+0-8 | Set color label |
+| 0-5 | Set star rating; 0 clears |
+| Cmd+0-8 | Set color label; 0 clears |
 | Cmd+T | Open template palette |
 | Ctrl+1-9 | Apply template 1-9 |
 | Cmd+E | Open in external editor |
-| H | Toggle HDR mode |
-| G | Toggle gamut clipping |
-| M | Toggle masks panel |
+| Ctrl+Option+H | Toggle HDR mode |
+| Ctrl+Option+G | Toggle gamut clipping |
+| M (hold, Develop) | Before / after preview |
 | Cmd+J | Add new mask |
-| Cmd+W (Develop) | Remove selected local layer, or reset Global |
+| Ctrl+Option+Delete (Develop) | Remove selected local layer, or reset Global |
 | Cmd+D | Mute selected mask (or the Global layer) |
 | Option+V | Paste develop settings (including crop) |
 | Cmd+R / Shift+Cmd+R | Rotate right / left |
@@ -378,9 +385,8 @@ Opt-in sync that keeps your library settings in step across Macs, configured in 
 | Shift+Cmd+S | Render all |
 | Shift+Cmd+W | Write pending metadata |
 | Cmd+U / Shift+Cmd+U | Upload selected / all |
-| Shift+1-4 | Scope: Waveform / Parade / Vector / Chromaticity |
+| Ctrl+Option+1-4 | Scope: Waveform / Parade / Vector / Gamut |
 | Space | Full-screen toggle |
-| 0-5 (full-screen or Develop) | Set rating; 0 clears |
 | Middle-click (Develop filmstrip) | Copy clicked image's settings to current selection |
 
 ## Architecture

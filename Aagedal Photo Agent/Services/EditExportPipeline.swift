@@ -534,11 +534,21 @@ enum SidecarIPTCOverlay {
 
     static func apply(sourceURL: URL, renderedURL: URL, folderURL: URL?,
                       writeEngine: any MetadataWriteEngine) async -> Outcome {
+        // Pending app drafts are the displayed editorial state, even when an older XMP
+        // record exists. Match EffectiveMetadataResolver: never let physical sidecar
+        // metadata hide a pending history-only caption, keyword edit, or clear.
+        if let folderURL,
+           let draft = MetadataSidecarService().loadSidecar(for: sourceURL, in: folderURL),
+           draft.pendingChanges {
+            return await applyPendingDraft(draft, sourceURL: sourceURL,
+                                           renderedURL: renderedURL, writeEngine: writeEngine)
+        }
+
         // Prefer XMP sidecar IPTC (default write mode for RAW and C2PA files). A sidecar
         // without descriptive content (develop-settings-only, written by saveCameraRawOnly
         // or stripped by Remove IPTC) is not an IPTC record: running toOverwriteFields on
-        // it would wipe every descriptive field from the render. Skip it and fall through
-        // to the JSON sidecar, which may still hold pending history-only edits.
+        // it would wipe every descriptive field from the render. Ignore that physical
+        // sidecar when no pending app draft was selected above.
         let xmpService = XMPSidecarService()
         if let xmpMeta = xmpService.loadSidecar(for: sourceURL),
            xmpMeta.hasDescriptiveContent || xmpMeta.rating != nil || xmpMeta.label != nil {
@@ -584,13 +594,11 @@ enum SidecarIPTCOverlay {
             }
         }
 
-        // Fall back to JSON sidecar (history-only mode). This sidecar is app-private and
-        // only overlaid when `pendingChanges` is set (edits not yet written to the file),
-        // so external-tool staleness doesn't apply here.
-        guard let folderURL else { return .noPendingEdits }
-        let sidecarService = MetadataSidecarService()
-        guard let sidecar = sidecarService.loadSidecar(for: sourceURL, in: folderURL),
-              sidecar.pendingChanges else { return .noPendingEdits }
+        return .noPendingEdits
+    }
+
+    private static func applyPendingDraft(_ sidecar: MetadataSidecar, sourceURL: URL,
+                                          renderedURL: URL, writeEngine: any MetadataWriteEngine) async -> Outcome {
 
         // Same partial-record guard as the .xmp branch: a record with no descriptive
         // content (e.g. a failed-seed fallback) must not wipe fields it never carried.

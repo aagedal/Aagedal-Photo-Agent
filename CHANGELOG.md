@@ -4,6 +4,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Add a keyboard preview and key recording for rating and label shortcuts in Settings, with visible free keys, alternate bindings, confirmed reassignment and restore defaults.
+- Export the newest pending metadata draft when an older XMP sidecar exists, including explicitly cleared editorial fields.
+
 - Refresh browser metadata in place when order and filter membership are unchanged, reducing repeated sorting and preview warming during folder reads.
 - Preserve newly selected ratings and color labels when older background metadata reads finish during or after their writes.
 - Keep the right-hand metadata panel responsive across single/batch selection changes and stop cancelled selections before they enqueue another metadata read.

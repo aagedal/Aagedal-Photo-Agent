@@ -224,6 +224,10 @@ nonisolated enum KeyboardShortcutProfiles {
             KeyboardShortcutBinding(command: .labelRed, chord: .init(key: "s")),
             KeyboardShortcutBinding(command: .labelTrash, chord: .init(key: "x")),
         ]
+        bindings += labelCommands.enumerated().map {
+            KeyboardShortcutBinding(command: $0.element,
+                chord: .init(key: String($0.offset), modifiers: .command))
+        }
         return bindings
     }()
 
@@ -334,6 +338,36 @@ final class KeyboardShortcutProfileRegistry {
         customBindings.removeAll { $0.command == command }
         customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
         customBindings.sort { $0.command.rawValue < $1.command.rawValue }
+        persist()
+    }
+
+    /// Refuse occupied chords until the editor explicitly confirms reassignment.
+    /// Existing aliases remain available when adding another shortcut.
+    @discardableResult
+    func reassign(
+        _ chord: KeyboardShortcutChord,
+        to command: KeyboardShortcutCommand,
+        replacingConflicts: Bool = false
+    ) -> Bool {
+        guard KeyboardShortcutProfiles.editableChordChoices.contains(chord) else { return false }
+        let occupied = selectedProfile.bindings.contains { $0.chord == chord && $0.command != command }
+        guard !occupied || replacingConflicts else { return false }
+        if selectedPreset != .custom {
+            customBindings = selectedProfile.bindings
+            selectedPreset = .custom
+        }
+        customBindings.removeAll { $0.chord == chord }
+        customBindings.append(KeyboardShortcutBinding(command: command, chord: chord))
+        persist()
+        return true
+    }
+
+    func remove(_ chord: KeyboardShortcutChord, from command: KeyboardShortcutCommand) {
+        if selectedPreset != .custom {
+            customBindings = selectedProfile.bindings
+            selectedPreset = .custom
+        }
+        customBindings.removeAll { $0.command == command && $0.chord == chord }
         persist()
     }
 
@@ -494,4 +528,16 @@ func keyboardTextInputState(in window: NSWindow?) -> (
         responder is NSText || responder is NSTextView || client != nil,
         client?.hasMarkedText() ?? false
     )
+}
+
+
+extension KeyboardShortcutProfile {
+    /// Menu equivalents must remain safe during text entry. Bare culling keys stay
+    /// with the focus-aware browser router; only unambiguous Command chords reach menus.
+    nonisolated func menuChord(for action: KeyboardCullingAction) -> KeyboardShortcutChord? {
+        bindings.first { binding in
+            binding.command.action == action && binding.chord.modifiers.contains(.command)
+                && binding.chord.key.count == 1 && command(for: binding.chord) == binding.command
+        }?.chord
+    }
 }

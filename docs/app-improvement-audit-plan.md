@@ -1,5 +1,11 @@
 # App improvement audit plan
 
+**Shortcut editor and export metadata (2026-10-18):** Settings gains a keyboard preview,
+local recording, alias editing and confirmed reassignment. Native culling menus follow the
+selected profile; pending metadata drafts now take precedence over older XMP during export.
+The 4,313-test regression passes; release performance and packaging gates remain open.
+See the [dated continuation](plan-status-shortcut-editor-export-continuation-2026-10-18.md).
+
 **Develop rooted batch recovery (2026-10-18):** Checkpoint-owned photo journals
 bind exact admission evidence and recheck the active batch under the parent lock on
 every physical retention. Version-two bindings preserve older-writer refusal; read-only

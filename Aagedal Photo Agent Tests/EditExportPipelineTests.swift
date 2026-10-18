@@ -363,6 +363,43 @@ struct EditExportPipelineTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: rendered).localizedTitles == nil)
     }
 
+    @Test("Pending app drafts override existing XMP on export, including descriptive clears",
+          arguments: [false, true])
+    func pendingDraftWinsOverExistingXMP(clearsDescription: Bool) async throws {
+        let (dir, source) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.headline: "Embedded", .description: "Embedded caption",
+                                      .subject: "embedded"], to: [source])
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(
+            title: "Saved XMP", description: "Saved XMP caption", keywords: ["saved"]
+        ), for: source)
+        let pending = IPTCMetadata(title: clearsDescription ? nil : "Pending headline",
+            localizedTitles: clearsDescription ? [] : nil,
+            description: clearsDescription ? nil : "Pending caption",
+            keywords: clearsDescription ? [] : ["pending"])
+        try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: source.lastPathComponent, pendingChanges: true, metadata: pending
+        ), for: source, in: dir)
+        let sourceBytes = try Data(contentsOf: source)
+        let xmpURL = XMPSidecarService().sidecarURL(for: source)
+        let xmpBytes = try Data(contentsOf: xmpURL)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let tracker = MetadataFailureTracker()
+        let rendered = try await EditExportPipeline.renderItem(sourceURL: source, cameraRaw: nil,
+            kind: .jpeg, outputFolder: output, folderURL: dir, writeEngine: engine,
+            failureTracker: tracker)
+        let actual = try await SwiftExifReadService().readFullMetadata(url: rendered)
+        #expect((actual.title ?? "") == (pending.title ?? ""))
+        #expect((actual.description ?? "") == (pending.description ?? ""))
+        #expect(actual.keywords == pending.keywords)
+        #expect(await tracker.sidecarOverlayFailures.isEmpty)
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        #expect(try Data(contentsOf: xmpURL) == xmpBytes)
+        #expect(MetadataSidecarService().loadSidecar(for: source, in: dir)?.pendingChanges == true)
+    }
+
     @Test("Rendered sidecar overlay preserves explicit label clears and missing-label inheritance", arguments: [false, true], [false, true])
     func renderedLabelClearPropagation(usesJSON: Bool, explicitlyClears: Bool) async throws {
         let (dir, source) = try makeWorkspace()
