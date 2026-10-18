@@ -1,5 +1,14 @@
 # App improvement audit plan
 
+**Develop rooted batch recovery (2026-10-18):** Checkpoint-owned photo journals
+bind exact admission evidence and recheck the active batch under the parent lock on
+every physical retention. Version-two bindings preserve older-writer refusal; read-only
+recovery exposes prepared/installed carriers and retains valid evidence beside child
+inspection issues. Managed execution linkage and native consent/Start remain open.
+The 46-test focused run and 4,308-test regression pass (two existing skips, zero
+failures); repository, helper, model and development-signature checks pass.
+State stays IMPLEMENTING. See the [dated continuation](release/develop-rooted-batch-recovery-2026-10-18.md).
+
 **Develop rooted mutation evidence (2026-10-18):** A synchronous durable journal
 retains exact original review/carrier material, prepared candidate bytes/inodes/destinations
 and installed receipts. Installed-retention failure preserves physical evidence and stops

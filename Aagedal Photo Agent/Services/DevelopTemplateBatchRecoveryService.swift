@@ -61,18 +61,31 @@ actor DevelopTemplateBatchRecoveryService {
                 throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
             }
             projected.append(.init(id: id, imageURL: url, completed: completions[index] as? Bool,
-                active: checkpoint.activeRequestID == id, physicalEvidence: physicalEvidence(photo),
+                active: checkpoint.activeRequestID == id, physicalEvidence: physicalEvidence(photo)
+                    + rootedPhysicalEvidence(entry.rootedMutations.filter { $0.material.requestID == id }),
                 failure: photo["failure"] as? String))
         }
         let unexpected = payload["unexpectedReceipt"] as? [String: Any]
         let unexpectedEvidence = unexpected?["evidence"] as? [String: Any]
-        return .init(id: entry.id, issue: nil, outcome: checkpoint.outcome, sequence: checkpoint.sequence,
-            templateID: templateID, templateRevision: revision, needsReview: checkpoint.needsReview,
+        return .init(id: entry.id, issue: entry.issue, outcome: checkpoint.outcome, sequence: checkpoint.sequence,
+            templateID: templateID, templateRevision: revision,
+            needsReview: checkpoint.needsReview || entry.issue != nil || !entry.rootedMutations.isEmpty,
             photos: projected, failure: payload["failure"] as? String,
             unexpectedReceiptID: unexpected?["reportedRequestID"] as? String,
             unexpectedPhysicalEvidence: unexpectedEvidence.map(physicalEvidence) ?? [],
             unexpectedFailure: unexpectedEvidence?["failure"] as? String,
             retentionFailure: payload["retentionFailure"] as? String)
+    }
+
+    private func rootedPhysicalEvidence(_ records: [DevelopTemplateRootedMutationStore.Record]) -> [String] {
+        records.flatMap { record in
+            record.mutations.map { mutation in
+                let carrier = mutation.carrier == .xmp ? "XMP" : "App metadata"
+                return mutation.installedRevision == nil
+                    ? "\(carrier) prepared; publication may have occurred"
+                    : "\(carrier) installation journal retained; batch verification remains separate"
+            }
+        }
     }
 
     private func physicalEvidence(_ photo: [String: Any]) -> [String] {

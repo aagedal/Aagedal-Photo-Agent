@@ -32,31 +32,30 @@ struct DevelopTemplateBatchRecoveryView: View {
                 DisclosureGroup {
                     if let issue = review.issue {
                         Text(verbatim: issueMessage(issue)).foregroundStyle(.orange)
-                    } else {
-                        if let templateID = review.templateID, let revision = review.templateRevision {
-                            Text("Template \(templateID.uuidString), revision \(revision)").font(.caption)
+                    }
+                    if let templateID = review.templateID, let revision = review.templateRevision {
+                        Text("Template \(templateID.uuidString), revision \(revision)").font(.caption)
+                    }
+                    if let sequence = review.sequence { Text("Checkpoint \(sequence)").font(.caption) }
+                    if let unexpected = review.unexpectedReceiptID {
+                        Text("Unexpected writer receipt: \(unexpected). Physical effects may have occurred; inspect the saved files before applying edits again.")
+                            .foregroundStyle(.orange)
+                        ForEach(review.unexpectedPhysicalEvidence, id: \.self) {
+                            Text(verbatim: $0).font(.caption).foregroundStyle(.orange)
                         }
-                        if let sequence = review.sequence { Text("Checkpoint \(sequence)").font(.caption) }
-                        if let unexpected = review.unexpectedReceiptID {
-                            Text("Unexpected writer receipt: \(unexpected). Physical effects may have occurred; inspect the saved files before applying edits again.")
-                                .foregroundStyle(.orange)
-                            ForEach(review.unexpectedPhysicalEvidence, id: \.self) {
-                                Text(verbatim: $0).font(.caption).foregroundStyle(.orange)
-                            }
-                            if let failure = review.unexpectedFailure { Text(verbatim: failure).font(.caption) }
-                        }
-                        if let failure = review.failure { Text(verbatim: failure).textSelection(.enabled) }
-                        if let failure = review.retentionFailure {
-                            Text("Checkpoint retention failed: \(failure)").foregroundStyle(.orange).textSelection(.enabled)
-                        }
-                        ForEach(review.photos) { photo in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(verbatim: photo.imageURL.path).font(.caption).textSelection(.enabled)
-                                Text(photoStatus(photo))
-                                ForEach(photo.physicalEvidence, id: \.self) { Text(verbatim: $0).font(.caption) }
-                                if let failure = photo.failure { Text(verbatim: failure).font(.caption) }
-                            }.padding(.vertical, 4)
-                        }
+                        if let failure = review.unexpectedFailure { Text(verbatim: failure).font(.caption) }
+                    }
+                    if let failure = review.failure { Text(verbatim: failure).textSelection(.enabled) }
+                    if let failure = review.retentionFailure {
+                        Text("Checkpoint retention failed: \(failure)").foregroundStyle(.orange).textSelection(.enabled)
+                    }
+                    ForEach(review.photos) { photo in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(verbatim: photo.imageURL.path).font(.caption).textSelection(.enabled)
+                            Text(photoStatus(photo))
+                            ForEach(photo.physicalEvidence, id: \.self) { Text(verbatim: $0).font(.caption) }
+                            if let failure = photo.failure { Text(verbatim: failure).font(.caption) }
+                        }.padding(.vertical, 4)
                     }
                 } label: {
                     Text(verbatim: reviewLabel(review))
@@ -128,9 +127,9 @@ struct DevelopTemplateBatchRecoveryView: View {
 
     private func issueMessage(_ issue: DevelopTemplateBatchCheckpointInventoryEntry.Issue) -> String {
         switch issue {
-        case .corrupt: "Unreadable or corrupt checkpoint evidence. Keep this entry for investigation."
+        case .corrupt: "Unreadable or corrupt checkpoint or carrier journal evidence. Available evidence is shown below. Keep this entry for investigation."
         case .newerVersion: "This checkpoint requires another app version. Keep this entry for investigation."
-        case .unavailable: "Checkpoint inspection blocked by access, a symbolic link, or an active writer. Keep this entry and try again when writing stops."
+        case .unavailable: "Some checkpoint or carrier journal evidence could not be inspected because of access, a symbolic link, or an active writer. Available evidence is shown below. Keep this entry and try again when writing stops."
         }
     }
 
