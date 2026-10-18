@@ -3,6 +3,21 @@ import os
 
 nonisolated private let ftpLog = Logger(subsystem: "com.aagedal.photo-agent", category: "FTPViewModel")
 
+/// Injectable execution boundaries keep upload lifecycle tests independent of credentials,
+/// network services, rendering hardware, and signing tools.
+nonisolated struct FTPUploadExecutionAccess: Sendable {
+    var password: @MainActor @Sendable (String) -> String? = { KeychainService.load(forKey: $0) }
+    var upload: @Sendable (URL, FTPConnection, String, @escaping @Sendable (FTPUploadProgress) -> Void) async throws -> Void = { url, connection, password, progress in
+        try await FTPService().uploadFile(localURL: url, connection: connection, password: password, progressHandler: progress)
+    }
+    var render: @MainActor @Sendable (URL, CameraRawSettings?, URL, URL?, any MetadataWriteEngine, MetadataFailureTracker) async throws -> URL = { source, raw, output, folder, engine, tracker in
+        try await EditExportPipeline.renderForDelivery(sourceURL: source, cameraRaw: raw, kind: .jpeg, outputFolder: output, folderURL: folder, writeEngine: engine, failureTracker: tracker)
+    }
+    var sign: @Sendable (C2PAUploadSigningConfiguration, URL) async throws -> Void = { configuration, url in
+        try await configuration.sign(url)
+    }
+}
+
 /// Immutable file facts used to create one upload-history entry after filesystem work has
 /// completed away from the main actor.
 nonisolated struct FTPUploadFileInventory: Sendable {
@@ -251,14 +266,41 @@ final class FTPViewModel {
 
     private let ftpService = FTPService()
     @ObservationIgnored private let fileSystem: FTPUploadFileSystemBoundary
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let execution: FTPUploadExecutionAccess
     private let connectionsKey = UserDefaultsKeys.ftpConnections
     @ObservationIgnored private var uploadTask: Task<Void, Never>?
     @ObservationIgnored private var completionTask: Task<Void, Never>?
     @ObservationIgnored private var connectionTestTask: Task<Void, Never>?
     @ObservationIgnored private var uploadGeneration = UUID()
 
-    init(fileSystem: FTPUploadFileSystemBoundary = FTPUploadFileSystemBoundary()) {
+    init(
+        fileSystem: FTPUploadFileSystemBoundary = FTPUploadFileSystemBoundary(),
+        defaults: UserDefaults = .standard,
+        execution: FTPUploadExecutionAccess = .init()
+    ) {
         self.fileSystem = fileSystem
+        self.defaults = defaults
+        self.execution = execution
+    }
+
+    /// Captures one run's completion, including cleanup, even after a restart replaces it.
+    func currentUploadCompletion() -> @Sendable () async -> Void {
+        let task = uploadTask
+        return { await task?.value }
+    }
+
+    private func ownsUpload(_ generation: UUID) -> Bool {
+        uploadGeneration == generation && !Task.isCancelled
+    }
+
+    private func applyUploadProgress(_ progress: FTPUploadProgress, generation: UUID,
+                                     offset: Double = 0, range: Double = 1) {
+        guard uploadGeneration == generation, isUploading, !uploadCompleted,
+              uploadProgress[progress.fileName]?.isComplete != true,
+              progress.fractionCompleted >= (uploadProgress[progress.fileName]?.fractionCompleted ?? 0) else { return }
+        uploadProgress[progress.fileName] = progress
+        updateSmoothedProgress(uploadWeightOffset: offset, uploadWeightRange: range)
     }
 
     deinit {
@@ -268,7 +310,7 @@ final class FTPViewModel {
     }
 
     func loadConnections() {
-        guard let data = UserDefaults.standard.data(forKey: connectionsKey) else { return }
+        guard let data = defaults.data(forKey: connectionsKey) else { return }
         do {
             connections = try JSONDecoder().decode([FTPConnection].self, from: data)
         } catch {
@@ -287,19 +329,19 @@ final class FTPViewModel {
     func saveConnections() {
         do {
             let data = try JSONEncoder().encode(connections)
-            UserDefaults.standard.set(data, forKey: connectionsKey)
+            defaults.set(data, forKey: connectionsKey)
         } catch {
             ftpLog.error("Failed to encode FTP connections: \(error.localizedDescription, privacy: .private)")
         }
     }
 
     func saveLastUsedConnectionID(_ id: UUID) {
-        UserDefaults.standard.set(id.uuidString, forKey: UserDefaultsKeys.lastUsedFTPConnectionID)
+        defaults.set(id.uuidString, forKey: UserDefaultsKeys.lastUsedFTPConnectionID)
     }
 
     func restoreLastUsedConnection() {
         guard selectedConnectionID == nil,
-              let idString = UserDefaults.standard.string(forKey: UserDefaultsKeys.lastUsedFTPConnectionID),
+              let idString = defaults.string(forKey: UserDefaultsKeys.lastUsedFTPConnectionID),
               let id = UUID(uuidString: idString),
               connections.contains(where: { $0.id == id }) else {
             return
@@ -411,7 +453,7 @@ final class FTPViewModel {
     // MARK: - Upload History
 
     func loadHistory() {
-        guard let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.ftpUploadHistory),
+        guard let data = defaults.data(forKey: UserDefaultsKeys.ftpUploadHistory),
               let decoded = try? JSONDecoder().decode(FTPUploadHistory.self, from: data) else {
             return
         }
@@ -420,7 +462,7 @@ final class FTPViewModel {
 
     func saveHistory() {
         if let data = try? JSONEncoder().encode(uploadHistory) {
-            UserDefaults.standard.set(data, forKey: UserDefaultsKeys.ftpUploadHistory)
+            defaults.set(data, forKey: UserDefaultsKeys.ftpUploadHistory)
         }
     }
 
@@ -461,7 +503,7 @@ final class FTPViewModel {
 
     func uploadFiles(_ urls: [URL], to connection: FTPConnection) {
         guard ensureUploadTransportIsAcknowledged(connection) else { return }
-        guard let password = KeychainService.load(forKey: connection.keychainKey) else {
+        guard let password = execution.password(connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
         }
@@ -474,6 +516,8 @@ final class FTPViewModel {
         uploadCompleted = false
         errorMessages = []
         completedCount = 0
+        renderCompletedCount = 0
+        renderTotalCount = 0
         totalCount = urls.count
         uploadProgress = [:]
         overallProgress = 0
@@ -489,7 +533,7 @@ final class FTPViewModel {
                     for: urls,
                     fallbackDate: historyStartedAt
                 )
-                guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+                guard self.ownsUpload(generation) else { return }
                 self.recordUploadStart(
                     inventory: inventory,
                     connection: connection,
@@ -500,32 +544,29 @@ final class FTPViewModel {
             } catch is CancellationError {
                 return
             } catch {
+                guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
                 self.isUploading = false
                 return
             }
             for (index, url) in urls.enumerated() {
-                guard !Task.isCancelled else { break }
+                guard self.ownsUpload(generation) else { return }
                 do {
-                    try await ftpService.uploadFile(
-                        localURL: url,
-                        connection: connection,
-                        password: password
-                    ) { progress in
+                    try await execution.upload(url, connection, password) { progress in
                         Task { @MainActor in
-                            guard self.uploadGeneration == generation else { return }
-                            self.uploadProgress[progress.fileName] = progress
-                            self.updateSmoothedProgress()
+                            self.applyUploadProgress(progress, generation: generation)
                         }
                     }
                     // Count completion here, on the awaited result, rather than from the
                     // background progress callback: the callback is delivered via an
                     // unstructured Task that may not have drained by the time the loop
                     // finishes and recordActivity() reads completedCount.
+                    guard self.ownsUpload(generation) else { return }
                     self.markFileComplete(url.lastPathComponent)
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard self.ownsUpload(generation) else { return }
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                     // The server is unreachable / rejecting auth — every remaining file
                     // would fail identically, so stop rather than retrying each in turn.
@@ -535,7 +576,7 @@ final class FTPViewModel {
                     }
                 }
             }
-            guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+            guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
             self.showCompletion(connection: connection)
         }
@@ -561,7 +602,7 @@ final class FTPViewModel {
             uploadFiles(urls, to: connection)
             return
         }
-        guard let password = KeychainService.load(forKey: connection.keychainKey) else {
+        guard let password = execution.password(connection.keychainKey) else {
             errorMessages = ["No password found for \(connection.name). Edit the connection to set a password."]
             return
         }
@@ -591,7 +632,7 @@ final class FTPViewModel {
                     for: urls,
                     fallbackDate: historyStartedAt
                 )
-                guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+                guard self.ownsUpload(generation) else { return }
                 self.recordUploadStart(
                     inventory: inventory,
                     connection: connection,
@@ -602,6 +643,7 @@ final class FTPViewModel {
             } catch is CancellationError {
                 return
             } catch {
+                guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
                 self.isRendering = false
                 return
@@ -613,6 +655,7 @@ final class FTPViewModel {
             } catch is CancellationError {
                 return
             } catch {
+                guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to create temp directory: \(error.localizedDescription)"]
                 self.isRendering = false
                 return
@@ -622,6 +665,8 @@ final class FTPViewModel {
                 fileSystem.removeEventually(tempDir)
             }
 
+            guard self.ownsUpload(generation) else { return }
+
             // Read batch metadata + resolve edit settings only for the files we'll render,
             // the same way the local export paths do: prefer the live in-memory CameraRaw,
             // falling back to the XMP sidecar for RAW files.
@@ -629,8 +674,10 @@ final class FTPViewModel {
             do {
                 metadataMap = try await readService.readBatchFullMetadata(urls: renderTargets)
             } catch {
+                guard self.ownsUpload(generation) else { return }
                 // Continue without camera raw — renders will use defaults
             }
+            guard self.ownsUpload(generation) else { return }
             do {
                 try await EditExportPipeline.resolveCameraRaw(
                     into: &metadataMap,
@@ -640,8 +687,11 @@ final class FTPViewModel {
             } catch is CancellationError {
                 return
             } catch {
+                guard self.ownsUpload(generation) else { return }
                 // The production sidecar boundary is best-effort and does not throw read errors.
             }
+
+            guard self.ownsUpload(generation) else { return }
 
             // Render phase (0–50% of overall progress). Files not in renderURLs are interleaved
             // in source order as their originals, so the upload list preserves the user's order.
@@ -653,7 +703,7 @@ final class FTPViewModel {
             // img_jpg.jpg) don't end up overwriting each other on the remote server.
             var usedNames: Set<String> = []
             for (index, url) in urls.enumerated() {
-                guard !Task.isCancelled else { break }
+                guard self.ownsUpload(generation) else { return }
                 guard renderURLs.contains(url) else {
                     // Upload the untouched original (staged only on a name collision).
                     do {
@@ -670,11 +720,13 @@ final class FTPViewModel {
                                 in: tempDir,
                                 index: index
                             )
+                            guard self.ownsUpload(generation) else { return }
                             uploadURLs.append(staged.url)
                         }
                     } catch is CancellationError {
                         return
                     } catch {
+                        guard self.ownsUpload(generation) else { return }
                         self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
                     }
                     continue
@@ -689,14 +741,16 @@ final class FTPViewModel {
                     let uploadedDir = url.deletingLastPathComponent()
                         .appendingPathComponent("Uploaded", isDirectory: true)
                     try await fileSystem.ensureDirectory(uploadedDir)
-                    let outputURL = try await EditExportPipeline.renderForDelivery(
-                        sourceURL: url, cameraRaw: metadataMap[url]?.cameraRaw, kind: .jpeg,
-                        outputFolder: uploadedDir, folderURL: url.deletingLastPathComponent(),
-                        writeEngine: writeEngine, failureTracker: failureTracker)
+                    guard self.ownsUpload(generation) else { return }
+                    let outputURL = try await execution.render(
+                        url, metadataMap[url]?.cameraRaw, uploadedDir,
+                        url.deletingLastPathComponent(), writeEngine, failureTracker)
+                    guard self.ownsUpload(generation) else { return }
                     let prepared = try await fileSystem.sequenceRenderedFile(
                         outputURL,
                         avoiding: usedNames
                     )
+                    guard self.ownsUpload(generation) else { return }
                     let renderedURL = prepared.url
                     usedNames.insert(renderedURL.lastPathComponent)
                     uploadURLs.append(renderedURL)
@@ -707,6 +761,7 @@ final class FTPViewModel {
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard self.ownsUpload(generation) else { return }
                     self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
                 }
                 self.renderCompletedCount += 1
@@ -714,33 +769,34 @@ final class FTPViewModel {
             }
 
             let copyFailures = await failureTracker.metadataCopyFailures
+            let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let staleWarnings = await failureTracker.staleSidecarWarnings
+            guard self.ownsUpload(generation) else { return }
             if !copyFailures.isEmpty {
                 self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
             }
-            let overlayFailures = await failureTracker.sidecarOverlayFailures
             if !overlayFailures.isEmpty {
                 self.errorMessages.append("Sidecar metadata overlay failed for \(overlayFailures.count) \(overlayFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
             }
-            let staleWarnings = await failureTracker.staleSidecarWarnings
             if !staleWarnings.isEmpty {
                 self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image" : "images") used embedded metadata instead of the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")
             }
 
-            guard !Task.isCancelled else {
-                self.isRendering = false
-                return
-            }
+            guard self.ownsUpload(generation) else { return }
 
             if let signingConfiguration, !renderedUploadURLs.isEmpty {
                 var signingFailed = false
                 for renderedURL in renderedUploadURLs {
                     do {
                         try Task.checkCancellation()
-                        try await signingConfiguration.sign(renderedURL)
+                        guard self.ownsUpload(generation) else { return }
+                        try await execution.sign(signingConfiguration, renderedURL)
+                        guard self.ownsUpload(generation) else { return }
                     } catch is CancellationError {
-                        self.isRendering = false
+                        if self.uploadGeneration == generation { self.isRendering = false }
                         return
                     } catch {
+                        guard self.ownsUpload(generation) else { return }
                         signingFailed = true
                         self.errorMessages.append("C2PA signing failed for \(renderedURL.lastPathComponent): \(error.localizedDescription)")
                     }
@@ -752,10 +808,7 @@ final class FTPViewModel {
                 }
             }
 
-            guard !Task.isCancelled, self.uploadGeneration == generation else {
-                self.isRendering = false
-                return
-            }
+            guard self.ownsUpload(generation) else { return }
 
             // Upload phase (50–100% of overall progress)
             self.isRendering = false
@@ -764,23 +817,19 @@ final class FTPViewModel {
             self.completedCount = 0
 
             for (index, url) in uploadURLs.enumerated() {
-                guard !Task.isCancelled else { break }
+                guard self.ownsUpload(generation) else { return }
                 do {
-                    try await ftpService.uploadFile(
-                        localURL: url,
-                        connection: connection,
-                        password: password
-                    ) { progress in
+                    try await execution.upload(url, connection, password) { progress in
                         Task { @MainActor in
-                            guard self.uploadGeneration == generation else { return }
-                            self.uploadProgress[progress.fileName] = progress
-                            self.updateSmoothedProgress(uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
+                            self.applyUploadProgress(progress, generation: generation, offset: 0.5, range: 0.5)
                         }
                     }
+                    guard self.ownsUpload(generation) else { return }
                     self.markFileComplete(url.lastPathComponent, uploadWeightOffset: 0.5, uploadWeightRange: 0.5)
                 } catch is CancellationError {
                     return
                 } catch {
+                    guard self.ownsUpload(generation) else { return }
                     self.errorMessages.append("Failed to upload \(url.lastPathComponent): \(error.localizedDescription)")
                     if (error as? FTPService.FTPError)?.isServerLevel == true {
                         self.appendBatchAbortNotice(remaining: uploadURLs.count - index - 1)
@@ -789,7 +838,7 @@ final class FTPViewModel {
                 }
             }
 
-            guard !Task.isCancelled, self.uploadGeneration == generation else { return }
+            guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
             self.showCompletion(connection: connection)
         }

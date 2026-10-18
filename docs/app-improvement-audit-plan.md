@@ -1,5 +1,14 @@
 # App improvement audit plan
 
+**FTP generation ownership (2026-10-18):** Cancelled/superseded transfer, render and
+signing results cannot publish errors, progress, counts, phase changes or completion into a
+replacement run. Late callbacks cannot regress completed-file or batch progress. Local fixture
+coverage includes direct restart into another render, with no production credentials or network.
+The final regression passes 4,375 tests in 424 suites (4,373 passed, two existing skips, zero
+failures); repository validation passes. Native interaction, representative performance, real-server
+behavior and signed-release qualification remain open. See the
+[dated continuation](plan-status-ftp-generation-continuation-2026-10-18.md).
+
 **Concurrent export ownership (2026-10-18):** Numbered destinations use exclusive creation;
 path/symlink/inode claims prevent concurrent replacement through pending IPTC overlay and artifact
 finalization. JPEG delivery returns its actual allocated URL, isolating cancelled detached renders

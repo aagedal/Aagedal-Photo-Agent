@@ -1,4 +1,5 @@
 import Testing
+import AppKit
 import Foundation
 @testable import Aagedal_Photo_Agent
 
@@ -862,4 +863,284 @@ struct FTPViewModelTransportAcknowledgementTests {
 
 private nonisolated enum FTPSidecarExecutorContext {
     @TaskLocal static var marker: URL?
+}
+
+@Suite("FTP upload generation isolation")
+@MainActor
+struct FTPUploadGenerationIsolationTests {
+    @Test("Late cancelled transfer results and progress cannot alter a restarted run", arguments: [false, true])
+    func cancelledTransferCannotMutateRestart(fails: Bool) async throws {
+        try await withFixture(blocked: ["upload:old.jpg", "upload:new.jpg"]) { fixture in
+            let vm = fixture.model
+            vm.uploadFiles([fixture.old], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:old.jpg")
+            let waitOld = fixture.captureCompletion()
+            vm.cancelUpload()
+            vm.uploadFiles([fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:new.jpg")
+            let waitNew = fixture.captureCompletion()
+            await fixture.gate.emit("upload:old.jpg", fileName: "old.jpg", fraction: 0.8)
+            await fixture.gate.release("upload:old.jpg", fails: fails)
+            await waitOld()
+            await drainProgressCallbacks()
+            #expect(vm.isUploading && !vm.isRendering && !vm.uploadCompleted)
+            #expect(vm.completedCount == 0 && vm.overallProgress == 0)
+            #expect(vm.errorMessages.isEmpty && vm.uploadProgress.isEmpty)
+            #expect(vm.uploadHistory.entries.filter { $0.completedAt != nil }.isEmpty)
+            await fixture.gate.release("upload:new.jpg")
+            await waitNew()
+            #expect(vm.uploadCompleted && vm.completedCount == 1)
+            #expect(vm.uploadProgress["new.jpg"]?.isComplete == true)
+            #expect(vm.uploadProgress["old.jpg"] == nil)
+            #expect(vm.errorMessages.isEmpty)
+        }
+    }
+
+    @Test("A late progress callback cannot regress an already completed file")
+    func completedFileRejectsLateProgress() async throws {
+        try await withFixture(blocked: ["upload:old.jpg", "upload:new.jpg"]) { fixture in
+            fixture.model.uploadFiles([fixture.old, fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:old.jpg")
+            let completion = fixture.captureCompletion()
+            await fixture.gate.release("upload:old.jpg")
+            try await fixture.gate.waitFor("upload:new.jpg")
+            await fixture.gate.emit("upload:old.jpg", fileName: "old.jpg", fraction: 0.2)
+            await drainProgressCallbacks()
+            #expect(fixture.model.isUploading && !fixture.model.uploadCompleted)
+            #expect(fixture.model.completedCount == 1 && fixture.model.overallProgress == 0.5)
+            #expect(fixture.model.uploadProgress["old.jpg"]?.isComplete == true)
+            #expect(fixture.model.uploadProgress["old.jpg"]?.fractionCompleted == 1)
+            await fixture.gate.release("upload:new.jpg")
+            await completion()
+            #expect(fixture.model.uploadCompleted && fixture.model.completedCount == 2)
+            await fixture.gate.emit("upload:old.jpg", fileName: "old.jpg", fraction: 0.1)
+            await drainProgressCallbacks()
+            #expect(fixture.model.overallProgress == 1)
+            #expect(fixture.model.uploadProgress["old.jpg"]?.isComplete == true)
+        }
+    }
+
+    @Test("An obsolete render cannot sequence, sign or upload after restart")
+    func obsoleteRenderCannotPublish() async throws {
+        try await withFixture(blocked: ["render", "upload:new.jpg"]) { fixture in
+            fixture.startRendered(signing: true)
+            try await fixture.gate.waitFor("render")
+            let waitOld = fixture.captureCompletion()
+            fixture.model.cancelUpload()
+            fixture.model.uploadFiles([fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:new.jpg")
+            let waitNew = fixture.captureCompletion()
+            await fixture.gate.release("render")
+            await waitOld()
+            #expect(FileManager.default.fileExists(atPath: fixture.rendered.path))
+            #expect(await fixture.gate.count("sign") == 0)
+            #expect(await fixture.gate.totalUploadCalls == 1)
+            #expect(fixture.model.isUploading && !fixture.model.isRendering)
+            #expect(fixture.model.renderCompletedCount == 0)
+            #expect(fixture.model.renderedUploadedFolders.isEmpty)
+            #expect(fixture.model.errorMessages.isEmpty && !fixture.model.uploadCompleted)
+            await fixture.gate.release("upload:new.jpg")
+            await waitNew()
+            #expect(fixture.model.uploadCompleted && fixture.model.completedCount == 1)
+        }
+    }
+
+    @Test("Obsolete signing success or failure cannot clear or report into a restarted run", arguments: [false, true])
+    func obsoleteSigningCannotMutateRestart(fails: Bool) async throws {
+        try await withFixture(blocked: ["sign", "upload:new.jpg"]) { fixture in
+            fixture.startRendered(signing: true)
+            try await fixture.gate.waitFor("sign")
+            let waitOld = fixture.captureCompletion()
+            fixture.model.cancelUpload()
+            fixture.model.uploadFiles([fixture.new], to: fixture.connection)
+            try await fixture.gate.waitFor("upload:new.jpg")
+            let waitNew = fixture.captureCompletion()
+            await fixture.gate.release("sign", fails: fails)
+            await waitOld()
+            #expect(await fixture.gate.totalUploadCalls == 1)
+            #expect(fixture.model.isUploading && !fixture.model.isRendering)
+            #expect(fixture.model.errorMessages.isEmpty && !fixture.model.uploadCompleted)
+            #expect(fixture.model.completedCount == 0 && fixture.model.overallProgress == 0)
+            await fixture.gate.release("upload:new.jpg")
+            await waitNew()
+            #expect(fixture.model.uploadCompleted && fixture.model.completedCount == 1)
+        }
+    }
+
+    @Test("An obsolete preparation cannot clear a newer rendering generation", arguments: ["render", "sign"])
+    func obsoletePreparationCannotClearNewRender(oldPhase: String) async throws {
+        try await withFixture(blocked: [oldPhase, "render:new.jpg"]) { fixture in
+            fixture.startRendered(signing: true)
+            try await fixture.gate.waitFor(oldPhase)
+            let waitOld = fixture.captureCompletion()
+            fixture.startRendered(signing: false, source: fixture.new)
+            try await fixture.gate.waitFor("render:new.jpg")
+            let waitNew = fixture.captureCompletion()
+            await fixture.gate.release(oldPhase)
+            await waitOld()
+            #expect(fixture.model.isRendering && !fixture.model.isUploading)
+            #expect(!fixture.model.uploadCompleted && fixture.model.errorMessages.isEmpty)
+            #expect(fixture.model.renderCompletedCount == 0 && fixture.model.overallProgress == 0)
+            #expect(await fixture.gate.totalUploadCalls == 0)
+            await fixture.gate.release("render:new.jpg")
+            await waitNew()
+            #expect(fixture.model.uploadCompleted && fixture.model.completedCount == 1)
+        }
+    }
+
+    private func withFixture(blocked: Set<String>,
+                             operation: (FTPGenerationFixture) async throws -> Void) async throws {
+        let fixture = try FTPGenerationFixture(blocked: blocked)
+        do {
+            try await operation(fixture)
+        } catch {
+            await fixture.finish()
+            fixture.remove()
+            throw error
+        }
+        await fixture.finish()
+        fixture.remove()
+    }
+
+    private func drainProgressCallbacks() async {
+        // The transport callback deliberately schedules MainActor work independently of
+        // the awaited transfer. Yield so queued callback work can run before inspection.
+        for _ in 0..<20 { await Task.yield() }
+    }
+}
+
+
+@MainActor
+private final class FTPGenerationFixture {
+    let root: URL
+    let old: URL
+    let new: URL
+    let rendered: URL
+    let gate: FTPGenerationGate
+    let model: FTPViewModel
+    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 22, useSFTP: true)
+    private let defaults: UserDefaults
+    private let suite: String
+    private let watchdog: Task<Void, Never>
+    private var completions: [@Sendable () async -> Void] = []
+    private var finished = false
+
+    init(blocked: Set<String>) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("ftp-generation-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        old = root.appendingPathComponent("old.jpg")
+        new = root.appendingPathComponent("new.jpg")
+        rendered = root.appendingPathComponent("Uploaded/old-render.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        try jpeg.write(to: old)
+        try jpeg.write(to: new)
+        suite = "FTPGenerationTests.\(UUID())"
+        defaults = try #require(UserDefaults(suiteName: suite))
+        let probe = FTPGenerationGate(blocked: blocked)
+        gate = probe
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, _, _, progress in
+            await probe.registerProgress(progress, for: "upload:\(url.lastPathComponent)")
+            try await probe.block("upload:\(url.lastPathComponent)")
+        }
+        execution.render = { source, _, folder, _, _, _ in
+            let output = folder.appendingPathComponent(source.deletingPathExtension().lastPathComponent + "-render.jpg")
+            try FileManager.default.copyItem(at: source, to: output)
+            try await probe.block(source.lastPathComponent == "old.jpg" ? "render" : "render:\(source.lastPathComponent)")
+            return output
+        }
+        execution.sign = { _, _ in try await probe.block("sign") }
+        model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: root),
+                             defaults: defaults, execution: execution)
+        watchdog = Task.detached {
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            await probe.releaseAll(expired: true)
+        }
+    }
+
+    func startRendered(signing: Bool, source: URL? = nil) {
+        let source = source ?? old
+        model.uploadFiles([source], renderURLs: [source], to: connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in nil },
+            signingConfiguration: signing ? C2PAUploadSigningConfiguration(certificatePath: "unused",
+                privateKeyPEM: "unused", author: nil, usesTestCertificate: false) : nil)
+    }
+
+    func captureCompletion() -> @Sendable () async -> Void {
+        let completion = model.currentUploadCompletion()
+        completions.append(completion)
+        return completion
+    }
+
+    func finish() async {
+        await gate.releaseAll()
+        let current = model.currentUploadCompletion()
+        for completion in completions { await completion() }
+        await current()
+        #expect(await !gate.expired)
+        watchdog.cancel()
+        finished = true
+    }
+
+    func remove() {
+        guard finished else {
+            // Throwing test exits still release and join every captured generation;
+            // retain the watchdog until all injected operations have been unwound.
+            _ = captureCompletion()
+            model.cancelUpload()
+            Task { await finish(); remove() }
+            return
+        }
+        model.cancelUpload()
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor FTPGenerationGate {
+    private let blocked: Set<String>
+    private var counts: [String: Int] = [:]
+    private var callbacks: [String: @Sendable (FTPUploadProgress) -> Void] = [:]
+    private var continuations: [String: CheckedContinuation<Void, Never>] = [:]
+    private var released: Set<String> = []
+    private var failures: Set<String> = []
+    private(set) var expired = false
+    init(blocked: Set<String>) { self.blocked = blocked }
+    func count(_ key: String) -> Int { counts[key, default: 0] }
+    var totalUploadCalls: Int { counts.filter { $0.key.hasPrefix("upload:") }.values.reduce(0, +) }
+    func registerProgress(_ callback: @escaping @Sendable (FTPUploadProgress) -> Void, for key: String) {
+        callbacks[key] = callback
+    }
+    func block(_ key: String) async throws {
+        counts[key, default: 0] += 1
+        if blocked.contains(key), !released.contains(key) {
+            await withCheckedContinuation { continuations[key] = $0 }
+        }
+        if failures.contains(key) { throw CocoaError(.fileWriteUnknown) }
+    }
+    func release(_ key: String, fails: Bool = false) {
+        released.insert(key)
+        if fails { failures.insert(key) }
+        continuations.removeValue(forKey: key)?.resume()
+    }
+    func releaseAll(expired: Bool = false) {
+        self.expired = self.expired || expired
+        for key in blocked { release(key) }
+    }
+    func emit(_ key: String, fileName: String, fraction: Double) {
+        callbacks[key]?(FTPUploadProgress(fileName: fileName, bytesUploaded: 20,
+            totalBytes: 100, fractionCompleted: fraction, isComplete: false))
+    }
+    func waitFor(_ key: String) async throws {
+        let deadline = ContinuousClock.now + .seconds(6)
+        while count(key) == 0 {
+            guard ContinuousClock.now < deadline else { throw CocoaError(.userCancelled) }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
 }
