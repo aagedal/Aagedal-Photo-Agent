@@ -7,6 +7,13 @@ nonisolated struct DevelopTemplateBatchCheckpointInventoryEntry: Sendable, Ident
     let id: String
     let checkpoint: DevelopTemplateBatchCheckpoint?
     let issue: Issue?
+    let rootedMutations: [DevelopTemplateRootedMutationStore.Record]
+
+    init(id: String, checkpoint: DevelopTemplateBatchCheckpoint?, issue: Issue?,
+         rootedMutations: [DevelopTemplateRootedMutationStore.Record] = []) {
+        self.id = id; self.checkpoint = checkpoint; self.issue = issue
+        self.rootedMutations = rootedMutations
+    }
 }
 
 nonisolated enum DevelopTemplateBatchCheckpointError: Error, Equatable {
@@ -26,6 +33,8 @@ nonisolated struct DevelopTemplateBatchCheckpoint: Codable, Sendable {
     let sha256: String
     let immutableIntentData: Data
     let receipts: [Data?]
+    let rootedAdmissionEvidence: Data?
+    let rootedAdmissionEvidenceSHA256: String?
     var needsReview: Bool {
         activeRequestID != nil || outcome == .prepared || outcome == .running || outcome == .recoveryRequired
     }
@@ -112,12 +121,111 @@ actor DevelopTemplateBatchCheckpointStore {
                     throw DevelopTemplateBatchCheckpointError.invalidCheckpoint
                 }
             }
-            let checkpoint = DevelopTemplateBatchCheckpoint(formatVersion: 1, batchID: result.intent.id,
+            let checkpoint = DevelopTemplateBatchCheckpoint(formatVersion: previous?.formatVersion ?? 1, batchID: result.intent.id,
                 sequence: (previous?.sequence ?? 0) + 1, outcome: result.outcome,
                 activeRequestID: result.activeRequestID, completedCount: result.completedCount,
-                recoveryData: payload, sha256: Self.hash(payload), immutableIntentData: parts.intent, receipts: receipts)
+                recoveryData: payload, sha256: Self.hash(payload), immutableIntentData: parts.intent, receipts: receipts,
+                rootedAdmissionEvidence: previous?.rootedAdmissionEvidence,
+                rootedAdmissionEvidenceSHA256: previous?.rootedAdmissionEvidenceSHA256)
             try Self.validate(checkpoint)
             return ((), try encoder.encode(checkpoint))
+        }
+    }
+
+    /// Binds exact reviewed evidence once, before a photo journal can retain any
+    /// physical stage. The returned handle rechecks the parent under its lock for
+    /// every synchronous retention; obtaining a handle never grants write authority.
+    func rootedMutationStore(evidence: DevelopTemplateBatchAdmissionEvidence,
+                             requestID: UUID) throws -> DevelopTemplateRootedMutationStore {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let evidenceData = try encoder.encode(evidence)
+        guard evidenceData.count <= DevelopTemplateBatchAdmissionStore.maximumEvidenceBytes else {
+            throw DevelopTemplateBatchFailure.retentionLimit
+        }
+        let batchID = evidence.batchID
+        let parent = persistence(batchID)
+        // Refusal against missing, terminal or mismatched parents must not create
+        // a journal directory or lock file merely to report that refusal.
+        try parent.transaction(readOnly: true) { existing in
+            guard let existing else { throw DevelopTemplateBatchCheckpointError.invalidCheckpoint }
+            let checkpoint = try Self.decode(existing, batchID: batchID)
+            try Self.validateRootedBinding(checkpoint, evidence: evidence, requestID: requestID)
+            if let retained = checkpoint.rootedAdmissionEvidence, retained != evidenceData {
+                throw DevelopTemplateBatchCheckpointError.immutableIntentChanged
+            }
+            return ((), existing)
+        }
+        try parent.transaction { existing in
+            guard let existing else { throw DevelopTemplateBatchCheckpointError.invalidCheckpoint }
+            let checkpoint = try Self.decode(existing, batchID: batchID)
+            try Self.validateRootedBinding(checkpoint, evidence: evidence, requestID: requestID)
+            if let retained = checkpoint.rootedAdmissionEvidence {
+                guard retained == evidenceData else { throw DevelopTemplateBatchCheckpointError.immutableIntentChanged }
+                return ((), existing)
+            }
+            guard checkpoint.sequence < UInt64.max else { throw DevelopTemplateBatchCheckpointError.invalidCheckpoint }
+            // Older checkpoint writers must refuse instead of dropping the binding.
+            let bound = DevelopTemplateBatchCheckpoint(formatVersion: 2,
+                batchID: batchID, sequence: checkpoint.sequence + 1, outcome: checkpoint.outcome,
+                activeRequestID: checkpoint.activeRequestID, completedCount: checkpoint.completedCount,
+                recoveryData: checkpoint.recoveryData, sha256: checkpoint.sha256,
+                immutableIntentData: checkpoint.immutableIntentData, receipts: checkpoint.receipts,
+                rootedAdmissionEvidence: evidenceData, rootedAdmissionEvidenceSHA256: Self.hash(evidenceData))
+            try Self.validate(bound)
+            return ((), try encoder.encode(bound))
+        }
+        let child = directory.appendingPathComponent(batchID.uuidString, isDirectory: true)
+            .appendingPathComponent("RootedMutations", isDirectory: true)
+            .appendingPathComponent(requestID.uuidString, isDirectory: true)
+        return DevelopTemplateRootedMutationStore(directory: child, withBatchCheckpoint: { material, body in
+            try parent.transaction(readOnly: true) { existing in
+                guard let existing else { throw DevelopTemplateBatchCheckpointError.invalidCheckpoint }
+                let checkpoint = try Self.decode(existing, batchID: batchID)
+                try Self.validateRootedBinding(checkpoint, evidence: evidence, requestID: requestID)
+                guard checkpoint.rootedAdmissionEvidence == evidenceData,
+                      material.evidenceData == evidenceData, material.batchID == batchID,
+                      material.requestID == requestID else {
+                    throw DevelopTemplateBatchCheckpointError.immutableIntentChanged
+                }
+                try body()
+                return ((), existing)
+            }
+        })
+    }
+
+    private static func validateRootedBinding(_ checkpoint: DevelopTemplateBatchCheckpoint,
+        evidence: DevelopTemplateBatchAdmissionEvidence, requestID: UUID) throws {
+        let intent = try parts(evidence.originalIntentData)
+        guard Self.validRootedEvidence(evidence, photos: intent.photos),
+              evidence.batchID == checkpoint.batchID,
+              intent.intent == checkpoint.immutableIntentData,
+              evidence.photos.map({ $0.requestID.uuidString }) == intent.photos.compactMap({ $0["requestID"] as? String }),
+              checkpoint.outcome == .running, checkpoint.activeRequestID == requestID,
+              let index = evidence.photos.firstIndex(where: { $0.requestID == requestID }),
+              checkpoint.receipts[index] == nil else {
+            throw DevelopTemplateBatchCheckpointError.invalidCheckpoint
+        }
+    }
+
+    private static func validRootedEvidence(_ evidence: DevelopTemplateBatchAdmissionEvidence,
+        photos: [[String: Any]]) -> Bool {
+        guard evidence.formatVersion == 1,
+              !evidence.templateRevision.isEmpty,
+              !evidence.configurationRevision.isEmpty,
+              evidence.configurationRevision.utf8.count <= 4_096,
+              !evidence.photos.isEmpty, evidence.photos.count == photos.count,
+              evidence.photos.count <= DevelopTemplateBatchIntent.maximumPhotos,
+              Set(evidence.photos.map(\.requestID)).count == evidence.photos.count,
+              let intent = try? JSONSerialization.jsonObject(with: evidence.originalIntentData) as? [String: Any],
+              intent["batchID"] as? String == evidence.batchID.uuidString,
+              intent["templateID"] as? String == evidence.template.id.uuidString,
+              intent["templateRevision"] as? String == evidence.templateRevision else { return false }
+        return zip(evidence.photos, photos).allSatisfy { photo, captured in
+            photo.url.isFileURL && photo.targetIdentity.device != 0 && photo.targetIdentity.inode != 0
+                && !photo.sourceRevision.isEmpty && !photo.xmpRevision.isEmpty && !photo.appRevision.isEmpty
+                && captured["requestID"] as? String == photo.requestID.uuidString
+                && captured["imageURL"] as? String == photo.url.absoluteString
+                && captured["expectedXMPKnown"] as? Bool == true
         }
     }
 
@@ -173,12 +281,24 @@ actor DevelopTemplateBatchCheckpointStore {
                 return .init(id: name, checkpoint: nil, issue: .corrupt)
             }
             do {
-                let checkpoint = try load(id)
-                guard checkpoint.recoveryData.count <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes - retainedBytes else {
-                    throw AutomationOperationRegistry.Failure.capacity
+                return try persistence(id).transaction(readOnly: true) { existing in
+                    guard let existing else { throw DevelopTemplateBatchCheckpointError.corruptCheckpoint }
+                    let checkpoint = try Self.decode(existing, batchID: id)
+                    let checkpointBytes = checkpoint.recoveryData.count + (checkpoint.rootedAdmissionEvidence?.count ?? 0)
+                    guard checkpointBytes <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes - retainedBytes else {
+                        throw AutomationOperationRegistry.Failure.capacity
+                    }
+                    retainedBytes += checkpointBytes
+                    do {
+                        let attached = try rootedInventory(checkpoint, retainedBytes: &retainedBytes)
+                        return (.init(id: name, checkpoint: checkpoint, issue: attached.issue,
+                                      rootedMutations: attached.records), existing)
+                    } catch AutomationOperationRegistry.Failure.capacity {
+                        throw AutomationOperationRegistry.Failure.capacity
+                    } catch {
+                        return (.init(id: name, checkpoint: checkpoint, issue: .unavailable), existing)
+                    }
                 }
-                retainedBytes += checkpoint.recoveryData.count
-                return .init(id: name, checkpoint: checkpoint, issue: nil)
             }
             catch DevelopTemplateBatchCheckpointError.unsupportedVersion {
                 return .init(id: name, checkpoint: nil, issue: .newerVersion)
@@ -197,7 +317,81 @@ actor DevelopTemplateBatchCheckpointStore {
         return entries
     }
 
-    private func openInventoryDirectory(allowMissing: Bool = false) throws -> Int32 {
+    /// Parent checkpoint lock remains held throughout attached journal discovery.
+    /// Unknown or unreadable children remain visible as a batch issue alongside the
+    /// valid parent and any independently valid siblings.
+    private func rootedInventory(_ checkpoint: DevelopTemplateBatchCheckpoint,
+        retainedBytes: inout Int) throws -> (records: [DevelopTemplateRootedMutationStore.Record],
+                                           issue: DevelopTemplateBatchCheckpointInventoryEntry.Issue?) {
+        let location = directory.appendingPathComponent(checkpoint.batchID.uuidString, isDirectory: true)
+            .appendingPathComponent("RootedMutations", isDirectory: true)
+        let root = try openInventoryDirectory(at: location, allowMissing: true)
+        guard root >= 0 else { return ([], nil) }
+        guard let stream = fdopendir(root) else {
+            Darwin.close(root)
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw AutomationOperationRegistry.Failure.storageUnavailable }
+                break
+            }
+            let capacity = Int(entry.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: capacity) { String(cString: $0) }
+            }
+            guard name != ".", name != ".." else { continue }
+            guard names.count < DevelopTemplateBatchIntent.maximumPhotos else {
+                throw AutomationOperationRegistry.Failure.capacity
+            }
+            names.append(name)
+        }
+        var records: [DevelopTemplateRootedMutationStore.Record] = []
+        var issue: DevelopTemplateBatchCheckpointInventoryEntry.Issue?
+        let evidence = checkpoint.rootedAdmissionEvidence.flatMap {
+            try? JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self, from: $0)
+        }
+        for name in names.sorted() {
+            guard let requestID = UUID(uuidString: name), requestID.uuidString == name,
+                  evidence?.photos.contains(where: { $0.requestID == requestID }) == true else {
+                issue = .corrupt; continue
+            }
+            do {
+                let store = DevelopTemplateRootedMutationStore(directory: location.appendingPathComponent(name, isDirectory: true))
+                guard let record = try store.load(), record.material.batchID == checkpoint.batchID,
+                      record.material.requestID == requestID,
+                      record.material.evidenceData == checkpoint.rootedAdmissionEvidence else {
+                    issue = .corrupt; continue
+                }
+                let count = try JSONEncoder().encode(record).count
+                guard count <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes - retainedBytes else {
+                    throw AutomationOperationRegistry.Failure.capacity
+                }
+                retainedBytes += count
+                records.append(record)
+            } catch AutomationOperationRegistry.Failure.capacity {
+                throw AutomationOperationRegistry.Failure.capacity
+            } catch DevelopTemplateRootedMutationStore.Failure.corruptJournal {
+                issue = .corrupt
+            } catch {
+                if issue == nil { issue = .unavailable }
+            }
+        }
+        let fresh = try openInventoryDirectory(at: location)
+        defer { Darwin.close(fresh) }
+        var original = stat(), current = stat()
+        guard fstat(root, &original) == 0, fstat(fresh, &current) == 0,
+              original.st_dev == current.st_dev, original.st_ino == current.st_ino else {
+            throw AutomationOperationRegistry.Failure.storageUnavailable
+        }
+        return (records, issue)
+    }
+
+    private func openInventoryDirectory(at selectedDirectory: URL? = nil, allowMissing: Bool = false) throws -> Int32 {
+        let directory = selectedDirectory ?? self.directory
         guard directory.isFileURL, directory.path.hasPrefix("/") else {
             throw AutomationOperationRegistry.Failure.storageUnavailable
         }
@@ -234,7 +428,7 @@ actor DevelopTemplateBatchCheckpointStore {
               let version = header["formatVersion"] as? Int else {
             throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
         }
-        guard version == 1 else { throw DevelopTemplateBatchCheckpointError.unsupportedVersion }
+        guard version == 1 || version == 2 else { throw DevelopTemplateBatchCheckpointError.unsupportedVersion }
         guard let checkpoint = try? JSONDecoder().decode(DevelopTemplateBatchCheckpoint.self, from: data),
               checkpoint.batchID == batchID else { throw DevelopTemplateBatchCheckpointError.corruptCheckpoint }
         try validate(checkpoint)
@@ -266,13 +460,28 @@ actor DevelopTemplateBatchCheckpointStore {
         return (try canonical(value), photos)
     }
     private static func validate(_ checkpoint: DevelopTemplateBatchCheckpoint) throws {
-        guard checkpoint.formatVersion == 1 else { throw DevelopTemplateBatchCheckpointError.unsupportedVersion }
+        guard checkpoint.formatVersion == 1 || checkpoint.formatVersion == 2 else { throw DevelopTemplateBatchCheckpointError.unsupportedVersion }
         guard checkpoint.sequence > 0,
               checkpoint.recoveryData.count <= DevelopTemplateBatchExecutionService.maximumRecoveryBytes,
               checkpoint.sha256 == hash(checkpoint.recoveryData) else {
             throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
         }
         let parts = try parts(checkpoint.recoveryData)
+        guard (checkpoint.formatVersion == 2) == (checkpoint.rootedAdmissionEvidence != nil),
+              checkpoint.rootedAdmissionEvidence != nil || checkpoint.rootedAdmissionEvidenceSHA256 == nil else {
+            throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
+        }
+        if let data = checkpoint.rootedAdmissionEvidence {
+            guard data.count <= DevelopTemplateBatchAdmissionStore.maximumEvidenceBytes,
+                  checkpoint.rootedAdmissionEvidenceSHA256 == Self.hash(data),
+                  let evidence = try? JSONDecoder().decode(DevelopTemplateBatchAdmissionEvidence.self, from: data),
+                  Self.validRootedEvidence(evidence, photos: parts.photos),
+                  evidence.batchID == checkpoint.batchID,
+                  try Self.parts(evidence.originalIntentData).intent == checkpoint.immutableIntentData,
+                  evidence.photos.map({ $0.requestID.uuidString }) == parts.photos.compactMap({ $0["requestID"] as? String }) else {
+                throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
+            }
+        }
         guard let payload = try JSONSerialization.jsonObject(with: checkpoint.recoveryData) as? [String: Any] else {
             throw DevelopTemplateBatchCheckpointError.corruptCheckpoint
         }

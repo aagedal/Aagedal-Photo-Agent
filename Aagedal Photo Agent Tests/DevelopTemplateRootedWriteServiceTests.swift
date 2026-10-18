@@ -368,6 +368,127 @@ struct DevelopTemplateRootedWriteServiceTests {
         }
     }
 
+    private func runningCheckpoint(_ f: Fixture) async throws -> (DevelopTemplateBatchCheckpointStore, DevelopTemplateBatchAdmissionEvidence, DevelopTemplateBatchExecutionResult) {
+        let store = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("batches"))
+        var state = DevelopTemplateBatchExecutionResult(intent: f.capture.intent, results: [nil, nil])
+        try await store.retain(state)
+        state.outcome = .running; state.activeRequestID = f.request.id
+        try await store.retain(state)
+        return (store, try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy"), state)
+    }
+
+    @Test("Checkpoint-owned journal survives restart without claiming batch completion")
+    func checkpointJournalPublication() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (checkpoints, evidence, _) = try await runningCheckpoint(f)
+        let journal = try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id)
+        let lease = try MCPProcessReservation.acquirePhoto(f.request.imageURL); defer { lease.release() }
+        let result = try await DevelopTemplateRootedWriteService(facade: f.facade).execute(f.request,
+            expected: f.snapshot, reservation: lease, evidence: evidence, mutationStore: journal,
+            validateCommitAuthority: { _, expected in try validate(expected, facade: f.facade, reservation: lease) })
+        #expect(result.writeResult.completed)
+        let before = try await checkpoints.load(f.capture.intent.id)
+        let restarted = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("batches"))
+        let inventory = try await restarted.recoveryInventory()
+        #expect(inventory.count == 1 && inventory[0].issue == nil)
+        #expect(inventory[0].rootedMutations.first?.mutations.count == 2)
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: restarted).inspect()
+        #expect(reviews.first?.needsReview == true)
+        #expect(reviews.first?.photos.first?.completed == nil)
+        #expect(reviews.first?.photos.first?.physicalEvidence.count == 2)
+        let after = try await restarted.load(f.capture.intent.id)
+        #expect(after.formatVersion == 2)
+        #expect(after.sequence == before.sequence && after.recoveryData == before.recoveryData)
+        #expect(after.activeRequestID == f.request.id && after.completedCount == 0)
+    }
+
+    @Test("Checkpoint attachment refuses missing, prepared, wrong-active and substituted evidence")
+    func checkpointJournalAdmission() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let missing = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("missing"))
+        let evidence = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "policy")
+        await #expect(throws: (any Error).self) { try await missing.rootedMutationStore(evidence: evidence, requestID: f.request.id) }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("missing").path))
+        let checkpoints = DevelopTemplateBatchCheckpointStore(directory: f.root.appendingPathComponent("batches"))
+        var state = DevelopTemplateBatchExecutionResult(intent: f.capture.intent, results: [nil, nil])
+        try await checkpoints.retain(state)
+        await #expect(throws: (any Error).self) { try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id) }
+        state.outcome = .running; state.activeRequestID = f.request.id
+        try await checkpoints.retain(state)
+        await #expect(throws: (any Error).self) { try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.capture.intent.requests[1].id) }
+        _ = try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id)
+        let changed = try DevelopTemplateBatchAdmissionEvidence(capture: f.capture, configurationRevision: "changed-policy")
+        await #expect(throws: (any Error).self) { try await checkpoints.rootedMutationStore(evidence: changed, requestID: f.request.id) }
+        #expect(!FileManager.default.fileExists(atPath: f.root.appendingPathComponent("batches/\(f.capture.intent.id.uuidString)/RootedMutations").path))
+    }
+
+    @Test("Bound review checksum detects corruption and preserves the retained checkpoint")
+    func checkpointJournalBindingCorruption() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (checkpoints, evidence, _) = try await runningCheckpoint(f)
+        _ = try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id)
+        let file = f.root.appendingPathComponent("batches/\(f.capture.intent.id.uuidString)/operations.json")
+        var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        object["rootedAdmissionEvidenceSHA256"] = "invalid"
+        let changed = try JSONSerialization.data(withJSONObject: object)
+        try changed.write(to: file)
+        await #expect(throws: (any Error).self) { try await checkpoints.load(f.capture.intent.id) }
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: checkpoints).inspect()
+        #expect(reviews.first?.issue == .corrupt && reviews.first?.needsReview == true)
+        #expect(try Data(contentsOf: file) == changed)
+    }
+
+    @Test("Retained handles recheck terminal checkpoint before every journal mutation")
+    func checkpointJournalStaleHandle() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (checkpoints, evidence, running) = try await runningCheckpoint(f)
+        let journal = try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id)
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.snapshot)
+        try journal.retain(material)
+        var terminal = running; terminal.outcome = .recoveryRequired
+        try await checkpoints.retain(terminal)
+        #expect(try await checkpoints.load(f.capture.intent.id).formatVersion == 2)
+        #expect(throws: (any Error).self) { try journal.retain(material) }
+        #expect(throws: (any Error).self) {
+            try journal.recordPrepared(material, carrier: .xmp,
+                identity: .init(file: .init(device: 1, inode: 42), size: 3, modificationSeconds: 1, modificationNanoseconds: 0),
+                candidate: Data("xmp".utf8), destination: f.request.imageURL.deletingPathExtension().appendingPathExtension("xmp"))
+        }
+        #expect(try journal.load()?.mutations.isEmpty == true)
+    }
+
+    @Test("Recovery preserves interrupted, corrupt, orphaned and symlink journal evidence", arguments: ["prepared", "corrupt", "orphan", "symlink", "missing-lock"])
+    func checkpointJournalRecovery(kind: String) async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let (checkpoints, evidence, _) = try await runningCheckpoint(f)
+        let journal = try await checkpoints.rootedMutationStore(evidence: evidence, requestID: f.request.id)
+        let material = try DevelopTemplateRootedMutationStore.Material(evidence: evidence, request: f.request, original: f.snapshot)
+        try journal.retain(material)
+        try journal.recordPrepared(material, carrier: .xmp,
+            identity: .init(file: .init(device: 1, inode: 42), size: 3, modificationSeconds: 1, modificationNanoseconds: 0),
+            candidate: Data("xmp".utf8), destination: f.request.imageURL.deletingPathExtension().appendingPathExtension("xmp"))
+        let base = f.root.appendingPathComponent("batches/\(f.capture.intent.id.uuidString)/RootedMutations")
+        let child = base.appendingPathComponent(f.request.id.uuidString)
+        if kind == "corrupt" { try Data("broken".utf8).write(to: child.appendingPathComponent("operations.json")) }
+        if kind == "missing-lock" { try FileManager.default.removeItem(at: child.appendingPathComponent("operations.lock")) }
+        if kind == "orphan" { try FileManager.default.createDirectory(at: base.appendingPathComponent(UUID().uuidString), withIntermediateDirectories: false) }
+        if kind == "symlink" {
+            try FileManager.default.moveItem(at: child, to: f.root.appendingPathComponent("saved-journal"))
+            try FileManager.default.createSymbolicLink(at: child, withDestinationURL: f.root.appendingPathComponent("saved-journal"))
+        }
+        let before = try await checkpoints.load(f.capture.intent.id)
+        let reviews = try await DevelopTemplateBatchRecoveryService(store: checkpoints).inspect()
+        #expect(reviews.first?.needsReview == true && reviews.first?.photos.count == 2)
+        #expect((reviews.first?.issue != nil) == (kind != "prepared"))
+        if kind == "prepared" {
+            #expect(reviews.first?.photos.first?.physicalEvidence.count == 1)
+            #expect(reviews.first?.photos.first?.completed == nil)
+        }
+        let after = try await checkpoints.load(f.capture.intent.id)
+        #expect(after.sequence == before.sequence && after.recoveryData == before.recoveryData)
+        if kind == "missing-lock" { #expect(!FileManager.default.fileExists(atPath: child.appendingPathComponent("operations.lock").path)) }
+    }
+
     @Test("Failed installed retention stops the next carrier and returns physical evidence", arguments: [false, true])
     func installedRetentionFailure(afterApp: Bool) async throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }

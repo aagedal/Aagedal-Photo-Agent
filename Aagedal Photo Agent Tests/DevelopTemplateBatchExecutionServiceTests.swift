@@ -264,7 +264,7 @@ struct DevelopTemplateBatchExecutionServiceTests {
         try FileManager.default.createDirectory(at: batchDirectory, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         let url = batchDirectory.appendingPathComponent("operations.json")
-        let bytes = Data((newer ? "{\"formatVersion\":2}" : "broken checkpoint").utf8)
+        let bytes = Data((newer ? "{\"formatVersion\":3}" : "broken checkpoint").utf8)
         try bytes.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         let store = DevelopTemplateBatchCheckpointStore(directory: directory)
@@ -396,7 +396,7 @@ struct DevelopTemplateBatchExecutionServiceTests {
         let original = try Data(contentsOf: validFile)
         let badID = UUID(), newerID = UUID()
         var files: [(URL, Data)] = []
-        for (id, bytes) in [(badID, Data("broken".utf8)), (newerID, Data("{\"formatVersion\":2}".utf8))] {
+        for (id, bytes) in [(badID, Data("broken".utf8)), (newerID, Data("{\"formatVersion\":3}".utf8))] {
             let child = directory.appendingPathComponent(id.uuidString)
             try FileManager.default.createDirectory(at: child, withIntermediateDirectories: false,
                 attributes: [.posixPermissions: 0o700])

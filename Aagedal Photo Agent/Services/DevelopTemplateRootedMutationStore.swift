@@ -106,19 +106,24 @@ nonisolated struct DevelopTemplateRootedMutationStore: Sendable {
         let sha256: String
     }
     private let persistence: AutomationOperationPersistence
-    init(directory: URL) {
+    private let withBatchCheckpoint: @Sendable (Material, () throws -> Void) throws -> Void
+    init(directory: URL,
+         withBatchCheckpoint: @escaping @Sendable (Material, () throws -> Void) throws -> Void = { _, body in try body() }) {
+        self.withBatchCheckpoint = withBatchCheckpoint
         persistence = .init(directory: directory, maximumBytes: 100_663_296)
     }
 
     /// Retaining an identical original binding is idempotent; it never clears progress.
     func retain(_ material: Material) throws {
         guard material.isValid else { throw Failure.invalidMaterial }
-        try persistence.transaction { bytes in
-            if let bytes {
-                guard try decode(bytes).material == material else { throw Failure.changedMaterial }
-                return ((), bytes)
+        try withBatchCheckpoint(material) {
+            try persistence.transaction { bytes in
+                if let bytes {
+                    guard try decode(bytes).material == material else { throw Failure.changedMaterial }
+                    return ((), bytes)
+                }
+                return ((), try encode(.init(material: material, mutations: [])))
             }
-            return ((), try encode(.init(material: material, mutations: [])))
         }
     }
 
@@ -169,12 +174,14 @@ nonisolated struct DevelopTemplateRootedMutationStore: Sendable {
         }
     }
     private func update(_ material: Material, body: (inout Record) throws -> Void) throws {
-        try persistence.transaction { bytes in
-            guard let bytes else { throw Failure.invalidTransition }
-            var record = try decode(bytes)
-            guard record.material == material else { throw Failure.changedMaterial }
-            try body(&record)
-            return ((), try encode(record))
+        try withBatchCheckpoint(material) {
+            try persistence.transaction { bytes in
+                guard let bytes else { throw Failure.invalidTransition }
+                var record = try decode(bytes)
+                guard record.material == material else { throw Failure.changedMaterial }
+                try body(&record)
+                return ((), try encode(record))
+            }
         }
     }
     private func encode(_ record: Record) throws -> Data {
