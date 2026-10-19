@@ -501,4 +501,26 @@ struct AutomationOperationRegistryTests {
         #expect(throws: AutomationOperationRegistry.Failure.storageUnavailable) { try registry.records() }
         #expect(try Data(contentsOf: url) == before)
     }
+
+    @Test("Explicit pruning keeps the newest finished records and never touches active work")
+    func pruneFinishedKeepsNewestAndActive() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = AutomationOperationRegistry(storageDirectory: root)
+        let owner = UUID()
+        var finished: [UUID] = []
+        for offset in 0..<4 {
+            let record = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, now: now)
+            _ = try registry.finish(record.id, ownerID: owner, outcome: .verified,
+                                    now: now.addingTimeInterval(TimeInterval(offset)))
+            finished.append(record.id)
+        }
+        let active = try registry.enqueue(kind: .voiceTranscription, ownerID: owner, now: now)
+        let otherKind = try registry.enqueue(kind: .iptcPatch, ownerID: owner, now: now)
+        _ = try registry.finish(otherKind.id, ownerID: owner, outcome: .verified, now: now)
+
+        #expect(try registry.pruneFinished(kind: .voiceTranscription, keepingNewest: 1) == 3)
+        let remaining = Set(try registry.records().map(\.id))
+        #expect(remaining == [finished[3], active.id, otherKind.id])
+    }
 }

@@ -92,6 +92,13 @@ struct TranscriptionSettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Smaller models are faster. For Norwegian, choose an NbAiLab model and select Norwegian below.")
                 .font(.caption).foregroundStyle(.secondary)
+            if managedWhisper.selectedModelID.hasPrefix("nb-") {
+                // Measured on real Sony memos: NbAiLab models render English speech as a Norwegian
+                // paraphrase, even with Automatic language. That would put words in a source's mouth.
+                Label("Norwegian models write Norwegian. Speech in other languages comes out translated into Norwegian, even with Automatic language. For memos in English or mixed languages, use Turbo or Large v3.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .accessibilityIdentifier("settings.transcription.whisper.norwegianOnly")
+            }
             if managedWhisper.isDownloading {
                 if managedWhisper.downloadPhase == .downloading {
                     ProgressView(value: managedWhisper.progress) {

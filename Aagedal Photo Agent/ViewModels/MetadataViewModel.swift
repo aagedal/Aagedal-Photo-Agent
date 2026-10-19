@@ -2265,15 +2265,6 @@ final class MetadataViewModel {
             original: originalImageMetadata, includeCameraRaw: includeCameraRaw, imageAspect: imageAspect)
     }
 
-    private func syncCameraRawToXMPSidecar(for imageURL: URL, metadata: IPTCMetadata) async {
-        guard metadata.cameraRaw != nil || originalImageMetadata?.cameraRaw != nil else { return }
-        try? await xmpSidecarService.saveCameraRawOnlySerialized(
-            metadata.cameraRaw,
-            orientation: metadata.exifOrientation,
-            for: imageURL
-        )
-    }
-
     private func appendCameraRawFields(
         from metadata: IPTCMetadata,
         into fields: inout [MetadataFieldKey: String],
@@ -2305,11 +2296,29 @@ final class MetadataViewModel {
         guard selectedCount == 1,
               let imageURL = selectedURLs.first,
               let folderURL = currentFolderURL else {
+            // Batch / folderless fallback. Report completion only after both writes actually
+            // finish, so callers (pending badges, Develop lifecycle) never see an early success.
             writeMetadata()
-            if alsoWriteXMPSidecar {
-                Task { await writeXMPSidecar() }
+            let embedWrite = writeTask
+            writeTask = Task {
+                await withTaskCancellationHandler {
+                    await embedWrite?.value
+                } onCancel: {
+                    embedWrite?.cancel()
+                }
+                if let saveError {
+                    onComplete(Task.isCancelled ? .cancelled(message: saveError) : .failed(message: saveError))
+                    return
+                }
+                if alsoWriteXMPSidecar {
+                    await writeXMPSidecar()
+                    if let saveError {
+                        onComplete(.failed(message: saveError))
+                        return
+                    }
+                }
+                onComplete(Task.isCancelled ? .cancelled(message: "Metadata save was cancelled.") : .succeeded)
             }
-            onComplete(.succeeded)
             return
         }
 

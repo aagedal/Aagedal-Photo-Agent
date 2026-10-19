@@ -1433,12 +1433,22 @@ final class ImportViewModel {
                             }
                             guard shouldApplyMetadata else { return }
 
+                            // Never embed into a proprietary RAW container: RAW gets the
+                            // template through its XMP sidecar (merge keeps any develop block).
+                            let sidecarBoundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
                             if processVariables {
                                 var sequenceNumber = 1
                                 for url in copiedURLs {
                                     try Task.checkCancellation()
                                     let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
                                     sequenceNumber += 1
+                                    if SupportedImageFormats.isRaw(url: url) {
+                                        _ = try await sidecarBoundary.write(
+                                            metadata: resolved, for: url,
+                                            requestedMode: .writeToXMPSidecar, semantics: .merge
+                                        )
+                                        continue
+                                    }
                                     let fields = await Self.buildMetadataFields(from: resolved)
                                     if !fields.isEmpty {
                                         try await self.writeEngine.writeFields(
@@ -1451,13 +1461,22 @@ final class ImportViewModel {
                                     }
                                 }
                             } else {
+                                let rawURLs = copiedURLs.filter { SupportedImageFormats.isRaw(url: $0) }
+                                let embeddableURLs = copiedURLs.filter { !SupportedImageFormats.isRaw(url: $0) }
+                                for url in rawURLs {
+                                    try Task.checkCancellation()
+                                    _ = try await sidecarBoundary.write(
+                                        metadata: metadata, for: url,
+                                        requestedMode: .writeToXMPSidecar, semantics: .merge
+                                    )
+                                }
                                 let fields = await Self.buildMetadataFields(from: metadata)
                                 if !fields.isEmpty {
                                     let batchSize = 20
-                                    for batchStart in stride(from: 0, to: copiedURLs.count, by: batchSize) {
+                                    for batchStart in stride(from: 0, to: embeddableURLs.count, by: batchSize) {
                                         try Task.checkCancellation()
-                                        let batchEnd = min(batchStart + batchSize, copiedURLs.count)
-                                        let batch = Array(copiedURLs[batchStart..<batchEnd])
+                                        let batchEnd = min(batchStart + batchSize, embeddableURLs.count)
+                                        let batch = Array(embeddableURLs[batchStart..<batchEnd])
                                         try await self.writeEngine.writeFields(
                                             fields,
                                             to: batch,

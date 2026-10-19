@@ -270,8 +270,10 @@ final class DescriptionAssistantModelSetup {
         } catch { message = error.localizedDescription }
     }
 
+    /// Apple's model when this Mac and build can use it; otherwise the local model, so a fresh
+    /// install doesn't default to a provider that can only report "unavailable".
     static var defaultProvider: DescriptionAssistantProvider {
-        .appleFoundationModels
+        AppleFoundationDescriptionBackend.availability.isAvailable ? .appleFoundationModels : .localModel
     }
 
     func select(_ url: URL, activateProvider: Bool = true) throws {

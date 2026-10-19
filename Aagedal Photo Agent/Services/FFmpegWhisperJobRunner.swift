@@ -89,9 +89,10 @@ actor FFmpegWhisperJobRunner {
         let audio = job.appendingPathComponent("input.wav")
         let model = job.appendingPathComponent("model.bin")
         let output = job.appendingPathComponent("output.json")
-        try Self.snapshot(request.executable, to: executable)
-        try Self.snapshot(request.audio, to: audio)
-        try Self.snapshot(request.model, to: model)
+        // The executable is always rewritten: a clone would carry xattrs such as quarantine.
+        try Self.snapshot(request.executable, to: executable, allowClone: false)
+        try Self.snapshot(request.audio, to: audio, allowClone: true)
+        try Self.snapshot(request.model, to: model, allowClone: true)
         guard chmod(executable.path, 0o500) == 0 else { throw FFmpegWhisperJobError.unsafeInput }
         let process = Process()
         process.executableURL = executable
@@ -200,7 +201,8 @@ actor FFmpegWhisperJobRunner {
         return descriptor
     }
 
-    private nonisolated static func snapshot(_ input: FFmpegWhisperJobInput, to output: URL) throws {
+    private nonisolated static func snapshot(_ input: FFmpegWhisperJobInput, to output: URL,
+                                             allowClone: Bool) throws {
         try Task.checkCancellation()
         let source = try openInput(input.url)
         defer { close(source) }
@@ -208,6 +210,12 @@ actor FFmpegWhisperJobRunner {
         guard fstat(source, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
               before.st_nlink == 1, before.st_size == input.byteCount else {
             throw FFmpegWhisperJobError.unsafeInput
+        }
+        // Same APFS volume: an atomic copy-on-write clone is an equally isolated snapshot without
+        // rewriting a multi-GB model for every memo. The clone is then verified against the pin.
+        if allowClone, fclonefileat(source, AT_FDCWD, output.path, 0) == 0 {
+            try verifyClone(at: output, expected: input)
+            return
         }
         let target = open(output.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard target >= 0 else { throw FFmpegWhisperJobError.unsafeInput }
@@ -245,5 +253,35 @@ actor FFmpegWhisperJobRunner {
         let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
         guard digest == input.sha256 else { throw FFmpegWhisperJobError.identityMismatch }
         guard fsync(target) == 0, fchmod(target, 0o400) == 0 else { throw FFmpegWhisperJobError.unsafeInput }
+    }
+
+    /// The clone is private to the job directory, so hashing it proves exactly what the producer reads.
+    private nonisolated static func verifyClone(at url: URL, expected input: FFmpegWhisperJobInput) throws {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw FFmpegWhisperJobError.unsafeInput }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_size == input.byteCount, fchmod(descriptor, 0o400) == 0 else {
+            throw FFmpegWhisperJobError.inputChanged
+        }
+        var hash = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+        var total: Int64 = 0
+        while true {
+            try Task.checkCancellation()
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw FFmpegWhisperJobError.unsafeInput
+            }
+            if count == 0 { break }
+            total += Int64(count)
+            guard total <= input.byteCount else { throw FFmpegWhisperJobError.inputChanged }
+            buffer.withUnsafeBytes { hash.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
+        }
+        guard total == input.byteCount else { throw FFmpegWhisperJobError.inputChanged }
+        let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        guard digest == input.sha256 else { throw FFmpegWhisperJobError.identityMismatch }
     }
 }

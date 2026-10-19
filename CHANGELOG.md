@@ -4,6 +4,15 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Paste IPTC, import templates and multi-photo Develop paste now reach RAW files through their XMP sidecar instead of silently skipping them. Photos set to Save History Only are reported, not changed.
+- Develop paste updates an existing XMP sidecar on JPEG/HEIC too, so the pasted settings are not replaced by older sidecar settings on reload; target masks and crop are kept when the copied settings have none.
+- FTP Upload is blocked with a message when Develop settings can't be read, instead of sending edited photos unedited.
+- Batch metadata saves report completion only after the file and XMP writes finish.
+- Description Assistant defaults to a local model when Apple Foundation Models is unavailable on the Mac.
+- Fix current-location lookup in signed builds (location entitlement under the hardened runtime).
+- Voice memos: finding the matching WAV no longer reads every photo in the folder, transcription no longer rewrites the whole Whisper model to disk for each memo, and batch transcription can't be blocked by accumulated history.
+- Warn in Settings that Norwegian (NbAiLab) Whisper models translate speech in other languages into Norwegian.
+
 - Keep export-side JSON/XMP inspection and stale-sidecar checks off the UI thread. Serialize the source snapshot with metadata writes and avoid redundant embedded reads for rating/label-only sidecars.
 
 - Preserve comma-containing IPTC keywords, people and organisation values during edited export and sidecar sync. Include pending JSON/XMP metadata when saving from Develop.

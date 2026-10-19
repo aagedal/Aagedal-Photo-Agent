@@ -19,6 +19,10 @@ nonisolated enum UserDefaultsKeys {
     /// Custom-preset RAW write mode (RAW files, any C2PA status).
     static let metadataWriteModeRaw = "metadataWriteModeRaw"
 
+    // MARK: - Automation
+    /// Settings ▸ Automation shows its review, history and recovery sections.
+    static let automationShowsAdvanced = "automationShowsAdvanced"
+
     // MARK: - Face Recognition
     static let browserFaceBarCollapsed = "browserFaceBarCollapsed"
     static let faceCleanupPolicy = "faceCleanupPolicy"

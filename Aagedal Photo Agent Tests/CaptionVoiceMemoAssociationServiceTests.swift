@@ -100,6 +100,30 @@ struct CaptionVoiceMemoAssociationServiceTests {
         #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
     }
 
+    @Test("A memo for a different photo is not a candidate")
+    func otherStemMemoIsNoMatch() async throws {
+        let (folder, _, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let other = folder.appendingPathComponent("TRA08908.JPG")
+        try Data("other photo".utf8).write(to: other)
+        await #expect(throws: CaptionVoiceMemoAssociationService.Failure.self) {
+            try await service().discover(imageURL: other)
+        }
+        #expect(FileManager.default.fileExists(atPath: memo.path))
+    }
+
+    @Test("Unrelated files in the folder neither block nor invalidate a pairing")
+    func unrelatedFolderChangesAreIgnored() async throws {
+        let (folder, image, memo) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = service()
+        let preview = try await service.discover(imageURL: image)
+        try Data("later shot".utf8).write(to: folder.appendingPathComponent("TRA08999.JPG"))
+        try await service.confirm(preview)
+        #expect(try VoiceMemoCompanionRepository().lookup(for: image) != .none)
+        #expect(preview.association.memoURL.lastPathComponent == memo.lastPathComponent)
+    }
+
     @Test("Changed source bytes invalidate a reviewed preview")
     func sourceDrift() async throws {
         let (folder, image, memo) = try fixture()
