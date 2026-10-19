@@ -34,6 +34,26 @@ nonisolated struct DescriptiveMetadataWriteResult: Sendable, Equatable {
     let xmpSidecarURL: URL?
 }
 
+nonisolated struct DescriptiveMetadataPasteSummary: Sendable {
+    var written: [URL] = []
+    var historyOnlySkipped: [URL] = []
+    var failures: [(url: URL, message: String)] = []
+
+    /// A user-facing message for anything that did not get written, or nil when all succeeded.
+    var problemMessage: String? {
+        var parts: [String] = []
+        if let first = failures.first {
+            parts.append(failures.count == 1
+                ? "Failed to paste IPTC to \(first.url.lastPathComponent): \(first.message)"
+                : "Failed to paste IPTC to \(failures.count) photos (first: \(first.url.lastPathComponent): \(first.message))")
+        }
+        if !historyOnlySkipped.isEmpty {
+            parts.append("\(historyOnlySkipped.count) photo(s) use Save History Only and were not changed.")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}
+
 /// Non-UI execution boundary for descriptive writes. It combines target resolution with the two
 /// established backends so no caller can accidentally ask SwiftExif to rewrite a proprietary RAW.
 nonisolated struct DescriptiveMetadataWriteBoundary: Sendable {
@@ -119,6 +139,35 @@ nonisolated struct DescriptiveMetadataWriteBoundary: Sendable {
             target: target,
             xmpSidecarURL: writtenSidecarURL
         )
+    }
+
+    /// Merges one copied descriptive record into many photos (Paste IPTC), resolving the
+    /// destination per photo. RAW always lands in its XMP sidecar; an embedded write also
+    /// refreshes an existing sidecar so its stale copy cannot shadow the file on read/export.
+    /// History-only photos are left untouched and reported, never silently embedded.
+    func pasteMerging(
+        _ metadata: IPTCMetadata,
+        into targets: [(url: URL, mode: MetadataWriteMode)]
+    ) async -> DescriptiveMetadataPasteSummary {
+        var summary = DescriptiveMetadataPasteSummary()
+        for target in targets {
+            guard !Task.isCancelled else { break }
+            var mode = target.mode
+            if mode == .writeToFile, xmpSidecarService.sidecarExists(for: target.url) {
+                mode = .writeToFileAndXMPSidecar
+            }
+            if targetResolver.resolve(sourceURL: target.url, requestedMode: mode) == .historyOnly {
+                summary.historyOnlySkipped.append(target.url)
+                continue
+            }
+            do {
+                _ = try await write(metadata: metadata, for: target.url, requestedMode: mode, semantics: .merge)
+                summary.written.append(target.url)
+            } catch {
+                summary.failures.append((target.url, error.localizedDescription))
+            }
+        }
+        return summary
     }
 
     nonisolated private func structuredEditorial(

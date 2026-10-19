@@ -71,6 +71,8 @@
 	<string>© 2026 Truls Aagedal</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record spoken descriptions and reporting notes for transcription.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Transcribe camera voice memos and dictated descriptions on this Mac.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Use your current location to set GPS coordinates on selected photos.</string>
 	<key>SUFeedURL</key>

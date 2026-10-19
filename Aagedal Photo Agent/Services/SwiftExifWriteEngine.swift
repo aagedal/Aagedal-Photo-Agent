@@ -11,6 +11,17 @@ nonisolated private let crsNamespace = "http://ns.adobe.com/camera-raw-settings/
 /// position in the reorderable layer chain (mirrors XMPSidecarService's `aaphoto`).
 nonisolated private let aaphotoNamespace = "http://aagedal.me/ns/photo/1.0/"
 
+/// Thrown when a descriptive write is aimed at a RAW container. RAW metadata belongs in the XMP
+/// sidecar; a caller reaching here has a routing bug that used to be a silent no-op.
+nonisolated struct RawEmbeddedWriteRefusedError: LocalizedError, Equatable {
+    let urls: [URL]
+
+    var errorDescription: String? {
+        let names = urls.prefix(3).map(\.lastPathComponent).joined(separator: ", ")
+        return "RAW files keep their metadata in an XMP sidecar and can't be written to directly (\(names))."
+    }
+}
+
 nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
     case sourceAndDestinationAreSameFile(URL)
 
@@ -52,7 +63,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         to urls: [URL],
         structuredData: StructuredWriteData
     ) async throws {
-        let urls = embeddableURLs(urls)
+        let rawURLs = urls.filter { SupportedImageFormats.isRaw(url: $0) }
+        guard rawURLs.isEmpty else { throw RawEmbeddedWriteRefusedError(urls: rawURLs) }
         guard !urls.isEmpty, !fields.isEmpty || !structuredData.isEmpty else { return }
 
         for url in urls {

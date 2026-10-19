@@ -2449,7 +2449,7 @@ struct AppleDescriptionProviderTests {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let setup = DescriptionAssistantModelSetup(defaults: defaults)
-        #expect(setup.provider == .appleFoundationModels)
+        #expect(setup.provider == DescriptionAssistantModelSetup.defaultProvider)
         setup.directory = URL(fileURLWithPath: "/existing.gguf")
         setup.provider = .appleFoundationModels
         #expect(DescriptionAssistantModelSetup(defaults: defaults).provider == .appleFoundationModels)

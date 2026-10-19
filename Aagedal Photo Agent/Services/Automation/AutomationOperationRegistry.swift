@@ -237,6 +237,24 @@ nonisolated final class AutomationOperationRegistry: Sendable {
         }
     }
 
+    /// Explicit retention for owners that create routine records (native batch transcription):
+    /// removes the oldest removable records of `kind` beyond the newest `keepingNewest`. Active,
+    /// uncertain and unresolved recovery records are never touched. Returns the removed count.
+    @discardableResult
+    func pruneFinished(kind: Kind, keepingNewest keep: Int) throws -> Int {
+        guard keep >= 0 else { throw Failure.invalidArguments }
+        return try transaction { records in
+            let removable = records.enumerated()
+                .filter { $0.element.kind == kind && $0.element.canRemove }
+                .sorted { $0.element.updatedAt > $1.element.updatedAt }
+                .dropFirst(keep)
+            let doomed = Set(removable.map(\.offset))
+            guard !doomed.isEmpty else { return 0 }
+            records = records.enumerated().filter { !doomed.contains($0.offset) }.map(\.element)
+            return doomed.count
+        }
+    }
+
     func removeTerminal(_ id: UUID, ownerID: UUID) throws {
         try transaction { records in
             guard let index = records.firstIndex(where: { $0.id == id }) else { throw Failure.unknownOperation }

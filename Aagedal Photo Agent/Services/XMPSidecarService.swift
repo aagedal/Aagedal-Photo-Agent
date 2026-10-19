@@ -547,6 +547,27 @@ struct XMPSidecarService: Sendable {
         }
     }
 
+    /// Read-modify-write of the crs block from the revision being replaced. Callers must hold the
+    /// URL lock (see `pasteCameraRawSerialized`).
+    @MetadataSidecarFilesystemActor
+    func updateCameraRawTransaction(
+        for imageURL: URL,
+        mutation: @escaping @Sendable (CameraRawSettings?) -> CameraRawSettings
+    ) async throws {
+        _ = try await updateXMPTransaction(for: imageURL) { xmp in
+            let existing = XMPMetadataReader.parseMetadata(
+                from: xmp, imageAspect: { ImagePixelAspect.aspect(at: imageURL) }
+            ).cameraRaw
+            let updated = mutation(existing)
+            XMPDataBuilder.applyCameraRaw(
+                updated,
+                imageAspect: self.imageAspectIfCropAngled(for: imageURL, crop: updated.crop),
+                into: &xmp
+            )
+            xmp.creatorTool = SwiftExifWriteEngine.creatorTool
+        }
+    }
+
     func saveCameraRawOnly(_ settings: CameraRawSettings?, orientation: Int?, for imageURL: URL) throws {
         let url = sidecarURL(for: imageURL)
         if let settings, !settings.isEmpty {

@@ -4196,6 +4196,8 @@ final class CoreWorkflowSmokeTests: XCTestCase {
             "--ui-test-develop-admission-root", fixtureRoot.appendingPathComponent("ManagedDevelopAdmissions").resolvingSymlinksInPath().path,
             "--ui-test-face-receipt-root", faceReceiptPath,
             "-voiceMemo.transcriptionProvider", transcriptionProvider,
+            // Automation workflows inspect the review/recovery sections directly.
+            "-automationShowsAdvanced", "YES",
         ]
         if workflow == "known-people-interchange" {
             // Argument-domain defaults are process-only and keep this workflow away

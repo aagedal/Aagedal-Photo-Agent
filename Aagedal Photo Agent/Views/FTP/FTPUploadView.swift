@@ -76,6 +76,8 @@ struct FTPUploadView: View {
     @State private var inspectionRevision = UUID()
     @State private var inspectionRequestID: UUID?
     @State private var isInspectingFiles = true
+    /// Set when render status couldn't be determined; blocks Upload rather than guessing "as-is".
+    @State private var inspectionFailure: String?
     @State private var sidecarMergeRequestID: UUID?
     @State private var sidecarMergeTask: Task<Void, Never>?
 
@@ -352,6 +354,11 @@ struct FTPUploadView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+            } else if let inspectionFailure {
+                Label(inspectionFailure, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             } else if requiredMissing > 0 {
                 Label("\(requiredMissing) file\(requiredMissing == 1 ? "" : "s") missing required metadata", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
@@ -432,17 +439,30 @@ struct FTPUploadView: View {
         let requestID = UUID()
         inspectionRequestID = requestID
         isInspectingFiles = true
+        inspectionFailure = nil
         fileInfo = [:]
         metadataStatus = [:]
         sidecarMergeableURLs = []
 
         let urls = requestKey.files
+        // Per-file read failures only drop that file from the map (evaluated as missing metadata).
         var metadataMap = (try? await readService.readBatchFullMetadata(urls: urls)) ?? [:]
-        try? await EditExportPipeline.resolveCameraRaw(
-            into: &metadataMap,
-            urls: urls,
-            inMemory: inMemoryCameraRaw
-        )
+        do {
+            try await EditExportPipeline.resolveCameraRaw(
+                into: &metadataMap,
+                urls: urls,
+                inMemory: inMemoryCameraRaw
+            )
+        } catch {
+            // Without Develop settings an edited photo would be judged "upload as-is" and go out
+            // unedited. Stop here instead of guessing.
+            guard !Task.isCancelled,
+                  inspectionRequestID == requestID,
+                  inspectionRequestKey == requestKey else { return }
+            inspectionFailure = "Couldn't read Develop settings, so it's unknown which files need rendering. Close and reopen Upload to retry."
+            isInspectingFiles = false
+            return
+        }
         guard !Task.isCancelled,
               inspectionRequestID == requestID,
               inspectionRequestKey == requestKey else { return }
@@ -545,7 +565,8 @@ struct FTPUploadView: View {
                   let sidecar = sidecarSnapshot.metadataByImageURL[url],
                   sidecar.hasDescriptiveContent || sidecar.rating != nil || sidecar.label != nil else { return }
             let fields = SidecarIPTCOverlay.authoritativeFields(from: sidecar)
-            guard !fields.isEmpty else { return }
+            // A RAW's sidecar already is its metadata; there is nothing to merge into the file.
+            guard !fields.isEmpty, !SupportedImageFormats.isRaw(url: url) else { return }
             do {
                 try await MetadataSidecarService().requireNoPendingOrientation(
                     for: url, in: url.deletingLastPathComponent())
@@ -775,7 +796,7 @@ struct FTPUploadView: View {
     private var uploadDisabled: Bool {
         selectedServerID == nil || viewModel.isUploading || viewModel.isRendering
             || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
-            || isInspectingFiles
+            || isInspectingFiles || inspectionFailure != nil
             || metadataViolationCount(.error) > 0
     }
 
@@ -1054,7 +1075,7 @@ struct FTPUploadView: View {
                     if resolved.instructions != meta.instructions { fields[.instructions] = resolved.instructions ?? "" }
                     if resolved.source != meta.source { fields[.source] = resolved.source ?? "" }
 
-                    if !fields.isEmpty {
+                    if !fields.isEmpty, !SupportedImageFormats.isRaw(url: url) {
                         try await writeEngine.writeFields(
                             fields,
                             to: [url],

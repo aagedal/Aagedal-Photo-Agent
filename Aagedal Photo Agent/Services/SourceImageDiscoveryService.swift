@@ -515,7 +515,8 @@ nonisolated struct SonyDualCardVoiceMemoAssociationService: Sendable {
         }
     }
 
-    private static func stem(_ url: URL) -> String {
+    /// Pairing is decided strictly within one stem group; callers may limit evidence to it.
+    static func stem(_ url: URL) -> String {
         url.deletingPathExtension().lastPathComponent
             .precomposedStringWithCanonicalMapping
             .lowercased(with: Locale(identifier: "en_US_POSIX"))

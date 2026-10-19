@@ -78,6 +78,7 @@ actor AutomationVoiceTranscriptionBatchService {
     }
 
     static let maximumPhotos = 8
+    static let retainedFinishedBatches = 32
     private nonisolated let registry: AutomationOperationRegistry
     nonisolated var operationRegistry: AutomationOperationRegistry { registry }
     private let coordinator: AutomationOperationExecutionCoordinator
@@ -143,6 +144,9 @@ actor AutomationVoiceTranscriptionBatchService {
     private func enqueue(_ inputs: [Input], provider: Provider,
                          lifecycle: LifecycleHooks? = nil,
                          executionGuard: ExecutionGuard? = nil) async throws -> AutomationOperationRegistry.Record {
+        // Routine batches would otherwise fill the 256-record history and refuse every later
+        // batch. Keep recent finished batches for inspection; prune the rest explicitly.
+        try registry.pruneFinished(kind: .voiceTranscription, keepingNewest: Self.retainedFinishedBatches)
         let retained = inputs
         let registry = registry, dependencies = dependencies
         let owner = coordinator.ownerID

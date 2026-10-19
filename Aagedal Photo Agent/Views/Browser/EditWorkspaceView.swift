@@ -7584,7 +7584,9 @@ struct EditWorkspaceView: View {
         // Update in-memory ImageFile state for immediate visual feedback
         for url in urls {
             if let index = browserViewModel.urlToImageIndex[url] {
-                browserViewModel.images[index].cameraRawSettings = cameraRaw
+                browserViewModel.images[index].cameraRawSettings = CameraRawSettings.pasted(
+                    cameraRaw, onto: browserViewModel.images[index].cameraRawSettings, includeCrop: includeCrop
+                )
                 browserViewModel.images[index].hasDevelopEdits = true
                 if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
@@ -7598,9 +7600,22 @@ struct EditWorkspaceView: View {
         // Write camera raw settings to XMP in the image files. The coordinator owns the task and
         // active-session result publication; the write itself remains on the existing serialized
         // metadata engine and is allowed to finish if the workspace closes mid-transaction.
-        let targetURLs = Array(urls)
+        // RAW never gets an embedded write (it would corrupt maker data); its Develop lives only
+        // in the XMP sidecar. Any other file with a sidecar gets it updated too, because the
+        // sidecar's crs wins on load and would otherwise resurrect the pre-paste settings.
+        let sidecarService = XMPSidecarService()
+        let sidecarURLs = urls.filter {
+            SupportedImageFormats.isRaw(url: $0) || sidecarService.sidecarExists(for: $0)
+        }
+        let targetURLs = Array(urls.filter { !SupportedImageFormats.isRaw(url: $0) })
         let writeEngine = browserViewModel.writeEngine
         persistenceSession.scheduleBatchPersistence {
+            for url in sidecarURLs {
+                try Task.checkCancellation()
+                try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+            }
+            guard !targetURLs.isEmpty else { return }
+
             // Simple crs scalar fields via the canonical serializer (ACR-style signed
             // ints, +exposure) — shared with the export engine and MetadataViewModel so
             // the three write paths can't drift. Crop is written separately below

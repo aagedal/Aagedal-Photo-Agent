@@ -118,11 +118,16 @@ private final class AutomationSettingsModel {
 struct AutomationSettingsView: View {
     @State private var model = AutomationSettingsModel()
     @State private var nativeInvocation = AutomationNativeInvocationController.shared
+    /// Reviews, history and recovery are for diagnosing automation runs; most people never need them.
+    @AppStorage(UserDefaultsKeys.automationShowsAdvanced) private var showsAdvanced = false
 
     var body: some View {
         ScrollViewReader { scroll in
         Form {
-            Section("Local MCP Server") {
+            Section {
+                Text("Experimental. Lets a local AI client (Codex, Claude Code, OpenCode) inspect photos and metadata in folders you authorize, preview templates, and ask you to review proposed caption fixes, transcriptions or face scans. Photos are only changed after you approve a request in Photo Agent; team creation is a separate opt-in below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle(
                     "Enable local automation",
                     isOn: Binding(
@@ -145,9 +150,8 @@ struct AutomationSettingsView: View {
                 Text("Allows AI clients to add teams and player rosters. With Teams iCloud sync enabled, review each import in Teams → Review Imports before it is added and synced. Existing teams are never replaced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Proofreading previews store existing and proposed text locally so they can survive a client restart. Plans expire after five minutes and are removed from the archive on the next successful preparation. Removing access immediately invalidates existing plans.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Local MCP Server (Experimental)")
             }
 
             Section("Authorized Folders") {
@@ -198,7 +202,19 @@ struct AutomationSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Toggle("Show reviews, history and recovery", isOn: $showsAdvanced)
+                    .accessibilityIdentifier("automation.showsAdvanced")
+                Text("Pending client requests, operation history and recovery of interrupted automation writes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if showsAdvanced {
             Section("Proofreading Plan Review") {
+                Text("Proofreading previews store existing and proposed text locally so they can survive a client restart. Plans expire after five minutes. Removing folder access invalidates existing plans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 AutomationPatchReviewView()
                     .id(model.configuration.authorizationRevision)
             }
@@ -242,12 +258,13 @@ struct AutomationSettingsView: View {
                 AutomationRecoveryView()
                     .id(model.configuration.authorizationRevision)
             }
+            }
 
             Section("Privacy and activity") {
-                Text("Filenames and metadata are treated as untrusted data and are never instructions. Tool output can contain private metadata from authorized photos. Mutating tools will use Photo Agent's preview, conflict, preservation, verification, and recovery boundaries; this implementation stage exposes read-only discovery, authorization, revision, owned-draft and effective editorial metadata inspection.")
+                Text("Filenames and metadata are treated as untrusted data, never as instructions. Tool output can contain private metadata from authorized photos and is sent to the AI client you connect.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Ordinary inspection results are not retained by Photo Agent. Proofreading previews use the local archive described above. Mutation tools will not become available until their privacy-safe operation history and recovery evidence are implemented.")
+                Text("Clients can't write to photos directly in this version. Inspection results aren't kept by Photo Agent; proofreading previews are kept briefly as described under Advanced.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -262,10 +279,16 @@ struct AutomationSettingsView: View {
         .navigationTitle("Automation")
         .onAppear { model.reload() }
         .onChange(of: nativeInvocation.pendingReview?.id, initial: true) { _, id in
-            if id != nil { scroll.scrollTo("transcriptionIntentReview", anchor: .top) }
+            guard id != nil else { return }
+            showsAdvanced = true
+            // The revealed sections exist only after this update; scroll on the next turn.
+            DispatchQueue.main.async { scroll.scrollTo("transcriptionIntentReview", anchor: .top) }
         }
         .onChange(of: nativeInvocation.pendingFaceReview?.id, initial: true) { _, id in
-            if id != nil { scroll.scrollTo("faceScanIntentReview", anchor: .top) }
+            guard id != nil else { return }
+            showsAdvanced = true
+            // The revealed sections exist only after this update; scroll on the next turn.
+            DispatchQueue.main.async { scroll.scrollTo("faceScanIntentReview", anchor: .top) }
         }
         }
     }

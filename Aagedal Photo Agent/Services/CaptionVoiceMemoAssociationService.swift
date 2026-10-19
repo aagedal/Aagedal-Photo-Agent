@@ -4,6 +4,7 @@ import Observation
 nonisolated struct CaptionVoiceMemoAssociationPreview: Sendable {
     let association: VoiceMemoAssociation
     fileprivate let inventory: [URL: CaptionVoiceMemoAssociationRevision]
+    fileprivate let stem: String
     fileprivate let folderDevice: UInt64
     fileprivate let folderInode: UInt64
 }
@@ -32,13 +33,16 @@ actor CaptionVoiceMemoAssociationService {
         let access = folder.startAccessingSecurityScopedResource()
         defer { if access { folder.stopAccessingSecurityScopedResource() } }
         try requireAbsentRecord(image)
-        // Most photo folders have no voice memos. Avoid hashing their entire inventory
-        // during automatic checks when there cannot be an adjacent candidate.
+        // Pairing is decided per stem (DSC01234.ARW/.JPG/.WAV), so only that group is evidence.
+        // Hashing the whole folder made every Caption open on a card folder read gigabytes.
+        let stem = SonyDualCardVoiceMemoAssociationService.stem(image)
         let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
-        guard files.contains(where: { $0.pathExtension.lowercased() == "wav" }) else { throw Failure.noMatch }
+        guard files.contains(where: {
+            $0.pathExtension.lowercased() == "wav" && SonyDualCardVoiceMemoAssociationService.stem($0) == stem
+        }) else { throw Failure.noMatch }
         let folderRevision = try CaptionVoiceMemoFileRevision.read(folder)
-        let inventory = try Self.captureInventory(folder)
+        let inventory = try Self.captureInventory(folder, stem: stem)
         let report = try await scan(inventory: inventory, folder: folder)
         guard let association = report.association(for: image) else {
             throw Failure.noMatch
@@ -47,7 +51,7 @@ actor CaptionVoiceMemoAssociationService {
             throw Failure.changed
         }
         let preview = CaptionVoiceMemoAssociationPreview(association: association, inventory: inventory,
-            folderDevice: folderRevision.device, folderInode: folderRevision.inode)
+            stem: stem, folderDevice: folderRevision.device, folderInode: folderRevision.inode)
         try Self.revalidate(preview)
         try requireAbsentRecord(image)
         return preview
@@ -106,13 +110,14 @@ actor CaptionVoiceMemoAssociationService {
         }
     }
 
-    private static func captureInventory(_ folder: URL) throws -> [URL: CaptionVoiceMemoAssociationRevision] {
+    private static func captureInventory(_ folder: URL, stem: String) throws -> [URL: CaptionVoiceMemoAssociationRevision] {
         guard try FileManager.default.attributesOfItem(atPath: folder.path)[.type] as? FileAttributeType == .typeDirectory
         else { throw Failure.changed }
         let files = try FileManager.default.contentsOfDirectory(at: folder,
             includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants])
         var inventory: [URL: CaptionVoiceMemoAssociationRevision] = [:]
-        for file in files where SupportedImageFormats.isSupported(url: file) || file.pathExtension.lowercased() == "wav" {
+        for file in files where SonyDualCardVoiceMemoAssociationService.stem(file) == stem
+            && (SupportedImageFormats.isSupported(url: file) || file.pathExtension.lowercased() == "wav") {
             try Task.checkCancellation()
             try VoiceMemoTranscriptionService.requireRegularInput(file)
             let before = try CaptionVoiceMemoFileRevision.read(file)
@@ -128,7 +133,7 @@ actor CaptionVoiceMemoAssociationService {
         let folder = preview.association.imageURL.deletingLastPathComponent()
         let current = try CaptionVoiceMemoFileRevision.read(folder)
         guard current.device == preview.folderDevice, current.inode == preview.folderInode,
-              try captureInventory(folder) == preview.inventory else { throw Failure.changed }
+              try captureInventory(folder, stem: preview.stem) == preview.inventory else { throw Failure.changed }
     }
 
     enum Failure: LocalizedError {

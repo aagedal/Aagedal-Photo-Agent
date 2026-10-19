@@ -550,4 +550,130 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(installed.keywords.isEmpty)
         #expect(installed.cameraRaw?.exposure2012 == 1.25)
     }
+
+    @Test("Paste IPTC writes RAW to its XMP sidecar, keeps Develop settings and never touches RAW bytes")
+    func pasteIntoRawUsesSidecar() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceBefore = try Data(contentsOf: source)
+        var existing = IPTCMetadata(title: "Keep headline")
+        existing.cameraRaw = CameraRawSettings(exposure2012: 0.5)
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: existing, for: source)
+
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        let summary = await boundary.pasteMerging(
+            IPTCMetadata(description: "Pasted caption", keywords: ["pasted"]),
+            into: [(url: source, mode: .writeToFile)]
+        )
+
+        #expect(summary.written == [source])
+        #expect(summary.problemMessage == nil)
+        #expect(try Data(contentsOf: source) == sourceBefore)
+        let written = try #require(service.loadSidecar(for: source))
+        #expect(written.title == "Keep headline")
+        #expect(written.description == "Pasted caption")
+        #expect(written.keywords == ["pasted"])
+        #expect(written.cameraRaw?.exposure2012 == 0.5)
+    }
+
+    @Test("Paste IPTC embeds into JPEG and refreshes an existing sidecar so it cannot shadow the file")
+    func pasteIntoJPEGMirrorsExistingSidecar() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: IPTCMetadata(description: "Stale caption"), for: source)
+
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        let summary = await boundary.pasteMerging(
+            IPTCMetadata(description: "Pasted caption"),
+            into: [(url: source, mode: .writeToFile)]
+        )
+
+        #expect(summary.written == [source])
+        #expect(try await SwiftExifReadService().readFullMetadata(url: source).description == "Pasted caption")
+        #expect(try #require(service.loadSidecar(for: source)).description == "Pasted caption")
+    }
+
+    @Test("Paste IPTC leaves history-only photos untouched and reports them")
+    func pasteSkipsHistoryOnly() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let before = try Data(contentsOf: source)
+
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        let summary = await boundary.pasteMerging(
+            IPTCMetadata(description: "Pasted caption"),
+            into: [(url: source, mode: .historyOnly)]
+        )
+
+        #expect(summary.written.isEmpty)
+        #expect(summary.historyOnlySkipped == [source])
+        #expect(summary.problemMessage?.contains("Save History Only") == true)
+        #expect(try Data(contentsOf: source) == before)
+        #expect(!XMPSidecarService().sidecarExists(for: source))
+    }
+
+    @Test("Develop paste onto RAW lands in the sidecar, keeps captions and the unpasted crop")
+    func developPasteIntoRawSidecar() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sourceBefore = try Data(contentsOf: source)
+        let targetCrop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 0, hasCrop: true)
+        var existing = IPTCMetadata(title: "Keep headline")
+        existing.cameraRaw = CameraRawSettings(exposure2012: 0.5)
+        existing.cameraRaw?.crop = targetCrop
+        let service = XMPSidecarService()
+        try service.saveSidecar(metadata: existing, for: source)
+
+        var pasted = CameraRawSettings(exposure2012: 1.25)
+        pasted.contrast2012 = 20
+        try await service.pasteCameraRawSerialized(pasted, includeCrop: false, for: source)
+
+        #expect(try Data(contentsOf: source) == sourceBefore)
+        let written = try #require(service.loadSidecar(for: source))
+        #expect(written.title == "Keep headline")
+        #expect(written.cameraRaw?.exposure2012 == 1.25)
+        #expect(written.cameraRaw?.contrast2012 == 20)
+        #expect(written.cameraRaw?.crop?.left == targetCrop.left)
+    }
+
+    @Test("Develop paste creates a sidecar for a RAW that has none")
+    func developPasteCreatesRawSidecar() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+
+        try await service.pasteCameraRawSerialized(
+            CameraRawSettings(exposure2012: -0.7), includeCrop: true, for: source
+        )
+
+        #expect(try #require(service.loadSidecar(for: source)).cameraRaw?.exposure2012 == -0.7)
+    }
+
+    @Test("Develop paste keeps target masks and crop the source doesn't carry")
+    func developPasteMergeKeepsTargetCollections() {
+        var target = CameraRawSettings(exposure2012: 0.3)
+        target.crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 0, hasCrop: true)
+        target.toneCurve = ToneCurve()
+        let merged = CameraRawSettings.pasted(
+            CameraRawSettings(exposure2012: 1.0), onto: target, includeCrop: true
+        )
+        #expect(merged.exposure2012 == 1.0)
+        #expect(merged.crop == target.crop)
+        #expect(merged.toneCurve == target.toneCurve)
+        #expect(merged.hasSettings == true)
+    }
+
+    @Test("Direct SwiftExif writes refuse RAW loudly instead of silently succeeding")
+    func swiftExifRefusesRawEmbed() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let before = try Data(contentsOf: source)
+
+        await #expect(throws: RawEmbeddedWriteRefusedError(urls: [source])) {
+            try await SwiftExifWriteEngine().writeFields([.headline: "x"], to: [source], structuredData: .empty)
+        }
+        #expect(try Data(contentsOf: source) == before)
+    }
 }

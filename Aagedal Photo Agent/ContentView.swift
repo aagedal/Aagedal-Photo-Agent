@@ -3324,42 +3324,20 @@ struct ContentView: View {
         // Preserve the historical no-op for a completely blank copied record while allowing a
         // structured-only record (including localized Title intent) to reach the writer.
         guard copied.hasDescriptiveContent else { return }
-        let fields = copied.toWriteFields()
-        let structuredData = StructuredWriteData(
-            editorial: EditorialStructuredWriteData(metadata: copied)
-        )
-
-        let c2paImages = selected.filter { $0.hasC2PA }
-        let normalImages = selected.filter { !$0.hasC2PA }
+        // Each photo follows the configured write preset: RAW and (by default) C2PA get an
+        // XMP sidecar that keeps Develop settings; other files are embedded.
+        let targets = selected.map { image in
+            (url: image.url, mode: MetadataWriteMode.current(
+                forC2PA: image.hasC2PA, isRaw: SupportedImageFormats.isRaw(url: image.url)))
+        }
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: browserViewModel.writeEngine)
 
         Task {
-            // Write directly to non-C2PA images
-            if !normalImages.isEmpty {
-                let normalURLs = normalImages.map(\.url)
-                do {
-                    try await browserViewModel.writeEngine.writeFields(
-                        fields,
-                        to: normalURLs,
-                        structuredData: structuredData
-                    )
-                } catch {
-                    browserViewModel.errorMessage = "Failed to paste IPTC: \(error.localizedDescription)"
-                }
+            let summary = await boundary.pasteMerging(copied, into: targets)
+            if let message = summary.problemMessage {
+                browserViewModel.errorMessage = message
             }
-
-            // For C2PA images, write to XMP sidecar (preserving camera raw edits)
-            let xmpService = XMPSidecarService()
-            for image in c2paImages {
-                do {
-                    try await xmpService.saveSidecarPreservingDevelopSettingsSerialized(
-                        metadata: copied,
-                        for: image.url,
-                        mergeWithExisting: true
-                    )
-                } catch {
-                    browserViewModel.errorMessage = "Failed to save XMP sidecar for \(image.url.lastPathComponent): \(error.localizedDescription)"
-                }
-            }
+            browserViewModel.refreshPendingStatusBatch(for: summary.written)
 
             // Reload metadata panel to reflect changes
             reloadMetadataForSelection()
