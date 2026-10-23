@@ -1319,7 +1319,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("The aspect ratio is preserved, and smaller images are never enlarged.")
+                Text("Applies to Export, Develop Save and signed renders. Save As and FTP uploads keep the full resolution. The aspect ratio is preserved, and smaller images are never enlarged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
