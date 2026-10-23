@@ -42,14 +42,14 @@ struct BrowserView: View {
                 if providesToolbar {
                     ToolbarItemGroup(placement: .automatic) {
                         ColorLabelFilterBar(selectedLabels: $viewModel.selectedColorLabels)
-                            .disabled(viewModel.images.isEmpty)
+                            .disabled(!viewModel.hasImages)
                             .padding(8)
                     }
 
 
                     ToolbarItemGroup(placement: .automatic) {
                         StarRatingFilterBar(minimumRating: $viewModel.minimumStarRating)
-                            .disabled(viewModel.images.isEmpty)
+                            .disabled(!viewModel.hasImages)
                             .padding(8)
 
                         filterMenu
@@ -84,7 +84,7 @@ struct BrowserView: View {
     private var browserContent: some View {
         if viewModel.isLoading {
             ProgressView("Loading images...")
-        } else if viewModel.images.isEmpty {
+        } else if !viewModel.hasImages {
             if let error = viewModel.folderLoadErrorMessage {
                 ContentUnavailableView {
                     Label("Couldn’t Open Folder", systemImage: "exclamationmark.triangle")
@@ -177,7 +177,7 @@ struct BrowserView: View {
 
                     // Permanent image count overlay
                     ImageCountOverlayView(
-                        totalImageCount: viewModel.images.count,
+                        totalImageCount: viewModel.imageCount,
                         visibleImageCount: viewModel.visibleImages.count,
                         isFiltering: viewModel.isFilteringActive,
                         selectedCount: viewModel.selectedImageIDs.count,
@@ -323,7 +323,7 @@ struct BrowserView: View {
             )
         }
         .help("Filter images")
-        .disabled(viewModel.images.isEmpty)
+        .disabled(!viewModel.hasImages)
     }
 
     private var searchField: some View {
@@ -347,7 +347,7 @@ struct BrowserView: View {
             .disabled(viewModel.searchText.isEmpty)
             .accessibilityHidden(viewModel.searchText.isEmpty)
         }
-        .disabled(viewModel.images.isEmpty)
+        .disabled(!viewModel.hasImages)
     }
 
 }

@@ -5,7 +5,8 @@ struct FaceBarView: View {
     @Bindable var viewModel: FaceRecognitionViewModel
     @ObservedObject private var auraFaceComponent = AuraFaceComponentManager.shared
     let folderURL: URL?
-    let images: [ImageFile]
+    /// Read lazily (only by actions) so the bar does not depend on every row edit.
+    let images: () -> [ImageFile]
     let settingsViewModel: SettingsViewModel
     var isExpanded: Bool = false
     var selectionState: FaceSelectionState?  // Passed from expanded view for drag detection
@@ -35,7 +36,7 @@ struct FaceBarView: View {
     private let barHeight: CGFloat = 100
 
     private var imageURLs: [URL] {
-        images.map(\.url)
+        images().map(\.url)
     }
 
     private var isScanningCurrentFolder: Bool {
@@ -595,7 +596,7 @@ struct FaceBarView: View {
     private func applyAllNamesToMetadata() {
         guard !isApplyingAllNames else { return }
         isApplyingAllNames = true
-        viewModel.applyAllNamesToMetadata(images: images, folderURL: folderURL) {
+        viewModel.applyAllNamesToMetadata(images: images(), folderURL: folderURL) {
             isApplyingAllNames = false
         }
     }

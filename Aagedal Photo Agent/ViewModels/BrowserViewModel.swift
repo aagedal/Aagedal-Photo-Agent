@@ -45,29 +45,57 @@ final class BrowserViewModel {
     }
 
     var images: [ImageFile] = [] {
+        // Never reference `oldValue` here: doing so makes every `images[i].x = …` copy the
+        // whole array (SE-0268). The previous URL identity lives in `imagesCascadeURLs`.
         didSet {
-            guard !suppressImagesCascade else { return }
-            urlToImageIndex = Dictionary(uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) })
-            guard !isBatchUpdating else { return }
+            if imageCount != images.count { imageCount = images.count }
+            guard !suppressImagesCascade else {
+                syncFullScreenImage()
+                return
+            }
+            let urls = images.map(\.url)
             // Equal counts do not imply equal identities: rename/replacement keeps the
             // count but changes URL keys. Reusing the old sorted list would drop those rows.
-            let sameURLs = images.count == oldValue.count
-                && zip(images, oldValue).allSatisfy { $0.url == $1.url }
+            let sameURLs = urls == imagesCascadeURLs
+            if !sameURLs {
+                // The index is a pure function of the URL list, so only identity changes
+                // rebuild (and re-publish) it.
+                urlToImageIndex = Dictionary(uniqueKeysWithValues: urls.enumerated().map { ($1, $0) })
+                imagesCascadeURLs = urls
+            }
+            syncFullScreenImage()
+            guard !isBatchUpdating else { return }
             setNeedsSortRebuild(forceSort: !sameURLs)
         }
     }
+    /// URL identity of `images` as of the last cascading assignment (or explicit index
+    /// rebuild). Suppressed in-place edits never change URLs, so this stays current.
+    @ObservationIgnored private var imagesCascadeURLs: [URL] = []
+    /// Views that only need emptiness/count read these instead of `images`, so a rating
+    /// change on one row doesn't re-evaluate them.
+    private(set) var imageCount = 0
+    var hasImages: Bool { imageCount > 0 }
+    /// The row the full-screen viewer shows, published only when that row changes so
+    /// edits to other rows don't re-evaluate the viewer. Kept current only while
+    /// `isFullScreen` (re-synced on entry).
+    private(set) var fullScreenImage: ImageFile?
     var selectedImageIDs: Set<URL> = [] {
         didSet {
             if selectedImageIDs != oldValue {
                 rebuildSelectedCache()
             }
+            syncFullScreenImage()
         }
     }
-    var lastClickedImageURL: URL?
+    var lastClickedImageURL: URL? {
+        didSet { syncFullScreenImage() }
+    }
     var currentFolderURL: URL?
     var currentFolderName: String?
     var isLoading = false
-    var isFullScreen = false
+    var isFullScreen = false {
+        didSet { syncFullScreenImage() }
+    }
     var shouldRestoreGridFocus = false
     var iCloudDownloadNotice: String?
     /// Non-blocking second phase after the file grid appears. Exposed so the browser can
@@ -259,6 +287,10 @@ final class BrowserViewModel {
     @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
+    @ObservationIgnored private var fieldMutationBatchesInFlight = 0
+    /// True while browser rating/label/rotation writes are still running. Their own
+    /// FSEvents echoes are folded into one folder refresh after the queue drains.
+    var hasFieldMutationWritesInFlight: Bool { fieldMutationBatchesInFlight > 0 }
     @ObservationIgnored private var fieldMutationDisplayID = UUID()
     @ObservationIgnored private var tagReadRevisions: [URL: UUID] = [:]
     @ObservationIgnored private var fieldMutationRequestIDs: [URL: [String: UUID]] = [:]
@@ -392,38 +424,53 @@ final class BrowserViewModel {
         return nil
     }
 
+    /// Same resolution the viewer used to compute from `images` (active row if selected,
+    /// else the first selected row), applied only when the resolved row differs. O(1).
+    private func syncFullScreenImage() {
+        // Outside full screen nothing reads it; entering full screen re-syncs. Leaving the
+        // last value in place keeps a closing viewer from seeing a transient nil.
+        guard isFullScreen else { return }
+        func indexed(_ url: URL) -> ImageFile? {
+            guard let index = urlToImageIndex[url], images.indices.contains(index),
+                  images[index].url == url else { return nil }
+            return images[index]
+        }
+        var resolved: ImageFile?
+        if let active = lastClickedImageURL, selectedImageIDs.contains(active) {
+            resolved = indexed(active)
+        }
+        if resolved == nil, let first = selectedImageIDs.first {
+            resolved = indexed(first)
+        }
+        if resolved != fullScreenImage { fullScreenImage = resolved }
+    }
+
     private func rebuildSortedCache(forceSort: Bool = true) {
         let needsSort = forceSort || sortOrder == .rating || sortOrder == .label || sortOrder == .similarity
         if needsSort {
             let sorted: [ImageFile]
+            let images = self.images
             switch sortOrder {
             case .name:
-                sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+                sorted = filenameOrder().order.map { images[$0] }
             case .dateCreated:
-                sorted = images.sorted { $0.dateCreated > $1.dateCreated }
+                sorted = Self.reordered(images, by: \.dateCreated, >)
             case .dateModified:
-                sorted = images.sorted { $0.dateModified > $1.dateModified }
+                sorted = Self.reordered(images, by: \.dateModified, >)
             case .dateAdded:
-                sorted = images.sorted { $0.dateAdded > $1.dateAdded }
+                sorted = Self.reordered(images, by: \.dateAdded, >)
             case .rating:
-                sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+                sorted = Self.reordered(images, by: \.starRating.rawValue, >)
             case .label:
-                sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+                sorted = Self.reordered(images, by: { $0.colorLabel.shortcutIndex ?? 0 }, <)
             case .fileType:
-                sorted = images.sorted {
-                    let ext0 = $0.url.pathExtension.lowercased()
-                    let ext1 = $1.url.pathExtension.lowercased()
-                    if ext0 != ext1 {
-                        return ext0.localizedStandardCompare(ext1) == .orderedAscending
-                    }
-                    return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
-                }
+                sorted = Self.fileTypeSorted(images, nameRank: filenameOrder().rank)
             case .similarity:
                 updateSimilaritySortIfNeeded()
                 let byURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
                 let ordered = Set(similarityOrder)
                 sorted = similarityOrder.compactMap { byURL[$0] }
-                    + images.filter { !ordered.contains($0.url) }.sorted(by: Self.similarityNameOrder)
+                    + similarityNameOrderedImages().filter { !ordered.contains($0.url) }
             case .manual:
                 if manualOrder.isEmpty {
                     sorted = images
@@ -444,6 +491,65 @@ final class BrowserViewModel {
             sortedImages = sortedImages.compactMap { imageByURL[$0.url] }
         }
         rebuildVisibleCache()
+    }
+
+    /// Sorting indices by precomputed keys yields the same permutation as sorting the rows
+    /// with the equivalent comparator (same stable algorithm, same comparison results),
+    /// without moving large `ImageFile` values on every swap.
+    static func reordered<Key>(_ rows: [ImageFile], by key: (ImageFile) -> Key,
+                               _ areInIncreasingOrder: (Key, Key) -> Bool) -> [ImageFile] {
+        let keys = rows.map(key)
+        return rows.indices.sorted { areInIncreasingOrder(keys[$0], keys[$1]) }.map { rows[$0] }
+    }
+
+    /// Stable `localizedStandardCompare` filename permutation of `rows`.
+    static func filenameSortPermutation(_ rows: [ImageFile]) -> [Int] {
+        rows.indices.sorted {
+            rows[$0].filename.localizedStandardCompare(rows[$1].filename) == .orderedAscending
+        }
+    }
+
+    /// Extension order, then filename. `nameRank` (from `filenameSortPermutation`) replaces
+    /// the per-comparison filename compare: it orders localized-different names identically
+    /// and orders localized-equal names by listing position, which is what the stable sort
+    /// kept for them.
+    static func fileTypeSorted(_ rows: [ImageFile], nameRank: [Int]) -> [ImageFile] {
+        let extensions = rows.map { $0.url.pathExtension.lowercased() }
+        return rows.indices.sorted { lhs, rhs in
+            if extensions[lhs] != extensions[rhs] {
+                return extensions[lhs].localizedStandardCompare(extensions[rhs]) == .orderedAscending
+            }
+            return nameRank[lhs] < nameRank[rhs]
+        }.map { rows[$0] }
+    }
+
+    /// Filename orders depend only on the URL list, so the localized comparisons run once
+    /// per listing change rather than on every reverse toggle, file-type sort or
+    /// similarity rebuild. `order` is the stable `localizedStandardCompare` permutation of
+    /// `images`; `rank[i]` is row i's position in it (ties keep listing order, as before).
+    @ObservationIgnored private var filenameOrderCache: (urls: [URL], order: [Int], rank: [Int])?
+    @ObservationIgnored private var similarityNameOrderCache: (urls: [URL], order: [Int])?
+
+    private func filenameOrder() -> (order: [Int], rank: [Int]) {
+        let images = self.images
+        let urls = images.map(\.url)
+        if let cache = filenameOrderCache, cache.urls == urls { return (cache.order, cache.rank) }
+        let order = Self.filenameSortPermutation(images)
+        var rank = [Int](repeating: 0, count: images.count)
+        for (position, index) in order.enumerated() { rank[index] = position }
+        filenameOrderCache = (urls, order, rank)
+        return (order, rank)
+    }
+
+    /// `images` in `similarityNameOrder` (a total order, so filtering this list equals
+    /// sorting a filtered subset).
+    private func similarityNameOrderedImages() -> [ImageFile] {
+        let images = self.images
+        let urls = images.map(\.url)
+        if let cache = similarityNameOrderCache, cache.urls == urls { return cache.order.map { images[$0] } }
+        let order = images.indices.sorted { Self.similarityNameOrder(images[$0], images[$1]) }
+        similarityNameOrderCache = (urls, order)
+        return order.map { images[$0] }
     }
 
     private func showSortFeedback() {
@@ -1050,6 +1156,17 @@ final class BrowserViewModel {
                         || existing.dateModified != item.dateModified
                     let sidecarChanged = !contentModified
                         && existing.sidecarModified != item.sidecarModified
+                    if !contentModified, !sidecarChanged,
+                       existing.dateCreated == item.dateCreated,
+                       existing.dateAdded == item.dateAdded,
+                       existing.isICloudDownloadPending == item.isICloudDownloadPending {
+                        // Every scanned field matches, so the copy below would rebuild an
+                        // identical value — including the derived lowercased search text
+                        // that the metadata/keyword/person didSets recompute. Most refreshes
+                        // touch few files; reuse the row instead of rebuilding n of them.
+                        merged.append(existing)
+                        continue
+                    }
                     var updated = item
                     updated.starRating = existing.starRating
                     updated.colorLabel = existing.colorLabel
@@ -1998,7 +2115,9 @@ final class BrowserViewModel {
         let writer = injectedFieldMutationWriter
         let engine = writeEngine
         let reader = metadataReadService
+        fieldMutationBatchesInFlight += 1
         fieldMutationTask = Task {
+            defer { fieldMutationBatchesInFlight -= 1 }
             await previous?.value
             let service = MetadataFieldMutationWriteService(writeEngine: engine, readEmbedded: { url in
                 guard let value = try await reader.readBatchFullMetadata(urls: [url])[url] else {
@@ -3287,18 +3406,7 @@ final class BrowserViewModel {
         Task {
             let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
             guard self.currentFolderURL == folderURL else { return }
-            var updated = self.images
-            for i in updated.indices {
-                if let sidecar = allSidecars[updated[i].url], sidecar.pendingChanges {
-                    updated[i].hasPendingMetadataChanges = true
-                    updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                    applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
-                } else {
-                    updated[i].hasPendingMetadataChanges = false
-                    updated[i].pendingFieldNames = []
-                }
-            }
-            self.images = updated
+            self.applyPendingSidecarStatus(allSidecars, at: Array(self.images.indices))
         }
     }
 
@@ -3309,20 +3417,40 @@ final class BrowserViewModel {
             guard let service = self?.sidecarService else { return }
             let sidecars = await service.loadSidecars(for: urls, in: folderURL)
             guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
-            let urlSet = Set(urls)
-            var updated = self.images
-            for i in updated.indices where urlSet.contains(updated[i].url) {
-                if let sidecar = sidecars[updated[i].url], sidecar.pendingChanges {
-                    updated[i].hasPendingMetadataChanges = true
-                    updated[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
-                    applyPendingSidecarOverrides(to: &updated, for: updated[i].url, index: i, cachedSidecar: sidecar)
-                } else {
-                    updated[i].hasPendingMetadataChanges = false
-                    updated[i].pendingFieldNames = []
-                }
-            }
-            self.images = updated
+            let indices = Set(urls).compactMap { self.urlToImageIndex[$0] }.sorted()
+            self.applyPendingSidecarStatus(sidecars, at: indices)
         }
+    }
+
+    /// Pending-status refreshes change badges/overrides on existing rows, never the URL
+    /// inventory. Mutate in place and publish only the rows that changed, instead of
+    /// replacing `images` (which re-indexes, re-sorts, re-filters and re-diffs the grid).
+    private func applyPendingSidecarStatus(_ sidecars: [URL: MetadataSidecar], at indices: [Int]) {
+        // A metadata load can hold the cascade suppressed across awaits; restore its state.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        var changedURLs: [URL] = []
+        var sortKeyChanged = false
+        for i in indices {
+            let before = images[i]
+            let url = before.url
+            if let sidecar = sidecars[url], sidecar.pendingChanges {
+                images[i].hasPendingMetadataChanges = true
+                images[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
+                applyPendingSidecarOverrides(for: url, index: i, cachedSidecar: sidecar)
+            } else {
+                images[i].hasPendingMetadataChanges = false
+                images[i].pendingFieldNames = []
+            }
+            guard images[i] != before else { continue }
+            changedURLs.append(url)
+            sortKeyChanged = sortKeyChanged
+                || (sortOrder == .rating && images[i].starRating != before.starRating)
+                || (sortOrder == .label && images[i].colorLabel != before.colorLabel)
+        }
+        suppressImagesCascade = wasSuppressed
+        guard !wasSuppressed, !changedURLs.isEmpty else { return }
+        publishMetadataBatch(for: changedURLs, sortKeyChanged: sortKeyChanged)
     }
 
     nonisolated static func metadataReviewKey(_ url: URL) -> String {
@@ -3678,8 +3806,9 @@ final class BrowserViewModel {
                 // while their embedded manifests are parsed. A deletion during the window must
                 // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
                 // is in the Trash but its stale thumbnail remains visible and appears undeletable.
+                imagesCascadeURLs = images.map(\.url)
                 urlToImageIndex = Dictionary(
-                    uniqueKeysWithValues: images.enumerated().map { ($1.url, $0) }
+                    uniqueKeysWithValues: imagesCascadeURLs.enumerated().map { ($1, $0) }
                 )
                 rebuildSortedCache(forceSort: true)
 
@@ -4368,7 +4497,7 @@ final class BrowserViewModel {
     }
 
     private func updateSimilaritySortIfNeeded() {
-        let inputs = images.sorted(by: Self.similarityNameOrder).map(ImageSimilarityService.Input.init)
+        let inputs = similarityNameOrderedImages().map(ImageSimilarityService.Input.init)
         guard inputs != similarityInputs else { return }
         similaritySortTask?.cancel()
         similarityInputs = inputs

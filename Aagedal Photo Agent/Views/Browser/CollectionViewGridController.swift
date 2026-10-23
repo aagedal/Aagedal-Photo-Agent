@@ -17,7 +17,10 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     private var dataSource: NSCollectionViewDiffableDataSource<Section, URL>!
     private var observationTasks: [Task<Void, Never>] = []
     private var lastSnapshotURLs: [URL] = []
-    private var lastImageStates: [URL: ImageFile] = [:]
+    /// Rows as last handed to the data source, in snapshot order.
+    private var lastImages: [ImageFile] = []
+    private var hasAppliedSnapshot = false
+    private var lastDataApply: ContinuousClock.Instant?
     /// A grid rebuilt after leaving Develop inherits the active selection, but observation
     /// only reports future changes. Keep this pending until the first laid-out snapshot can
     /// scroll that already-selected image back into view.
@@ -170,18 +173,23 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         observationTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let (images, _) = await withCheckedContinuation { continuation in
+                await withCheckedContinuation { continuation in
                     withObservationTracking {
                         _ = self.viewModel.visibleImages
                         _ = self.viewModel.showOriginalThumbnails
                     } onChange: {
-                        Task { @MainActor [self] in
-                            continuation.resume(returning: (self.viewModel.visibleImages, self.viewModel.showOriginalThumbnails))
-                        }
+                        Task { @MainActor in continuation.resume() }
                     }
                 }
+                // Batch writes publish one row per awaited completion. Apply at most once per
+                // display frame so a 2,000-photo rating run doesn't walk the grid per photo;
+                // the latest rows are read after the wait, so nothing is dropped.
+                let frame = Duration.milliseconds(16)
+                if let last = self.lastDataApply, last.duration(to: .now) < frame {
+                    try? await Task.sleep(for: frame - last.duration(to: .now))
+                }
                 guard !Task.isCancelled else { return }
-                self.applyDataUpdate(images: images)
+                self.applyDataUpdate(images: self.viewModel.visibleImages)
             }
         })
 
@@ -253,13 +261,16 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     // MARK: - Data Updates
 
     private func applyDataUpdate(images: [ImageFile]) {
+        lastDataApply = .now
+        if hasAppliedSnapshot, reconfigureInPlaceIfOrderUnchanged(images) { return }
+
         let newURLs = images.map(\.url)
-        let newStates = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
+        let oldStates = Dictionary(lastImages.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
 
         // Find items that changed properties (need reconfigure, not insert/delete)
         var changedURLs: [URL] = []
         for image in images {
-            if let old = lastImageStates[image.url], old != image {
+            if let old = oldStates[image.url], old != image {
                 changedURLs.append(image.url)
             }
         }
@@ -294,7 +305,36 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
         }
 
         lastSnapshotURLs = newURLs
-        lastImageStates = newStates
+        lastImages = images
+        hasAppliedSnapshot = true
+    }
+
+    /// Rating/label/badge updates keep order and membership. Rebuilding and diffing an
+    /// n-item snapshot for those is O(n) hashing per update; instead re-run the cell
+    /// configuration for the changed rows that currently have an item. Rows without an
+    /// item are configured from the view model when they scroll in.
+    private func reconfigureInPlaceIfOrderUnchanged(_ images: [ImageFile]) -> Bool {
+        guard images.count == lastImages.count else { return false }
+        var changed: [Int] = []
+        for index in images.indices {
+            let new = images[index], old = lastImages[index]
+            guard new.url == old.url else { return false }
+            if new != old { changed.append(index) }
+        }
+        lastImages = images
+        guard !changed.isEmpty else { return true }
+        for index in changed {
+            guard let item = collectionView.item(at: IndexPath(item: index, section: 0))
+                as? ThumbnailCollectionViewItem else { continue }
+            configureItem(item, url: images[index].url)
+        }
+        // Same post-update selection reconciliation the snapshot path performs.
+        ThumbnailCollectionView.refreshSelection(
+            in: Array(collectionView.visibleItems()),
+            selectedIDs: viewModel.selectedImageIDs,
+            activeURL: viewModel.lastClickedImageURL
+        )
+        return true
     }
 
     // MARK: - Selection Updates

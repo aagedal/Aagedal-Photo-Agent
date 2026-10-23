@@ -384,13 +384,9 @@ struct FullScreenImageView: View {
     }
     private let maxZoom: CGFloat = 40.0
 
+    /// Narrow read: edits to other rows of `images` don't re-evaluate the viewer.
     private var currentImageFile: ImageFile? {
-        if let activeURL = viewModel.lastClickedImageURL,
-           viewModel.selectedImageIDs.contains(activeURL),
-           let index = viewModel.urlToImageIndex[activeURL] {
-            return viewModel.images[index]
-        }
-        return viewModel.firstSelectedImage
+        viewModel.fullScreenImage
     }
 
     private var isHDR: Bool {
