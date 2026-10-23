@@ -26,6 +26,9 @@ final class DevelopWorkspaceInputCoordinator {
     var hoveredFilmstripURL: URL?
     var isSpaceHandToolActive = false
     var filmstripKeyboardScrollTarget: URL?
+    /// True while a window-level overlay (e.g. a template palette) is presented above the
+    /// workspace. The key monitor then passes every event through untouched.
+    @ObservationIgnored var isOverlayPresented = false
 
     @ObservationIgnored private var scrollMonitor: MonitorRegistration?
     @ObservationIgnored private var keyMonitor: MonitorRegistration?

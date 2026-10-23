@@ -56,6 +56,11 @@ These are material product and evidence boundaries, not a list of unfinished int
   validation remain release gates and are not claimed by this draft.
 - Color, alignment, keyboard-only, VoiceOver, upgrade/downgrade, and crash-interruption automation does not
   replace the open release-candidate manual validation passes.
+- Develop renders at most 8 enabled local layers per image (ellipse, brush, and AI masks plus extra Global and
+  LUT/CST layers) and at most 4 watermark layers; the limits come from fixed-size GPU buffers and apply to
+  preview and export alike. The add-layer controls are disabled at the mask limit, and a file that already
+  carries more enabled layers (for example from Camera Raw or a paste) shows a warning on the layer strip;
+  only the first 8 enabled layers render until others are disabled or deleted.
 
 ## Reviewed automation publication
 

@@ -94,27 +94,44 @@ final class DevelopWhiteBalanceSessionCoordinator {
         return true
     }
 
+    /// Maps a pane-space sample rectangle to the source-image region the preview shows there.
+    /// `rotationRadians` is the confirmed-crop straighten angle: the crop viewport shader rotates
+    /// sampling around the viewport (crop) centre in source-pixel space (EditAdjustments.metal),
+    /// so the same rotation is applied here. A rotated rectangle is sampled via its source-aligned
+    /// bounding box, which keeps the sample centred on the clicked pixel.
     func sourceRegion(
         forPaneRect rect: CGRect,
         paneSize: CGSize,
         viewportOrigin: SIMD2<Float>,
         viewportSize: SIMD2<Float>,
+        rotationRadians: Double = 0,
         sourceExtent: CGRect
     ) -> CGRect? {
         guard paneSize.width > 0, paneSize.height > 0,
               sourceExtent.width > 0, sourceExtent.height > 0 else { return nil }
 
-        func uvX(_ x: CGFloat) -> Double {
-            Double(viewportOrigin.x) + Double(x / paneSize.width) * Double(viewportSize.x)
-        }
-        func uvY(_ y: CGFloat) -> Double {
-            Double(viewportOrigin.y) + Double(y / paneSize.height) * Double(viewportSize.y)
+        let centerX = Double(viewportOrigin.x) + Double(viewportSize.x) / 2
+        let centerY = Double(viewportOrigin.y) + Double(viewportSize.y) / 2
+        let cosA = cos(rotationRadians)
+        let sinA = sin(rotationRadians)
+        // Pane point → normalized source UV (top-left origin), mirroring the shader exactly.
+        func uv(_ point: CGPoint) -> (x: Double, y: Double) {
+            let offX = (Double(point.x / paneSize.width) - 0.5) * Double(viewportSize.x) * sourceExtent.width
+            let offY = (Double(point.y / paneSize.height) - 0.5) * Double(viewportSize.y) * sourceExtent.height
+            return (
+                centerX + (offX * cosA - offY * sinA) / sourceExtent.width,
+                centerY + (offX * sinA + offY * cosA) / sourceExtent.height
+            )
         }
 
-        let uvMinX = min(max(uvX(rect.minX), 0), 1)
-        let uvMaxX = min(max(uvX(rect.maxX), 0), 1)
-        let uvMinY = min(max(uvY(rect.minY), 0), 1)
-        let uvMaxY = min(max(uvY(rect.maxY), 0), 1)
+        let corners = [
+            uv(CGPoint(x: rect.minX, y: rect.minY)), uv(CGPoint(x: rect.maxX, y: rect.minY)),
+            uv(CGPoint(x: rect.minX, y: rect.maxY)), uv(CGPoint(x: rect.maxX, y: rect.maxY)),
+        ]
+        let uvMinX = min(max(corners.map(\.x).min()!, 0), 1)
+        let uvMaxX = min(max(corners.map(\.x).max()!, 0), 1)
+        let uvMinY = min(max(corners.map(\.y).min()!, 0), 1)
+        let uvMaxY = min(max(corners.map(\.y).max()!, 0), 1)
         guard uvMaxX > uvMinX, uvMaxY > uvMinY else { return nil }
 
         return CGRect(

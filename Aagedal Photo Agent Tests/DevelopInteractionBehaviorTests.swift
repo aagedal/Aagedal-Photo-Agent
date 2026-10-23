@@ -967,6 +967,75 @@ struct DevelopLayerGeometryInteractionCoordinatorTests {
     }
 }
 
+@Suite("Develop straighten pivot and layer limits")
+@MainActor
+struct DevelopStraightenPivotAndLimitTests {
+    @Test("mask display mapping and AI picks rotate about the crop viewport centre")
+    func straightenRotatesAboutCropCentre() {
+        let coordinator = DevelopLayerGeometryInteractionCoordinator()
+        let projection = DevelopLayerGeometryProjection(
+            displayImageSize: CGSize(width: 1_000, height: 1_000),
+            crop: NormalizedCropRegion(top: 0.1, left: 0.5, bottom: 0.5, right: 0.9),
+            straightenAngle: 90,
+            straightenPivot: CGPoint(x: 0.7, y: 0.3)
+        )
+        // Shader sampling: source = pivot + R(90°)·(displayed − pivot).
+        // Displayed (0.7, 0.5) → offset (0, 0.2) → rotated (−0.2, 0) → source (0.5, 0.3).
+        let source = coordinator.sourcePointForAIMask(
+            fromDisplayedUV: CGPoint(x: 0.7, y: 0.5),
+            projection: projection
+        )
+        #expect(abs(source.x - 0.5) < 0.000_001)
+        #expect(abs(source.y - 0.3) < 0.000_001)
+
+        // The overlay needs the inverse: a mask at source (0.5, 0.3) is drawn at (0.7, 0.5).
+        var mask = EllipseMaskGeometry()
+        mask.centerX = 0.5
+        mask.centerY = 0.3
+        let display = coordinator.maskForDisplay(mask, projection: projection)
+        #expect(abs(display.centerX - 0.7) < 0.000_001)
+        #expect(abs(display.centerY - 0.5) < 0.000_001)
+        let back = coordinator.maskForSensor(display, projection: projection)
+        #expect(abs(back.centerX - 0.5) < 0.000_001)
+        #expect(abs(back.centerY - 0.3) < 0.000_001)
+    }
+
+    @Test("layer limit counts enabled local layers only")
+    func layerLimitGating() {
+        func settings(enabled: Int, disabled: Int) -> CameraRawSettings {
+            var settings = CameraRawSettings()
+            settings.localAdjustments = (0..<enabled).map { _ in MaskAdjustment(name: "on", geometry: EllipseMaskGeometry()) }
+                + (0..<disabled).map { _ in
+                    var mask = MaskAdjustment(name: "off", geometry: EllipseMaskGeometry())
+                    mask.enabled = false
+                    return mask
+                }
+            return settings
+        }
+        let limit = DevelopLayerLimits.maxEnabledMasks
+        #expect(limit == 8)
+        #expect(DevelopLayerLimits.canAddMask(to: nil))
+        #expect(DevelopLayerLimits.canAddMask(to: settings(enabled: limit - 1, disabled: 3)))
+        #expect(!DevelopLayerLimits.canAddMask(to: settings(enabled: limit, disabled: 0)))
+        #expect(!DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit, disabled: 4)))
+        #expect(DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit + 1, disabled: 0)))
+    }
+
+    @Test("oversized LUT files report a size error, not an encoding error")
+    func oversizedLUTReportsSize() async {
+        let oversized = Data(repeating: 0x20, count: CubeLUTParser.maxFileSize + 1)
+        #expect {
+            try CubeLUTParser.parse(oversized)
+        } throws: { error in
+            guard case CubeLUTParser.ParseError.tooLarge = error else { return false }
+            return error.localizedDescription == "The LUT file is too large (max 8 MB)."
+        }
+        await #expect(throws: CubeLUTParser.ParseError.self) {
+            try await CubeLUTParser.parseOffMain(Data([0xFF, 0xFE]))
+        }
+    }
+}
+
 @Suite("Develop export session coordinator")
 @MainActor
 struct DevelopExportSessionCoordinatorTests {

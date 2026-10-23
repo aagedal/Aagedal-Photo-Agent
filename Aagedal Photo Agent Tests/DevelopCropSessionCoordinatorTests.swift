@@ -130,4 +130,68 @@ struct DevelopCropSessionCoordinatorTests {
         #expect(!source.contains("@State private var dragCropAngle"))
         #expect(!source.contains("@State private var lockedCropImageRect"))
     }
+
+    @Test("Esc cancel restores the crop captured on entry; Done and navigation drop it")
+    func cancelRestoresEntryCrop() {
+        let image = URL(fileURLWithPath: "/tmp/develop-crop-cancel.raw")
+        let entry = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.8, right: 0.9, angle: 3.5, hasCrop: true)
+        let coordinator = DevelopCropSessionCoordinator()
+        coordinator.beginImageSession(image, isCropEnabled: true)
+
+        // Capture is ignored while the tool is closed.
+        coordinator.captureEntryCrop(entry)
+        #expect(coordinator.entrySnapshot == nil)
+
+        #expect(coordinator.toggleTool())
+        coordinator.captureEntryCrop(entry)
+        coordinator.zoomScale = 2
+        coordinator.updateAngleDrag(9, region: NormalizedCropRegion(top: 0, left: 0, bottom: 1, right: 1))
+
+        let restored = coordinator.cancelTool()
+        #expect(restored == DevelopCropEntrySnapshot(crop: entry))
+        #expect(!coordinator.isToolActive)
+        #expect(coordinator.entrySnapshot == nil)
+        #expect(coordinator.zoomScale == 1)
+        #expect(coordinator.dragAngle == nil)
+        #expect(coordinator.dragRegion == nil)
+
+        // A crop-less image restores "no crop" (nil), distinct from "no snapshot".
+        #expect(coordinator.toggleTool())
+        coordinator.captureEntryCrop(nil)
+        #expect(coordinator.cancelTool() == DevelopCropEntrySnapshot(crop: nil))
+
+        // Done keeps the edit: the snapshot is discarded.
+        #expect(coordinator.toggleTool())
+        coordinator.captureEntryCrop(entry)
+        #expect(!coordinator.toggleTool())
+        #expect(coordinator.entrySnapshot == nil)
+
+        // A tool left open across navigation has no snapshot for the next image.
+        #expect(coordinator.toggleTool())
+        coordinator.captureEntryCrop(entry)
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-next.raw"), isCropEnabled: true)
+        #expect(coordinator.isToolActive)
+        #expect(coordinator.cancelTool() == nil)
+    }
+
+    @Test("Develop routes Esc in crop mode through cancel and Load Embedded Crop through undo")
+    func escapeAndEmbeddedCropSourceContract() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent(
+                "Aagedal Photo Agent/Views/Browser/EditWorkspaceView.swift"
+            ),
+            encoding: .utf8
+        )
+        #expect(source.contains("cropSession.captureEntryCrop(entryCrop)"))
+        #expect(source.contains("if showCropControls {\n                cancelCropControls()"))
+        #expect(source.contains("whiteBalanceSession.deactivatePicker()\n                return nil"))
+        #expect(source.contains("maskInteraction.stopBrushPainting()\n                syncMaskOverlayTarget()\n                return nil"))
+        #expect(source.contains("guard !workspaceInput.isOverlayPresented,"))
+        // Embedded crop import is an undoable, version-aware Develop mutation.
+        #expect(!source.contains("metadataViewModel.importEmbeddedCrop()"))
+        #expect(source.contains("metadataViewModel.embeddedCropForImport"))
+    }
 }
