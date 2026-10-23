@@ -30,6 +30,16 @@ struct BrowserView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: viewModel.errorMessage)
+            // On the whole workspace (not just the grid) so it still shows when the operation
+            // emptied the folder, e.g. after moving every photo to .Rejected.
+            .overlay(alignment: .bottom) {
+                if let notice = viewModel.fileOperationNotice {
+                    fileOperationNoticeView(notice)
+                        .padding(.bottom, 44)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: viewModel.fileOperationNotice)
             .sheet(isPresented: $showingDescriptionBatch) {
                 BatchDescriptionAssistantView(urls: descriptionBatchURLs, browser: viewModel)
             }
@@ -163,6 +173,17 @@ struct BrowserView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
 
+                    if viewModel.isPreparingRename {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing rename…").font(.callout)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
                     if let progress = viewModel.metadataLoadingProgress {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(
@@ -197,6 +218,7 @@ struct BrowserView: View {
                 .animation(.easeInOut(duration: 0.2), value: viewModel.sortFeedback)
                 .animation(.easeInOut(duration: 0.25), value: viewModel.iCloudDownloadNotice)
                 .animation(.easeInOut(duration: 0.2), value: viewModel.metadataLoadingProgress)
+                .animation(.easeInOut(duration: 0.2), value: viewModel.isPreparingRename)
 
                 // Thumbnail size slider (bottom-right)
                 VStack {
@@ -243,6 +265,36 @@ struct BrowserView: View {
         descriptionBatchURLs = viewModel.selectedImages.filter { $0.isImageFile }.map(\.url)
         guard !descriptionBatchURLs.isEmpty else { return }
         showingDescriptionBatch = true
+    }
+
+    private func fileOperationNoticeView(_ notice: FileOperationNotice) -> some View {
+        HStack(spacing: 8) {
+            Label(notice.message, systemImage: "checkmark.circle")
+                .font(.callout)
+            if let url = notice.revealURL {
+                // Open the folder itself: `.Rejected` is hidden, so selecting it in its parent
+                // would show nothing in a default Finder window.
+                Button("Reveal in Finder") { NSWorkspace.shared.open(url) }
+                    .controlSize(.small)
+            }
+            Button {
+                viewModel.fileOperationNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss notice")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .task(id: notice.id) {
+            try? await Task.sleep(for: .seconds(8))
+            if viewModel.fileOperationNotice?.id == notice.id {
+                viewModel.fileOperationNotice = nil
+            }
+        }
     }
 
     private func errorBanner(_ message: String) -> some View {

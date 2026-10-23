@@ -370,6 +370,30 @@ struct RejectMoveServiceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: result.rejectedFolder.path).isEmpty)
     }
 
+    @Test("Rejecting a RAW+JPEG pair keeps one name and one shared XMP")
+    func rejectPairKeepsSharedXMP() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        try Data("shared xmp".utf8).write(to: xmp)
+
+        let result = await FileSystemService().moveRejectedItems([raw, jpeg], in: root)
+
+        let rejected = root.appendingPathComponent(RejectMoveService.rejectedFolderName)
+        #expect(result.failedFiles.isEmpty)
+        #expect(result.movedFiles == [
+            rejected.appendingPathComponent("photo.ARW"),
+            rejected.appendingPathComponent("photo.JPG"),
+        ])
+        #expect(try Data(contentsOf: rejected.appendingPathComponent("photo.xmp")) == Data("shared xmp".utf8))
+        #expect(!FileManager.default.fileExists(atPath: rejected.appendingPathComponent("photo-1.JPG").path))
+        #expect(!FileManager.default.fileExists(atPath: xmp.path))
+    }
+
     @Test("Name collisions keep image and sidecars associated")
     func collisionRenamesWholeBundle() async throws {
         let root = try makeTempFolder()

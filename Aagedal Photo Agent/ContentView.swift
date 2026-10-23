@@ -291,13 +291,23 @@ struct ContentView: View {
                 commandRouter?.send(.registerOpenFolderForSidebar(url))
             }
         }
-        configurePane(browser)
         let panesModel = BrowserPanesModel(
             primary: browser,
             thumbnailService: thumbnailService,
             fullScreenImageCache: fullScreenImageCache
         )
-        panesModel.configurePane = configurePane
+        // Sidebar folder rename/move/trash runs on the primary pane; every other pane showing
+        // that folder (or a descendant) must follow it too instead of keeping a dead path.
+        let configureWithPanes: (BrowserViewModel) -> Void = { [weak panesModel] vm in
+            configurePane(vm)
+            vm.onFolderRelocated = { [weak panesModel, weak vm] oldURL, newURL in
+                for pane in panesModel?.panes ?? [] where pane !== vm {
+                    pane.followRelocatedFolder(from: oldURL, to: newURL)
+                }
+            }
+        }
+        configureWithPanes(browser)
+        panesModel.configurePane = configureWithPanes
         _panes = State(initialValue: panesModel)
         _metadataViewModel = State(initialValue: MetadataViewModel(readService: browser.metadataReadService, writeEngine: browser.writeEngine))
         _faceRecognitionViewModel = State(initialValue: faceRecognition)
@@ -654,7 +664,12 @@ struct ContentView: View {
                             return ImageFile(url: destination, relocating: image)
                         }
                         comparisonRenameEvent = ComparisonRenameEvent(mappings: presentation.mappings)
-                        browserViewModel.applySuccessfulRename(presentation)
+                        // Keep the sheet open when app references need review so its
+                        // reassociation report stays visible.
+                        browserViewModel.applySuccessfulRename(
+                            presentation,
+                            dismissSheet: reassociation.succeeded
+                        )
                         faceRecognitionViewModel.loadFaceData(
                             for: request.folderURL,
                             cleanupPolicy: settingsViewModel.faceCleanupPolicy
@@ -735,28 +750,30 @@ struct ContentView: View {
                 viewModel: browserViewModel,
                 isActiveHost: !browserViewModel.isFullScreen
             )
-            .alert("Move Folder to Trash", isPresented: Bindable(browserViewModel).showTrashSubfolderConfirmation) {
+            // Sidebar folder dialogs: the folder tree rows act on the sidebar's pane (always the
+            // primary one), so these must too — not the active pane, or they never appear in split view.
+            .alert("Move Folder to Trash", isPresented: Bindable(sidebarViewModel).showTrashSubfolderConfirmation) {
                 Button("Cancel", role: .cancel) {
-                    browserViewModel.pendingTrashSubfolderURL = nil
+                    sidebarViewModel.pendingTrashSubfolderURL = nil
                 }
                 Button("Move to Trash", role: .destructive) {
-                    browserViewModel.trashPendingSubfolder()
+                    sidebarViewModel.trashPendingSubfolder()
                 }
             } message: {
-                if let url = browserViewModel.pendingTrashSubfolderURL {
+                if let url = sidebarViewModel.pendingTrashSubfolderURL {
                     Text("Are you sure you want to move \"\(url.lastPathComponent)\" and all its contents to the Trash?")
                 }
             }
-            .sheet(isPresented: Bindable(browserViewModel).showRenameSubfolderAlert) {
-                RenameFolderSheet(viewModel: browserViewModel)
+            .sheet(isPresented: Bindable(sidebarViewModel).showRenameSubfolderAlert) {
+                RenameFolderSheet(viewModel: sidebarViewModel)
             }
-            .alert("New Subfolder", isPresented: Bindable(browserViewModel).showNewSubfolderAlert) {
-                TextField("Name", text: Bindable(browserViewModel).newSubfolderName)
+            .alert("New Subfolder", isPresented: Bindable(sidebarViewModel).showNewSubfolderAlert) {
+                TextField("Name", text: Bindable(sidebarViewModel).newSubfolderName)
                 Button("Cancel", role: .cancel) {
-                    browserViewModel.pendingNewSubfolderParentURL = nil
+                    sidebarViewModel.pendingNewSubfolderParentURL = nil
                 }
                 Button("Create") {
-                    browserViewModel.createPendingSubfolder()
+                    sidebarViewModel.createPendingSubfolder()
                 }
             } message: {
                 Text("Enter a name for the new subfolder.")
@@ -896,7 +913,9 @@ struct ContentView: View {
                 case .archiveRAW(let format):
                     archiveSelectedRAW(as: format)
                 case .renameSelected:
-                    performAfterCaptionFlush { browserViewModel.renameSelected() }
+                    // Commit the Browser metadata panel first: a rename moves the files the
+                    // panel's unsaved edits are keyed to.
+                    performAfterMetadataFileOperation { browserViewModel.renameSelected() }
                 case .duplicateSelected:
                     performAfterCaptionFlush { browserViewModel.duplicateSelectedImages() }
                 case .resetAllEdits:
@@ -1704,7 +1723,7 @@ struct ContentView: View {
 
         case let .renameSettings(imageURL):
             guard selectDeadlineRemediationImages(imageURL) else { return }
-            browserViewModel.renameSelected()
+            performAfterMetadataFileOperation { browserViewModel.renameSelected() }
 
         case let .exportSettings(imageURL):
             guard selectDeadlineRemediationImages(imageURL) else { return }
@@ -4449,6 +4468,7 @@ struct ContentViewModifiers: ViewModifier {
     @Binding var technicalMetadataCache: [URL: TechnicalMetadata]
     @Binding var technicalMetadata: TechnicalMetadata?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openSettings) private var openSettings
     @State private var selectionLoadTask: Task<Void, Never>?
     private let selectionDebounceNanoseconds: UInt64 = 200_000_000
     private let perfLog = Logger(subsystem: "com.aagedal.photo-agent", category: "MetadataPerf")
@@ -4650,15 +4670,45 @@ struct ContentViewModifiers: ViewModifier {
     }
 
     private func openSelectedInExternalEditor() {
-        guard let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
-              !editorPath.isEmpty else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
         guard !urls.isEmpty else { return }
-        NSWorkspace.shared.open(
-            urls,
-            withApplicationAt: URL(fileURLWithPath: editorPath),
-            configuration: NSWorkspace.OpenConfiguration()
-        )
+        let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor) ?? ""
+        guard !editorPath.isEmpty else {
+            offerExternalEditorSettings("No external editor is set.")
+            return
+        }
+        let editorURL = URL(fileURLWithPath: editorPath)
+        let editorName = editorURL.deletingPathExtension().lastPathComponent
+        guard FileManager.default.fileExists(atPath: editorPath) else {
+            offerExternalEditorSettings("The external editor “\(editorName)” is no longer at \(editorPath).")
+            return
+        }
+        Task { @MainActor in
+            do {
+                _ = try await NSWorkspace.shared.open(
+                    urls,
+                    withApplicationAt: editorURL,
+                    configuration: NSWorkspace.OpenConfiguration()
+                )
+            } catch {
+                offerExternalEditorSettings("“\(editorName)” could not open the selected photos: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Open in Editor used to do nothing when the editor was unset or stale; explain why and
+    /// offer the Settings window where the editor is chosen.
+    @MainActor
+    private func offerExternalEditorSettings(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Can’t Open in External Editor"
+        alert.informativeText = message + "\n\nChoose an external editor in Settings."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            openSettings()
+        }
     }
 }
 

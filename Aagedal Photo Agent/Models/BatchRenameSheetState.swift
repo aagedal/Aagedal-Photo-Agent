@@ -289,6 +289,8 @@ nonisolated struct BatchRenamePreviewRow: Identifiable, Equatable, Sendable {
             return "Could not find a free suffix in \(maximumAttempts) attempts"
         case .originalFilenameXMPSidecarMissing:
             return "Original-filename preservation requires an existing XMP sidecar for RAW"
+        case .sharedArtifactSplit(let otherIndex):
+            return "Shares a sidecar with row \(otherIndex + 1) but would get a different name. Give paired files the same name."
         }
     }
 

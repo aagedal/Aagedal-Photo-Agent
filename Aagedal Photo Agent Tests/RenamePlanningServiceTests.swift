@@ -481,6 +481,32 @@ struct RenamePlanningServiceTests {
         #expect(plan.canExecute)
     }
 
+    @Test("A RAW+JPEG pair given different names blocks instead of splitting its shared XMP")
+    func pairSplitAcrossNamesBlocks() throws {
+        let raw = root.appendingPathComponent("IMG_9.NEF")
+        let jpeg = root.appendingPathComponent("IMG_9.JPG")
+        let xmp = root.appendingPathComponent("IMG_9.xmp")
+        let items = [(raw, "a.NEF"), (jpeg, "b.JPG")].map { source, destination in
+            RenamePlanningItem(
+                sourceImageURL: source,
+                context: BatchRenameContext(originalFilename: source.lastPathComponent, metadata: [.event: destination])
+            )
+        }
+        let plan = service.makePlan(
+            items: items,
+            recipe: BatchRenameRecipe(name: "Mapped", components: [.token(.metadata(.event))]),
+            environment: RenamePlanningEnvironment(
+                caseSensitivity: .caseInsensitive,
+                existingURLs: [raw, jpeg, xmp]
+            )
+        )
+        #expect(!plan.canExecute)
+        let issue = try #require(plan.issues.first { $0.kind == .sharedArtifactSplit })
+        #expect(issue.severity == .blocking)
+        #expect(issue.itemIndex == 1)
+        #expect(BatchRenamePreviewRow(entry: plan.entries[1]).issueText.contains("row 1"))
+    }
+
     @Test("Three-way image cycles preserve input order and reserve every destination")
     func threeWayCycle() {
         let names = ["A.jpg", "B.jpg", "C.jpg"]

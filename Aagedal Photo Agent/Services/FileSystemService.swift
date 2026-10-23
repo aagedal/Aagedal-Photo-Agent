@@ -632,13 +632,22 @@ actor FileSystemService {
         var moved: Set<URL> = []
         var failures: [ItemFailure] = []
         var cancellationStoppedRemainingItems = false
+        // XMP sidecars this batch placed in the destination, keyed by destination and valued by
+        // their source. A RAW+JPEG pair shares one stem `.xmp`: the first image copies it (its
+        // partner still needs it), and the partner must accept that copy instead of failing.
+        var transferredXMPSources: [URL: URL] = [:]
         for sourceURL in sourceURLs {
             if Task.isCancelled {
                 cancellationStoppedRemainingItems = true
                 break
             }
             let destinationURL = destinationFolder.appendingPathComponent(sourceURL.lastPathComponent)
-            let reservedDestinations = [destinationURL, xmpSidecarService.sidecarURL(for: destinationURL)]
+            let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
+            let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+            let xmpAlreadyTransferred = transferredXMPSources[xmpDestination.standardizedFileURL]
+                == xmpSource.standardizedFileURL
+            let reservedDestinations = [destinationURL]
+                + (xmpAlreadyTransferred ? [] : [xmpDestination])
                 + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: destinationFolder)
             guard !reservedDestinations.contains(where: { fileManager.fileExists(atPath: $0.path) }) else {
                 failures.append(ItemFailure(
@@ -671,17 +680,23 @@ actor FileSystemService {
                 continue
             }
 
-            let xmpSource = xmpSidecarService.sidecarURL(for: sourceURL)
             if fileManager.fileExists(atPath: xmpSource.path) {
                 do {
-                    let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
-                    if try PhotoSidecarOwnership.hasSurvivingStemSibling(
+                    let survivingSibling = try PhotoSidecarOwnership.hasSurvivingStemSibling(
                         of: sourceURL, in: sourceURL.deletingLastPathComponent()
-                    ) {
+                    )
+                    if xmpAlreadyTransferred {
+                        // The partner already copied this sidecar here. Once no sibling is left
+                        // behind, retire the source by moving it over that copy.
+                        if !survivingSibling {
+                            _ = try fileManager.replaceItemAt(xmpDestination, withItemAt: xmpSource)
+                        }
+                    } else if survivingSibling {
                         try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
                     } else {
                         try fileManager.moveItem(at: xmpSource, to: xmpDestination)
                     }
+                    transferredXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
                 } catch {
                     failures.append(ItemFailure(
                         sourceURL: sourceURL,
