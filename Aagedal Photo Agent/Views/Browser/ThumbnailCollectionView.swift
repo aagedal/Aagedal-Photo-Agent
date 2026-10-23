@@ -374,7 +374,7 @@ final class ThumbnailCollectionView: NSCollectionView {
         }
 
         // Open in External Editor
-        if let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+        if let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
            !editorPath.isEmpty {
             let editorItem = NSMenuItem(title: "Open in External Editor", action: #selector(contextOpenInExternalEditor(_:)), keyEquivalent: "")
             editorItem.target = self
@@ -585,7 +585,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     @objc private func contextOpenInExternalEditor(_ sender: Any?) {
         guard let viewModel,
-              let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+              let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
               !editorPath.isEmpty else { return }
         let urls = viewModel.selectedImages.map(\.url)
         NSWorkspace.shared.open(urls, withApplicationAt: URL(fileURLWithPath: editorPath), configuration: NSWorkspace.OpenConfiguration())

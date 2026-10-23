@@ -393,21 +393,21 @@ final class ImportViewModel {
     /// Whether the user wants to sort files into per-date folders.
     var sortByDate: Bool = false {
         didSet {
-            UserDefaults.standard.set(sortByDate, forKey: UserDefaultsKeys.importSortByDate)
+            AppDefaults.store.set(sortByDate, forKey: UserDefaultsKeys.importSortByDate)
         }
     }
     /// When `sortByDate` is on, optionally wrap date folders in a parent folder.
     var dateFolderGrouping: ImportDateFolderGrouping = .none {
         didSet {
-            UserDefaults.standard.set(dateFolderGrouping.rawValue, forKey: UserDefaultsKeys.importDateFolderGrouping)
-            UserDefaults.standard.set(dateFolderGrouping == .year, forKey: UserDefaultsKeys.importGroupByYear)
+            AppDefaults.store.set(dateFolderGrouping.rawValue, forKey: UserDefaultsKeys.importDateFolderGrouping)
+            AppDefaults.store.set(dateFolderGrouping == .year, forKey: UserDefaultsKeys.importGroupByYear)
         }
     }
     /// When a single capture date is split into multiple shoots, import the shoots
     /// as subfolders inside that date folder instead of sibling date folders.
     var splitShootsIntoSubfolders: Bool = false {
         didSet {
-            UserDefaults.standard.set(splitShootsIntoSubfolders, forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
+            AppDefaults.store.set(splitShootsIntoSubfolders, forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
             normalizeSplitFolderLayout()
         }
     }
@@ -464,7 +464,7 @@ final class ImportViewModel {
         voiceMemoAssociationScanService: ImportVoiceMemoAssociationScanService = ImportVoiceMemoAssociationScanService(),
         pathContainmentService: SafePathContainmentService = .shared,
         executionSecurityScopeService: ImportExecutionSecurityScopeService = .shared,
-        bookmarkDefaults: UserDefaults = .standard,
+        bookmarkDefaults: UserDefaults = AppDefaults.store,
         destinationBookmarkService: ImportDestinationBookmarkService = .shared
     ) {
         self.readService = readService
@@ -481,35 +481,35 @@ final class ImportViewModel {
         self.destinationBookmarkService = destinationBookmarkService
 
         // Restore last-used verification mode (default = .on).
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importVerificationMode),
+        if let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.importVerificationMode),
            let mode = CopyVerificationMode(rawValue: raw) {
             self.configuration.verificationMode = mode
         }
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importFileTypeFilter),
+        if let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.importFileTypeFilter),
            let filter = ImportFileTypeFilter(rawValue: raw) {
             self.configuration.fileTypeFilter = filter
         }
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.importConflictPolicy),
+        if let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.importConflictPolicy),
            let policy = ImportConflictPolicy(rawValue: raw) {
             self.configuration.conflictPolicy = policy
         }
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.importCreateSubFolders) != nil {
-            self.configuration.createSubFolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importCreateSubFolders)
+        if AppDefaults.store.object(forKey: UserDefaultsKeys.importCreateSubFolders) != nil {
+            self.configuration.createSubFolders = AppDefaults.store.bool(forKey: UserDefaultsKeys.importCreateSubFolders)
         }
         // Restore last-used date-folder grouping. Fall back to the legacy year
         // toggle so existing installs keep their previous behavior.
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSortByDate) != nil {
-            self.sortByDate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSortByDate)
+        if AppDefaults.store.object(forKey: UserDefaultsKeys.importSortByDate) != nil {
+            self.sortByDate = AppDefaults.store.bool(forKey: UserDefaultsKeys.importSortByDate)
         }
-        if let rawGrouping = UserDefaults.standard.string(forKey: UserDefaultsKeys.importDateFolderGrouping),
+        if let rawGrouping = AppDefaults.store.string(forKey: UserDefaultsKeys.importDateFolderGrouping),
            let grouping = ImportDateFolderGrouping(rawValue: rawGrouping) {
             self.dateFolderGrouping = grouping
         } else {
-            self.dateFolderGrouping = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importGroupByYear) ? .year : .none
+            self.dateFolderGrouping = AppDefaults.store.bool(forKey: UserDefaultsKeys.importGroupByYear) ? .year : .none
         }
-        self.splitShootsIntoSubfolders = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
-        if UserDefaults.standard.object(forKey: UserDefaultsKeys.importSkipPreviouslyImported) != nil {
-            self.configuration.skipPreviouslyImported = UserDefaults.standard.bool(forKey: UserDefaultsKeys.importSkipPreviouslyImported)
+        self.splitShootsIntoSubfolders = AppDefaults.store.bool(forKey: UserDefaultsKeys.importSplitShootsIntoSubfolders)
+        if AppDefaults.store.object(forKey: UserDefaultsKeys.importSkipPreviouslyImported) != nil {
+            self.configuration.skipPreviouslyImported = AppDefaults.store.bool(forKey: UserDefaultsKeys.importSkipPreviouslyImported)
         }
         scheduleDestinationBookmarkLoad()
         scheduleBackupBookmarkLoad()
@@ -1036,9 +1036,9 @@ final class ImportViewModel {
         lastCompletionEntry = nil
 
         // Persist verification mode for next run.
-        UserDefaults.standard.set(configuration.verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
-        UserDefaults.standard.set(configuration.fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
-        UserDefaults.standard.set(configuration.skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported)
+        AppDefaults.store.set(configuration.verificationMode.rawValue, forKey: UserDefaultsKeys.importVerificationMode)
+        AppDefaults.store.set(configuration.fileTypeFilter.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
+        AppDefaults.store.set(configuration.skipPreviouslyImported, forKey: UserDefaultsKeys.importSkipPreviouslyImported)
 
         // Capture configuration values for the background copy.
         let createSubFolders = configuration.createSubFolders

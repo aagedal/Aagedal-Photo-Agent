@@ -904,9 +904,9 @@ struct FTPUploadView: View {
     }
 
     private func makeC2PAUploadSigningConfiguration() -> C2PAUploadSigningConfiguration? {
-        let certPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
-        let author = UserDefaults.standard.string(forKey: UserDefaultsKeys.c2paDefaultAuthor)
-        let usesTestCertificate = UserDefaults.standard.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
+        let certPath = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paCertificatePath) ?? ""
+        let author = AppDefaults.store.string(forKey: UserDefaultsKeys.c2paDefaultAuthor)
+        let usesTestCertificate = AppDefaults.store.bool(forKey: UserDefaultsKeys.c2paUseTestCertificate)
         guard C2PASigningService.isAvailable else {
             preprocessErrors.append("C2PA signing is unavailable; no files were uploaded.")
             return nil

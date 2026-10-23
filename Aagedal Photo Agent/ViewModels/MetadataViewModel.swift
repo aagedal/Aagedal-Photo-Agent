@@ -449,11 +449,11 @@ final class MetadataViewModel {
     private func multiSelectMode(for field: String) -> MultiSelectFieldMode {
         switch field {
         case "keywords":
-            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode)
+            let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectKeywordsMode)
                 ?? MultiSelectFieldMode.add.rawValue
             return MultiSelectFieldMode(rawValue: raw) ?? .add
         case "personShown":
-            let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode)
+            let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.multiSelectPersonShownMode)
                 ?? MultiSelectFieldMode.add.rawValue
             return MultiSelectFieldMode(rawValue: raw) ?? .add
         default:

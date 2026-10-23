@@ -272,7 +272,7 @@ struct DevelopInteractionBehaviorTests {
         #expect(defaults.string(forKey: sortKey) == BrowserViewModel.SortOrder.fileType.rawValue)
     }
 
-    /// Sort changes persist to UserDefaults.standard; restore the user's values afterwards.
+    /// Sort changes persist to AppDefaults.store; restore the user's values afterwards.
     @MainActor
     private func withRestoredSortDefaults(_ body: () async throws -> Void) async rethrows {
         let defaults = AppDefaults.store
@@ -1391,6 +1391,8 @@ private nonisolated final class BlockingColorLUTImportReaderProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(5)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw ColorLUTImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

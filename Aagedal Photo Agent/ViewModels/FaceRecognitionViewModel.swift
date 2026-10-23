@@ -108,12 +108,12 @@ final class FaceRecognitionViewModel {
     /// from the displayed face set without re-scanning. Bound to the slider in the expanded face
     /// view and persisted to `faceMinQuality`.
     var displayQualityThreshold: Float = Float(
-        UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinQuality) as? Double
+        AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinQuality) as? Double
             ?? Double(FaceRecognitionDefaults.minFaceQuality)
     ) {
         didSet {
             guard displayQualityThreshold != oldValue else { return }
-            UserDefaults.standard.set(Double(displayQualityThreshold), forKey: UserDefaultsKeys.faceMinQuality)
+            AppDefaults.store.set(Double(displayQualityThreshold), forKey: UserDefaultsKeys.faceMinQuality)
             invalidateCaches()
         }
     }
@@ -584,19 +584,19 @@ final class FaceRecognitionViewModel {
     var detectionConfig: FaceDetectionService.DetectionConfig {
         var config = FaceDetectionService.DetectionConfig()
 
-        let confidence = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
+        let confidence = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinConfidence) as? Double
         config.minConfidence = Float(confidence ?? 0.7)
-        let minSize = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
+        let minSize = AppDefaults.store.object(forKey: UserDefaultsKeys.faceMinFaceSize) as? Int
         config.minFaceSize = minSize ?? 50
 
         // Fast is the default. Thorough adds tiled detection for small/off-angle group-shot faces.
-        config.tiledDetection = UserDefaults.standard.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
+        config.tiledDetection = AppDefaults.store.object(forKey: UserDefaultsKeys.faceTiledDetection) as? Bool ?? false
 
         // OCR is an explicit scan action, independent of the legacy saved Sports toggle.
         config.sportsModeEnabled = false
-        let ocrConf = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
+        let ocrConf = AppDefaults.store.object(forKey: UserDefaultsKeys.sportsOCRConfidenceThreshold) as? Double
         config.sportsOCRConfidenceThreshold = Float(ocrConf ?? 0.5)
-        let minHeight = UserDefaults.standard.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
+        let minHeight = AppDefaults.store.object(forKey: UserDefaultsKeys.sportsNumberMinHeightFraction) as? Double
         config.sportsNumberMinHeightFraction = CGFloat(minHeight ?? 0.02)
 
         return config
@@ -2110,7 +2110,7 @@ final class FaceRecognitionViewModel {
             embeddingSources: sourceThumbnails, representativeSource: representativeData
         )
         let upgradeSources: [UUID: Data]
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) {
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) {
             let cropInputs = zip(faces, embeddings).map { face, embedding in
                 KnownPeopleUpgradeCropSource(embeddingID: embedding.id,
                     imageURL: face.imageURL, faceRect: face.faceRect)

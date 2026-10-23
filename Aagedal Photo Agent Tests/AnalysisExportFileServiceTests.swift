@@ -554,6 +554,8 @@ private nonisolated final class BlockingTextFileImportReaderProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(5)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw TextFileImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -735,6 +737,8 @@ private nonisolated final class BlockingAnalysisExportWriter: @unchecked Sendabl
         let deadline = ContinuousClock.now + .seconds(2)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstWrite()
                 throw AnalysisExportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1102,6 +1106,8 @@ private nonisolated final class BlockingExportDirectoryWriterProbe: @unchecked S
         let deadline = ContinuousClock.now + .seconds(2)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstCreation()
                 throw ExportDirectoryProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

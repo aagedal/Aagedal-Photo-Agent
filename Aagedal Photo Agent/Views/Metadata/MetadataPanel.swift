@@ -829,7 +829,7 @@ struct MetadataPanel: View {
     @discardableResult
     private func addStructuredPersonSideKeywords(for activation: StructuredKeywordActivation) -> Bool {
         var incoming = activation.relatedKeywords
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
             incoming = activation.categoryKeywords + incoming
         }
         guard !incoming.isEmpty else { return false }

@@ -6,26 +6,26 @@ nonisolated enum KnownPeoplePrivacyLifecycle {
     static let disclosureVersion = 3
     static let iCloudConsentVersion = 2
 
-    static func hasAcknowledgedDisclosure(in defaults: UserDefaults = .standard) -> Bool {
+    static func hasAcknowledgedDisclosure(in defaults: UserDefaults = AppDefaults.store) -> Bool {
         defaults.integer(forKey: UserDefaultsKeys.knownPeopleDisclosureAcknowledgedVersion) >= disclosureVersion
     }
 
-    static func acknowledgeDisclosure(in defaults: UserDefaults = .standard) {
+    static func acknowledgeDisclosure(in defaults: UserDefaults = AppDefaults.store) {
         defaults.set(disclosureVersion, forKey: UserDefaultsKeys.knownPeopleDisclosureAcknowledgedVersion)
     }
 
-    static func hasConfirmedICloudTransfer(in defaults: UserDefaults = .standard) -> Bool {
+    static func hasConfirmedICloudTransfer(in defaults: UserDefaults = AppDefaults.store) -> Bool {
         defaults.integer(forKey: UserDefaultsKeys.knownPeopleICloudConsentVersion) >= iCloudConsentVersion
     }
 
-    static func recordICloudTransferConfirmation(in defaults: UserDefaults = .standard) {
+    static func recordICloudTransferConfirmation(in defaults: UserDefaults = AppDefaults.store) {
         defaults.set(iCloudConsentVersion, forKey: UserDefaultsKeys.knownPeopleICloudConsentVersion)
     }
 
     static func requiresICloudConfirmation(
         enabling: Bool,
         currentlyEnabled: Bool,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = AppDefaults.store
     ) -> Bool {
         enabling && !hasConfirmedICloudTransfer(in: defaults)
     }

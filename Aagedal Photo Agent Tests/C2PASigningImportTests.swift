@@ -282,11 +282,11 @@ struct C2PASigningImportTests {
                 UserDefaultsKeys.c2paCertificateExpiry,
                 UserDefaultsKeys.c2paUseTestCertificate
             ]
-            let originalDefaults = Dictionary(uniqueKeysWithValues: keys.compactMap { key in UserDefaults.standard.object(forKey: key).map { (key, $0) } })
-            UserDefaults.standard.set(certificateURL.path, forKey: UserDefaultsKeys.c2paCertificatePath)
-            UserDefaults.standard.set("Old signer", forKey: UserDefaultsKeys.c2paCertificateSubject)
-            UserDefaults.standard.set("Jan 1, 2020", forKey: UserDefaultsKeys.c2paCertificateExpiry)
-            UserDefaults.standard.set(false, forKey: UserDefaultsKeys.c2paUseTestCertificate)
+            let originalDefaults = Dictionary(uniqueKeysWithValues: keys.compactMap { key in AppDefaults.store.object(forKey: key).map { (key, $0) } })
+            AppDefaults.store.set(certificateURL.path, forKey: UserDefaultsKeys.c2paCertificatePath)
+            AppDefaults.store.set("Old signer", forKey: UserDefaultsKeys.c2paCertificateSubject)
+            AppDefaults.store.set("Jan 1, 2020", forKey: UserDefaultsKeys.c2paCertificateExpiry)
+            AppDefaults.store.set(false, forKey: UserDefaultsKeys.c2paUseTestCertificate)
             self.certificateURL = certificateURL
             self.importURL = importURL
             self.persistence = persistence
@@ -311,8 +311,8 @@ struct C2PASigningImportTests {
                 UserDefaultsKeys.c2paCertificateExpiry,
                 UserDefaultsKeys.c2paUseTestCertificate
             ] {
-                if let value = originalDefaults[key] { UserDefaults.standard.set(value, forKey: key) }
-                else { UserDefaults.standard.removeObject(forKey: key) }
+                if let value = originalDefaults[key] { AppDefaults.store.set(value, forKey: key) }
+                else { AppDefaults.store.removeObject(forKey: key) }
             }
         }
     }
@@ -431,7 +431,7 @@ private nonisolated final class BlockingImporterProbe: C2PAIdentityImporting, @u
     func waitUntilFirstImportStarts() async throws {
         let deadline = ContinuousClock.now + .seconds(2)
         while invocationCount == 0 {
-            guard ContinuousClock.now < deadline else { throw C2PAImportProbeError.timedOut }
+            guard ContinuousClock.now < deadline else { releaseFirstImport(); throw C2PAImportProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))
         }
     }

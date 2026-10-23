@@ -103,7 +103,7 @@ struct TeamImportReviewView: View {
         defer { busy = false }
         errorMessage = nil
         destination = nil
-        let cloud = UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
+        let cloud = AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled)
         cloudEnabled = cloud
         do {
             let result = try await Task.detached(priority: .userInitiated) {
@@ -114,7 +114,7 @@ struct TeamImportReviewView: View {
             }.value
             requests = result.0
             if !requests.contains(where: { $0.id == selectedID }) { selectedID = requests.first?.id }
-            guard cloud == UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled),
+            guard cloud == AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled),
                   !ICloudSyncCoordinator.shared.isTeamsRouting else {
                 errorMessage = "Teams storage is changing. Refresh after the change finishes."
                 return

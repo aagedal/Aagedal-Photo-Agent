@@ -28,7 +28,7 @@ final class WatermarkCloudCoordinator {
 
     init(
         isEnabled: @escaping () -> Bool = {
-            UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
+            AppDefaults.store.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled)
         },
         resolveRoot: @escaping @Sendable () async -> URL? = {
             await LibraryICloudRoutingService.watermarks.cloudRootURL(ensuringDirectory: true)

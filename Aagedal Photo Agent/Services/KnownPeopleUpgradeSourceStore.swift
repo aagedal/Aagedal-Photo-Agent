@@ -56,14 +56,14 @@ actor KnownPeopleUpgradeSourceStore {
     /// actor so turning retention off cannot be followed by a queued write re-creating the crops.
     func saveIfEnabled(_ sources: [UUID: Data], admittedIDs: Set<UUID>,
                        knownPeopleRoot: URL) throws -> Int {
-        guard UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) else { return 0 }
+        guard AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) else { return 0 }
         if Self.cloudDirectory(for: knownPeopleRoot) != nil,
            !KnownPeoplePrivacyLifecycle.hasConfirmedICloudTransfer() { return 0 }
         let root = Self.directory(for: knownPeopleRoot)
         try Self.ensureSafeDirectory(root)
         var written = 0
         for id in admittedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-            guard UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources),
+            guard AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources),
                   let data = sources[id], Self.isValidUpgradeCrop(data) else { continue }
             let url = root.appendingPathComponent("\(id.uuidString).jpg")
             if Self.cloudDirectory(for: knownPeopleRoot) != nil {
@@ -128,7 +128,7 @@ actor KnownPeopleUpgradeSourceStore {
         }
         let documents = AppPaths.iCloudDocuments
         if documents == nil,
-           UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) {
+           AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) {
             throw CocoaError(.fileNoSuchFile)
         }
         let parent = AppPaths.applicationSupport.appendingPathComponent(
@@ -212,7 +212,7 @@ actor KnownPeopleUpgradeSourceStore {
 
 
     func snapshot(admittedIDs: Set<UUID>, knownPeopleRoot: URL) throws -> [UUID: Data] {
-        guard UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) else { return [:] }
+        guard AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleRetainUpgradeSources) else { return [:] }
         var sources: [UUID: Data] = [:]
         for id in admittedIDs {
             if let data = try read(id, knownPeopleRoot: knownPeopleRoot) { sources[id] = data }

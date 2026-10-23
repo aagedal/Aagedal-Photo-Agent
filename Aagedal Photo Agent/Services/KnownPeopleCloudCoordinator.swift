@@ -41,7 +41,7 @@ final class KnownPeopleCloudCoordinator {
     private let stopMetadataQuery: (NSMetadataQuery) -> Void
 
     init(
-        isEnabled: @escaping () -> Bool = { UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) },
+        isEnabled: @escaping () -> Bool = { AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled) },
         makeMetadataQuery: @escaping () -> NSMetadataQuery = { NSMetadataQuery() },
         startMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.start() },
         stopMetadataQuery: @escaping (NSMetadataQuery) -> Void = { $0.stop() }

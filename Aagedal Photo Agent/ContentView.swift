@@ -4584,7 +4584,7 @@ struct ContentViewModifiers: ViewModifier {
     }
 
     private func openSelectedInExternalEditor() {
-        guard let editorPath = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultExternalEditor),
+        guard let editorPath = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultExternalEditor),
               !editorPath.isEmpty else { return }
         let urls = browserViewModel.selectedImages.map(\.url)
         guard !urls.isEmpty else { return }

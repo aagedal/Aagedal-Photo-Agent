@@ -71,7 +71,7 @@ nonisolated enum AppPaths {
     static func templatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
         // iCloud sync, when enabled and reachable, takes precedence over any
         // user-chosen folder so templates land in the synced container.
-        if UserDefaults.standard.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
+        if AppDefaults.store.bool(forKey: UserDefaultsKeys.templatesICloudEnabled),
            let cloud = iCloudTemplatesURL {
             // Coordinated so the iCloud daemon doesn't fork this folder into
             // "Templates 2" when it races our create with a remote pull.
@@ -84,7 +84,7 @@ nonisolated enum AppPaths {
     /// Resolves the non-iCloud templates location even while iCloud sync is enabled.
     /// Migration code uses this to copy first and flip the preference only after success.
     static func localTemplatesDirectory() -> (url: URL, release: @Sendable () -> Void) {
-        if let data = UserDefaults.standard.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
+        if let data = AppDefaults.store.data(forKey: UserDefaultsKeys.templatesFolderBookmark) {
             var stale = false
             if let url = try? URL(
                 resolvingBookmarkData: data,

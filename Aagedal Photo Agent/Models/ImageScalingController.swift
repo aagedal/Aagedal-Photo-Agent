@@ -11,7 +11,7 @@ final class ImageScalingController: ObservableObject {
 
     @Published var useNearestNeighbor: Bool {
         didSet {
-            UserDefaults.standard.set(
+            AppDefaults.store.set(
                 useNearestNeighbor,
                 forKey: UserDefaultsKeys.imageScalingNearestNeighbor
             )
@@ -19,7 +19,7 @@ final class ImageScalingController: ObservableObject {
     }
 
     private init() {
-        useNearestNeighbor = UserDefaults.standard.bool(
+        useNearestNeighbor = AppDefaults.store.bool(
             forKey: UserDefaultsKeys.imageScalingNearestNeighbor
         )
     }

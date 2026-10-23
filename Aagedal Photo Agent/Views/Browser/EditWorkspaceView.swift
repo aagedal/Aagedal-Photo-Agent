@@ -7475,10 +7475,10 @@ struct EditWorkspaceView: View {
     private var saveButtonLabel: String {
         let formatName: String
         if isHDREnabled {
-            let format = ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
+            let format = ExportFormatHDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "") ?? .jxl
             formatName = "HDR \(format.displayName)"
         } else {
-            let format = ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
+            let format = ExportFormatSDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "") ?? .jpeg
             formatName = format.displayName
         }
         return exportSession.isExporting ? "Saving \(formatName)..." : "Save \(formatName)"

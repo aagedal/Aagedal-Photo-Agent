@@ -3087,12 +3087,12 @@ struct ExplicitJerseyScanIntentTests {
     @Test @MainActor
     func savedSportsPreferenceDoesNotEnableFaceOCR() {
         let key = UserDefaultsKeys.sportsModeEnabled
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = AppDefaults.store.object(forKey: key)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         let model = FaceRecognitionViewModel(readService: SwiftExifReadService(),
             writeEngine: SwiftExifWriteEngine(), faceModelAvailability: .unavailable)
         #expect(!model.detectionConfig.sportsModeEnabled)

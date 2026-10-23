@@ -337,7 +337,7 @@ nonisolated struct DescriptionAssistantPresets: Codable, Equatable, Sendable {
         return DescriptionAssistantBuiltInPreset.allCases.first { $0.id == selectedID }?.title ?? "Archival"
     }
 
-    static func load(defaults: UserDefaults = .standard) -> Self {
+    static func load(defaults: UserDefaults = AppDefaults.store) -> Self {
         if let data = defaults.data(forKey: storageKey),
            var library = try? JSONDecoder().decode(Self.self, from: data) {
             if library.selectedCustomIndex == nil,
@@ -356,7 +356,7 @@ nonisolated struct DescriptionAssistantPresets: Codable, Equatable, Sendable {
         return library
     }
 
-    func save(defaults: UserDefaults = .standard) {
+    func save(defaults: UserDefaults = AppDefaults.store) {
         if let data = try? JSONEncoder().encode(self) { defaults.set(data, forKey: Self.storageKey) }
     }
 

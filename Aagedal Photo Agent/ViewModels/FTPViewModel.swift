@@ -279,7 +279,7 @@ final class FTPViewModel {
 
     init(
         fileSystem: FTPUploadFileSystemBoundary = FTPUploadFileSystemBoundary(),
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         execution: FTPUploadExecutionAccess = .init()
     ) {
         self.fileSystem = fileSystem

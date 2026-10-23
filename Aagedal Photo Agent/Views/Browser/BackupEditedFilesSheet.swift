@@ -219,7 +219,7 @@ struct BackupEditedFilesSheet: View {
     private func scanForBackupContent() {
         let source = sourceFolder
         // Read live (like the export paths) so a renamed export sub-folder is included.
-        let customSubfolderName = UserDefaults.standard.string(
+        let customSubfolderName = AppDefaults.store.string(
             forKey: UserDefaultsKeys.exportCustomSubfolderName
         ) ?? "Exports"
         Task.detached(priority: .userInitiated) {

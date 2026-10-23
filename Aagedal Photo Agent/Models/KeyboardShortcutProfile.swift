@@ -582,7 +582,7 @@ final class KeyboardShortcutProfileRegistry {
     private(set) var customBindings: [KeyboardShortcutBinding]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         storageKey: String = "keyboardShortcutProfile.v1"
     ) {
         self.defaults = defaults
@@ -745,7 +745,7 @@ final class CaptionAdvanceShortcutRegistry {
     ]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         storageKey: String = "captionAdvanceShortcuts.v1"
     ) {
         self.defaults = defaults

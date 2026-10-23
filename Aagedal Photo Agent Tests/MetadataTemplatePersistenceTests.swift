@@ -1342,6 +1342,8 @@ nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked S
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw TemplateImportPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1542,6 +1544,8 @@ nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Se
         let deadline = ContinuousClock.now + .seconds(30)
         while loadCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstLoad()
                 throw TemplateImportPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

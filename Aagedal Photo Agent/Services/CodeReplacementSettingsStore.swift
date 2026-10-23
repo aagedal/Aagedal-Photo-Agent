@@ -303,7 +303,7 @@ final class CodeReplacementSettingsStore {
     @ObservationIgnored private var sourceOperationRequestID = UUID()
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.store,
         access: CodeReplacementSourceAccess = .live,
         configurationKey: String = UserDefaultsKeys.codeReplacementConfiguration,
         bookmarkKey: String = UserDefaultsKeys.codeReplacementSourceBookmark,

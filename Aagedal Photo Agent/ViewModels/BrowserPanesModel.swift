@@ -32,7 +32,7 @@ final class BrowserPanesModel {
     var layout: BrowserPaneLayout {
         didSet {
             guard layout != oldValue else { return }
-            UserDefaults.standard.set(layout.rawValue, forKey: UserDefaultsKeys.browserPaneLayout)
+            AppDefaults.store.set(layout.rawValue, forKey: UserDefaultsKeys.browserPaneLayout)
         }
     }
 
@@ -43,7 +43,7 @@ final class BrowserPanesModel {
         didSet {
             let clamped = min(max(splitFraction, 0.15), 0.85)
             if clamped != splitFraction { splitFraction = clamped; return }
-            UserDefaults.standard.set(splitFraction, forKey: UserDefaultsKeys.browserPaneSplitFraction)
+            AppDefaults.store.set(splitFraction, forKey: UserDefaultsKeys.browserPaneSplitFraction)
         }
     }
 
@@ -63,7 +63,7 @@ final class BrowserPanesModel {
         // Always launch in single mode — a saved split would point its second pane at
         // a folder we haven't reloaded yet, and the user can re-split in one click.
         self.layout = .single
-        let storedFraction = UserDefaults.standard.double(forKey: UserDefaultsKeys.browserPaneSplitFraction)
+        let storedFraction = AppDefaults.store.double(forKey: UserDefaultsKeys.browserPaneSplitFraction)
         self.splitFraction = (storedFraction >= 0.15 && storedFraction <= 0.85) ? storedFraction : 0.5
     }
 

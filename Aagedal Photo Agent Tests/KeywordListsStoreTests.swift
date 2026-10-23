@@ -1532,7 +1532,7 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
     func waitUntilDeletionStarts() async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while !hasStartedDeletion {
-            guard ContinuousClock.now < deadline else { throw KeywordListBackupPreviewProbeError.timedOut }
+            guard ContinuousClock.now < deadline else { releaseDeletion(); throw KeywordListBackupPreviewProbeError.timedOut }
             try await Task.sleep(for: .milliseconds(10))
         }
     }
@@ -1616,6 +1616,8 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
         let deadline = ContinuousClock.now + .seconds(30)
         while contentsInvocationCount < enumerationToBlock {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstEnumeration()
                 throw KeywordListBackupPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -1680,6 +1682,8 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw KeywordListBackupPreviewProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

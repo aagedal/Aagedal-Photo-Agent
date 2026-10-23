@@ -18,8 +18,8 @@ struct VariableMetadataOptions: Sendable {
             credentialMode: .current(forC2PA: true, isRaw: false),
             rawMode: .current(forC2PA: false, isRaw: true),
             credentialRawMode: .current(forC2PA: true, isRaw: true),
-            initials: UserDefaults.standard.string(forKey: UserDefaultsKeys.creatorInitials) ?? "",
-            addJobIDToKeywords: UserDefaults.standard.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
+            initials: AppDefaults.store.string(forKey: UserDefaultsKeys.creatorInitials) ?? "",
+            addJobIDToKeywords: AppDefaults.store.bool(forKey: UserDefaultsKeys.addJobIdToKeywords),
             approvedKeywords: keywordPolicy.isActive ? keywordPolicy.canonicalByNormalized : [:],
             strictKeywords: keywordPolicy.isStrict)
     }

@@ -390,6 +390,8 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
         let deadline = ContinuousClock.now + .seconds(30)
         while invocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstProbe()
                 throw HistoryAvailabilityProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -641,6 +643,8 @@ private nonisolated final class FTPSidecarLoadProbe: @unchecked Sendable {
         let deadline = ContinuousClock.now + .seconds(30)
         while loadedURLs.isEmpty {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstLoad()
                 throw FTPSidecarLoadProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

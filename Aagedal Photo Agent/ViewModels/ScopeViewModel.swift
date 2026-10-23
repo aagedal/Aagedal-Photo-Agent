@@ -15,7 +15,7 @@ final class ScopeViewModel {
         didSet {
             guard scopeMode != oldValue else { return }
             if persistsScopeMode {
-                UserDefaults.standard.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
+                AppDefaults.store.set(scopeMode.rawValue, forKey: UserDefaultsKeys.lastScopeMode)
             }
             rerender()
         }
@@ -34,7 +34,7 @@ final class ScopeViewModel {
 
         if let scopeMode {
             self.scopeMode = scopeMode
-        } else if let raw = UserDefaults.standard.string(
+        } else if let raw = AppDefaults.store.string(
             forKey: UserDefaultsKeys.lastScopeMode
         ), let mode = ScopeMode(rawValue: raw) {
             self.scopeMode = mode

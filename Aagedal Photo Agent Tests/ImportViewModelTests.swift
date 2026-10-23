@@ -860,7 +860,7 @@ private nonisolated final class ImportSourceBlockingSecurityScopeProbe: @uncheck
 struct ImportViewModelTests {
     @Test("Destination bookmarks restore and refresh away from MainActor")
     func destinationBookmarksRestoreOffMainActor() async throws {
-        let standardDefaults = UserDefaults.standard
+        let standardDefaults = AppDefaults.store
         let originalVerifyAfterWrite = standardDefaults.object(
             forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
         )
@@ -930,7 +930,7 @@ struct ImportViewModelTests {
 
     @Test("Selected destinations publish and persist complete bookmark work")
     func selectedDestinationsPublishCompleteBookmarkWork() async throws {
-        let standardDefaults = UserDefaults.standard
+        let standardDefaults = AppDefaults.store
         let originalVerifyAfterWrite = standardDefaults.object(
             forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
         )
@@ -987,7 +987,7 @@ struct ImportViewModelTests {
 
     @Test("Clearing backup rejects a bookmark completion already in flight")
     func clearingBackupRejectsLateBookmarkCompletion() async throws {
-        let standardDefaults = UserDefaults.standard
+        let standardDefaults = AppDefaults.store
         let originalVerifyAfterWrite = standardDefaults.object(
             forKey: UserDefaultsKeys.importBackupVerifyAfterWrite
         )
@@ -1077,7 +1077,7 @@ struct ImportViewModelTests {
 
     @Test("RAW and JPEG filters include images from both selected cards")
     func fileTypeFilterSpansBothSources() {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let original = defaults.object(forKey: UserDefaultsKeys.importFileTypeFilter)
         defer {
             if let original {
@@ -1137,7 +1137,7 @@ struct ImportViewModelTests {
 
     @Test("Import readiness explains each blocked setup state")
     func importReadinessExplainsBlockedStates() {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let keys = [
             UserDefaultsKeys.importFileTypeFilter,
             UserDefaultsKeys.importSortByDate,
@@ -1208,7 +1208,7 @@ struct ImportViewModelTests {
 
     @Test("Import behavior settings restore from defaults and survive reset")
     func importBehaviorSettingsRestoreFromDefaultsAndSurviveReset() {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let keys = [
             UserDefaultsKeys.importFileTypeFilter,
             UserDefaultsKeys.importConflictPolicy,
@@ -1358,7 +1358,7 @@ struct ImportViewModelTests {
 
     @Test("Capture-date scan uses an import title entered while the scan is running")
     func captureDateScanUsesLatestImportTitle() async throws {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let originalFilter = defaults.object(forKey: UserDefaultsKeys.importFileTypeFilter)
         defer {
             if let originalFilter { defaults.set(originalFilter, forKey: UserDefaultsKeys.importFileTypeFilter) }
@@ -1438,7 +1438,7 @@ struct ImportViewModelTests {
 
     @Test("Import opens its reveal folder only after the directory exists")
     func importStartedFollowsRevealFolderCreation() async throws {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let preferenceKeys = [
             UserDefaultsKeys.importFileTypeFilter,
             UserDefaultsKeys.importConflictPolicy,
@@ -1542,7 +1542,7 @@ struct ImportViewModelTests {
 
     @Test("Dual-card import copies a matched WAV with the image conflict suffix")
     func dualCardImportKeepsMemoBesideRenamedImage() async throws {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let preferenceKeys = [
             UserDefaultsKeys.importFileTypeFilter,
             UserDefaultsKeys.importConflictPolicy,
@@ -1651,7 +1651,7 @@ struct ImportViewModelTests {
 
     @Test("One-card import can keep RAW, JPEG, and their voice memo")
     func oneCardImportKeepsBothImageVariantsAndMemo() async throws {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let preferenceKeys = [
             UserDefaultsKeys.importFileTypeFilter,
             UserDefaultsKeys.importConflictPolicy,

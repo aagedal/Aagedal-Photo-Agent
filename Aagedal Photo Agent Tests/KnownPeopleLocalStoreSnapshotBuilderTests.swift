@@ -87,17 +87,17 @@ struct KnownPeopleLocalStoreSnapshotBuilderTests {
     @Test("Opt-in crops round-trip through schema 3 ZIP and directory packages")
     func upgradeSourceRoundTrip() async throws {
         let key = UserDefaultsKeys.knownPeopleRetainUpgradeSources
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = AppDefaults.store.object(forKey: key)
         defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let parent = try root()
         defer { try? FileManager.default.removeItem(at: parent) }
         let (local, admitted) = try await fixture(parent)
         let id = try #require(admitted.people.first?.embeddings.first?.id)
         let crop = try upgradeJPEG()
-        UserDefaults.standard.set(true, forKey: key)
+        AppDefaults.store.set(true, forKey: key)
         _ = try await KnownPeopleUpgradeSourceStore.shared.saveIfEnabled(
             [id: crop], admittedIDs: [id], knownPeopleRoot: local)
         let captured = try await capture(local, admitted)
@@ -116,7 +116,7 @@ struct KnownPeopleLocalStoreSnapshotBuilderTests {
         try await install(restored, at: remote)
         #expect(try await KnownPeopleUpgradeSourceStore.shared.read(
             id, knownPeopleRoot: remote) == crop)
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         let optedOut = try await capture(local, admitted)
         #expect(optedOut.snapshot.manifest.schemaVersion == 2)
         #expect(optedOut.snapshot.files[path] == nil)

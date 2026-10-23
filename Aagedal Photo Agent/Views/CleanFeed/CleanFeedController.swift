@@ -142,7 +142,7 @@ final class CleanFeedController {
     /// the interactive comparison workspace on the main display.
     var comparisonLayout: ComparisonLayout = .sideBySide {
         didSet {
-            UserDefaults.standard.set(
+            AppDefaults.store.set(
                 comparisonLayout.rawValue,
                 forKey: UserDefaultsKeys.cleanFeedComparisonLayout
             )
@@ -296,20 +296,20 @@ final class CleanFeedController {
     // MARK: - Persistence
 
     private func loadTargetDisplay() {
-        let raw = UserDefaults.standard.integer(forKey: UserDefaultsKeys.cleanFeedDisplayID)
+        let raw = AppDefaults.store.integer(forKey: UserDefaultsKeys.cleanFeedDisplayID)
         targetDisplayID = raw == 0 ? nil : CGDirectDisplayID(UInt32(truncatingIfNeeded: raw))
     }
 
     private func persistTargetDisplay() {
         if let id = targetDisplayID {
-            UserDefaults.standard.set(Int(id), forKey: UserDefaultsKeys.cleanFeedDisplayID)
+            AppDefaults.store.set(Int(id), forKey: UserDefaultsKeys.cleanFeedDisplayID)
         } else {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.cleanFeedDisplayID)
+            AppDefaults.store.removeObject(forKey: UserDefaultsKeys.cleanFeedDisplayID)
         }
     }
 
     private func loadComparisonLayout() {
-        guard let raw = UserDefaults.standard.string(
+        guard let raw = AppDefaults.store.string(
             forKey: UserDefaultsKeys.cleanFeedComparisonLayout
         ), let saved = ComparisonLayout(rawValue: raw) else { return }
         comparisonLayout = saved

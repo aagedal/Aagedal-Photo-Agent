@@ -204,7 +204,7 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandGroup(after: .newItem) {
                 Button("Open in Editor") {
-                    let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.defaultEditDestination)
+                    let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.defaultEditDestination)
                         ?? DefaultEditDestination.internalEditor.rawValue
                     let destination = DefaultEditDestination(rawValue: raw) ?? .internalEditor
                     if destination == .internalEditor {

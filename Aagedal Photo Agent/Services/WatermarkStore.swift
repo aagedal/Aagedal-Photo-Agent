@@ -591,7 +591,7 @@ final class WatermarkStore {
         } else if let override = Self.storageOverrideURL {
             url = override
         } else {
-            let syncEnabled = UserDefaults.standard.bool(
+            let syncEnabled = AppDefaults.store.bool(
                 forKey: UserDefaultsKeys.watermarksICloudEnabled
             )
             url = await LibraryICloudRoutingService.watermarks.storageURL(
@@ -629,7 +629,7 @@ final class WatermarkStore {
         let root: URL
         if let override = storageOverrideURL {
             root = override
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
+        } else if AppDefaults.store.bool(forKey: UserDefaultsKeys.watermarksICloudEnabled),
                   let cloud = AppPaths.iCloudWatermarksURL {
             root = cloud
         } else {

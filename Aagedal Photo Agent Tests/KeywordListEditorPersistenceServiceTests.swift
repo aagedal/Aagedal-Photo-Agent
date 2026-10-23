@@ -954,6 +954,8 @@ private nonisolated final class BlockingKeywordListEditorFileAccessProbe: @unche
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ firstReadStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw KeywordListEditorFileAccessProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

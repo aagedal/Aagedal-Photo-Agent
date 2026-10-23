@@ -340,6 +340,8 @@ private nonisolated final class BlockingProjectArchiveIOProbe: @unchecked Sendab
         let deadline = ContinuousClock.now + .seconds(30)
         while exportInvocationCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstExport()
                 throw ProjectArchiveProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

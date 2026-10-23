@@ -492,7 +492,7 @@ struct StructuredKeywordsPicker: View {
         }
         var sideKeywords = activation.relatedKeywords
         if supportsRelatedKeywords,
-           UserDefaults.standard.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
+           AppDefaults.store.bool(forKey: UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) {
             sideKeywords = activation.categoryKeywords + sideKeywords
         }
         let detailValues = activation.values + (supportsRelatedKeywords ? sideKeywords.map { "#\($0)" } : [])

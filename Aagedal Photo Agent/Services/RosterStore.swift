@@ -498,7 +498,7 @@ final class RosterStore {
         if storageRoot == nil {
             automationObserver = TeamCreationObserver { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self, !UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) else { return }
+                    guard let self, !AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) else { return }
                     await self.reloadAfterStorageChange()
                 }
             }
@@ -516,7 +516,7 @@ final class RosterStore {
             url = injectedStorageRoot
         } else if let override = Self.storageOverrideURL {
             url = override
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled),
+        } else if AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled),
                   let cloud = AppPaths.iCloudTeamsURL {
             url = cloud
         } else {
@@ -657,7 +657,7 @@ final class RosterStore {
         }
         await loadIfNeeded()
         guard storageGeneration == generation,
-              injectedStorageRoot != nil || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled
+              injectedStorageRoot != nil || (AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled
                   && !ICloudSyncCoordinator.shared.isTeamsRouting),
               teamsRootDirectory.standardizedFileURL == destination.standardizedFileURL,
               try authorizationStore.load() == configuration else {
@@ -666,7 +666,7 @@ final class RosterStore {
         let usesInjectedStorage = injectedStorageRoot != nil
         let commit = try await persistence.createReviewedTeam(team, in: destination, requestID: UUID()) {
             guard try authorizationStore.load() == configuration else { throw MCPTeamLibrary.Failure.teamCreationDisabled }
-            guard usesInjectedStorage || UserDefaults.standard.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled else {
+            guard usesInjectedStorage || AppDefaults.store.bool(forKey: UserDefaultsKeys.teamsICloudEnabled) == cloudEnabled else {
                 throw MCPTeamLibrary.Failure.storageUnavailable
             }
         }

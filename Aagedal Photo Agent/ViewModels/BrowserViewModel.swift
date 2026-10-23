@@ -364,7 +364,7 @@ final class BrowserViewModel {
          presentationFactsService: FullScreenImagePresentationFactsService = .shared,
          pathContainmentService: SafePathContainmentService = .shared,
          voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService = .shared,
-         favoritesDefaults: UserDefaults = .standard,
+         favoritesDefaults: UserDefaults = AppDefaults.store,
          favoriteBookmarkService: FavoriteFolderBookmarkService = .shared,
          fieldMutationWriter: (@Sendable (MetadataFieldMutationWriteRequest) async -> MetadataFieldMutationWriteResult)? = nil,
          fieldMutationModeResolver: @escaping @MainActor (Bool, Bool) -> MetadataWriteMode = {
@@ -1642,7 +1642,7 @@ final class BrowserViewModel {
                 let previousOrientation = updated[index].exifOrientation
                 updated[index].exifOrientation = parseIntValue(dict[MetadataDictKey.orientation]) ?? 1
                 updated[index].isNativeHDR = nativeHDRByURL[sourceURL] == true
-                    || (UserDefaults.standard.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
+                    || (AppDefaults.store.bool(forKey: UserDefaultsKeys.rawRenderAsHDR) && SupportedImageFormats.isRaw(url: sourceURL))
                 updated[index].cropRegion = cropRegion(in: dict, exifOrientation: updated[index].exifOrientation)
                 // Preserve in-memory localAdjustments — these are set by the edit
                 // workspace and written to the image directly, not parsed from

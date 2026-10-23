@@ -407,6 +407,8 @@ private nonisolated final class BlockingApprovedListImportWriteProbe: @unchecked
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ writeStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseWrite()
                 throw ApprovedListImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -471,6 +473,8 @@ private nonisolated final class BlockingApprovedListImportAccessProbe: @unchecke
         let deadline = ContinuousClock.now + .seconds(30)
         while !condition.withLock({ firstReadStarted }) {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw ApprovedListImportProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

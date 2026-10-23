@@ -96,7 +96,7 @@ struct GeocodingServiceCoordinateTests {
 
 /// These tests mutate the two reverse-geocode defaults keys, so they must run
 /// serialized (and against `AppDefaults.store`, the throwaway test suite, never
-/// the user's live `UserDefaults.standard`). Keeping every defaults-touching test
+/// the user's live `AppDefaults.store`). Keeping every defaults-touching test
 /// in one serialized suite prevents cross-test races on the shared keys.
 @Suite("GeocodingService engine selection", .serialized)
 struct GeocodingServiceEngineTests {

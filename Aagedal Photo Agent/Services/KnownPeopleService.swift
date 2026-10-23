@@ -1162,9 +1162,9 @@ final class KnownPeopleService {
             url = override
         } else if let testFallback = Self.testProcessFallbackDirectory {
             url = testFallback
-        } else if UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+        } else if AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
                   let cloud = AppPaths.iCloudKnownPeopleURL {
-            if let text = UserDefaults.standard.string(
+            if let text = AppDefaults.store.string(
                 forKey: UserDefaultsKeys.knownPeopleICloudGenerationID
             ), text == text.lowercased(), let generationID = UUID(uuidString: text),
                generationID.uuidString.lowercased() == text {
@@ -1908,7 +1908,7 @@ final class KnownPeopleService {
         } else if let testFallback = Self.testProcessFallbackDirectory {
             root = testFallback
         } else {
-            let syncEnabled = UserDefaults.standard.bool(
+            let syncEnabled = AppDefaults.store.bool(
                 forKey: UserDefaultsKeys.knownPeopleICloudEnabled
             )
             root = await KnownPeopleICloudRoutingService.shared.storageURL(syncEnabled: syncEnabled)
@@ -2631,7 +2631,7 @@ final class KnownPeopleService {
     private func migrateEmbeddingVersionIfNeeded() {
         guard Self.importCommitRoot != knownPeopleDirectory.standardizedFileURL else { return }
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
-        let stored = UserDefaults.standard.object(forKey: key) as? Int
+        let stored = AppDefaults.store.object(forKey: key) as? Int
         let current = FaceRecognitionDefaults.embeddingVersion
         guard stored != current else {
             Self.migrationRecoveryNotices.clear(.knownPeople)
@@ -2640,14 +2640,14 @@ final class KnownPeopleService {
         if FaceRecognitionDefaults.preservesKnownPeopleOnUpgrade(
             storedVersion: stored, currentVersion: current
         ) {
-            UserDefaults.standard.set(current, forKey: key)
+            AppDefaults.store.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
         // An admitted managed replacement carries its model contract in the root itself.
         // Honor it only while the managed projection still matches the recorded digest.
         if KnownPeopleManagedStoreState.protectsCurrentEmbeddingStore(at: knownPeopleDirectory) {
-            UserDefaults.standard.set(current, forKey: key)
+            AppDefaults.store.set(current, forKey: key)
             Self.migrationRecoveryNotices.clear(.knownPeople)
             return
         }
@@ -2678,7 +2678,7 @@ final class KnownPeopleService {
             }
         }
 
-        UserDefaults.standard.set(current, forKey: key)
+        AppDefaults.store.set(current, forKey: key)
         Self.migrationRecoveryNotices.clear(.knownPeople)
     }
 
@@ -2833,7 +2833,7 @@ final class KnownPeopleService {
     }
 
     func currentAutoMatchPolicy() -> MatchPolicy {
-        let minConfidence = Float(UserDefaults.standard.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
+        let minConfidence = Float(AppDefaults.store.object(forKey: UserDefaultsKeys.knownPeopleMinConfidence) as? Double
             ?? Double(FaceRecognitionDefaults.knownPeopleMinConfidence))
         return MatchPolicy(
             threshold: FaceRecognitionDefaults.knownPeopleMatchThreshold,
@@ -3134,7 +3134,7 @@ final class KnownPeopleService {
     func managedStoreRoute(routingActive: Bool) -> KnownPeopleManagedStoreRoute {
         KnownPeopleManagedStoreRoute(rootURL: knownPeopleDirectory,
             generation: storageRevision,
-            iCloudSyncActive: UserDefaults.standard.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
+            iCloudSyncActive: AppDefaults.store.bool(forKey: UserDefaultsKeys.knownPeopleICloudEnabled),
             routingActive: routingActive)
     }
 

@@ -530,6 +530,8 @@ nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sen
         let deadline = ContinuousClock.now + .seconds(5)
         while readCount == 0 {
             guard ContinuousClock.now < deadline else {
+                // A test that gives up must not leave the probe holding a shared queue.
+                releaseFirstRead()
                 throw CodeReplacementSourceProbeError.timedOut
             }
             try await Task.sleep(for: .milliseconds(10))

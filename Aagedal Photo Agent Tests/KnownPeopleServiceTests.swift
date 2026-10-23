@@ -17,7 +17,7 @@ struct KnownPeopleServiceTests {
     @Test("Matching never mixes examples with different known model provenance")
     func matchSkipsForeignModelSpace() throws {
         try withIsolatedEmbeddingMigration { _ in
-            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion,
+            AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion,
                 forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
             var vector = [Float](repeating: 0, count: 512)
             vector[0] = 1
@@ -53,10 +53,10 @@ struct KnownPeopleServiceTests {
         let directory = makeTempDir()
         activate(directory)
         let versionKey = UserDefaultsKeys.knownPeopleEmbeddingVersion
-        let previousVersion = UserDefaults.standard.object(forKey: versionKey)
+        let previousVersion = AppDefaults.store.object(forKey: versionKey)
         defer {
-            if let previousVersion { UserDefaults.standard.set(previousVersion, forKey: versionKey) }
-            else { UserDefaults.standard.removeObject(forKey: versionKey) }
+            if let previousVersion { AppDefaults.store.set(previousVersion, forKey: versionKey) }
+            else { AppDefaults.store.removeObject(forKey: versionKey) }
             teardown(directory)
         }
         let peer = KnownPeopleService()
@@ -76,7 +76,7 @@ struct KnownPeopleServiceTests {
         let legacyData = try JSONEncoder().encode(KnownPeopleDatabase(people: [older, first, second]))
         try CloudCoordinatedIO.writeData(legacyData, to: legacyURL)
         // Legacy migration must not require or stamp readiness for a different embedding model.
-        UserDefaults.standard.set(1, forKey: versionKey)
+        AppDefaults.store.set(1, forKey: versionKey)
         KnownPeopleService.embeddingMigrationModelReadiness = { false }
         let gate = KnownPeopleThumbnailPublicationGate(data: legacyData)
         defer { gate.resume() }
@@ -170,7 +170,7 @@ struct KnownPeopleServiceTests {
             #expect(payload.personThumbnails[original.id] == personThumbnail)
             #expect(payload.embeddingThumbnails[original.embeddings[0].id] == embeddingThumbnail)
         }
-        #expect(UserDefaults.standard.integer(forKey: versionKey) == 1)
+        #expect(AppDefaults.store.integer(forKey: versionKey) == 1)
         if outcome == "storageChange" {
             #expect(service.getAllPeople().isEmpty)
         }
@@ -1319,7 +1319,7 @@ struct KnownPeopleServiceTests {
             KnownPeopleService.embeddingMigrationIO = io
             let legacy = KnownPerson(name: "Old embedding space", embeddings: [embedding(3)])
             try writePersonFile(legacy, into: dir)
-            UserDefaults.standard.set(
+            AppDefaults.store.set(
                 FaceRecognitionDefaults.embeddingVersion - 1,
                 forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
             )
@@ -1348,7 +1348,7 @@ struct KnownPeopleServiceTests {
     @Test("Cold loads reject mismatched person filenames and preserve recovery bytes", arguments: [false, true])
     func coldLoadRejectsMismatchedIdentity(malformedFilename: Bool) throws {
         try withIsolatedEmbeddingMigration { directory in
-            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
             let person = KnownPerson(name: "Keep")
             try writePersonFile(person, into: directory)
             var impostor = person
@@ -1373,7 +1373,7 @@ struct KnownPeopleServiceTests {
     @Test("Remote records cannot update another person's identity", arguments: [false, true])
     func remoteLoadRejectsMismatchedIdentity(malformedFilename: Bool) throws {
         try withIsolatedEmbeddingMigration { directory in
-            UserDefaults.standard.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
             let person = KnownPerson(name: "Keep")
             try writePersonFile(person, into: directory)
             let service = KnownPeopleService()
@@ -1426,15 +1426,15 @@ struct KnownPeopleServiceTests {
 
     private func withIsolatedEmbeddingMigration(_ body: (URL) throws -> Void) rethrows {
         let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
-        let previous = UserDefaults.standard.object(forKey: key)
+        let previous = AppDefaults.store.object(forKey: key)
         let dir = makeTempDir()
         KnownPeopleService.migrationRecoveryNotices = MigrationRecoveryNoticeCenter()
         activate(dir)
         defer {
             if let previous {
-                UserDefaults.standard.set(previous, forKey: key)
+                AppDefaults.store.set(previous, forKey: key)
             } else {
-                UserDefaults.standard.removeObject(forKey: key)
+                AppDefaults.store.removeObject(forKey: key)
             }
             KnownPeopleService.embeddingMigrationIO = .live
             KnownPeopleService.embeddingMigrationModelReadiness = {
@@ -2642,7 +2642,7 @@ struct KnownPeopleServiceTests {
                 name: "Must Survive",
                 embeddings: [embedding(3)]
             )
-            UserDefaults.standard.set(
+            AppDefaults.store.set(
                 FaceRecognitionDefaults.embeddingVersion - 1,
                 forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
             )
@@ -2663,7 +2663,7 @@ struct KnownPeopleServiceTests {
             #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
             #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
             #expect(
-                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                AppDefaults.store.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
                     == FaceRecognitionDefaults.embeddingVersion - 1
             )
             let notice = KnownPeopleService.migrationRecoveryNotices.notice
@@ -2681,7 +2681,7 @@ struct KnownPeopleServiceTests {
                 embeddings: [embedding(8)]
             )
             let priorVersion = FaceRecognitionDefaults.embeddingVersion - 1
-            UserDefaults.standard.set(priorVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+            AppDefaults.store.set(priorVersion, forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
 
             var backupAttempted = false
             var io = KnownPeopleEmbeddingMigrationIO.live
@@ -2695,7 +2695,7 @@ struct KnownPeopleServiceTests {
             #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
             #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
             #expect(
-                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                AppDefaults.store.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
                     == priorVersion
             )
         }
@@ -2710,7 +2710,7 @@ struct KnownPeopleServiceTests {
                 name: "Reset Failure Survivor",
                 embeddings: [embedding(4)]
             )
-            UserDefaults.standard.set(
+            AppDefaults.store.set(
                 FaceRecognitionDefaults.embeddingVersion - 1,
                 forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion
             )
@@ -2728,7 +2728,7 @@ struct KnownPeopleServiceTests {
             #expect(FileManager.default.fileExists(atPath: personFileURL(person.id, in: dir).path))
             #expect(KnownPeopleService.shared.person(byID: person.id) != nil)
             #expect(
-                UserDefaults.standard.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
+                AppDefaults.store.integer(forKey: UserDefaultsKeys.knownPeopleEmbeddingVersion)
                     == FaceRecognitionDefaults.embeddingVersion - 1
             )
             #expect(
@@ -2943,13 +2943,13 @@ struct KnownPeopleServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let previousOverride = KnownPeopleService.storageOverrideURL
         let key = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previousPreference = UserDefaults.standard.object(forKey: key)
+        let previousPreference = AppDefaults.store.object(forKey: key)
         KnownPeopleService.storageOverrideURL = fixture.root
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = previousOverride
-            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previousPreference { AppDefaults.store.set(previousPreference, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let service = KnownPeopleService()
         let first = await service.prepareLocalInterchangeSnapshot(exportedAt: interchangeDate,
@@ -2978,13 +2978,13 @@ struct KnownPeopleServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let previousOverride = KnownPeopleService.storageOverrideURL
         let key = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previousPreference = UserDefaults.standard.object(forKey: key)
+        let previousPreference = AppDefaults.store.object(forKey: key)
         KnownPeopleService.storageOverrideURL = fixture.root
-        UserDefaults.standard.set(false, forKey: key)
+        AppDefaults.store.set(false, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = previousOverride
-            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previousPreference { AppDefaults.store.set(previousPreference, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let routeGate = KnownPeopleRouteMutationGate()
         let firstService = KnownPeopleService(), secondService = KnownPeopleService()
@@ -3029,13 +3029,13 @@ struct KnownPeopleServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let previousOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previousPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let previousPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = fixture.root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = previousOverride
-            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previousPreference { AppDefaults.store.set(previousPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let exporter = try interchangeExporter
         let owner = KnownPeopleService()
@@ -3108,13 +3108,13 @@ struct KnownPeopleServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let previousOverride = KnownPeopleService.storageOverrideURL
         let defaultsKey = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previousPreference = UserDefaults.standard.object(forKey: defaultsKey)
+        let previousPreference = AppDefaults.store.object(forKey: defaultsKey)
         KnownPeopleService.storageOverrideURL = fixture.root
-        UserDefaults.standard.set(false, forKey: defaultsKey)
+        AppDefaults.store.set(false, forKey: defaultsKey)
         defer {
             KnownPeopleService.storageOverrideURL = previousOverride
-            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: defaultsKey) }
-            else { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+            if let previousPreference { AppDefaults.store.set(previousPreference, forKey: defaultsKey) }
+            else { AppDefaults.store.removeObject(forKey: defaultsKey) }
         }
         let importGate = KnownPeopleLegacyImportGate()
         let system = KnownPeopleArchiveFileAccess.system
@@ -3226,13 +3226,13 @@ struct KnownPeopleServiceTests {
         defer { try? FileManager.default.removeItem(at: fixture.parent) }
         let previousOverride = KnownPeopleService.storageOverrideURL
         let key = UserDefaultsKeys.knownPeopleICloudEnabled
-        let previousPreference = UserDefaults.standard.object(forKey: key)
+        let previousPreference = AppDefaults.store.object(forKey: key)
         KnownPeopleService.storageOverrideURL = fixture.root
-        UserDefaults.standard.set(iCloud, forKey: key)
+        AppDefaults.store.set(iCloud, forKey: key)
         defer {
             KnownPeopleService.storageOverrideURL = previousOverride
-            if let previousPreference { UserDefaults.standard.set(previousPreference, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
+            if let previousPreference { AppDefaults.store.set(previousPreference, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
         }
         let result = await KnownPeopleService().prepareLocalInterchangeSnapshot(
             exportedAt: interchangeDate, exporter: try interchangeExporter,

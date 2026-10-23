@@ -286,7 +286,7 @@ actor RAWArchiveSigningFailureCleanupService {
 
 nonisolated enum RAWArchiveService {
     static var currentLocationMode: RAWArchiveLocationMode {
-        let raw = UserDefaults.standard.string(
+        let raw = AppDefaults.store.string(
             forKey: UserDefaultsKeys.rawArchiveLocationMode
         ) ?? RAWArchiveLocationMode.workFolderArchive.rawValue
         return RAWArchiveLocationMode(rawValue: raw) ?? .workFolderArchive
@@ -308,7 +308,7 @@ nonisolated enum RAWArchiveService {
     }
 
     static var usesSourceRootOverride: Bool {
-        UserDefaults.standard.data(
+        AppDefaults.store.data(
             forKey: UserDefaultsKeys.rawArchiveSourceRootBookmark
         ) != nil
     }
@@ -408,14 +408,14 @@ nonisolated enum RAWArchiveService {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(data, forKey: key)
+            AppDefaults.store.set(data, forKey: key)
         } catch {
-            UserDefaults.standard.removeObject(forKey: key)
+            AppDefaults.store.removeObject(forKey: key)
         }
     }
 
     static func resolveBookmark(key: String) -> URL? {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
+        guard let data = AppDefaults.store.data(forKey: key) else {
             return nil
         }
         var isStale = false
@@ -431,7 +431,7 @@ nonisolated enum RAWArchiveService {
             }
             return url
         } catch {
-            UserDefaults.standard.removeObject(forKey: key)
+            AppDefaults.store.removeObject(forKey: key)
             return nil
         }
     }

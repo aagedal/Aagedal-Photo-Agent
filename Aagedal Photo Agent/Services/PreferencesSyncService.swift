@@ -81,7 +81,7 @@ final class PreferencesSyncService {
     ]
 
     var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled)
+        AppDefaults.store.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled)
     }
 
     /// Posted after remote preference values are written into `UserDefaults` so
@@ -101,7 +101,7 @@ final class PreferencesSyncService {
     /// current local values so other devices converge on this Mac's settings.
     @discardableResult
     func setEnabled(_ enabled: Bool) -> Bool {
-        UserDefaults.standard.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
+        AppDefaults.store.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
         if enabled {
             installObservers()
             pushLocalToRemote(keys: Self.syncedKeys)
@@ -183,7 +183,7 @@ final class PreferencesSyncService {
     // MARK: - Mirroring
 
     private func pushLocalToRemote(keys: [String]) {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         for key in keys {
             if let value = defaults.object(forKey: key) {
                 kvs.set(value, forKey: key)
@@ -194,7 +194,7 @@ final class PreferencesSyncService {
     }
 
     private func applyRemoteToLocal(keys: [String]) {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         isApplyingRemote = true
         defer { isApplyingRemote = false }
         for key in keys {

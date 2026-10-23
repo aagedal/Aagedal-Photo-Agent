@@ -1096,9 +1096,9 @@ final class FullScreenImageCache: @unchecked Sendable {
             return nil
         }
         let decoderPreference = RAWDecoderVersionPreference(rawValue:
-            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? "") ?? .auto
+            AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecoderVersionPreference) ?? "") ?? .auto
         let profile = decodeProfile ?? RAWDecodeProfile(storedRawValue:
-            UserDefaults.standard.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? "") ?? .camera
+            AppDefaults.store.string(forKey: UserDefaultsKeys.rawDecodeProfile) ?? "") ?? .camera
         guard let result = RAWSourceDecoder.decode(rawFilter, draftMode: draftMode,
             maxPixelSize: maxPixelSize, nativeLongestSide: nativeLongestSide(of: url),
             profile: profile, decoderPreference: decoderPreference) else {

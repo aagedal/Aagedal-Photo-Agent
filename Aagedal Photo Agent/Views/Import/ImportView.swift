@@ -379,7 +379,7 @@ struct ImportView: View {
                         get: { viewModel.configuration.backupDestination?.verifyAfterWrite ?? true },
                         set: {
                             viewModel.configuration.backupDestination?.verifyAfterWrite = $0
-                            UserDefaults.standard.set($0, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
+                            AppDefaults.store.set($0, forKey: UserDefaultsKeys.importBackupVerifyAfterWrite)
                         }
                     ))
                     .controlSize(.small)
@@ -601,7 +601,7 @@ struct ImportView: View {
                     get: { viewModel.configuration.fileTypeFilter },
                     set: { newValue in
                         viewModel.configuration.fileTypeFilter = newValue
-                        UserDefaults.standard.set(newValue.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
+                        AppDefaults.store.set(newValue.rawValue, forKey: UserDefaultsKeys.importFileTypeFilter)
                         if viewModel.sortByDate {
                             viewModel.scanCaptureDates()
                         }

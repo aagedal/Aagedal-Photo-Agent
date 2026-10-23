@@ -178,7 +178,7 @@ nonisolated struct DeadlineLiveFileSystem: Sendable {
             let localBase = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             let local = localBase?
                 .appendingPathComponent("Aagedal Photo Agent/Lists/approved/keywords.txt")
-            if UserDefaults.standard.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled),
+            if AppDefaults.store.bool(forKey: UserDefaultsKeys.keywordListsICloudEnabled),
                let cloud = fileManager.url(
                    forUbiquityContainerIdentifier: AppPaths.iCloudContainerID
                )?.appendingPathComponent("Documents/Lists/approved/keywords.txt") {

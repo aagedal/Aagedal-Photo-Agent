@@ -25,11 +25,11 @@ struct DeliveryStagingProductionFactoryTests {
 
         // These mutable defaults deliberately disagree with the plan. The adapter must pass the
         // frozen configuration and must not let the legacy renderer consult these values.
-        UserDefaults.standard.set(0.11, forKey: UserDefaultsKeys.exportQualitySDR)
-        UserDefaults.standard.set("rec2020", forKey: UserDefaultsKeys.exportColorGamutSDR)
+        AppDefaults.store.set(0.11, forKey: UserDefaultsKeys.exportQualitySDR)
+        AppDefaults.store.set("rec2020", forKey: UserDefaultsKeys.exportColorGamutSDR)
         defer {
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.exportQualitySDR)
-            UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.exportColorGamutSDR)
+            AppDefaults.store.removeObject(forKey: UserDefaultsKeys.exportQualitySDR)
+            AppDefaults.store.removeObject(forKey: UserDefaultsKeys.exportColorGamutSDR)
         }
 
         let originalBytes = try Data(contentsOf: fixture.sourceURL)

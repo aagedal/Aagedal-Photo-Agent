@@ -270,7 +270,7 @@ nonisolated enum EditedImageRenderer {
     }
 
     private static var currentResolutionLimit: ExportResolutionLimit {
-        let stored = UserDefaults.standard.string(forKey: UserDefaultsKeys.exportResolutionLimit)
+        let stored = AppDefaults.store.string(forKey: UserDefaultsKeys.exportResolutionLimit)
         return ExportResolutionLimit(rawValue: stored ?? "") ?? .original
     }
 
@@ -347,13 +347,13 @@ nonisolated enum EditedImageRenderer {
         reservationOwner: ExportOutputReservationOwner
     ) async throws -> URL {
         let format = configuration?.sdrFormat
-            ?? ExportFormatSDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
+            ?? ExportFormatSDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatSDR) ?? "")
             ?? .jpeg
         let quality = configuration?.sdrQuality
-            ?? (UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double)
+            ?? (AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double)
             ?? 0.92
         let gamut = configuration?.sdrGamut
-            ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
+            ?? TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "")
             ?? .sRGB
 
         let destURL = try reservationOwner.reserveOutput(for: sourceURL, in: outputFolder,
@@ -493,13 +493,13 @@ nonisolated enum EditedImageRenderer {
         reservationOwner: ExportOutputReservationOwner
     ) async throws -> URL {
         let format = configuration?.hdrFormat
-            ?? ExportFormatHDR(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
+            ?? ExportFormatHDR(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportFormatHDR) ?? "")
             ?? .jxl
         let quality = configuration?.hdrQuality
-            ?? (UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double)
+            ?? (AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualityHDR) as? Double)
             ?? 0.92
         let gamut = configuration?.hdrGamut
-            ?? TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
+            ?? TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutHDR) ?? "")
             ?? .displayP3
 
         let destURL = try reservationOwner.reserveOutput(for: sourceURL, in: outputFolder,
@@ -832,7 +832,7 @@ nonisolated enum EditedImageRenderer {
         if let requestedCompression {
             compression = requestedCompression
         } else {
-            let compressionRaw = UserDefaults.standard.string(
+            let compressionRaw = AppDefaults.store.string(
                 forKey: UserDefaultsKeys.exportTIFFCompression
             ) ?? "lzw"
             compression = TIFFCompression(rawValue: compressionRaw) ?? .lzw
@@ -877,7 +877,7 @@ nonisolated enum EditedImageRenderer {
         if isHDR {
             let format = configuration?.hdrFormat
                 ?? ExportFormatHDR(
-                    rawValue: UserDefaults.standard.string(
+                    rawValue: AppDefaults.store.string(
                         forKey: UserDefaultsKeys.exportFormatHDR
                     ) ?? ""
                 )
@@ -895,7 +895,7 @@ nonisolated enum EditedImageRenderer {
             let format = sdrFormat
                 ?? configuration?.sdrFormat
                 ?? ExportFormatSDR(
-                    rawValue: UserDefaults.standard.string(
+                    rawValue: AppDefaults.store.string(
                         forKey: UserDefaultsKeys.exportFormatSDR
                     ) ?? ""
                 )
@@ -917,7 +917,7 @@ nonisolated enum EditedImageRenderer {
     /// Read directly (not via a `SettingsViewModel` instance) so changes take effect
     /// without an app restart — matching the convention used by `formatFolderName`.
     static var currentLocationMode: ExportLocationMode {
-        ExportLocationMode(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportLocationMode) ?? "") ?? .formatSubfolder
+        ExportLocationMode(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportLocationMode) ?? "") ?? .formatSubfolder
     }
 
     /// Resolves the destination folder for a single exported file based on the user's
@@ -941,7 +941,7 @@ nonisolated enum EditedImageRenderer {
             return sourceURL.deletingLastPathComponent()
         case .customSubfolder:
             let customName = configuration?.customSubfolderName
-                ?? UserDefaults.standard.string(
+                ?? AppDefaults.store.string(
                     forKey: UserDefaultsKeys.exportCustomSubfolderName
                 )
                 ?? "Exports"
@@ -1062,9 +1062,9 @@ nonisolated enum EditedImageRenderer {
         var sdrSettings = cameraRaw
         sdrSettings?.hdrEditMode = 0
         let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
-        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
+        let gamut = TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
-        let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
+        let quality = AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
         let destinationURL = try owner.reserveOutput(for: sourceURL, in: outputFolder,
             extension: "jpg", collisionPolicy: collisionPolicy)
         try writeJPEGWithSourceProperties(
@@ -1128,7 +1128,7 @@ nonisolated enum EditedImageRenderer {
             cameraRaw: archiveSettings,
             rawDecodeProfile: decodeProfile
         )
-        let quality = UserDefaults.standard.object(
+        let quality = AppDefaults.store.object(
             forKey: UserDefaultsKeys.exportQualityHDR
         ) as? Double ?? 0.92
         let destinationURL = try reserveRAWArchiveOutput(
@@ -1257,7 +1257,7 @@ nonisolated enum EditedImageRenderer {
         var sdrSettings = cameraRaw
         sdrSettings?.hdrEditMode = 0
         let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
-        let gamut = TargetColorGamut(rawValue: UserDefaults.standard.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
+        let gamut = TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext
 
@@ -1267,7 +1267,7 @@ nonisolated enum EditedImageRenderer {
 
         switch format {
         case .jpeg:
-            let quality = UserDefaults.standard.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
+            let quality = AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
             try writeJPEGWithSourceProperties(
                 ciImage: output,
                 sourceURL: sourceURL,
