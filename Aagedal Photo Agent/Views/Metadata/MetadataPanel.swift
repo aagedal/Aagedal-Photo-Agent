@@ -1382,6 +1382,21 @@ struct MetadataPanel: View {
         } message: {
             Text("This image has C2PA content credentials. Writing metadata will invalidate the authenticity chain.")
         }
+        .alert("Discard Pending Changes?", isPresented: $viewModel.showDiscardConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard", role: .destructive) {
+                let task = viewModel.discardPendingChanges()
+                Task { @MainActor in
+                    await task?.value
+                    onPendingStatusChanged?()
+                    // Show the photos' written metadata again (batch discard clears the editor).
+                    viewModel.loadMetadata(for: browserViewModel.selectedImages,
+                                           folderURL: browserViewModel.currentFolderURL)
+                }
+            }
+        } message: {
+            Text("The unwritten metadata drafts for the selected photo(s) will be deleted. Metadata already written to the files is not changed.")
+        }
         .fileImporter(
             isPresented: $showingListFilePicker,
             allowedContentTypes: [.plainText],
@@ -2798,10 +2813,26 @@ struct MetadataPanel: View {
                         .controlSize(.small)
                 }
 
-                if mode != .writeToFile {
+                if viewModel.selectedHavePendingSidecars {
+                    Button {
+                        viewModel.confirmDiscardPendingChanges()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .disabled(viewModel.isSaving)
+                    .help("Discard Pending Changes")
+                    .accessibilityLabel("Discard pending metadata changes")
+                }
+
+                // In Write-to-file mode edits are written automatically, but a pending draft
+                // (from History Only, Caption or a template) still needs an explicit Write.
+                if mode != .writeToFile || viewModel.selectedHavePendingSidecars {
                     Button {
                         flushBufferedFields()
-                        if browserViewModel.firstSelectedImage?.hasC2PA == true {
+                        // RAW photos are written to their XMP sidecar, which keeps credentials intact.
+                        if browserViewModel.selectedImages.contains(where: {
+                            $0.hasC2PA && !SupportedImageFormats.isRaw(url: $0.url)
+                        }) {
                             showingC2PAWarning = true
                         } else {
                             viewModel.writeMetadataAndClearSidecar()

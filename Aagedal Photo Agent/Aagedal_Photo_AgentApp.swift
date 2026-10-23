@@ -535,7 +535,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard terminationReplyLatch.begin() else { return .terminateLater }
         let captionOperation = CaptionWorkspaceTerminationFlushOperation()
         let coordinator = ApplicationTerminationFlushCoordinator(
-            captionFlush: { try await captionOperation.flush() },
+            captionFlush: {
+                try await captionOperation.flush()
+                // The Browser metadata panel has no Caption FIFO; save its typed/unsaved edits too.
+                try await MetadataEditorTerminationFlush.shared.flush()
+            },
             developFlush: {
                 await DevelopVersionFlushCoordinator.shared.flush(.applicationTermination)
             }

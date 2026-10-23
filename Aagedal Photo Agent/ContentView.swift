@@ -42,9 +42,30 @@ enum MetadataAutomaticSaveBoundary {
             if trigger == .deactivation { try captionFlush() }
             return
         }
+        // Keyboard navigation (Cmd+N/Cmd+P) and backgrounding leave the field editor focused,
+        // so its typed text has not reached the model yet.
+        viewModel.captureFocusedEditorText()
         guard viewModel.hasUnpersistedEditorChanges else { return }
+        if viewModel.shouldDeferAutomaticCommitForVariables {
+            // Never embed literal {variable} tokens automatically: keep the edit as a pending
+            // draft that Process Variables (or an explicit Write) resolves later.
+            viewModel.keepUnresolvedVariablesAsPendingDraft()
+            return
+        }
         commitConfigured()
     }
+}
+
+/// Lets termination persist the Browser metadata panel, which (unlike Caption) has no FIFO
+/// flush coordinator: typed field text and unsaved edits would otherwise be lost on Quit.
+@MainActor
+final class MetadataEditorTerminationFlush {
+    static let shared = MetadataEditorTerminationFlush()
+    private var handler: (@MainActor () async throws -> Void)?
+
+    func register(_ handler: @escaping @MainActor () async throws -> Void) { self.handler = handler }
+
+    func flush() async throws { try await handler?() }
 }
 
 enum TemplateCommandTarget: Equatable {
@@ -1056,6 +1077,7 @@ struct ContentView: View {
                 BackgroundOperationMonitor.shared.isImporting = importViewModel.isImporting
                 BackgroundOperationMonitor.shared.isUploading = ftpViewModel.isUploading
                 BackgroundOperationMonitor.shared.isRenderingForUpload = ftpViewModel.isRendering
+                MetadataEditorTerminationFlush.shared.register { try await commitBrowserMetadataEditor() }
             }
     }
 
@@ -1326,7 +1348,44 @@ struct ContentView: View {
         performAfterCaptionFlush {
             guard browserViewModel.currentFolderURL == folder,
                   browserViewModel.selectedImageIDs == selection else { return }
-            operation()
+            Task { @MainActor in
+                // Paste/Copy IPTC and file exports act on disk (or the editor) state: commit the
+                // Browser panel's typed and unsaved edits first so they are neither lost nor stale.
+                do { try await commitBrowserMetadataEditor() }
+                catch { return }
+                guard browserViewModel.currentFolderURL == folder,
+                      browserViewModel.selectedImageIDs == selection else { return }
+                operation()
+            }
+        }
+    }
+
+    /// Browser-mode counterpart of the Caption flush: captures the focused field's typed text
+    /// and saves unsaved edits with the configured write mode, waiting for the write to finish.
+    /// Literal variable tokens are kept as a pending draft rather than embedded.
+    private func commitBrowserMetadataEditor() async throws {
+        guard mainViewMode == .browser || mainViewMode == .faceManagement else { return }
+        metadataViewModel.captureFocusedEditorText()
+        guard metadataViewModel.hasUnpersistedEditorChanges else { return }
+        let selection = browserViewModel.selectedImages
+        if metadataViewModel.shouldDeferAutomaticCommitForVariables {
+            metadataViewModel.keepUnresolvedVariablesAsPendingDraft()
+            await metadataViewModel.waitForPendingWrites()
+            browserViewModel.refreshPendingStatusBatch(for: selection.map(\.url))
+            return
+        }
+        let mode = MetadataWriteMode.current(
+            forC2PA: selection.contains { $0.hasC2PA },
+            isRaw: selection.contains { SupportedImageFormats.isRaw(url: $0.url) })
+        let result = await withCheckedContinuation { continuation in
+            metadataViewModel.commitEditsReportingResult(mode: mode) { continuation.resume(returning: $0) }
+        }
+        await metadataViewModel.waitForPendingWrites()
+        browserViewModel.refreshPendingStatusBatch(for: selection.map(\.url))
+        switch result {
+        case .succeeded: return
+        case .failed(let message), .cancelled(let message):
+            throw CaptionWorkspaceFlushError.persistenceFailed(message)
         }
     }
 
@@ -3264,43 +3323,21 @@ struct ContentView: View {
             return
         }
 
-        let source = mainViewMode == .metadataReview
-            ? (browserViewModel.selectedImages.first?.metadata ?? metadataViewModel.editingMetadata)
-            : metadataViewModel.editingMetadata
-        browserViewModel.copiedIPTCMetadata = IPTCMetadata(
-            title: source.title,
-            localizedTitles: source.localizedTitles,
-            description: source.description,
-            extendedDescription: source.extendedDescription,
-            keywords: source.keywords,
-            personShown: source.personShown,
-            organisationsShownNames: source.organisationsShownNames,
-            organisationsShownCodes: source.organisationsShownCodes,
-            digitalSourceType: source.digitalSourceType,
-            urgency: source.urgency,
-            sceneCodes: source.sceneCodes,
-            subjectCodes: source.subjectCodes,
-            mediaTopics: source.mediaTopics,
-            genres: source.genres,
-            latitude: source.latitude,
-            longitude: source.longitude,
-            creators: source.creators,
-            creatorJobTitle: source.creatorJobTitle,
-            descriptionWriter: source.descriptionWriter,
-            credit: source.credit,
-            copyright: source.copyright,
-            rightsUsageTerms: source.rightsUsageTerms,
-            webStatementOfRights: source.webStatementOfRights,
-            digitalImageGUID: source.digitalImageGUID,
-            imageSupplierImageID: source.imageSupplierImageID,
-            imageSuppliers: source.imageSuppliers,
-            jobId: source.jobId,
-            dateCreated: source.dateCreated,
-            city: source.city,
-            country: source.country,
-            countryCode: source.countryCode,
-            event: source.event
-        )
+        let selectedURL = browserViewModel.selectedImages.first?.url
+        let source: IPTCMetadata
+        if mainViewMode == .metadataReview, let reviewed = browserViewModel.selectedImages.first?.metadata {
+            source = reviewed
+        } else {
+            // Selection loads are debounced: until the editor describes the selected photo, its
+            // buffer still holds the previously selected photo's metadata.
+            guard let selectedURL, metadataViewModel.selectedURLs == [selectedURL],
+                  !metadataViewModel.isLoading, metadataViewModel.metadata != nil else {
+                browserViewModel.errorMessage = "The selected photo's metadata is still loading. Try Copy IPTC again."
+                return
+            }
+            source = metadataViewModel.editingMetadata
+        }
+        browserViewModel.copiedIPTCMetadata = source.copyableIPTCRecord
     }
 
     private func pasteIPTCMetadata() {
@@ -3332,8 +3369,12 @@ struct ContentView: View {
         }
         let boundary = DescriptiveMetadataWriteBoundary(writeEngine: browserViewModel.writeEngine)
 
+        let folderURL = browserViewModel.currentFolderURL
         Task {
             let summary = await boundary.pasteMerging(copied, into: targets)
+            if let folderURL {
+                await metadataViewModel.applyPastedIPTCToPendingDrafts(copied, urls: summary.written, in: folderURL)
+            }
             if let message = summary.problemMessage {
                 browserViewModel.errorMessage = message
             }

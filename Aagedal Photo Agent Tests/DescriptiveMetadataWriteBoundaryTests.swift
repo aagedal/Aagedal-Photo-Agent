@@ -53,6 +53,26 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(resolver.resolve(sourceURL: jpeg, requestedMode: .writeToFileAndXMPSidecar) == .embeddedAndXMPSidecar)
     }
 
+    @Test("embedded boundary keeps commas inside keywords, people and organisations")
+    func embeddedListItemsWithCommasSurvive() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let boundary = DescriptiveMetadataWriteBoundary(writeEngine: SwiftExifWriteEngine())
+        var record = IPTCMetadata()
+        record.keywords = ["Støre, Jonas Gahr", "politikk"]
+        record.personShown = ["Støre, Jonas Gahr"]
+        record.organisationsShownNames = ["Arbeiderpartiet, Oslo"]
+
+        for semantics in [DescriptiveMetadataWriteSemantics.merge, .replace] {
+            _ = try await boundary.write(metadata: record, for: source,
+                                         requestedMode: .writeToFile, semantics: semantics)
+            let read = try await SwiftExifReadService().readFullMetadata(url: source)
+            #expect(read.keywords == record.keywords)
+            #expect(read.personShown == record.personShown)
+            #expect(read.organisationsShownNames == record.organisationsShownNames)
+        }
+    }
+
     @Test("embedded boundary replaces and clears authoritative localized Titles")
     func embeddedLocalizedTitleWrite() async throws {
         let (directory, source) = try makeJPEGWorkspace()

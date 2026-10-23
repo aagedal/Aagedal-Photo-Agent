@@ -184,7 +184,11 @@ nonisolated struct DescriptiveMetadataWriteBoundary: Sendable {
         case .merge: isReplacement = false
         case .replace: isReplacement = true
         }
-        guard isReplacement || hasStructuredContent else { return .empty }
-        return StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: metadata))
+        // List items travel typed so a comma inside one keyword/person/organisation
+        // ("Støre, Jonas Gahr") is content, not a separator the engine re-splits on.
+        let listValues = EditorialListWriteData(metadata: metadata)
+        guard isReplacement || hasStructuredContent else { return StructuredWriteData(listValues: listValues) }
+        return StructuredWriteData(editorial: EditorialStructuredWriteData(metadata: metadata),
+                                   listValues: listValues)
     }
 }

@@ -1455,7 +1455,8 @@ final class ImportViewModel {
                                             fields,
                                             to: [url],
                                             structuredData: StructuredWriteData(
-                                                editorial: EditorialStructuredWriteData(metadata: resolved)
+                                                editorial: EditorialStructuredWriteData(metadata: resolved),
+                                                listValues: EditorialListWriteData(metadata: resolved)
                                             )
                                         )
                                     }
@@ -1481,7 +1482,8 @@ final class ImportViewModel {
                                             fields,
                                             to: batch,
                                             structuredData: StructuredWriteData(
-                                                editorial: EditorialStructuredWriteData(metadata: metadata)
+                                                editorial: EditorialStructuredWriteData(metadata: metadata),
+                                                listValues: EditorialListWriteData(metadata: metadata)
                                             )
                                         )
                                     }
