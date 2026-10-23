@@ -368,6 +368,50 @@ struct MetadataBatchSelectionTests {
         }
     }
 
+    @Test("batch commit through the Browser write path finishes saving")
+    func batchCommitClearsSaving() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        model.editingMetadata.city = "Oslo"
+        model.markChanged()
+        let result = await withCheckedContinuation { continuation in
+            model.commitEditsReportingResult(mode: .writeToFile) { continuation.resume(returning: $0) }
+        }
+        #expect(result == .succeeded)
+        try await waitForSave(model)
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).city == "Oslo")
+        }
+    }
+
+    @Test("a second batch location write keeps the first one")
+    func secondBatchLocationWriteKeepsFirst() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        let first = EditorialLocation(name: "Oslo", countryCode: "NOR")
+        let second = EditorialLocation(name: "Bergen", countryCode: "NOR")
+
+        try model.setBatchLocationsShownMutation(.append([first]))
+        model.writeMetadata()
+        try await waitForSave(model)
+        try model.setBatchLocationsShownMutation(.append([second]))
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).locationsShown == [first, second])
+        }
+    }
+
     @Test("emptying a batch field that was common to the selection clears it on every photo")
     func batchClearCommonField() async throws {
         let folder = try makeFolder()

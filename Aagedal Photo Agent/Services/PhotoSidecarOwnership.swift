@@ -27,7 +27,8 @@ nonisolated enum PhotoSidecarOwnership {
             options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
         ).contains { candidate in
             guard candidate.standardizedFileURL.path != imageURL.standardizedFileURL.path,
-                  SupportedImageFormats.isSupported(url: candidate),
+                  // A same-stem video (Live Photo, camera pair) shares the stem-named XMP too.
+                  SupportedImageFormats.isSupported(url: candidate) || BrowserFileVisibility.isVideo(candidate),
                   candidate.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(stem) == .orderedSame
             else { return false }
             // An unreadable or linked sibling is still a reason to preserve its shared carrier.

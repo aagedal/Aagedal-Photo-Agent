@@ -671,6 +671,28 @@ struct FileSystemExecutorTests {
         #expect(FileManager.default.fileExists(atPath: raw.path))
     }
 
+    @Test("Plain Trash keeps a .xmp shared with a same-stem video")
+    func plainTrashKeepsXMPSharedWithVideo() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = root.appendingPathComponent("IMG_1.HEIC")
+        let video = root.appendingPathComponent("IMG_1.MOV")
+        let xmp = root.appendingPathComponent("IMG_1.xmp")
+        try Data("heic".utf8).write(to: photo)
+        try Data("mov".utf8).write(to: video)
+        try Data("<xmp/>".utf8).write(to: xmp)
+        let trash = root.appendingPathComponent("Fake Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+
+        let result = await FileSystemService().trashItems([photo], using: ExecutorTestTrashHandler { url in
+            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+        })
+
+        #expect(result.completedSourceURLs == [photo])
+        #expect(FileManager.default.fileExists(atPath: xmp.path))
+        #expect(FileManager.default.fileExists(atPath: video.path))
+    }
+
     @Test("An unassociated photo skips an orphan relationship and never guesses a same-stem WAV")
     func duplicateWithoutProvenMemo() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

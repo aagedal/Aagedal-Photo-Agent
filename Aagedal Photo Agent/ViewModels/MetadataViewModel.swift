@@ -1954,6 +1954,15 @@ final class MetadataViewModel {
                     if isBatch {
                         // The saved state is the new baseline: later add/remove diffs and
                         // explicit list operations must be computed against it, not load time.
+                        // The per-photo records advance with it: a later RAW `.replace` or
+                        // structured write starts from them and would otherwise revert this one.
+                        if let draftMutation {
+                            for (url, record) in resolvedBatchSnapshot {
+                                var written = record
+                                draftMutation.mutation(&written)
+                                self.batchMetadataByURL[url] = written
+                            }
+                        }
                         self.previousEditingMetadata = edited
                         if self.batchFieldMutations == explicitBatchMutations {
                             self.batchFieldMutations = [:]
@@ -2373,7 +2382,11 @@ final class MetadataViewModel {
             // finish, so callers (pending badges, Develop lifecycle) never see an early success.
             writeMetadata()
             let embedWrite = writeTask
+            // Replacing `writeTask` advances the generation, so the inner write no longer owns
+            // `isSaving`; this wrapper must clear it when it is still the latest write.
+            let wrapperGeneration = writeTaskGeneration + 1
             writeTask = Task {
+                defer { if self.writeTaskGeneration == wrapperGeneration { self.isSaving = false } }
                 await withTaskCancellationHandler {
                     await embedWrite?.value
                 } onCancel: {
