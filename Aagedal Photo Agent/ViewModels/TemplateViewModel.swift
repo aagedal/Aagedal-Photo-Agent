@@ -71,13 +71,10 @@ final class TemplateViewModel {
             ?? TemplateImportCommitService(storage: storage)
     }
 
-    /// Runs `completion` with the in-memory inventory once it is loaded, otherwise with the
-    /// result of the pending (or a new) load. `nil` means the inventory could not be read.
+    /// Runs `completion` with a freshly read inventory: the result of the pending load, or of a
+    /// new one. Templates are edited through Settings' own view model, so this instance's
+    /// in-memory copy can be stale. `nil` means the inventory could not be read.
     func withLoadedTemplates(_ completion: @escaping ([MetadataTemplate]?) -> Void) {
-        if hasInventoryProvenance, loadTask == nil {
-            completion(templates)
-            return
-        }
         loadCompletions.append(completion)
         if loadTask == nil { loadTemplates() }
     }

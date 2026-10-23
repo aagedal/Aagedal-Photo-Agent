@@ -3478,10 +3478,20 @@ struct ContentView: View {
         if !editorMatches {
             metadataViewModel.loadSelectionMetadataNow(for: targets, folderURL: browserViewModel.currentFolderURL)
         }
+        let browserViewModel = browserViewModel
         Task {
             await metadataViewModel.waitForMetadataLoad()
+            // The selection may have moved on while the photos loaded; its save already ran and
+            // the next load would discard the template, so say so instead of dropping it.
             guard Set(metadataViewModel.selectedURLs) == targetURLs,
-                  !metadataViewModel.isLoading, !metadataViewModel.isLoadingBatchMetadata else { return }
+                  Set(browserViewModel.selectedImages.map(\.url)) == targetURLs,
+                  !metadataViewModel.isLoading, !metadataViewModel.isLoadingBatchMetadata else {
+                metadataViewModel.notice = MetadataPanelNotice(
+                    title: "Template “\(template.name)” was not applied",
+                    detail: ["The selection changed before its metadata finished loading. Apply the template again."],
+                    severity: .warning)
+                return
+            }
             applyTemplateToEditor(template, to: targets, append: append)
         }
     }

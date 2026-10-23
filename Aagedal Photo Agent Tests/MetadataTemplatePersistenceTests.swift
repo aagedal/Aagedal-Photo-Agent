@@ -1260,7 +1260,7 @@ struct MetadataTemplatePersistenceTests {
     }
 
     @MainActor
-    @Test("template shortcut waiters survive a superseding load and then use the in-memory inventory")
+    @Test("template shortcut waiters survive a superseding load and later shortcuts re-read the inventory")
     func templateShortcutWaiterSurvivesSupersededLoad() async throws {
         let probe = BlockingMetadataTemplateCRUDProbe()
         defer { probe.releaseFirstLoad() }
@@ -1286,10 +1286,20 @@ struct MetadataTemplatePersistenceTests {
         }
         #expect(delivered == [["second"]])
 
-        // Once loaded, a shortcut resolves synchronously without another disk read.
+        // Settings edits templates through its own view model, so a later shortcut reads the
+        // inventory again instead of trusting this instance's copy.
         viewModel.withLoadedTemplates { delivered.append($0?.map(\.name)) }
-        #expect(delivered == [["second"], ["second"]])
-        #expect(probe.loadCount == 2)
+        let rereadDeadline = ContinuousClock.now + .seconds(30)
+        while delivered.count < 2 {
+            guard ContinuousClock.now < rereadDeadline else {
+                Issue.record("Timed out waiting for the re-read template inventory")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(delivered.count == 2)
+        #expect(delivered[1] != nil)
+        #expect(probe.loadCount == 3)
     }
 
     @Test("template view models keep synchronous CRUD below the actor boundary")

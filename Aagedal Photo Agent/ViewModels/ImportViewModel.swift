@@ -377,9 +377,10 @@ nonisolated struct ImportMetadataWriteModes: Sendable, Equatable {
 
 /// Plans destination names for one import batch so no two sources ever share a destination
 /// file, whatever the conflict policy (which only governs files already on disk). Names are
-/// compared case-insensitively, like the default APFS/HFS+ volumes. Files of one exposure (same
-/// source folder and stem, e.g. RAW + JPEG) keep a common suffix where possible, and a voice memo
-/// always takes its image's suffix.
+/// compared case-insensitively, like the default APFS/HFS+ volumes. Destination stems are owned by
+/// one exposure (same source folder and stem, e.g. RAW + JPEG): every file of an exposure shares one
+/// suffix, and two exposures never share a stem — otherwise one camera's RAW could land beside
+/// another camera's JPEG and be shown as a pair. A voice memo always takes its image's suffix.
 nonisolated struct ImportBatchNamePlanner: Sendable {
     struct PlannedName: Sendable, Equatable {
         let image: URL
@@ -388,6 +389,8 @@ nonisolated struct ImportBatchNamePlanner: Sendable {
     }
 
     private var claimedImages: Set<String> = []
+    /// Destination folder + stem (with suffix) → the exposure that owns it.
+    private var stemOwners: [String: String] = [:]
     private var memoOwners: [String: URL] = [:]
     private var suffixByExposure: [String: Int] = [:]
 
@@ -412,6 +415,9 @@ nonisolated struct ImportBatchNamePlanner: Sendable {
                 source.pathExtension.isEmpty ? name : "\(name).\(source.pathExtension)"
             )
             guard !claimedImages.contains(Self.key(image)) else { return nil }
+            if let owner = stemOwners[Self.stemKey(folder: folder, name: name)], owner != exposureKey {
+                return nil
+            }
             var memo: URL?
             if memoOwner != nil {
                 let memoURL = folder.appendingPathComponent(name)
@@ -439,6 +445,10 @@ nonisolated struct ImportBatchNamePlanner: Sendable {
             }
         }
         claimedImages.insert(Self.key(result.image))
+        stemOwners[Self.stemKey(
+            folder: folder,
+            name: result.image.deletingPathExtension().lastPathComponent
+        )] = exposureKey
         if let memo = result.memo, let memoOwner {
             memoOwners[Self.key(memo)] = memoOwner
         }
@@ -447,6 +457,10 @@ nonisolated struct ImportBatchNamePlanner: Sendable {
 
     private static func key(_ url: URL) -> String {
         url.standardizedFileURL.path.lowercased()
+    }
+
+    private static func stemKey(folder: URL, name: String) -> String {
+        key(folder) + "|" + name.lowercased()
     }
 }
 

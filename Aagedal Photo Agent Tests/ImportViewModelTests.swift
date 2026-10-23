@@ -2519,6 +2519,26 @@ struct ImportWorkflowRegressionTests {
         #expect(!jpegA.wasRenamed)
     }
 
+    @Test("Batch planning never pairs one exposure's RAW with another exposure's JPEG")
+    func batchNamePlanningKeepsPairsTogether() {
+        var planner = ImportBatchNamePlanner()
+        let folder = URL(fileURLWithPath: "/photos/2026-10-24", isDirectory: true)
+        let jpegOnlyBody = URL(fileURLWithPath: "/cardA/DCIM/100CANON")
+        let rawPlusJPEGBody = URL(fileURLWithPath: "/cardB/DCIM/100CANON")
+
+        let jpegA = planner.plan(source: jpegOnlyBody.appendingPathComponent("IMG_0001.JPG"), folder: folder,
+                                 exposureFolder: folder, memoSource: nil, memoExtension: nil)
+        let rawB = planner.plan(source: rawPlusJPEGBody.appendingPathComponent("IMG_0001.CR3"), folder: folder,
+                                exposureFolder: folder, memoSource: nil, memoExtension: nil)
+        let jpegB = planner.plan(source: rawPlusJPEGBody.appendingPathComponent("IMG_0001.JPG"), folder: folder,
+                                 exposureFolder: folder, memoSource: nil, memoExtension: nil)
+
+        #expect(jpegA.image.lastPathComponent == "IMG_0001.JPG")
+        // The free name IMG_0001.CR3 would sit beside the other body's JPEG; take a new stem.
+        #expect(rawB.image.lastPathComponent == "IMG_0001-1.CR3")
+        #expect(jpegB.image.lastPathComponent == "IMG_0001-1.JPG")
+    }
+
     @Test("Skip Existing imports both same-named sources from two cards")
     func skipExistingKeepsSameNamedBatchFiles() async throws {
         try await withRestoredDefaults {
