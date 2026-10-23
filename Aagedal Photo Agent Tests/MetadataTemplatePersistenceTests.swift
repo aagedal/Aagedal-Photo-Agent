@@ -1259,6 +1259,39 @@ struct MetadataTemplatePersistenceTests {
         #expect(probe.maximumConcurrentOperations == 1)
     }
 
+    @MainActor
+    @Test("template shortcut waiters survive a superseding load and then use the in-memory inventory")
+    func templateShortcutWaiterSurvivesSupersededLoad() async throws {
+        let probe = BlockingMetadataTemplateCRUDProbe()
+        defer { probe.releaseFirstLoad() }
+        let viewModel = TemplateViewModel(
+            storage: TemplateStorageService(directoryURL: URL(fileURLWithPath: "/virtual/templates")),
+            crudService: TemplateCRUDService(access: probe.access)
+        )
+
+        var delivered: [[String]?] = []
+        viewModel.withLoadedTemplates { delivered.append($0?.map(\.name)) }
+        try await probe.waitUntilFirstLoadStarts()
+        // A storage-change reload cancels the shortcut's load; its waiter must still run.
+        viewModel.loadTemplates()
+        probe.releaseFirstLoad()
+
+        let deadline = ContinuousClock.now + .seconds(30)
+        while delivered.isEmpty {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for the template shortcut waiter")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(delivered == [["second"]])
+
+        // Once loaded, a shortcut resolves synchronously without another disk read.
+        viewModel.withLoadedTemplates { delivered.append($0?.map(\.name)) }
+        #expect(delivered == [["second"], ["second"]])
+        #expect(probe.loadCount == 2)
+    }
+
     @Test("template view models keep synchronous CRUD below the actor boundary")
     func templateCRUDSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)

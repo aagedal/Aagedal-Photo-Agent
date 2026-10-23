@@ -124,6 +124,31 @@ struct MetadataBatchSelectionTests {
         #expect(summary.locationsShown.partial.map(\.name) == ["Bergen"])
     }
 
+    @Test("literal template on a multi-selection records explicit list intent")
+    func literalTemplateRecordsBatchIntent() throws {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.selectedURLs = ["one.jpg", "two.jpg"].map { URL(fileURLWithPath: "/virtual/template-batch/\($0)") }
+        model.selectedCount = 2
+        // No common values: per-photo lists differ, so the editor starts empty.
+        model.applyTemplateFields(["keywords": "desk", "mediaTopic": "medtop:01000000",
+            "genre": "genre:Feature", "subjectCode": "01000000"])
+        model.applyTemplateFields(["creator": "Second Reporter"], append: true)
+
+        #expect(model.batchFieldMutations[.keywords] == .overwrite(.repeatable(["desk"])))
+        #expect(model.batchFieldMutations[.creator] == .append(["Second Reporter"]))
+        for field in [MetadataFieldID.mediaTopic, .genre, .subjectCode] {
+            #expect(model.batchFieldMutations[field] != nil, "Missing template intent for \(field)")
+        }
+        let photo = IPTCMetadata(keywords: ["own keyword"], creators: ["First Reporter"])
+        let saved = try MetadataViewModel.applyingBatchListMutations(model.batchFieldMutations, to: photo)
+        #expect(saved.keywords == ["desk"])
+        #expect(saved.creators == ["First Reporter", "Second Reporter"])
+        #expect(saved.subjectCodes == ["01000000"])
+        #expect(saved.mediaTopics.map(\.termIdentifier) == model.editingMetadata.mediaTopics.map(\.termIdentifier))
+        #expect(!saved.mediaTopics.isEmpty)
+        #expect(!saved.genres.isEmpty)
+    }
+
     @Test("explicit append replace and clear are normalized and transactional")
     func explicitOperations() throws {
         let oslo = EditorialLocation(name: "Oslo", countryCode: "NOR")

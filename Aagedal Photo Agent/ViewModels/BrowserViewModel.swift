@@ -2138,16 +2138,30 @@ final class BrowserViewModel {
 
     // MARK: - Rating & Labels
 
-    func setRating(_ rating: StarRating) {
+    func setRating(_ rating: StarRating, imagesToMutate: [ImageFile]? = nil) {
         applyBrowserFieldMutation(mutationForImage: { _ in .rating(rating == .none ? nil : rating.rawValue) }, field: "rating",
+            imagesToMutate: imagesToMutate,
             updateImage: { $0.starRating = rating },
             affectsSortKey: sortOrder == .rating, affectsFilterKey: minimumStarRating != .none)
     }
 
-    func setLabel(_ label: ColorLabel) {
+    func setLabel(_ label: ColorLabel, imagesToMutate: [ImageFile]? = nil) {
         applyBrowserFieldMutation(mutationForImage: { _ in .label(label.xmpLabelValue) }, field: "label",
+            imagesToMutate: imagesToMutate,
             updateImage: { $0.colorLabel = label },
             affectsSortKey: sortOrder == .label, affectsFilterKey: !selectedColorLabels.isEmpty)
+    }
+
+    /// Full screen shows one photo, so (like Photo Mechanic) rating it touches only that
+    /// photo even when a multi-selection is kept behind the viewer.
+    func setRatingOnFullScreenImage(_ rating: StarRating) {
+        guard let image = fullScreenImage else { return }
+        setRating(rating, imagesToMutate: [image])
+    }
+
+    func setLabelOnFullScreenImage(_ label: ColorLabel) {
+        guard let image = fullScreenImage else { return }
+        setLabel(label, imagesToMutate: [image])
     }
 
     /// Accepted field intents run in order; a later action never cancels an earlier one.
@@ -2165,7 +2179,8 @@ final class BrowserViewModel {
                 requestedMode: fieldMutationModeResolver(image.hasC2PA, SupportedImageFormats.isRaw(url: image.url)),
                 mutation: mutationForImage(image))
         }
-        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+        updateMetadataFieldPresentation(urls: capturedImages.map(\.url), updateImage: updateImage,
+            affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
         guard let folder else {
             errorMessage = "The current folder is unavailable; the \(field) could not be saved."
             return
@@ -2430,7 +2445,8 @@ final class BrowserViewModel {
         let urls = selectedImages.map(\.url)
         let c2paByURL = Dictionary(uniqueKeysWithValues: selectedImages.map { ($0.url, $0.hasC2PA) })
 
-        updateMetadataFieldPresentation(updateImage: updateImage, affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
+        updateMetadataFieldPresentation(urls: Array(selectedImageIDs), updateImage: updateImage,
+            affectsSortKey: affectsSortKey, affectsFilterKey: affectsFilterKey)
 
         metadataWriteTask?.cancel()
         metadataWriteTask = Task {
@@ -2482,12 +2498,12 @@ final class BrowserViewModel {
         }
     }
 
-    private func updateMetadataFieldPresentation(updateImage: (inout ImageFile) -> Void,
+    private func updateMetadataFieldPresentation(urls targetURLs: [URL], updateImage: (inout ImageFile) -> Void,
         affectsSortKey: Bool, affectsFilterKey: Bool) {
         // Phase 1: In-place mutation — skip the didSet cascade since URLs don't change
         suppressImagesCascade = true
         defer { suppressImagesCascade = false }
-        for url in selectedImageIDs {
+        for url in targetURLs {
             guard let index = urlToImageIndex[url] else { continue }
             updateImage(&images[index])
         }
@@ -2496,7 +2512,7 @@ final class BrowserViewModel {
         if affectsSortKey {
             rebuildSortedCache()
         } else {
-            for url in selectedImageIDs {
+            for url in targetURLs {
                 guard let imageIdx = urlToImageIndex[url],
                       let sortedIdx = urlToSortedIndex[url] else { continue }
                 sortedImages[sortedIdx] = images[imageIdx]
@@ -2505,7 +2521,7 @@ final class BrowserViewModel {
             if affectsFilterKey || isFilteringActive {
                 let filterContext = makeImageFilterContext()
                 var needsFullRebuild = false
-                for url in selectedImageIDs {
+                for url in targetURLs {
                     guard let imageIdx = urlToImageIndex[url] else { continue }
                     let updatedImage = images[imageIdx]
                     let passes = imagePassesFilter(updatedImage, context: filterContext)
@@ -2527,7 +2543,7 @@ final class BrowserViewModel {
                     rebuildSelectedCache()
                 }
             } else {
-                for url in selectedImageIDs {
+                for url in targetURLs {
                     guard let imageIdx = urlToImageIndex[url],
                           let visibleIdx = urlToVisibleIndex[url] else { continue }
                     visibleImages[visibleIdx] = images[imageIdx]

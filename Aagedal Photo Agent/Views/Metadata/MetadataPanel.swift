@@ -1308,7 +1308,7 @@ struct MetadataPanel: View {
             viewModel.registerVariableRecoveryEditorBarrier(owner: captionFlushOwner) {
                 try flushCaptionEditorBuffer()
             }
-            StructuredKeywordsCoordinator.shared.register(owner: viewModel) { expanded in
+            StructuredKeywordsCoordinator.shared.register(owner: captionFlushOwner) { expanded in
                 addStructuredKeywords(expanded)
             }
             captionFlushCoordinator?.register(
@@ -1345,7 +1345,7 @@ struct MetadataPanel: View {
             historyRestoreTask?.cancel()
             cancelQuickListCreation()
             viewModel.unregisterVariableRecoveryEditorBarrier(owner: captionFlushOwner)
-            StructuredKeywordsCoordinator.shared.unregister(owner: viewModel)
+            StructuredKeywordsCoordinator.shared.unregister(owner: captionFlushOwner)
             captionFlushCoordinator?.unregister(owner: captionFlushOwner)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { notification in

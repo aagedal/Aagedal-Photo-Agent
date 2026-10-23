@@ -338,6 +338,9 @@ final class MetadataViewModel {
         return originalImageMetadata
     }
     @ObservationIgnored private var metadataLoadTask: Task<Void, Never>?
+    /// Selection loaded ahead of the debounced selection load (a template shortcut pressed
+    /// right after navigating). That debounced load must not replace the applied template.
+    @ObservationIgnored private var eagerSelectionLoadURLs: Set<URL>?
     @ObservationIgnored private var metadataLoadRequestID: UUID? {
         didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil; primaryDevelopSourceBaseline = nil } }
     }
@@ -535,10 +538,36 @@ final class MetadataViewModel {
         return true
     }
 
+    /// The debounced browser-selection load. Skipped when `loadSelectionMetadataNow` already
+    /// loaded exactly this selection, so edits applied since then survive.
+    func loadSelectionMetadata(for images: [ImageFile], folderURL: URL?) {
+        let urls = Set(images.map(\.url))
+        if let eager = eagerSelectionLoadURLs, eager == urls, Set(selectedURLs) == urls {
+            eagerSelectionLoadURLs = nil
+            return
+        }
+        loadMetadata(for: images, folderURL: folderURL)
+    }
+
+    /// Loads a new browser selection immediately, ahead of its debounced selection load.
+    func loadSelectionMetadataNow(for images: [ImageFile], folderURL: URL?) {
+        loadMetadata(for: images, folderURL: folderURL)
+        eagerSelectionLoadURLs = Set(images.map(\.url))
+    }
+
+    /// Waits until the current metadata load (including one it hands over to) has finished.
+    func waitForMetadataLoad() async {
+        while let task = metadataLoadTask {
+            await task.value
+            if metadataLoadTask == task { return }
+        }
+    }
+
     /// `preservingUnsavedEdits`: a passive refresh of the same photo/batch (folder auto-refresh)
     /// keeps edits the user has not persisted yet and only advances their baseline. Explicit
     /// reloads (discard, recovery) leave it false and replace the editor.
     func loadMetadata(for images: [ImageFile], folderURL: URL? = nil, preservingUnsavedEdits: Bool = false) {
+        if let eager = eagerSelectionLoadURLs, eager != Set(images.map(\.url)) { eagerSelectionLoadURLs = nil }
         metadataLoadTask?.cancel()
         metadataLoadTask = nil
         // The replacement request owns both flags, including single/batch transitions.
@@ -2711,6 +2740,32 @@ final class MetadataViewModel {
             default: break
             }
         }
+        if selectedCount > 1 {
+            // A template names its repeatable fields explicitly. Capture that intent even when
+            // the selection has no common value: the batch save would otherwise infer lists from
+            // previousCommon (dropping organisation/code/controlled-vocabulary lists) and let
+            // replace/append act on the common subset instead of every photo's own list.
+            let templateLists: [(String, MetadataFieldID)] = [
+                ("keywords", .keywords), ("personShown", .personShown), ("creator", .creator),
+                ("organisationShownName", .organisationShownName), ("organisationShownCode", .organisationShownCode),
+                ("sceneCode", .sceneCode), ("subjectCode", .subjectCode), ("mediaTopic", .mediaTopic), ("genre", .genre)
+            ]
+            for (key, field) in templateLists where template[key] != nil {
+                let values = Self.values(for: field, in: editingMetadata)
+                if append {
+                    switch batchFieldMutations[field] ?? .untouched {
+                    case .clear, .overwrite:
+                        // A prior removal/clear is represented as replacement intent. Appending
+                        // a template must extend that replacement, not resurrect original values.
+                        batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                    case .untouched, .append:
+                        if !values.isEmpty { batchFieldMutations[field] = .append(values) }
+                    }
+                } else {
+                    batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
+                }
+            }
+        }
         hasChanges = true
     }
 
@@ -2739,31 +2794,6 @@ final class MetadataViewModel {
         }
         applyTemplateFields(template, append: append)
         guard !images.isEmpty else { return }
-        if selectedCount > 1 {
-            // An instant template names its repeatable fields explicitly. Capture that intent
-            // even when the selection has no common value; optional previousCommon inference
-            // must not drop a supplied organisation/controlled-vocabulary list.
-            let templateLists: [(String, MetadataFieldID)] = [
-                ("keywords", .keywords), ("personShown", .personShown), ("creator", .creator),
-                ("organisationShownName", .organisationShownName), ("organisationShownCode", .organisationShownCode),
-                ("sceneCode", .sceneCode), ("subjectCode", .subjectCode), ("mediaTopic", .mediaTopic), ("genre", .genre)
-            ]
-            for (key, field) in templateLists where template[key] != nil {
-                let values = Self.values(for: field, in: editingMetadata)
-                if append {
-                    switch batchFieldMutations[field] ?? .untouched {
-                    case .clear, .overwrite:
-                        // A prior removal/clear is represented as replacement intent. Appending
-                        // a template must extend that replacement, not resurrect original values.
-                        batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                    case .untouched, .append:
-                        if !values.isEmpty { batchFieldMutations[field] = .append(values) }
-                    }
-                } else {
-                    batchFieldMutations[field] = values.isEmpty ? .clear : .overwrite(.repeatable(values))
-                }
-            }
-        }
         // Capture the batch mutation with the variable request. Awaited JSON preparation saves
         // the complete per-photo result; no separate fire-and-forget literal write can race it.
         startVariableBatch(images: images, previewAction: append ? .append : .replace)

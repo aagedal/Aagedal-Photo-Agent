@@ -42,7 +42,7 @@ struct TemplateEditorView: View {
                 Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
                     Text("None").tag(nil as Int?)
                     ForEach(1...9, id: \.self) { slot in
-                        Text("Ctrl+\(slot)").tag(slot as Int?)
+                        Text(KeyboardShortcutProfileRegistry.shared.templateShortcutDisplayName(slot: slot)).tag(slot as Int?)
                     }
                 }
                 .frame(width: 240)

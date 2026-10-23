@@ -49,6 +49,9 @@ final class TemplateViewModel {
     @ObservationIgnored private var importCommitRequestID: UUID?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var loadRequestID: UUID?
+    /// Waiters for the inventory. A superseded load leaves them for its replacement, so a
+    /// shortcut pressed while the list reloads still runs; `nil` reports a failed load.
+    @ObservationIgnored private var loadCompletions: [([MetadataTemplate]?) -> Void] = []
     @ObservationIgnored private var mutationTask: Task<TemplateMutationOperationResult<MetadataTemplate>, Error>?
     @ObservationIgnored private var mutationRequestID: UUID?
     @ObservationIgnored private var exportTask: Task<Void, Never>?
@@ -68,7 +71,30 @@ final class TemplateViewModel {
             ?? TemplateImportCommitService(storage: storage)
     }
 
+    /// Runs `completion` with the in-memory inventory once it is loaded, otherwise with the
+    /// result of the pending (or a new) load. `nil` means the inventory could not be read.
+    func withLoadedTemplates(_ completion: @escaping ([MetadataTemplate]?) -> Void) {
+        if hasInventoryProvenance, loadTask == nil {
+            completion(templates)
+            return
+        }
+        loadCompletions.append(completion)
+        if loadTask == nil { loadTemplates() }
+    }
+
+    private func finishLoadCompletions(_ templates: [MetadataTemplate]?) {
+        let completions = loadCompletions
+        loadCompletions = []
+        completions.forEach { $0(templates) }
+    }
+
+    /// `onLoaded` runs once the inventory is read, by this load or one that supersedes it.
     func loadTemplates(onLoaded: (([MetadataTemplate]) -> Void)? = nil) {
+        if let onLoaded {
+            loadCompletions.append { templates in
+                if let templates { onLoaded(templates) }
+            }
+        }
         loadTask?.cancel()
         let requestID = UUID()
         loadRequestID = requestID
@@ -80,13 +106,16 @@ final class TemplateViewModel {
                       !Task.isCancelled else { return }
                 self.loadTask = nil
                 self.loadRequestID = nil
-                guard case .loaded(let snapshot) = result else { return }
+                guard case .loaded(let snapshot) = result else {
+                    self.finishLoadCompletions(self.hasInventoryProvenance ? self.templates : nil)
+                    return
+                }
                 self.templates = snapshot.templates
                 self.inventoryDirectoryURL = snapshot.directoryURL
                 self.inventoryAuthorities = snapshot.authorities
                 self.hasInventoryProvenance = true
                 self.errorMessage = nil
-                onLoaded?(snapshot.templates)
+                self.finishLoadCompletions(snapshot.templates)
             } catch {
                 guard let self,
                       self.loadRequestID == requestID,
@@ -94,6 +123,7 @@ final class TemplateViewModel {
                 self.loadTask = nil
                 self.loadRequestID = nil
                 self.errorMessage = error.localizedDescription
+                self.finishLoadCompletions(nil)
             }
         }
     }
@@ -384,6 +414,8 @@ final class TemplateViewModel {
         loadTask?.cancel()
         loadTask = nil
         loadRequestID = nil
+        // No replacement load will deliver these; answer them from the current inventory.
+        finishLoadCompletions(hasInventoryProvenance ? templates : nil)
     }
 
     func preparePreview(from source: URL) {

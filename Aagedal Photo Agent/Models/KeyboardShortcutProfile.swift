@@ -870,3 +870,11 @@ extension KeyboardShortcutProfile {
         command.flatMap { menuChord(for: $0)?.swiftUIShortcut }
     }
 }
+
+extension KeyboardShortcutProfileRegistry {
+    /// A template slot's chord in the active profile; users can rebind the default ⌃1–⌃9.
+    func templateShortcutDisplayName(slot: Int) -> String {
+        KeyboardShortcutCommand.templateCommand(slot: slot)
+            .flatMap { selectedProfile.menuChord(for: $0) }?.displayName ?? "Slot \(slot) (no shortcut)"
+    }
+}
