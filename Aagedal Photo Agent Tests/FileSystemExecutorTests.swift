@@ -589,6 +589,98 @@ struct FileSystemExecutorTests {
         #expect(try Data(contentsOf: root.appendingPathComponent("photo.xmp")) == edits)
     }
 
+    @Test("Dropping several folders onto a sidebar folder moves every one of them")
+    @MainActor
+    func multiFolderDropMovesAll() async throws {
+        let root = try trashTestRoot().resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let names = ["A", "B", "C"]
+        for name in names + ["Target"] {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: false
+            )
+        }
+        let target = root.appendingPathComponent("Target", isDirectory: true)
+        let viewModel = BrowserViewModel(fileSystemService: FileSystemService())
+
+        viewModel.moveFolders(names.map { root.appendingPathComponent($0, isDirectory: true) }, into: target)
+        await viewModel.waitForPendingFolderMutation()
+
+        for name in names {
+            #expect(FileManager.default.fileExists(atPath: target.appendingPathComponent(name).path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+        }
+        #expect(viewModel.errorMessage == nil)
+    }
+
+    @Test("Renaming a parent of the open folder follows the open folder to its new path")
+    @MainActor
+    func renamingParentRemapsCurrentFolder() async throws {
+        let root = try trashTestRoot().resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Parent", isDirectory: true)
+        let child = parent.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let viewModel = BrowserViewModel(fileSystemService: FileSystemService())
+        viewModel.currentFolderURL = child
+        viewModel.currentFolderName = child.lastPathComponent
+
+        viewModel.promptRenameSubfolder(parent)
+        viewModel.renameSubfolderNewName = "Renamed"
+        viewModel.renamePendingSubfolder()
+        await viewModel.waitForPendingFolderMutation()
+
+        let expected = root.appendingPathComponent("Renamed", isDirectory: true)
+            .appendingPathComponent("Child", isDirectory: true)
+        #expect(viewModel.errorMessage == nil)
+        #expect(viewModel.currentFolderURL?.standardizedFileURL.path == expected.standardizedFileURL.path)
+        #expect(FileManager.default.fileExists(atPath: expected.path))
+    }
+
+    @Test("Trashing a parent of the open folder navigates to the trashed folder's parent")
+    @MainActor
+    func trashingParentNavigatesToItsParent() throws {
+        let root = try trashTestRoot().resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("Parent", isDirectory: true)
+        let child = parent.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let viewModel = BrowserViewModel(fileSystemService: FileSystemService())
+        viewModel.currentFolderURL = child
+        viewModel.currentFolderName = child.lastPathComponent
+
+        // The post-trash navigation step, without sending a real folder to the user's Trash.
+        viewModel.followRelocatedFolder(from: parent, to: nil)
+
+        #expect(viewModel.currentFolderURL?.standardizedFileURL.path == root.standardizedFileURL.path)
+    }
+
+    @Test("Moving a RAW+JPEG pair moves both and keeps one shared .xmp at the destination")
+    func movePairKeepsSharedXMPSidecar() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        let edits = Data("<x:xmpmeta>shared</x:xmpmeta>".utf8)
+        try edits.write(to: root.appendingPathComponent("photo.xmp"))
+
+        let result = try await FileSystemService().moveImageItems(
+            [raw, jpeg], into: destination, createDestinationIfNeeded: false,
+            xmpSidecarService: XMPSidecarService(), metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.failures.isEmpty)
+        #expect(result.movedSourceURLs == [raw, jpeg])
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("photo.ARW").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("photo.JPG").path))
+        #expect(try Data(contentsOf: destination.appendingPathComponent("photo.xmp")) == edits)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("photo.xmp").path))
+    }
+
     @Test("Duplicating a RAW+JPEG pair keeps one shared .xmp on a common stem")
     func duplicatePairSharesXMPSidecar() async throws {
         let root = try trashTestRoot()

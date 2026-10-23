@@ -2,6 +2,12 @@ import Foundation
 import AppKit
 import os
 
+struct FileOperationNotice: Equatable, Identifiable {
+    let id = UUID()
+    let message: String
+    var revealURL: URL?
+}
+
 nonisolated struct MetadataReviewLoadedBaseline: Sendable {
     let metadata: IPTCMetadata
     let sidecar: MetadataSidecar?
@@ -323,6 +329,11 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingStatusRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var renamePlanningTask: Task<Void, Never>?
     @ObservationIgnored private var renamePlanningRequestID: UUID?
+    /// Transient success/info notice for file operations without their own sheet (e.g. Move
+    /// Rejected to Folder), optionally offering to reveal the affected folder in Finder.
+    var fileOperationNotice: FileOperationNotice?
+    /// True while Rename… resolves voice-memo companions before its sheet can open.
+    private(set) var isPreparingRename = false
     @ObservationIgnored private let voiceMemoRenamePlanningService: VoiceMemoRenamePlanningService
 
     @ObservationIgnored private let favoritesDefaults: UserDefaults
@@ -2368,7 +2379,10 @@ final class BrowserViewModel {
         guard prepareMetadataReviewBeforeMutation({ self.moveRejectedToFolder() }) else { return }
         guard let folderURL = currentFolderURL else { return }
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
-        guard !rejectedURLs.isEmpty else { return }
+        guard !rejectedURLs.isEmpty else {
+            fileOperationNotice = FileOperationNotice(message: "No visible photos are labeled Rejected.")
+            return
+        }
 
         // Serialize file operations: a new one waits for the running one instead of
         // cancelling it, so a slow move is never silently aborted by a later delete.
@@ -2376,14 +2390,27 @@ final class BrowserViewModel {
         imageMutationTask = Task {
             await previousMutation?.value
             let result = await fileSystemService.moveRejectedItems(rejectedURLs, in: folderURL)
+            let folderName = RejectMoveService.rejectedFolderName
+
+            // Report the outcome even if the user has since opened another folder.
+            if !result.failedFiles.isEmpty {
+                let shown = result.failedFiles.prefix(20).map { "\($0.0.lastPathComponent): \($0.1)" }
+                let remainder = result.failedFiles.count - shown.count
+                errorMessage = (["Failed to move \(result.failedFiles.count) rejected file(s) to \(folderName)/."]
+                    + shown + (remainder > 0 ? ["…and \(remainder) more."] : []))
+                    .joined(separator: "\n")
+            }
+            if !result.movedFiles.isEmpty {
+                let count = result.movedFiles.count
+                fileOperationNotice = FileOperationNotice(
+                    message: "Moved \(count) rejected photo\(count == 1 ? "" : "s") to \(folderName)",
+                    revealURL: result.rejectedFolder
+                )
+            }
 
             // The user can navigate while a slow volume is moving bundles. Never let completion
             // from the old folder navigate the browser back or overwrite the new folder's state.
             guard currentFolderURL == folderURL else { return }
-
-            if !result.failedFiles.isEmpty {
-                errorMessage = "Failed to move \(result.failedFiles.count) rejected file(s) to \(RejectMoveService.rejectedFolderName)/."
-            }
 
             // A pre-cancelled operation made no filesystem change and needs no reload. Any moved
             // or failed bundle preserves the previous behavior of reconciling from disk.
@@ -3084,6 +3111,8 @@ final class BrowserViewModel {
 
     var showTrashSubfolderConfirmation = false
     @ObservationIgnored var pendingTrashSubfolderURL: URL?
+    /// Folder trash/rename/create/move run one after another: a new mutation waits for the
+    /// running one instead of cancelling it (a multi-folder drop issues several moves at once).
     @ObservationIgnored private var folderMutationTask: Task<Void, Never>?
 
     func confirmTrashSubfolder(_ url: URL) {
@@ -3095,8 +3124,9 @@ final class BrowserViewModel {
         guard let subfolderURL = pendingTrashSubfolderURL else { return }
         pendingTrashSubfolderURL = nil
 
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.trashFolder(at: subfolderURL)
             } catch is CancellationError {
@@ -3119,17 +3149,39 @@ final class BrowserViewModel {
             // Recursively clean up all cached descendants
             removeSubfolderCacheRecursively(for: subfolderURL)
 
-            // If the trashed folder was the currently viewed folder, navigate away
-            if currentFolderURL == subfolderURL {
-                if let parent = openFolders.first {
-                    loadFolder(url: parent)
-                } else {
-                    currentFolderURL = nil
-                    currentFolderName = nil
-                    images = []
-                    selectedImageIDs.removeAll()
-                }
-            }
+            followRelocatedFolder(from: subfolderURL, to: nil)
+            onFolderRelocated?(subfolderURL, nil)
+        }
+    }
+
+    /// Fired after this pane renamed, moved (`newURL`) or trashed (`nil`) a folder, so the
+    /// owning scene can keep every other split-view pane on a real path.
+    @ObservationIgnored var onFolderRelocated: ((_ oldURL: URL, _ newURL: URL?) -> Void)?
+
+    /// Keeps this pane on a real path after a folder at or above its current folder was
+    /// renamed or moved (follow it to `newURL`) or trashed (`nil`: go to the trashed folder's
+    /// parent, or the first remaining open folder when a root itself was trashed).
+    func followRelocatedFolder(from oldURL: URL, to newURL: URL?) {
+        guard let current = currentFolderURL, isShowingFolder(atOrBelow: oldURL) else { return }
+        if let newURL {
+            let relativeSuffix = current.standardizedFileURL.path
+                .dropFirst(oldURL.standardizedFileURL.path.count)
+            loadFolder(url: relativeSuffix.isEmpty
+                ? newURL
+                : URL(fileURLWithPath: newURL.standardizedFileURL.path + relativeSuffix, isDirectory: true))
+            return
+        }
+        let roots = openFolders + favoriteFolders.map(\.url)
+        let trashedRoot = roots.contains { $0.standardizedFileURL == oldURL.standardizedFileURL }
+        if !trashedRoot {
+            loadFolder(url: oldURL.deletingLastPathComponent(), addToOpenFolders: false)
+        } else if let firstOpen = openFolders.first(where: { !isFolder($0, atOrBelow: oldURL) }) {
+            loadFolder(url: firstOpen)
+        } else {
+            currentFolderURL = nil
+            currentFolderName = nil
+            images = []
+            selectedImageIDs.removeAll()
         }
     }
 
@@ -3157,8 +3209,9 @@ final class BrowserViewModel {
         guard trimmed != oldURL.lastPathComponent else { return }
 
         let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(trimmed, isDirectory: true)
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task { [pathContainmentService] in
+            await previousMutation?.value
             let containmentRequestID = UUID()
             let containment = await pathContainmentService.inspect(
                 SafePathContainmentRequest(
@@ -3224,10 +3277,13 @@ final class BrowserViewModel {
                 ensureSubfoldersLoaded(for: newURL)
             }
 
-            // If the renamed folder was the current folder, reload it
-            if currentFolderURL == oldURL {
-                loadFolder(url: newURL)
+            if let openIndex = openFolders.firstIndex(of: oldURL) {
+                openFolders[openIndex] = newURL
             }
+
+            // If the renamed folder is (or contains) the current folder, follow it to its new path.
+            followRelocatedFolder(from: oldURL, to: newURL)
+            onFolderRelocated?(oldURL, newURL)
         }
     }
 
@@ -3255,8 +3311,9 @@ final class BrowserViewModel {
         }
 
         let newFolderURL = parentURL.appendingPathComponent(trimmed, isDirectory: true)
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.createFolder(at: newFolderURL)
             } catch is CancellationError {
@@ -3282,6 +3339,15 @@ final class BrowserViewModel {
 
     // MARK: - Move Folder
 
+    /// Moves several dropped folders. The metadata-review gate runs once for the whole drop so a
+    /// deferred review cannot drop every folder after the first; the moves then run serially.
+    func moveFolders(_ sourceURLs: [URL], into destinationURL: URL) {
+        guard prepareMetadataReviewBeforeMutation({ self.moveFolders(sourceURLs, into: destinationURL) }) else { return }
+        for sourceURL in sourceURLs {
+            moveFolder(sourceURL, into: destinationURL)
+        }
+    }
+
     func moveFolder(_ sourceURL: URL, into destinationURL: URL) {
         guard prepareMetadataReviewBeforeMutation({ self.moveFolder(sourceURL, into: destinationURL) }) else { return }
         let sourcePath = sourceURL.path(percentEncoded: false)
@@ -3299,8 +3365,9 @@ final class BrowserViewModel {
 
         let newURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: true)
 
-        folderMutationTask?.cancel()
+        let previousMutation = folderMutationTask
         folderMutationTask = Task {
+            await previousMutation?.value
             do {
                 _ = try await fileSystemService.moveFolder(from: sourceURL, to: newURL)
             } catch is CancellationError {
@@ -3377,16 +3444,9 @@ final class BrowserViewModel {
             openFolders[openIndex] = newURL
         }
 
-        // Handle current folder
-        if currentFolderURL == sourceURL {
-            loadFolder(url: newURL)
-        } else if let current = currentFolderURL,
-                  current.path(percentEncoded: false).hasPrefix(sourcePath + "/") {
-            // Current folder was a descendant of the moved folder — its path is now invalid
-            let relativeSuffix = current.path(percentEncoded: false).dropFirst(sourcePath.count)
-            let newCurrentPath = newURL.path(percentEncoded: false) + relativeSuffix
-            loadFolder(url: URL(fileURLWithPath: String(newCurrentPath)))
-        }
+        // Current folder (or a descendant of it) moved — follow it to the new path.
+        followRelocatedFolder(from: sourceURL, to: newURL)
+        onFolderRelocated?(sourceURL, newURL)
     }
 
     // MARK: - Reorder Favorites
@@ -3438,9 +3498,14 @@ final class BrowserViewModel {
 
     private func isShowingFolder(atOrBelow url: URL) -> Bool {
         guard let currentFolderURL else { return false }
-        if currentFolderURL == url { return true }
-        let currentPath = currentFolderURL.path(percentEncoded: false)
-        return currentPath.hasPrefix(url.path(percentEncoded: false) + "/")
+        return isFolder(currentFolderURL, atOrBelow: url)
+    }
+
+    private func isFolder(_ candidate: URL, atOrBelow url: URL) -> Bool {
+        let ancestorPath = url.standardizedFileURL.path
+        let candidatePath = candidate.standardizedFileURL.path
+        return candidatePath == ancestorPath
+            || candidatePath.hasPrefix(ancestorPath.hasSuffix("/") ? ancestorPath : ancestorPath + "/")
     }
 
     private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
@@ -3953,6 +4018,12 @@ final class BrowserViewModel {
         await imageMutationTask?.value
     }
 
+    /// Test/UI coordination seam for the serialized folder trash/rename/create/move chain.
+    func waitForPendingFolderMutation() async {
+        await metadataReviewMutationPreparationTask?.value
+        await folderMutationTask?.value
+    }
+
     // MARK: - Move to Subfolder
 
     func promptAddSelectedImagesToSubfolder() {
@@ -4188,6 +4259,7 @@ final class BrowserViewModel {
         renamePlanningTask?.cancel()
         renamePlanningRequestID = requestID
         batchRenameSheetRequest = nil
+        isPreparingRename = true
         let planningService = voiceMemoRenamePlanningService
         renamePlanningTask = Task { [weak self] in
             let snapshot = await planningService.plan(request)
@@ -4198,11 +4270,18 @@ final class BrowserViewModel {
                   snapshot.folderURL == folderURL else { return }
             self.renamePlanningTask = nil
             self.renamePlanningRequestID = nil
+            self.isPreparingRename = false
             guard self.currentFolderURL == folderURL,
-                  self.selectedImageIDs == selectedURLs else { return }
+                  self.selectedImageIDs == selectedURLs else {
+                self.errorMessage = "Rename was not opened because the folder or selection changed while it was being prepared. Choose Rename… again."
+                return
+            }
             switch snapshot.completion {
             case .complete:
-                guard snapshot.items.count == items.count else { return }
+                guard snapshot.items.count == items.count else {
+                    self.errorMessage = "Rename could not be prepared for every selected photo. Choose Rename… again."
+                    return
+                }
                 self.batchRenameSheetRequest = BatchRenameSheetRequest(
                     folderURL: folderURL,
                     items: snapshot.items
@@ -4219,18 +4298,21 @@ final class BrowserViewModel {
         renamePlanningTask?.cancel()
         renamePlanningTask = nil
         renamePlanningRequestID = nil
+        isPreparingRename = false
     }
 
     /// Applies only the executor's successful source→destination mapping. Building a complete
     /// replacement array first makes cycles (A↔B) safe and avoids transient duplicate URL keys.
-    func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation) {
+    /// `dismissSheet` is false when app-reference reassociation needs review: the sheet stays
+    /// open to show that report and the user closes it.
+    func applySuccessfulRename(_ presentation: BatchRenameExecutionPresentation, dismissSheet: Bool = true) {
         guard presentation.status == .succeeded else { return }
         defer { endRenameQuiescence() }
         let mapping = Dictionary(uniqueKeysWithValues: presentation.mappings.map {
             ($0.sourceURL.standardizedFileURL, $0.destinationURL.standardizedFileURL)
         })
         guard !mapping.isEmpty else {
-            batchRenameSheetRequest = nil
+            if dismissSheet { batchRenameSheetRequest = nil }
             return
         }
 
@@ -4262,7 +4344,7 @@ final class BrowserViewModel {
             }
         }
         rebuildNow()
-        batchRenameSheetRequest = nil
+        if dismissSheet { batchRenameSheetRequest = nil }
     }
 
     /// A failed or cancelled multi-file operation is authoritative only about its residual report.

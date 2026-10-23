@@ -66,6 +66,11 @@ nonisolated struct RejectMoveService: Sendable {
             )
         }
 
+        // XMP sidecars this batch placed in `.Rejected`, keyed by destination and valued by their
+        // source. A RAW+JPEG pair shares one stem `.xmp`: the first image copies it (its partner
+        // still needs it) and the partner reuses that copy so the pair keeps one name.
+        var transferredXMPSources: [URL: URL] = [:]
+
         // Sidecar files we move alongside the image:
         // - JSON sidecar at <folder>/.photo_metadata/<file>.meta.json
         // - XMP sidecar at <folder>/<basename>.xmp
@@ -74,11 +79,15 @@ nonisolated struct RejectMoveService: Sendable {
                 cancellationStoppedRemainingItems = true
                 break
             }
+            let xmpSource = url.deletingPathExtension().appendingPathExtension("xmp")
             let dest: URL
             do {
                 guard let available = try uniqueBundleDestination(
                     for: url, in: rejectedFolder, fm: fm,
-                    voiceMemoRepository: voiceMemoRepository
+                    voiceMemoRepository: voiceMemoRepository,
+                    isTransferredFromSource: {
+                        transferredXMPSources[$0.standardizedFileURL] == xmpSource.standardizedFileURL
+                    }
                 ) else {
                     failed.append((url, "Could not find an available name in .Rejected"))
                     continue
@@ -89,17 +98,26 @@ nonisolated struct RejectMoveService: Sendable {
                 continue
             }
 
-            let xmpSource = url.deletingPathExtension().appendingPathExtension("xmp")
             let xmpDestination = dest.deletingPathExtension().appendingPathExtension("xmp")
+            let xmpAlreadyTransferred = transferredXMPSources[xmpDestination.standardizedFileURL]
+                == xmpSource.standardizedFileURL
             var xmpMoved = false
             var xmpCopied = false
+            var xmpReplacedPartnerCopy = false
 
             do {
                 let receipt = try voiceMemoRepository.moveImagePreservingCompanion(from: url, to: dest) {
                     do {
                         if fm.fileExists(atPath: xmpSource.path) {
                             let sharedStem = try PhotoSidecarOwnership.hasSurvivingStemSibling(of: url, in: folderURL)
-                            if sharedStem {
+                            if xmpAlreadyTransferred {
+                                // The partner already copied it here; retire the source once
+                                // no sibling is left behind.
+                                if !sharedStem {
+                                    _ = try fm.replaceItemAt(xmpDestination, withItemAt: xmpSource)
+                                    xmpReplacedPartnerCopy = true
+                                }
+                            } else if sharedStem {
                                 try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
                                 xmpCopied = true
                             } else {
@@ -112,10 +130,12 @@ nonisolated struct RejectMoveService: Sendable {
                         )
                     } catch {
                         let originalError = error
-                        if xmpMoved || xmpCopied {
+                        if xmpMoved || xmpCopied || xmpReplacedPartnerCopy {
                             do {
                                 if xmpCopied { try fm.removeItem(at: xmpDestination) }
-                                else { try fm.moveItem(at: xmpDestination, to: xmpSource) }
+                                else if xmpReplacedPartnerCopy {
+                                    try PhotoSidecarOwnership.copyPreservingSource(from: xmpDestination, to: xmpSource)
+                                } else { try fm.moveItem(at: xmpDestination, to: xmpSource) }
                             }
                             catch {
                                 throw NSError(domain: "RejectMoveService", code: 1, userInfo: [
@@ -126,6 +146,9 @@ nonisolated struct RejectMoveService: Sendable {
                         }
                         throw originalError
                     }
+                }
+                if xmpMoved || xmpCopied || xmpAlreadyTransferred, fm.fileExists(atPath: xmpDestination.path) {
+                    transferredXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
                 }
                 if !receipt.cleanupResidualURLs.isEmpty {
                     failed.append((url, "Photo moved successfully; private source backups need cleanup: "
@@ -163,7 +186,8 @@ nonisolated struct RejectMoveService: Sendable {
         for sourceImageURL: URL,
         in folder: URL,
         fm: FileManager,
-        voiceMemoRepository: VoiceMemoCompanionRepository
+        voiceMemoRepository: VoiceMemoCompanionRepository,
+        isTransferredFromSource: (URL) -> Bool = { _ in false }
     ) throws -> URL? {
         let asURL = sourceImageURL
         let basename = asURL.deletingPathExtension().lastPathComponent
@@ -175,7 +199,7 @@ nonisolated struct RejectMoveService: Sendable {
                 : folder.appendingPathComponent(numberedBasename).appendingPathExtension(ext)
             let voiceMemoDestinations = try voiceMemoRepository.moveDestinationURLs(for: sourceImageURL, to: candidate)
             if bundleDestinations(for: candidate, in: folder).union(voiceMemoDestinations).allSatisfy({
-                !fm.fileExists(atPath: $0.path)
+                !fm.fileExists(atPath: $0.path) || isTransferredFromSource($0)
             }) {
                 return candidate
             }

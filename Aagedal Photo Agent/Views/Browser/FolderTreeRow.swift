@@ -319,14 +319,18 @@ struct FolderDropDelegate: DropDelegate {
             guard let snapshot = try? await viewModel.fileSystemService.dropSourceSnapshot(for: sourceURLs)
             else { return }
 
+            var foldersToMove: [URL] = []
             for sourceURL in snapshot.directories {
                 let sourceIsFavoriteRoot = viewModel.favoriteFolders.contains { $0.url == sourceURL }
                 let targetIsFavoriteRoot = dropSection == .favoriteRoot
                 if sourceIsFavoriteRoot && targetIsFavoriteRoot {
                     viewModel.reorderFavorite(from: sourceURL, relativeTo: target)
                 } else {
-                    viewModel.moveFolder(sourceURL, into: target)
+                    foldersToMove.append(sourceURL)
                 }
+            }
+            if !foldersToMove.isEmpty {
+                viewModel.moveFolders(foldersToMove, into: target)
             }
 
             if !snapshot.regularFiles.isEmpty {

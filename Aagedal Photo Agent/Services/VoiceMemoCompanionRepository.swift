@@ -40,7 +40,8 @@ actor VoiceMemoRenamePlanningService {
 
     static let shared = VoiceMemoRenamePlanningService()
 
-    private let artifactPlanner: ArtifactPlanner
+    /// Injected per-image planner (tests); nil uses the repository's batch planner.
+    private let artifactPlanner: ArtifactPlanner?
     private let signposter = OSSignposter(
         subsystem: "com.aagedal.photo-agent",
         category: "VoiceMemoRenamePlanning"
@@ -50,9 +51,7 @@ actor VoiceMemoRenamePlanningService {
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.voice-memo-rename-planning", qos: .utility
         ),
-        artifactPlanner: @escaping ArtifactPlanner = {
-            try VoiceMemoCompanionRepository().planningArtifacts(for: $0)
-        }
+        artifactPlanner: ArtifactPlanner? = nil
     ) {
         self.filesystemQueue = filesystemQueue
         self.artifactPlanner = artifactPlanner
@@ -78,13 +77,24 @@ actor VoiceMemoRenamePlanningService {
             return snapshot(.cancelled(completedItemCount: 0))
         }
 
+        // Memo reference counts are read once per folder for the whole request; per-photo
+        // recounting re-read every relationship record and made large selections quadratic.
+        let repository = VoiceMemoCompanionRepository()
+        var referenceCountsByFolder: [URL: [URL: Int]] = [:]
         do {
             for var item in request.items {
                 guard !Task.isCancelled else {
                     signposter.endInterval("Plan", state, "cancelled=prefix count=\(completed.count)")
                     return snapshot(.cancelled(completedItemCount: completed.count))
                 }
-                item.associatedArtifacts = try artifactPlanner(item.sourceImageURL)
+                if let artifactPlanner {
+                    item.associatedArtifacts = try artifactPlanner(item.sourceImageURL)
+                } else {
+                    item.associatedArtifacts = try repository.planningArtifacts(
+                        for: item.sourceImageURL,
+                        referenceCountsByFolder: &referenceCountsByFolder
+                    )
+                }
                 guard !Task.isCancelled else {
                     signposter.endInterval("Plan", state, "cancelled=postread count=\(completed.count)")
                     return snapshot(.cancelled(completedItemCount: completed.count))
@@ -1013,16 +1023,31 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     func planningArtifacts(for imageURL: URL) throws -> [RenamePlanningAssociatedArtifact] {
+        var referenceCountsByFolder: [URL: [URL: Int]] = [:]
+        return try planningArtifacts(for: imageURL, referenceCountsByFolder: &referenceCountsByFolder)
+    }
+
+    /// Batch form: memo reference counts are computed once per folder and reused for every
+    /// photo in the request instead of re-reading every relationship record per photo.
+    func planningArtifacts(
+        for imageURL: URL,
+        referenceCountsByFolder: inout [URL: [URL: Int]]
+    ) throws -> [RenamePlanningAssociatedArtifact] {
         switch try lookup(for: imageURL) {
         case .none:
             return []
         case .missing(let record):
             throw RepositoryError.memoMissing(record.memoFilename)
         case .available(let association):
-            let referenceCount = try memoReferenceCount(
-                to: association.memoURL,
-                in: imageURL.deletingLastPathComponent()
-            )
+            let folderURL = imageURL.deletingLastPathComponent().standardizedFileURL
+            let counts: [URL: Int]
+            if let cached = referenceCountsByFolder[folderURL] {
+                counts = cached
+            } else {
+                counts = try memoReferenceCounts(in: folderURL)
+                referenceCountsByFolder[folderURL] = counts
+            }
+            let referenceCount = counts[VoiceMemoAssociationService.canonicalURL(association.memoURL)] ?? 0
             guard referenceCount == 1 else {
                 throw RepositoryError.sharedMemoRequiresGroupAction(
                     association.memoURL.lastPathComponent
@@ -1935,7 +1960,11 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
     }
 
     private func memoReferenceCount(to memoURL: URL, in folderURL: URL) throws -> Int {
-        let target = VoiceMemoAssociationService.canonicalURL(memoURL)
+        try memoReferenceCounts(in: folderURL)[VoiceMemoAssociationService.canonicalURL(memoURL)] ?? 0
+    }
+
+    /// Relationship-record count per canonical memo URL for every record in `folderURL`.
+    private func memoReferenceCounts(in folderURL: URL) throws -> [URL: Int] {
         let recordURLs = try FileManager.default.contentsOfDirectory(
             at: folderURL,
             includingPropertiesForKeys: nil,
@@ -1945,7 +1974,7 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             return name.hasPrefix(".") && name.hasSuffix(Self.recordSuffix)
         }
 
-        var count = 0
+        var counts: [URL: Int] = [:]
         for url in recordURLs {
             let name = url.lastPathComponent
             let imageFilename = String(name.dropFirst().dropLast(Self.recordSuffix.count))
@@ -1956,11 +1985,9 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
                 currentImageFilename: imageFilename
             )
             let candidate = folderURL.appendingPathComponent(effectiveMemo)
-            if VoiceMemoAssociationService.canonicalURL(candidate) == target {
-                count += 1
-            }
+            counts[VoiceMemoAssociationService.canonicalURL(candidate), default: 0] += 1
         }
-        return count
+        return counts
     }
 
     private static func validateFilename(_ filename: String) throws {

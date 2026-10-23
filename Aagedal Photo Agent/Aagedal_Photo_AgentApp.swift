@@ -223,7 +223,7 @@ struct Aagedal_Photo_AgentApp: App {
                 }
                 .keyboardShortcut(keyboardProfile.menuShortcut(for: .deleteSelected))
 
-                Button("Move Rejected to Folder…") {
+                Button("Move Rejected to Folder") {
                     commandRouter.send(.moveRejectedToFolder)
                 }
                 .keyboardShortcut(keyboardProfile.menuShortcut(for: .moveRejectedToFolder))

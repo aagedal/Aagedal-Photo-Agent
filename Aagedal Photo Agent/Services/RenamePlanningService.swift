@@ -19,9 +19,16 @@ nonisolated struct RenamePlanningService: Sendable {
         artifactRegistry: RenameArtifactRegistry = .standard,
         environment: RenamePlanningEnvironment
     ) -> RenamePlan {
+        // Same-folder, same-stem images (RAW+JPEG, photo+video) share one sequence value so a
+        // `{stem}-{seq}` recipe keeps the pair together instead of splitting it across numbers.
+        let sequenceIndexes = pairedSequenceIndexes(
+            items: items,
+            caseSensitivity: environment.caseSensitivity
+        )
+        let stemSiblings = StemSiblingIndex(items: items, environment: environment)
         let evaluations = items.enumerated().map { itemIndex, item in
             var context = item.context
-            context.sequenceIndex = itemIndex
+            context.sequenceIndex = sequenceIndexes[itemIndex]
             context.originalFilename = item.sourceImageURL.lastPathComponent
             return renderer.evaluate(recipe, context: context)
         }
@@ -45,8 +52,16 @@ nonisolated struct RenamePlanningService: Sendable {
         // Artifact sources owned by a moving item are vacatable just like the image itself. This
         // is what allows A↔B swaps (and longer cycles) to include XMP/JSON/custom artifacts.
         var vacatableSourceKeys: Set<String> = []
+        let initiallyMovingImageKeys = Set(initiallyVacatingItemIndexes.map {
+            pathKey(items[$0].sourceImageURL, caseSensitivity: environment.caseSensitivity)
+        })
         for index in initiallyVacatingItemIndexes.sorted() {
             guard let destinationFilename = evaluations[index].proposedFilename else { continue }
+            // A stem-named artifact that a staying sibling still uses is copied, never vacated.
+            let retainsSharedArtifacts = stemSiblings.hasStayingSibling(
+                of: items[index].sourceImageURL,
+                movingImageKeys: initiallyMovingImageKeys
+            )
             let actions = artifactActions(
                 for: items[index].sourceImageURL,
                 destinationFilename: destinationFilename,
@@ -56,6 +71,10 @@ nonisolated struct RenamePlanningService: Sendable {
                 originalFilenameMetadata: recipe.originalFilenameMetadata
             )
             for action in actions {
+                if retainsSharedArtifacts,
+                   isStemSharedArtifact(action, registry: artifactRegistry) {
+                    continue
+                }
                 vacatableSourceKeys.insert(pathKey(
                     action.sourceURL,
                     caseSensitivity: environment.caseSensitivity
@@ -362,6 +381,12 @@ nonisolated struct RenamePlanningService: Sendable {
             items: items,
             caseSensitivity: environment.caseSensitivity
         )
+        entries = resolvingSharedStemArtifacts(
+            entries: entries,
+            registry: artifactRegistry,
+            stemSiblings: stemSiblings,
+            caseSensitivity: environment.caseSensitivity
+        )
         // Rebuild from accepted entries after dependency validation. A blocked dependent may have
         // tentatively reserved paths during the first pass; none of those may reach execution.
         reservedURLs = reservedDestinations(
@@ -559,6 +584,13 @@ nonisolated struct RenamePlanningService: Sendable {
             candidateKeys[key] = action
 
             if let reserved = reservations[key] {
+                // A RAW+JPEG pair given the same name plans its shared stem sidecar twice with
+                // identical source and destination; that is one artifact, not a collision.
+                if reserved.itemIndex != itemIndex,
+                   normalizedPath(reserved.url) == normalizedPath(action.destinationURL),
+                   reserved.sourceKey == pathKey(action.sourceURL, caseSensitivity: snapshot.caseSensitivity) {
+                    continue
+                }
                 let exact = normalizedPath(reserved.url) == normalizedPath(action.destinationURL)
                 conflicts.append(RenamePlanIssue(
                     severity: .blocking,
@@ -623,7 +655,8 @@ nonisolated struct RenamePlanningService: Sendable {
             reservations[key] = Reservation(
                 itemIndex: itemIndex,
                 artifactIdentifier: action.identifier,
-                url: action.destinationURL
+                url: action.destinationURL,
+                sourceKey: pathKey(action.sourceURL, caseSensitivity: caseSensitivity)
             )
             reservedURLs.append(action.destinationURL)
         }
@@ -789,6 +822,174 @@ nonisolated struct RenamePlanningService: Sendable {
         let itemIndex: Int
         let artifactIdentifier: String
         let url: URL
+        let sourceKey: String
+    }
+
+    /// Dense sequence values in visible order, with every same-folder, same-stem image sharing
+    /// the value of the first one seen.
+    private func pairedSequenceIndexes(
+        items: [RenamePlanningItem],
+        caseSensitivity: RenamePathCaseSensitivity
+    ) -> [Int] {
+        var assigned: [String: Int] = [:]
+        return items.map { item in
+            let key = pathKey(item.sourceImageURL.deletingPathExtension(), caseSensitivity: caseSensitivity)
+            if let existing = assigned[key] { return existing }
+            let next = assigned.count
+            assigned[key] = next
+            return next
+        }
+    }
+
+    private func isStemSharedArtifact(
+        _ action: RenameArtifactAction,
+        registry: RenameArtifactRegistry
+    ) -> Bool {
+        action.role == .associated && registry.rules.contains {
+            $0.identifier == action.identifier && $0.role == .associated && $0.filenamePattern.basis == .stem
+        }
+    }
+
+    /// Stem-named artifacts (XMP, legacy JSON) belong to every image with that stem. When several
+    /// accepted renames carry the same one it moves once, preferring the action that carries the
+    /// RAW original-filename mutation; different destinations would split the pair and block.
+    /// When an image with that stem stays behind, the remaining action copies instead of moving.
+    private func resolvingSharedStemArtifacts(
+        entries initialEntries: [RenamePlanEntry],
+        registry: RenameArtifactRegistry,
+        stemSiblings: StemSiblingIndex,
+        caseSensitivity: RenamePathCaseSensitivity
+    ) -> [RenamePlanEntry] {
+        struct Member: Hashable {
+            let entry: Int
+            let action: Int
+        }
+        let movingImageKeys = Set(initialEntries.compactMap { entry -> String? in
+            guard entry.disposition == .rename,
+                  let destination = entry.plannedDestinationImageURL,
+                  normalizedPath(destination) != normalizedPath(entry.sourceImageURL)
+            else { return nil }
+            return pathKey(entry.sourceImageURL, caseSensitivity: caseSensitivity)
+        })
+        var groups: [String: [Member]] = [:]
+        var groupOrder: [String] = []
+        for (entryIndex, entry) in initialEntries.enumerated() where entry.disposition == .rename {
+            for (actionIndex, action) in entry.plannedArtifactActions.enumerated()
+            where action.changesPath && isStemSharedArtifact(action, registry: registry) {
+                let key = pathKey(action.sourceURL, caseSensitivity: caseSensitivity)
+                if groups[key] == nil { groupOrder.append(key) }
+                groups[key, default: []].append(Member(entry: entryIndex, action: actionIndex))
+            }
+        }
+
+        func action(_ member: Member) -> RenameArtifactAction {
+            initialEntries[member.entry].plannedArtifactActions[member.action]
+        }
+        var removed: Set<Member> = []
+        var copied: Set<Member> = []
+        var splitIssues: [Int: [RenamePlanIssue]] = [:]
+        for key in groupOrder {
+            guard let members = groups[key], let first = members.first else { continue }
+            let firstDestination = pathKey(action(first).destinationURL, caseSensitivity: caseSensitivity)
+            let splitMembers = members.dropFirst().filter {
+                pathKey(action($0).destinationURL, caseSensitivity: caseSensitivity) != firstDestination
+            }
+            guard splitMembers.isEmpty else {
+                for member in splitMembers {
+                    splitIssues[member.entry, default: []].append(RenamePlanIssue(
+                        severity: .blocking,
+                        itemIndex: initialEntries[member.entry].itemIndex,
+                        artifactIdentifier: action(member).identifier,
+                        url: action(member).sourceURL,
+                        code: .sharedArtifactSplit(otherItemIndex: initialEntries[first.entry].itemIndex)
+                    ))
+                }
+                continue
+            }
+            let keeper = members.first { action($0).originalFilenameMetadataMutation != nil } ?? first
+            removed.formUnion(members.filter { $0 != keeper })
+            if stemSiblings.hasStayingSibling(
+                of: initialEntries[keeper.entry].sourceImageURL,
+                movingImageKeys: movingImageKeys
+            ) {
+                copied.insert(keeper)
+            }
+        }
+        guard !removed.isEmpty || !copied.isEmpty || !splitIssues.isEmpty else { return initialEntries }
+
+        return initialEntries.enumerated().map { entryIndex, entry in
+            if let issues = splitIssues[entryIndex] {
+                return RenamePlanEntry(
+                    itemIndex: entry.itemIndex,
+                    sourceImageURL: entry.sourceImageURL,
+                    requestedDestinationImageURL: entry.requestedDestinationImageURL,
+                    plannedDestinationImageURL: nil,
+                    disposition: .blocked,
+                    recipeEvaluation: entry.recipeEvaluation,
+                    requestedArtifactActions: entry.requestedArtifactActions,
+                    plannedArtifactActions: [],
+                    issues: entry.issues + issues
+                )
+            }
+            var actions: [RenameArtifactAction] = []
+            for (actionIndex, action) in entry.plannedArtifactActions.enumerated() {
+                let member = Member(entry: entryIndex, action: actionIndex)
+                if removed.contains(member) { continue }
+                actions.append(copied.contains(member) ? action.preservingSource() : action)
+            }
+            guard actions != entry.plannedArtifactActions else { return entry }
+            return RenamePlanEntry(
+                itemIndex: entry.itemIndex,
+                sourceImageURL: entry.sourceImageURL,
+                requestedDestinationImageURL: entry.requestedDestinationImageURL,
+                plannedDestinationImageURL: entry.plannedDestinationImageURL,
+                disposition: entry.disposition,
+                recipeEvaluation: entry.recipeEvaluation,
+                requestedArtifactActions: entry.requestedArtifactActions,
+                plannedArtifactActions: actions,
+                issues: entry.issues
+            )
+        }
+    }
+
+    /// Images and videos grouped by folder+stem, from the snapshot plus the planned sources.
+    private struct StemSiblingIndex {
+        let caseSensitivity: RenamePathCaseSensitivity
+        private let membersByStemKey: [String: Set<String>]
+
+        init(items: [RenamePlanningItem], environment: RenamePlanningEnvironment) {
+            let caseSensitivity = environment.caseSensitivity
+            self.caseSensitivity = caseSensitivity
+            let stemKeys = Set(items.map {
+                pathKey($0.sourceImageURL.deletingPathExtension(), caseSensitivity: caseSensitivity)
+            })
+            var isMediaByExtension: [String: Bool] = [:]
+            var grouped: [String: Set<String>] = [:]
+            for url in items.map(\.sourceImageURL) + Array(environment.existingURLs) {
+                let stemKey = pathKey(url.deletingPathExtension(), caseSensitivity: caseSensitivity)
+                guard stemKeys.contains(stemKey) else { continue }
+                let pathExtension = url.pathExtension.lowercased()
+                let isMedia: Bool
+                if let cached = isMediaByExtension[pathExtension] {
+                    isMedia = cached
+                } else {
+                    isMedia = SupportedImageFormats.isSupported(url: url) || BrowserFileVisibility.isVideo(url)
+                    isMediaByExtension[pathExtension] = isMedia
+                }
+                guard isMedia else { continue }
+                grouped[stemKey, default: []].insert(pathKey(url, caseSensitivity: caseSensitivity))
+            }
+            membersByStemKey = grouped
+        }
+
+        /// True when another image/video with the same folder and stem is not being renamed away.
+        func hasStayingSibling(of imageURL: URL, movingImageKeys: Set<String>) -> Bool {
+            let imageKey = pathKey(imageURL, caseSensitivity: caseSensitivity)
+            let stemKey = pathKey(imageURL.deletingPathExtension(), caseSensitivity: caseSensitivity)
+            return membersByStemKey[stemKey]?.contains {
+                $0 != imageKey && !movingImageKeys.contains($0)
+            } == true
+        }
     }
 
     private struct PathSnapshot {
