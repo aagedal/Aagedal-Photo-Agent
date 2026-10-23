@@ -399,7 +399,7 @@ private nonisolated final class BlockingReceiptSummaryWriter: @unchecked Sendabl
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1

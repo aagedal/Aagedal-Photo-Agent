@@ -311,7 +311,7 @@ private nonisolated final class BlockingStructuredKeywordSettingsImportProbe: @u
             if url.lastPathComponent == "first.txt" {
                 firstReadStarted = true
                 condition.broadcast()
-                while !firstReadReleased { condition.wait() }
+                while !firstReadReleased { if !condition.waitBounded() { break } }
             }
             condition.unlock()
             return Data((url.lastPathComponent == "first.txt" ? "First\n" : "Second\n").utf8)
@@ -574,7 +574,7 @@ private nonisolated final class StructuredKeywordBlockedWriteProbe: @unchecked S
     func write() {
         condition.lock()
         started = true
-        while !released { condition.wait() }
+        while !released { if !condition.waitBounded() { break } }
         condition.unlock()
     }
 
@@ -638,7 +638,7 @@ private nonisolated final class StructuredKeywordReplacementReadProbe: @unchecke
         condition.lock()
         started += 1
         let index = started
-        while index <= 2 && !released.contains(index) { condition.wait() }
+        while index <= 2 && !released.contains(index) { if !condition.waitBounded() { break } }
         condition.unlock()
         return Data((index == 1 ? "Obsolete\n" : "Replacement\n").utf8)
     }

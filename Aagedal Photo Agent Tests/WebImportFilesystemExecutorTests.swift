@@ -18,7 +18,7 @@ struct WebImportFilesystemExecutorTests {
             #expect(WebImportExecutorContext.marker == root)
             if operation == .prepare {
                 signal.yield(())
-                gate.wait()
+                gate.waitBounded()
             }
         })
         let service = WebMediaImportService(download: { _, _, _, _ in

@@ -1198,11 +1198,9 @@ struct MetadataPanel: View {
             onPendingStatusChanged?()
             return
         }
-        let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-        let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
         // Simple resolves C2PA to .writeToFile and deliberately ignores content
         // credentials — no warning, the file is written like any other.
-        let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+        let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
         viewModel.commitEdits(
             mode: mode,
             onComplete: onPendingStatusChanged
@@ -2748,9 +2746,7 @@ struct MetadataPanel: View {
             }
 
             HStack(spacing: 12) {
-                let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-                let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+                let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
 
                 if let onApplyTemplate {
                     Button {

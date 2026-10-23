@@ -250,7 +250,7 @@ private nonisolated final class BlockingTeamRosterExportWriterProbe: @unchecked 
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1

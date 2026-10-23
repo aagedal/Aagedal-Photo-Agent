@@ -135,7 +135,7 @@ nonisolated private final class BlockingCleanFeedRenderProbe: @unchecked Sendabl
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return CIImage(color: .gray).cropped(

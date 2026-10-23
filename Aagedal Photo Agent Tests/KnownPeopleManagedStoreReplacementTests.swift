@@ -805,7 +805,7 @@ nonisolated private final class KnownPeopleManagedBlockingHook: @unchecked Senda
         condition.lock()
         entered = true
         condition.broadcast()
-        while !released { condition.wait() }
+        while !released { if !condition.waitBounded() { break } }
         condition.unlock()
     }
 

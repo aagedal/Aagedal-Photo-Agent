@@ -389,7 +389,7 @@ private nonisolated final class MetadataSidecarExecutorGate: @unchecked Sendable
 
     func enter() {
         lock.withLock { entered = true }
-        semaphore.wait()
+        semaphore.waitBounded()
     }
 
     func release() { semaphore.signal() }

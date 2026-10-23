@@ -301,7 +301,7 @@ private nonisolated final class BlockingProjectArchiveIOProbe: @unchecked Sendab
                 observedMainThread = observedMainThread || Thread.isMainThread
                 condition.broadcast()
                 if blockFirstExport && exportCount == 1 {
-                    while !firstExportReleased { condition.wait() }
+                    while !firstExportReleased { if !condition.waitBounded() { break } }
                 }
                 activeExports -= 1
                 condition.unlock()

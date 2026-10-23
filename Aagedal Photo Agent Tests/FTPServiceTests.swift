@@ -377,7 +377,7 @@ private nonisolated final class BlockingHistoryAvailabilityProbe: @unchecked Sen
         condition.broadcast()
         if count == 1 {
             while !firstProbeReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()
@@ -626,7 +626,7 @@ private nonisolated final class FTPSidecarLoadProbe: @unchecked Sendable {
         condition.broadcast()
         if blocksFirstLoad, loadCount == 1 {
             while !firstLoadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()

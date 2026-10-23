@@ -594,7 +594,7 @@ private nonisolated final class BundleCommitGate: @unchecked Sendable {
         committedCount += 1
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
     }
@@ -631,7 +631,7 @@ private nonisolated final class BlockingRejectMoveProbe: @unchecked Sendable {
         started = true
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
 

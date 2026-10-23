@@ -940,7 +940,7 @@ private nonisolated final class BlockingKeywordListEditorFileAccessProbe: @unche
                 if readCount == 1 {
                     firstReadStarted = true
                     condition.broadcast()
-                    while !firstReadReleased { condition.wait() }
+                    while !firstReadReleased { if !condition.waitBounded() { break } }
                 }
                 activeReads -= 1
                 condition.unlock()

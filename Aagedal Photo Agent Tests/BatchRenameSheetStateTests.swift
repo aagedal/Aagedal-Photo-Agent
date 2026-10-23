@@ -844,7 +844,7 @@ private nonisolated final class BlockingBatchRenamePlanBuilder: @unchecked Senda
         let invocation = invocationCount
         condition.broadcast()
         while !releasesAllInvocations, !releasedInvocations.contains(invocation) {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
 
@@ -903,7 +903,7 @@ private nonisolated final class BlockingBatchRenameSnapshotIO: @unchecked Sendab
                 isBlocked = true
                 condition.broadcast()
                 while !isReleased {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 return [url.appendingPathComponent("old.jpg")]

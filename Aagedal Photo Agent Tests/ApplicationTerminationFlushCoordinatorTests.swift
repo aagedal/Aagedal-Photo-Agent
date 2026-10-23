@@ -201,7 +201,7 @@ private nonisolated final class TerminationPersistenceGate: @unchecked Sendable 
 private nonisolated final class TerminationBlockingGate: @unchecked Sendable {
     private let semaphore = DispatchSemaphore(value: 0)
     func signal() { semaphore.signal() }
-    func wait() { semaphore.wait() }
+    func wait() { semaphore.waitBounded() }
 }
 
 private actor TerminationAsyncSignal {

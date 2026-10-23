@@ -456,7 +456,7 @@ private nonisolated final class KnownPeopleWriterTestGate: @unchecked Sendable {
         lock.withLock { signalled = true }
         semaphore.signal()
     }
-    func waitUntilSignalled() { semaphore.wait() }
+    func waitUntilSignalled() { semaphore.waitBounded() }
     func waitForSignal(seconds: Double) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(seconds)

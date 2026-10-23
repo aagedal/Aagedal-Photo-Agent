@@ -1207,7 +1207,7 @@ private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Senda
             let invocation = _loadInvocationCount
             condition.broadcast()
             while blockFirstLoad, invocation == 1, !didReleaseFirstLoad {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
             activeLoads -= 1
             condition.broadcast()
@@ -1237,7 +1237,7 @@ private nonisolated final class ExportCameraRawResolutionProbe: @unchecked Senda
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _loadInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -1312,7 +1312,7 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
                 while blockFirstVisibilityRead,
                       invocation == 1,
                       !didReleaseFirstVisibilityRead {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 endOperation()
@@ -1350,7 +1350,7 @@ private nonisolated final class ExportArtifactFinalizationProbe: @unchecked Send
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _visibilityReadInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -2289,7 +2289,7 @@ nonisolated private final class RAWArchiveCleanupProbe: @unchecked Sendable {
                 while blockFirstRemoval,
                       _removalInvocationCount == 1,
                       !didReleaseFirstRemoval {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
 
                 defer {
@@ -2326,7 +2326,7 @@ nonisolated private final class RAWArchiveCleanupProbe: @unchecked Sendable {
             DispatchQueue.global().async { [self] in
                 condition.lock()
                 while _removalInvocationCount == 0 {
-                    condition.wait()
+                    if !condition.waitBounded() { break }
                 }
                 condition.unlock()
                 continuation.resume()
@@ -3551,7 +3551,7 @@ private nonisolated final class BlockingAdvancedExportPreviewCleanupProbe: @unch
         condition.broadcast()
         if storedRemovalCount == 1 {
             while !firstRemovalReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeRemovalCount -= 1

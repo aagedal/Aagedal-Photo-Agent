@@ -1323,7 +1323,7 @@ nonisolated private final class BlockingTemplateImportPreviewProbe: @unchecked S
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -1531,7 +1531,7 @@ nonisolated private final class BlockingMetadataTemplateCRUDProbe: @unchecked Se
         maximumActiveOperations = max(maximumActiveOperations, activeOperations)
         condition.broadcast()
         if invocation == 1 {
-            while !firstLoadReleased { condition.wait() }
+            while !firstLoadReleased { if !condition.waitBounded() { break } }
         }
         activeOperations -= 1
         condition.unlock()

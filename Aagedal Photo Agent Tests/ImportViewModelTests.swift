@@ -33,7 +33,7 @@ private nonisolated final class ImportPreflightTestGate: @unchecked Sendable {
         started = true
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
     }
@@ -83,7 +83,7 @@ private nonisolated final class ImportPreflightSerializationGate: @unchecked Sen
             firstProbeStarted = true
             condition.broadcast()
             while !released {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeProbeCount -= 1
@@ -157,7 +157,7 @@ private nonisolated final class ImportBookmarkGate: @unchecked Sendable {
         started = true
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
     }
@@ -819,7 +819,7 @@ private nonisolated final class ImportSourceBlockingSecurityScopeProbe: @uncheck
         started = true
         condition.broadcast()
         while !released {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return true
@@ -2227,7 +2227,7 @@ private nonisolated final class SafePathContainmentProbe: @unchecked Sendable {
             blocked = true
             condition.broadcast()
             while !released {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()

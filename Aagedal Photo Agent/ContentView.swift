@@ -1383,9 +1383,7 @@ struct ContentView: View {
             browserViewModel.refreshPendingStatusBatch(for: selection.map(\.url))
             return
         }
-        let mode = MetadataWriteMode.current(
-            forC2PA: selection.contains { $0.hasC2PA },
-            isRaw: selection.contains { SupportedImageFormats.isRaw(url: $0.url) })
+        let mode = MetadataWriteMode.current(forSelection: selection)
         let result = await withCheckedContinuation { continuation in
             metadataViewModel.commitEditsReportingResult(mode: mode) { continuation.resume(returning: $0) }
         }
@@ -4401,9 +4399,7 @@ struct ContentViewModifiers: ViewModifier {
                         let previousImages = metadataViewModel.selectedURLs.compactMap { url in
                             browserViewModel.urlToImageIndex[url].map { browserViewModel.images[$0] }
                         }
-                        let hadC2PA = previousImages.contains(where: \.hasC2PA)
-                        let hadRaw = previousImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-                        let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
+                        let mode = MetadataWriteMode.current(forSelection: previousImages)
                         let previousURLs = metadataViewModel.selectedURLs
                         // Admit the save before scheduling the next selection load; its I/O
                         // is already asynchronous. Avoid adding another deferred model read.
@@ -4437,9 +4433,7 @@ struct ContentViewModifiers: ViewModifier {
                                 throw CaptionWorkspaceFlushError.handlerUnavailable
                             }
                         }, commitConfigured: {
-                            let hasC2PA = browserViewModel.selectedImages.contains { $0.hasC2PA }
-                            let isRaw = browserViewModel.selectedImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
-                            let mode = MetadataWriteMode.current(forC2PA: hasC2PA, isRaw: isRaw)
+                            let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
                             metadataViewModel.commitEdits(mode: mode)
                         })
                 } catch {

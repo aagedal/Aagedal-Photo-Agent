@@ -3514,6 +3514,23 @@ struct MetadataWriteModePresetTests {
         }
     }
 
+    @Test("A RAW+JPEG selection embeds the JPEGs and leaves RAW to its sidecar; other mixes stay protective")
+    func selectionResolution() {
+        let raw = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_1.ARW"))
+        let jpeg = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_1.JPG"))
+        var signed = ImageFile(url: URL(fileURLWithPath: "/tmp/selection/IMG_2.JPG"))
+        signed.hasC2PA = true
+        withPreset(.professional) {
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg]) == .writeToFile)
+            #expect(MetadataWriteMode.current(forSelection: [raw]) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forSelection: [jpeg, signed]) == .writeToXMPSidecar)
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg, signed]) == .writeToXMPSidecar)
+        }
+        withPreset(.simple) {
+            #expect(MetadataWriteMode.current(forSelection: [raw, jpeg]) == .writeToFile)
+        }
+    }
+
     @Test("Custom RAW resolution coerces an unsafe embedded preference to XMP")
     func customRaw() {
         withPreset(.custom) {

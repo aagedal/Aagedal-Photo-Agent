@@ -542,7 +542,7 @@ private nonisolated final class BlockingTextFileImportReaderProbe: @unchecked Se
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1
@@ -724,7 +724,7 @@ private nonisolated final class BlockingAnalysisExportWriter: @unchecked Sendabl
         condition.broadcast()
         if writeCount == 1 {
             while !firstWriteReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeWrites -= 1
@@ -1090,7 +1090,7 @@ private nonisolated final class BlockingExportDirectoryWriterProbe: @unchecked S
         condition.broadcast()
         if count == 1 {
             while !firstCreationReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeCreations -= 1
@@ -1381,7 +1381,7 @@ private nonisolated final class BlockingQuickListFileAccessProbe: @unchecked Sen
         condition.broadcast()
         if checkCount == 1 {
             while !firstCheckReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeChecks -= 1

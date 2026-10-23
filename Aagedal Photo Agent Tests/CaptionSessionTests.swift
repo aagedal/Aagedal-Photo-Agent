@@ -531,7 +531,7 @@ private nonisolated final class BlockingGate: @unchecked Sendable {
     }
 
     func wait() {
-        semaphore.wait()
+        semaphore.waitBounded()
     }
 
 }
@@ -1133,7 +1133,7 @@ struct MetadataReviewPersistenceTests {
         let release = DispatchSemaphore(value: 0)
         let queue = CaptionDraftPersistenceQueue(label: "review.in-flight")
         let coordinator = CaptionWorkspaceFlushCoordinator(persistenceQueue: queue)
-        queue.enqueue(operation: { started.signal(); release.wait() })
+        queue.enqueue(operation: { started.signal(); release.waitBounded() })
         defer { release.signal() }
         let didStart = await withCheckedContinuation { continuation in
             DispatchQueue.global().async {

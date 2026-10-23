@@ -415,7 +415,7 @@ private nonisolated final class BlockingImporterProbe: C2PAIdentityImporting, @u
         condition.broadcast()
         if count == 1 {
             while !firstImportReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeImports -= 1

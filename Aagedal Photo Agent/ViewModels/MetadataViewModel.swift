@@ -2157,14 +2157,34 @@ final class MetadataViewModel {
         }
     }
 
-    private func writeXMPSidecar() async {
+    /// Everything an XMP sidecar write needs, captured when the save is requested so a write
+    /// that waits behind an earlier one still writes this selection's edits.
+    private struct XMPSidecarWriteCapture {
+        let urls: [URL]
+        let folder: URL?
+        let edited: IPTCMetadata
+        let mutation: @Sendable (inout IPTCMetadata) -> Void
+        let baselines: [URL: IPTCMetadata]
+    }
+
+    /// Returns nil (with `saveError` set) when the write must not start.
+    private func captureXMPSidecarWrite() -> XMPSidecarWriteCapture? {
         do { try requirePrimaryDevelopWritesPersisted() }
-        catch { saveError = error.localizedDescription; return }
-        let urls = selectedURLs
-        let folderAtAdmission = currentFolderURL
-        guard !urls.isEmpty else { return }
+        catch { saveError = error.localizedDescription; return nil }
+        guard !selectedURLs.isEmpty else { return nil }
+        return XMPSidecarWriteCapture(
+            urls: selectedURLs,
+            folder: currentFolderURL,
+            edited: editingMetadata,
+            mutation: capturedBatchMutation(),
+            baselines: batchMetadataByURL
+        )
+    }
+
+    private func writeXMPSidecar(_ capture: XMPSidecarWriteCapture) async {
+        let urls = capture.urls
         do {
-            if let folder = folderAtAdmission {
+            if let folder = capture.folder {
                 for url in urls {
                     try await sidecarService.requireNoPendingOrientation(for: url, in: folder)
                 }
@@ -2173,13 +2193,9 @@ final class MetadataViewModel {
             saveError = error.localizedDescription
             return
         }
-
-        guard !Task.isCancelled, selectedURLs == urls, currentFolderURL == folderAtAdmission else {
-            saveError = "The selection changed before the XMP write began. Try the write again."
-            return
-        }
+        guard !Task.isCancelled else { return }
         if urls.count == 1, let imageURL = urls.first {
-            let edited = editingMetadata
+            let edited = capture.edited
             do {
                 try await xmpSidecarService.saveSidecarSerialized(
                     metadata: edited,
@@ -2194,15 +2210,13 @@ final class MetadataViewModel {
             return
         }
 
-        let mutation = capturedBatchMutation()
-        let baselines = batchMetadataByURL
         for imageURL in urls {
             guard !Task.isCancelled else { return }
             do {
                 let installed = try await xmpSidecarService.updateSidecarSerialized(
                     for: imageURL,
-                    fallback: baselines[imageURL] ?? IPTCMetadata(),
-                    mutation: mutation
+                    fallback: capture.baselines[imageURL] ?? IPTCMetadata(),
+                    mutation: capture.mutation
                 )
                 if selectedURLs == urls {
                     batchMetadataByURL[imageURL] = installed
@@ -2217,9 +2231,19 @@ final class MetadataViewModel {
         onComplete: @escaping (MetadataCommitResult) -> Void
     ) {
         guard let folderURL = currentFolderURL else {
-            writeTask?.cancel()
+            guard let capture = captureXMPSidecarWrite() else {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
+            // Wait for an earlier write instead of cancelling it partway through its selection.
+            let priorWrite = writeTask
+            let generation = writeTaskGeneration + 1
+            isSaving = true
+            saveError = nil
             writeTask = Task {
-                await writeXMPSidecar()
+                defer { if writeTaskGeneration == generation { isSaving = false } }
+                await priorWrite?.value
+                await writeXMPSidecar(capture)
                 if let saveError {
                     onComplete(.failed(message: saveError))
                 } else {
@@ -2230,15 +2254,26 @@ final class MetadataViewModel {
         }
 
         if selectedCount > 1 {
-            writeTask?.cancel()
+            guard let capture = captureXMPSidecarWrite() else {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
+            let historyCapture = captureBatchSidecars()
+            let priorWrite = writeTask
+            let generation = writeTaskGeneration + 1
+            isSaving = true
+            saveError = nil
             writeTask = Task {
-                await writeXMPSidecar()
+                defer { if writeTaskGeneration == generation { isSaving = false } }
+                await priorWrite?.value
+                await writeXMPSidecar(capture)
                 if let saveError {
                     onComplete(.failed(message: saveError))
                     return
                 }
-                await saveBatchSidecars(folderURL: folderURL, pendingChanges: false)
-                hasChanges = false
+                await saveBatchSidecars(folderURL: folderURL, pendingChanges: false,
+                    updateState: true, capture: historyCapture)
+                if selectedURLs == historyCapture.selectedAtStart { hasChanges = false }
                 if let saveError {
                     onComplete(.failed(message: saveError))
                 } else {
@@ -2380,6 +2415,11 @@ final class MetadataViewModel {
               let folderURL = currentFolderURL else {
             // Batch / folderless fallback. Report completion only after both writes actually
             // finish, so callers (pending badges, Develop lifecycle) never see an early success.
+            let xmpCapture = alsoWriteXMPSidecar ? captureXMPSidecarWrite() : nil
+            if alsoWriteXMPSidecar, xmpCapture == nil {
+                onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
+                return
+            }
             writeMetadata()
             let embedWrite = writeTask
             // Replacing `writeTask` advances the generation, so the inner write no longer owns
@@ -2396,8 +2436,8 @@ final class MetadataViewModel {
                     onComplete(Task.isCancelled ? .cancelled(message: saveError) : .failed(message: saveError))
                     return
                 }
-                if alsoWriteXMPSidecar {
-                    await writeXMPSidecar()
+                if let xmpCapture {
+                    await writeXMPSidecar(xmpCapture)
                     if let saveError {
                         onComplete(.failed(message: saveError))
                         return
@@ -3981,10 +4021,15 @@ final class MetadataViewModel {
                 }
             }
         } else if selectedCount > 1 {
+            // Capture now and wait for an earlier write instead of cancelling it partway through
+            // its selection; this save still applies to the photos selected when it was requested.
+            let capture = captureBatchSidecars()
+            let priorWrite = writeTask
             isSaving = true
-            writeTask?.cancel()
             writeTask = Task {
-                await saveBatchSidecars(folderURL: folderURL)
+                await priorWrite?.value
+                await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
+                    updateState: true, capture: capture)
                 if writeTaskGeneration == generation { isSaving = false }
             }
         }
@@ -4069,6 +4114,37 @@ final class MetadataViewModel {
         return history
     }
 
+    /// The batch editor state a sidecar save applies, captured when the save is requested so a
+    /// save that waits behind an earlier write still applies this selection's edits.
+    private struct BatchSidecarCapture {
+        let urls: [URL]
+        let selectedAtStart: [URL]
+        let baselines: [URL: IPTCMetadata]
+        let savedEditing: IPTCMetadata
+        let savedFieldMutations: [MetadataFieldID: MetadataFieldMutation]
+        let savedLocationsShownMutation: BatchLocationsShownMutation
+        let savedImageSupplierMutation: EditorialImageSupplierMutation
+        let mutation: @Sendable (inout IPTCMetadata) -> Void
+        let overridesSuppliers: Bool
+    }
+
+    private func captureBatchSidecars(
+        targetURLs: [URL]? = nil,
+        capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
+    ) -> BatchSidecarCapture {
+        BatchSidecarCapture(
+            urls: targetURLs ?? selectedURLs,
+            selectedAtStart: selectedURLs,
+            baselines: batchMetadataByURL,
+            savedEditing: editingMetadata,
+            savedFieldMutations: batchFieldMutations,
+            savedLocationsShownMutation: batchLocationsShownMutation,
+            savedImageSupplierMutation: batchImageSupplierMutation,
+            mutation: capturedMutation?.mutation ?? capturedBatchMutation(),
+            overridesSuppliers: capturedMutation?.overridesSuppliers ?? (batchImageSupplierMutation != .untouched)
+        )
+    }
+
     private func saveBatchSidecars(
         folderURL: URL,
         pendingChanges: Bool = true,
@@ -4076,16 +4152,30 @@ final class MetadataViewModel {
         updateState: Bool = true,
         capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
     ) async {
+        await saveBatchSidecars(
+            folderURL: folderURL,
+            pendingChanges: pendingChanges,
+            updateState: updateState,
+            capture: captureBatchSidecars(targetURLs: targetURLs, capturedMutation: capturedMutation)
+        )
+    }
+
+    private func saveBatchSidecars(
+        folderURL: URL,
+        pendingChanges: Bool,
+        updateState: Bool,
+        capture: BatchSidecarCapture
+    ) async {
         let now = Date()
-        let mutation = capturedMutation?.mutation ?? capturedBatchMutation()
-        let overridesSuppliers = capturedMutation?.overridesSuppliers ?? (batchImageSupplierMutation != .untouched)
-        let urls = targetURLs ?? selectedURLs
-        let selectedAtStart = selectedURLs
-        let baselines = batchMetadataByURL
-        let savedEditing = editingMetadata
-        let savedFieldMutations = batchFieldMutations
-        let savedLocationsShownMutation = batchLocationsShownMutation
-        let savedImageSupplierMutation = batchImageSupplierMutation
+        let mutation = capture.mutation
+        let overridesSuppliers = capture.overridesSuppliers
+        let urls = capture.urls
+        let selectedAtStart = capture.selectedAtStart
+        let baselines = capture.baselines
+        let savedEditing = capture.savedEditing
+        let savedFieldMutations = capture.savedFieldMutations
+        let savedLocationsShownMutation = capture.savedLocationsShownMutation
+        let savedImageSupplierMutation = capture.savedImageSupplierMutation
         var allSaved = true
 
         for imageURL in urls {

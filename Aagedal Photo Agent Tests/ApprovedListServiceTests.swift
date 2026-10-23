@@ -394,7 +394,7 @@ private nonisolated final class BlockingApprovedListImportWriteProbe: @unchecked
                     writeStarted = true
                     condition.broadcast()
                     while !shouldReleaseWrite {
-                        condition.wait()
+                        if !condition.waitBounded() { break }
                     }
                 }
             }
@@ -449,7 +449,7 @@ private nonisolated final class BlockingApprovedListImportAccessProbe: @unchecke
                     firstReadStarted = true
                     condition.broadcast()
                     while !shouldReleaseFirstRead {
-                        condition.wait()
+                        if !condition.waitBounded() { break }
                     }
                 }
                 condition.unlock()

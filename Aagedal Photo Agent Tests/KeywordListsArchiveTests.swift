@@ -893,7 +893,7 @@ private nonisolated final class BlockingKeywordListsArchiveImporterProbe: @unche
         condition.broadcast()
         if importCount == 1 {
             while !firstImportReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeImports -= 1
@@ -1009,7 +1009,7 @@ private nonisolated final class BlockingKeywordListsArchivePreviewReaderProbe: @
         condition.broadcast()
         if inspectionCount == 1 {
             while !firstInspectionReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeInspections -= 1

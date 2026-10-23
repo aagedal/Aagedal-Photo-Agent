@@ -1523,7 +1523,7 @@ private nonisolated final class KeywordListBackupRetentionIOProbe: @unchecked Se
                 condition.lock()
                 defer { condition.unlock() }
                 deletionStarted = true
-                while !deletionReleased { condition.wait() }
+                while !deletionReleased { if !condition.waitBounded() { break } }
                 names.removeAll { $0 == url.lastPathComponent }
             }
         )
@@ -1591,7 +1591,7 @@ private nonisolated final class BlockingKeywordListBackupFileIOProbe: @unchecked
                 maximumActiveEnumerations = max(maximumActiveEnumerations, activeEnumerations)
                 condition.broadcast()
                 if contentsCount == enumerationToBlock {
-                    while !firstEnumerationReleased { condition.wait() }
+                    while !firstEnumerationReleased { if !condition.waitBounded() { break } }
                 }
                 activeEnumerations -= 1
                 condition.unlock()
@@ -1668,7 +1668,7 @@ private nonisolated final class BlockingKeywordListBackupPreviewReaderProbe: @un
         condition.broadcast()
         if readCount == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1

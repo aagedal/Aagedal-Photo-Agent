@@ -1635,7 +1635,7 @@ nonisolated private final class BlockingKnownPeopleDataSummaryProbe: @unchecked 
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return .complete(31)

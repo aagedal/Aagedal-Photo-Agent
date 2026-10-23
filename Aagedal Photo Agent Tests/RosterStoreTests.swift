@@ -615,7 +615,7 @@ nonisolated final class LibraryRootWriteGate: @unchecked Sendable {
             return continuation
         }
         continuation?.resume()
-        semaphore.wait()
+        semaphore.waitBounded()
     }
 
     func waitUntilBlocked() async throws {

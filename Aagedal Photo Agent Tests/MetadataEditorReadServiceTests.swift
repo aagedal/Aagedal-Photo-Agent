@@ -1998,7 +1998,7 @@ private nonisolated final class MetadataEditorReadAccessProbe: @unchecked Sendab
             )
         }
         defer { lock.withLock { activeReads -= 1 } }
-        if state.2 { firstReadGate.wait() }
+        if state.2 { firstReadGate.waitBounded() }
         if state.1 { withUnsafeCurrentTask { $0?.cancel() } }
 
         let xmp = IPTCMetadata(title: "XMP \(state.0)")
@@ -2075,7 +2075,7 @@ private nonisolated final class MetadataDiscardAdmissionGate: @unchecked Sendabl
 
     func blockAfterAdmission() {
         lock.withLock { entered = true }
-        semaphore.wait()
+        semaphore.waitBounded()
     }
 
     func release() { semaphore.signal() }

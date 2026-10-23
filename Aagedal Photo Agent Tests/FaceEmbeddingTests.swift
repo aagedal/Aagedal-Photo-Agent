@@ -1560,7 +1560,7 @@ private nonisolated final class FaceFolderLoadGate: @unchecked Sendable {
         didStart = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         activeCount -= 1
         condition.unlock()
@@ -2894,7 +2894,7 @@ nonisolated private final class FaceGroupTrashProbe: ImageTrashHandling, @unchec
             attempted.append(url)
         }
         if blocksUntilReleased {
-            releaseSemaphore.wait()
+            releaseSemaphore.waitBounded()
         }
         if failingURLs.contains(url) {
             throw Failure.injected
@@ -2941,7 +2941,7 @@ nonisolated private final class AuraFaceResolutionProbe: @unchecked Sendable {
         observedMainThread = observedMainThread || Thread.isMainThread
         condition.broadcast()
         while index == 0, !firstCallReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         activeCallCount -= 1
         let resolution = resolutions[min(index, resolutions.count - 1)]

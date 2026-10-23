@@ -508,7 +508,7 @@ nonisolated private final class CodeReplacementSourceAccessProbe: @unchecked Sen
         condition.broadcast()
         if blockFirstRead, reads == 1 {
             while !firstReadReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         activeReads -= 1

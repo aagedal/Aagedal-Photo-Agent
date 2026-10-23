@@ -971,7 +971,7 @@ nonisolated private final class SourceRevisionCaptureProbe: @unchecked Sendable 
             firstSnapshotStarted = true
             condition.broadcast()
             while !firstSnapshotReleased {
-                condition.wait()
+                if !condition.waitBounded() { break }
             }
         }
         condition.unlock()
@@ -1151,7 +1151,7 @@ nonisolated private final class BlockingDisplayOrientationProbe: @unchecked Send
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return orientation
@@ -1198,7 +1198,7 @@ nonisolated private final class BlockingSidecarPresenceProbe: @unchecked Sendabl
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return true
@@ -1252,7 +1252,7 @@ nonisolated private final class BlockingDropSourceProbe: @unchecked Sendable {
         isBlocked = true
         condition.broadcast()
         while !isReleased {
-            condition.wait()
+            if !condition.waitBounded() { break }
         }
         condition.unlock()
         return .regularFile
