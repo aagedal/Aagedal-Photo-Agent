@@ -23,6 +23,35 @@ extension CameraRawSettings {
         if source.unparsedMaskCorrections?.isEmpty != false {
             result.unparsedMaskCorrections = existing?.unparsedMaskCorrections
         }
+        // Per-image decode facts, never part of a paste (see their declarations).
+        result.asShotNeutralTemperature = existing?.asShotNeutralTemperature
+        result.asShotNeutralTint = existing?.asShotNeutralTint
+        result.sourceHasHDRHeadroom = existing?.sourceHasHDRHeadroom
+        return result
+    }
+
+    /// The Develop record a single-image (live editor) paste leaves on the active image. Same
+    /// merge as `pasted(_:onto:includeCrop:)` so single and multi-image paste agree, except that
+    /// pasted masks get fresh IDs — they become independent of the source's masks — with the
+    /// pasted layer order remapped to follow them.
+    nonisolated static func pastedIntoEditor(
+        _ source: CameraRawSettings,
+        onto existing: CameraRawSettings?,
+        includeCrop: Bool
+    ) -> CameraRawSettings {
+        var result = pasted(source, onto: existing, includeCrop: includeCrop)
+        guard let masks = source.localAdjustments, !masks.isEmpty else { return result }
+        var freshIDs: [UUID: UUID] = [:]
+        result.localAdjustments = masks.map { mask in
+            var copy = mask
+            copy.id = UUID()
+            freshIDs[mask.id] = copy.id
+            return copy
+        }
+        result.layerOrder = result.layerOrder?.map { ref in
+            guard case .mask(let id) = ref, let fresh = freshIDs[id] else { return ref }
+            return .mask(fresh)
+        }
         return result
     }
 }

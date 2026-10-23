@@ -50,6 +50,13 @@ final class DevelopPreviewSessionCoordinator {
         beginImageSession(nil, orientation: nil)
     }
 
+    /// Clears the full-resolution decode indicator on every exit of the decode that set it — a
+    /// failed upload included — unless a newer session already owns the indicator.
+    func finishFullResolutionDecode(sessionGeneration: UInt64) {
+        guard self.sessionGeneration == sessionGeneration else { return }
+        isDecodingFullResolution = false
+    }
+
     /// Returns the orientation of the retained source only when it belongs to the active image.
     func loadedOrientation(for imageURL: URL) -> Int? {
         guard activeImageURL == imageURL, sourceLoadedURL == imageURL else { return nil }

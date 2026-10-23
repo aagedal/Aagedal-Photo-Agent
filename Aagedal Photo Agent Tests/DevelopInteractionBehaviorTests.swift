@@ -499,6 +499,115 @@ struct DevelopInteractionBehaviorTests {
         #expect(settings.watermarkLayers == [watermark])
         #expect(settings.layerOrder == order)
     }
+
+    @Test("Single-image paste merges exactly like multi-image paste, with fresh mask IDs")
+    func singlePasteMatchesMultiPaste() throws {
+        let sourceMask = MaskAdjustment(name: "Sky", exposure: -0.5)
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var source = CameraRawSettings(exposure2012: 1.0)
+        source.localAdjustments = [sourceMask]
+        source.watermarkLayers = [watermark]
+        source.anonymizer = AnonymizerSettings(amount: 40, blackOut: nil)
+        source.layerOrder = [.mask(sourceMask.id), .global, .watermark(watermark.id)]
+        source.asShotNeutralTemperature = 5000
+
+        let preserved = PreservedMaskCorrection(fields: ["What": .string("Correction")])
+        var target = CameraRawSettings(exposure2012: -0.3)
+        target.toneCurve = ToneCurve(
+            master: [ToneCurvePoint(x: 0, y: 0.1), ToneCurvePoint(x: 1, y: 1)],
+            red: nil, green: nil, blue: nil
+        )
+        target.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20))
+        target.unparsedMaskCorrections = [preserved]
+        target.crop = CameraRawCrop(top: 0.1, left: 0.1, bottom: 0.9, right: 0.9, angle: 0, hasCrop: true)
+        target.asShotNeutralTemperature = 6500
+
+        let multi = CameraRawSettings.pasted(source, onto: target, includeCrop: false)
+        let single = CameraRawSettings.pastedIntoEditor(source, onto: target, includeCrop: false)
+
+        // Everything but the mask identities agrees with the multi-image merge.
+        let freshID = try #require(single.localAdjustments?.first?.id)
+        #expect(freshID != sourceMask.id)
+        var normalized = single
+        normalized.localAdjustments = single.localAdjustments?.map { mask in
+            var copy = mask
+            copy.id = sourceMask.id
+            return copy
+        }
+        normalized.layerOrder = [.mask(sourceMask.id), .global, .watermark(watermark.id)]
+        #expect(normalized == multi)
+        #expect(single.layerOrder == [.mask(freshID), .global, .watermark(watermark.id)])
+
+        // Copied collections arrive; target collections the source lacks survive.
+        #expect(single.exposure2012 == 1.0)
+        #expect(single.watermarkLayers == [watermark])
+        #expect(single.anonymizer == source.anonymizer)
+        #expect(single.toneCurve == target.toneCurve)
+        #expect(single.hslAdjustments == target.hslAdjustments)
+        #expect(single.unparsedMaskCorrections == [preserved])
+        #expect(single.crop == target.crop)
+        #expect(single.asShotNeutralTemperature == 6500)
+    }
+
+    @Test("Reset develop adjustments clears every adjustment except crop and HDR mode")
+    func developResetKeepsOnlyFraming() {
+        let crop = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.9, right: 0.8, angle: 2, hasCrop: true)
+        let mask = MaskAdjustment(name: "Local", exposure: 1)
+        let watermark = WatermarkLayer(libraryAssetID: UUID())
+        var settings = CameraRawSettings(exposure2012: 1.25, crop: crop, hdrEditMode: 1, sdrBrightness: 20)
+        settings.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20))
+        settings.localAdjustments = [mask]
+        settings.watermarkLayers = [watermark]
+        settings.layerOrder = [.mask(mask.id), .global, .watermark(watermark.id)]
+
+        DevelopAdjustmentsResetBehavior.reset(&settings, isRaw: true)
+
+        #expect(settings.whiteBalance == "As Shot")
+        #expect(settings.exposure2012 == nil)
+        #expect(settings.sdrBrightness == nil)
+        #expect(settings.hslAdjustments == nil)
+        #expect(settings.localAdjustments == nil)
+        #expect(settings.watermarkLayers == nil)
+        #expect(settings.layerOrder == nil)
+        #expect(settings.crop == crop)
+        #expect(settings.hdrEditMode == 1)
+        #expect(!DevelopAdjustmentsResetBehavior.hasResettableAdjustments(settings, isRaw: true))
+    }
+
+    @Test("Reset develop adjustments is offered exactly when it would change something")
+    func developResetVisibility() {
+        func resettable(_ build: (inout CameraRawSettings) -> Void, isRaw: Bool = true) -> Bool {
+            var settings = CameraRawSettings()
+            build(&settings)
+            return DevelopAdjustmentsResetBehavior.hasResettableAdjustments(settings, isRaw: isRaw)
+        }
+        #expect(!DevelopAdjustmentsResetBehavior.hasResettableAdjustments(nil, isRaw: true))
+        #expect(!resettable { $0.whiteBalance = "As Shot" })
+        #expect(!resettable({ $0.whiteBalance = "As Shot" }, isRaw: false))
+        #expect(!resettable { $0.crop = CameraRawCrop(top: 0.1, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true) })
+        #expect(!resettable { $0.hdrEditMode = 1 })
+        #expect(resettable { $0.hslAdjustments = HSLAdjustments(red: HSLColorAdjustment(saturation: 20)) })
+        #expect(resettable { $0.sdrContrast = 10 })
+        #expect(resettable { $0.watermarkLayers = [WatermarkLayer(libraryAssetID: UUID())] })
+        #expect(resettable { $0.whiteBalance = "Daylight" })
+    }
+
+    @Test("Toggling HDR off is a kept Develop setting even without other edits")
+    func hdrToggleSurvivesAsSetting() {
+        let enabled = DevelopSettingsMutation.applying({ $0.hdrEditMode = 1 }, to: nil)
+        #expect(enabled?.hdrEditMode == 1)
+        #expect(enabled?.hasSettings == nil)
+
+        let disabled = DevelopSettingsMutation.applying({ $0.hdrEditMode = 0 }, to: enabled)
+        #expect(disabled?.hdrEditMode == 0)
+        #expect(disabled?.hasSettings == nil)
+
+        let edited = DevelopSettingsMutation.applying({ $0.exposure2012 = 0.5 }, to: disabled)
+        #expect(edited?.hasSettings == true)
+        let reset = DevelopSettingsMutation.applying({ $0.exposure2012 = nil }, to: edited)
+        #expect(reset?.hdrEditMode == 0)
+        #expect(DevelopSettingsMutation.applying({ $0.exposure2012 = nil }, to: nil) == nil)
+    }
 }
 
 @Suite("Develop layer geometry interaction coordinator")

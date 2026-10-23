@@ -1593,6 +1593,16 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// Renders source pixels into a fully populated texture without publishing it. Publication is
     /// a separate step so the live-preview facade can generation-gate the final state mutation.
     nonisolated private func makeSourceTexture(_ ciImage: CIImage) -> MTLTexture? {
+        var ciImage = ciImage
+        // Metal can't allocate a 2D texture past the device limit (stitched panoramas and other
+        // oversized non-RAW sources). Downscale to fit, as `renderOffscreen` does; Develop
+        // geometry is normalized, so only 1:1 zoom detail is affected.
+        let maxDim = CGFloat(Self.maxTextureDimension)
+        if ciImage.extent.width > maxDim || ciImage.extent.height > maxDim {
+            let scale = min(maxDim / ciImage.extent.width, maxDim / ciImage.extent.height)
+            metalPipelineLog.info("makeSourceTexture: downscaling \(Int(ciImage.extent.width))x\(Int(ciImage.extent.height)) by \(scale, format: .fixed(precision: 4)) to fit max texture dim \(Int(maxDim))")
+            ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
         let extent = ciImage.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
 
