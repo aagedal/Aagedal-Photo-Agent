@@ -242,6 +242,7 @@ actor SourceImageRevisionCaptureService {
     private var digestCache: [URL: DigestCacheEntry] = [:]
     private var digestCacheClock: UInt64 = 0
     private let digestCacheCapacity: Int
+    private static let digestCacheSettleInterval: TimeInterval = 2.5
 
     init(io: SourceImageRevisionCaptureIO = .system,
          filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
@@ -285,7 +286,13 @@ actor SourceImageRevisionCaptureService {
             guard before.matches(after) else {
                 throw SourceImageRevisionError.sourceChangedDuringHash
             }
-            if let identity, after.statusChangeDate == before.statusChangeDate {
+            // Only remember files whose timestamps have settled: on volumes with coarse
+            // timestamps (HFS+ 1 s, FAT/exFAT 2 s) a same-size rewrite within the same tick
+            // would otherwise keep every identity field and reuse a stale digest.
+            let now = io.now()
+            if let identity, after.statusChangeDate == before.statusChangeDate,
+               now.timeIntervalSince(identity.statusChangeDate) >= Self.digestCacheSettleInterval,
+               now.timeIntervalSince(identity.contentModificationDate) >= Self.digestCacheSettleInterval {
                 storeDigest(digest, for: canonicalURL, identity: identity)
             }
         }

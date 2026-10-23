@@ -222,6 +222,19 @@ struct SourceImageRevisionTests {
         #expect(second.relationship(to: first) == .exactRevision)
     }
 
+    @Test("a file written moments ago is re-hashed until its timestamps settle")
+    func freshlyWrittenFileIsNotCached() async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter(clockOffset: 0)
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+
+        _ = try await service.capture(at: fixture.fileURL)
+        _ = try await service.capture(at: fixture.fileURL)
+
+        #expect(counter.count == 2)
+    }
+
     @Test("same-size in-place rewrite with a restored mtime misses the digest cache")
     func restoredModificationDateStillMisses() async throws {
         let fixture = try TemporaryFixture(contents: Data("aaaa".utf8), extension: "jpg")
@@ -272,6 +285,13 @@ struct SourceImageRevisionTests {
 nonisolated private final class HashCallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
+    /// Seconds the service clock runs ahead of the file timestamps. Fixtures are written just
+    /// before capture, so caching tests move the clock past the cache's settle interval.
+    private let clockOffset: TimeInterval
+
+    init(clockOffset: TimeInterval = 10) {
+        self.clockOffset = clockOffset
+    }
 
     var count: Int { lock.withLock { calls } }
 
@@ -284,7 +304,7 @@ nonisolated private final class HashCallCounter: @unchecked Sendable {
                 lock.withLock { calls += 1 }
                 return try system.hash(url)
             },
-            now: system.now
+            now: { [clockOffset] in system.now().addingTimeInterval(clockOffset) }
         )
     }
 }

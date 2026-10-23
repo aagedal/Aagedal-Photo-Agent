@@ -25,6 +25,11 @@ final class BrowserAutoRefreshCoordinator {
     private let debounceDuration = Duration.milliseconds(350)
     private let deferredRetryDuration = Duration.seconds(1)
     private let fallbackInterval = Duration.seconds(30)
+    /// Even with a local FSEvents stream, rescan occasionally: a refresh that was admitted and
+    /// then cancelled (Batch Rename quiescence) or failed (a scan error) is not retried, and no
+    /// further event may arrive to trigger another one.
+    private let localSafetyInterval: TimeInterval = 300
+    private var lastFallbackScan: [ObjectIdentifier: Date] = [:]
 
     init(
         panes: BrowserPanesModel,
@@ -93,6 +98,7 @@ final class BrowserAutoRefreshCoordinator {
             monitors.removeValue(forKey: paneID)?.cancel()
             monitoredURLs.removeValue(forKey: paneID)
             refreshTasks.removeValue(forKey: paneID)?.cancel()
+            lastFallbackScan.removeValue(forKey: paneID)
         }
 
         for (paneID, folderURL) in desired where monitoredURLs[paneID] != folderURL {
@@ -134,9 +140,18 @@ final class BrowserAutoRefreshCoordinator {
 
     /// A full rescan of a 10,000-photo folder every 30 s is wasted work when a local
     /// FSEvents stream already delivers every change.
-    func needsFallbackScan(paneID: ObjectIdentifier) -> Bool {
-        guard let monitor = monitors[paneID] else { return true }
-        return !monitor.watchesLocalVolume
+    func needsFallbackScan(paneID: ObjectIdentifier, now: Date = Date()) -> Bool {
+        guard let monitor = monitors[paneID], monitor.watchesLocalVolume else {
+            lastFallbackScan[paneID] = now
+            return true
+        }
+        guard let last = lastFallbackScan[paneID] else {
+            lastFallbackScan[paneID] = now
+            return false
+        }
+        guard now.timeIntervalSince(last) >= localSafetyInterval else { return false }
+        lastFallbackScan[paneID] = now
+        return true
     }
 
     private func panesToMonitor() -> [BrowserViewModel] {

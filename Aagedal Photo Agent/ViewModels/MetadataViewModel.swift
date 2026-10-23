@@ -348,6 +348,9 @@ final class MetadataViewModel {
         }
     }
     @ObservationIgnored private var writeTaskGeneration = 0
+    /// Failures of embedded writes keyed by their write generation, so a caller chained behind
+    /// other writes reads its own outcome instead of the shared, overwritable `saveError`.
+    @ObservationIgnored private var embeddedWriteFailures: [Int: String] = [:]
     @ObservationIgnored private var primaryDevelopSourceBaseline: (imageURL: URL, loadID: UUID, revision: SourceImageRevision)?
     private(set) var retainedPrimaryDevelopWrites: [PrimaryDevelopWriteRequest] = []
     @ObservationIgnored private var primaryDevelopResults: [UUID: PrimaryDevelopWriteResult] = [:]
@@ -1978,6 +1981,7 @@ final class MetadataViewModel {
                 // Superseded or torn down; not a user-facing failure.
             } catch {
                 self.saveError = error.localizedDescription
+                self.embeddedWriteFailures[generation] = error.localizedDescription
             }
             if self.writeTaskGeneration == generation { self.isSaving = false }
         }
@@ -2181,7 +2185,10 @@ final class MetadataViewModel {
         )
     }
 
-    private func writeXMPSidecar(_ capture: XMPSidecarWriteCapture) async {
+    /// Returns this write's own failure (also published as `saveError`), so a chained caller
+    /// never mistakes another write's error — or its cleared error — for its own outcome.
+    @discardableResult
+    private func writeXMPSidecar(_ capture: XMPSidecarWriteCapture) async -> String? {
         let urls = capture.urls
         do {
             if let folder = capture.folder {
@@ -2191,9 +2198,9 @@ final class MetadataViewModel {
             }
         } catch {
             saveError = error.localizedDescription
-            return
+            return saveError
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return nil }
         if urls.count == 1, let imageURL = urls.first {
             let edited = capture.edited
             do {
@@ -2206,12 +2213,14 @@ final class MetadataViewModel {
                 }
             } catch {
                 saveError = "Failed to write XMP sidecar: \(error.localizedDescription)"
+                return saveError
             }
-            return
+            return nil
         }
 
+        var failure: String?
         for imageURL in urls {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return failure }
             do {
                 let installed = try await xmpSidecarService.updateSidecarSerialized(
                     for: imageURL,
@@ -2223,8 +2232,10 @@ final class MetadataViewModel {
                 }
             } catch {
                 saveError = "Failed to save XMP sidecar: \(error.localizedDescription)"
+                failure = failure ?? saveError
             }
         }
+        return failure
     }
 
     private func writeXMPSidecarAndPreserveHistory(
@@ -2239,13 +2250,14 @@ final class MetadataViewModel {
             let priorWrite = writeTask
             let generation = writeTaskGeneration + 1
             isSaving = true
-            saveError = nil
             writeTask = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
                 await priorWrite?.value
-                await writeXMPSidecar(capture)
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+                // Judge this write by its own result: `saveError` may belong to the earlier one.
+                if let failure = await writeXMPSidecar(capture) {
+                    onComplete(.failed(message: failure))
+                } else if Task.isCancelled {
+                    onComplete(.cancelled(message: "Metadata save was cancelled."))
                 } else {
                     onComplete(.succeeded)
                 }
@@ -2262,21 +2274,26 @@ final class MetadataViewModel {
             let priorWrite = writeTask
             let generation = writeTaskGeneration + 1
             isSaving = true
-            saveError = nil
             writeTask = Task {
                 defer { if writeTaskGeneration == generation { isSaving = false } }
                 await priorWrite?.value
-                await writeXMPSidecar(capture)
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+                // Judge each phase by its own result: `saveError` may belong to the earlier write.
+                if let failure = await writeXMPSidecar(capture) {
+                    onComplete(.failed(message: failure))
                     return
                 }
-                await saveBatchSidecars(folderURL: folderURL, pendingChanges: false,
+                guard !Task.isCancelled else {
+                    onComplete(.cancelled(message: "Metadata save was cancelled."))
+                    return
+                }
+                let historyFailure = await saveBatchSidecars(folderURL: folderURL, pendingChanges: false,
                     updateState: true, capture: historyCapture)
-                if selectedURLs == historyCapture.selectedAtStart { hasChanges = false }
-                if let saveError {
-                    onComplete(.failed(message: saveError))
+                if let historyFailure {
+                    onComplete(.failed(message: historyFailure))
+                } else if Task.isCancelled {
+                    onComplete(.cancelled(message: "Metadata save was cancelled."))
                 } else {
+                    if selectedURLs == historyCapture.selectedAtStart { hasChanges = false }
                     onComplete(.succeeded)
                 }
             }
@@ -2420,7 +2437,14 @@ final class MetadataViewModel {
                 onComplete(.failed(message: saveError ?? "The XMP sidecar could not be written."))
                 return
             }
+            let generationBeforeEmbed = writeTaskGeneration
             writeMetadata()
+            guard writeTaskGeneration != generationBeforeEmbed else {
+                // The embedded write refused to start (for example unsaved Develop work).
+                onComplete(.failed(message: saveError ?? "Metadata could not be written."))
+                return
+            }
+            let embedGeneration = writeTaskGeneration
             let embedWrite = writeTask
             // Replacing `writeTask` advances the generation, so the inner write no longer owns
             // `isSaving`; this wrapper must clear it when it is still the latest write.
@@ -2432,14 +2456,14 @@ final class MetadataViewModel {
                 } onCancel: {
                     embedWrite?.cancel()
                 }
-                if let saveError {
-                    onComplete(Task.isCancelled ? .cancelled(message: saveError) : .failed(message: saveError))
+                // Judge each phase by its own result: `saveError` may belong to another write.
+                if let embedFailure = self.embeddedWriteFailures.removeValue(forKey: embedGeneration) {
+                    onComplete(Task.isCancelled ? .cancelled(message: embedFailure) : .failed(message: embedFailure))
                     return
                 }
                 if let xmpCapture {
-                    await writeXMPSidecar(xmpCapture)
-                    if let saveError {
-                        onComplete(.failed(message: saveError))
+                    if let xmpFailure = await writeXMPSidecar(xmpCapture) {
+                        onComplete(.failed(message: xmpFailure))
                         return
                     }
                 }
@@ -4152,7 +4176,7 @@ final class MetadataViewModel {
         updateState: Bool = true,
         capturedMutation: (mutation: @Sendable (inout IPTCMetadata) -> Void, overridesSuppliers: Bool)? = nil
     ) async {
-        await saveBatchSidecars(
+        _ = await saveBatchSidecars(
             folderURL: folderURL,
             pendingChanges: pendingChanges,
             updateState: updateState,
@@ -4160,12 +4184,14 @@ final class MetadataViewModel {
         )
     }
 
+    /// Returns this save's first failure (also published as `saveError`).
+    @discardableResult
     private func saveBatchSidecars(
         folderURL: URL,
         pendingChanges: Bool,
         updateState: Bool,
         capture: BatchSidecarCapture
-    ) async {
+    ) async -> String? {
         let now = Date()
         let mutation = capture.mutation
         let overridesSuppliers = capture.overridesSuppliers
@@ -4177,9 +4203,10 @@ final class MetadataViewModel {
         let savedLocationsShownMutation = capture.savedLocationsShownMutation
         let savedImageSupplierMutation = capture.savedImageSupplierMutation
         var allSaved = true
+        var failure: String?
 
         for imageURL in urls {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return failure }
             do {
                 let installed = try await sidecarService.updateMetadataSerialized(
                     for: imageURL,
@@ -4207,6 +4234,7 @@ final class MetadataViewModel {
             } catch {
                 allSaved = false
                 saveError = "Failed to save metadata sidecar: \(error.localizedDescription)"
+                failure = failure ?? saveError
             }
         }
 
@@ -4222,12 +4250,14 @@ final class MetadataViewModel {
                 batchImageSupplierMutation = .untouched
             }
         }
-        if updateState, selectedURLs == selectedAtStart {
+        // A failed photo keeps the editor's unsaved state so the edit is not reported as saved.
+        if updateState, allSaved, selectedURLs == selectedAtStart {
             hasChanges = pendingChanges
             if !pendingChanges {
                 selectedHavePendingSidecars = false
             }
         }
+        return failure
     }
 
     private func capturedBatchMutation() -> @Sendable (inout IPTCMetadata) -> Void {

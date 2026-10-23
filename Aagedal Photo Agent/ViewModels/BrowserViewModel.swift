@@ -3488,7 +3488,7 @@ final class BrowserViewModel {
         Task {
             let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
             guard self.currentFolderURL == folderURL else { return }
-            self.applyPendingSidecarStatus(allSidecars, at: Array(self.images.indices))
+            self.applyPendingSidecarStatus(allSidecars, at: self.images.enumerated().map { ($1.url, $0) })
         }
     }
 
@@ -3499,23 +3499,25 @@ final class BrowserViewModel {
             guard let service = self?.sidecarService else { return }
             let sidecars = await service.loadSidecars(for: urls, in: folderURL)
             guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
-            let indices = Set(urls).compactMap { self.urlToImageIndex[$0] }.sorted()
-            self.applyPendingSidecarStatus(sidecars, at: indices)
+            let targets = Set(urls).compactMap { url in self.urlToImageIndex[url].map { (url, $0) } }
+            self.applyPendingSidecarStatus(sidecars, at: targets)
         }
     }
 
     /// Pending-status refreshes change badges/overrides on existing rows, never the URL
     /// inventory. Mutate in place and publish only the rows that changed, instead of
     /// replacing `images` (which re-indexes, re-sorts, re-filters and re-diffs the grid).
-    private func applyPendingSidecarStatus(_ sidecars: [URL: MetadataSidecar], at indices: [Int]) {
+    private func applyPendingSidecarStatus(_ sidecars: [URL: MetadataSidecar], at targets: [(url: URL, index: Int)]) {
         // A metadata load can hold the cascade suppressed across awaits; restore its state.
         let wasSuppressed = suppressImagesCascade
         suppressImagesCascade = true
         var changedURLs: [URL] = []
         var sortKeyChanged = false
-        for i in indices {
+        for (url, i) in targets {
+            // `urlToImageIndex` is not rebuilt while the cascade is suppressed (for example
+            // during a metadata load), so a row may have moved: never update another photo.
+            guard images.indices.contains(i), images[i].url == url else { continue }
             let before = images[i]
-            let url = before.url
             if let sidecar = sidecars[url], sidecar.pendingChanges {
                 images[i].hasPendingMetadataChanges = true
                 images[i].pendingFieldNames = extractPendingFieldNames(from: sidecar)
