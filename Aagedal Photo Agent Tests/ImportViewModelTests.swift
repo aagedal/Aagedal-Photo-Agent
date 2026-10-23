@@ -2539,6 +2539,50 @@ struct ImportWorkflowRegressionTests {
         #expect(jpegB.image.lastPathComponent == "IMG_0001-1.JPG")
     }
 
+    @Test("Import brings a photo's XMP sidecar along under its final name without replacing one")
+    func importCopiesXMPSidecars() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportSidecarCopy-\(UUID().uuidString)", isDirectory: true)
+        let card = root.appendingPathComponent("card", isDirectory: true)
+        let photos = root.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let raw = card.appendingPathComponent("IMG_0001.CR3")
+        let jpeg = card.appendingPathComponent("IMG_0001.JPG")
+        let other = card.appendingPathComponent("IMG_0002.CR3")
+        for url in [raw, jpeg, other] { try Data("image".utf8).write(to: url) }
+        try Data("<x:xmpmeta>edits</x:xmpmeta>".utf8).write(to: card.appendingPathComponent("IMG_0001.xmp"))
+        try Data("<x:xmpmeta>card</x:xmpmeta>".utf8).write(to: card.appendingPathComponent("IMG_0002.xmp"))
+        // A sidecar already at the destination belongs to an earlier photo and must stay.
+        try Data("<x:xmpmeta>existing</x:xmpmeta>".utf8).write(to: photos.appendingPathComponent("IMG_0002.xmp"))
+
+        func copied(_ source: URL, to name: String) throws -> ImportCopyService.CopyResult {
+            let destination = photos.appendingPathComponent(name)
+            try Data("image".utf8).write(to: destination)
+            return ImportCopyService.CopyResult(
+                id: UUID(), source: source,
+                primary: .copied(destination, wasRenamed: name != source.lastPathComponent,
+                                 wasReplaced: false, hash: Data()),
+                primaryVerification: .skipped, backup: nil, backupVerification: nil)
+        }
+        let results = [
+            try copied(raw, to: "IMG_0001-1.CR3"),
+            try copied(jpeg, to: "IMG_0001-1.JPG"),
+            try copied(other, to: "IMG_0002.CR3"),
+        ]
+
+        let failures = ImportViewModel.copyXMPSidecars(for: results, imageSources: [raw, jpeg, other])
+
+        #expect(failures.isEmpty)
+        #expect(try String(contentsOf: photos.appendingPathComponent("IMG_0001-1.xmp"), encoding: .utf8)
+            == "<x:xmpmeta>edits</x:xmpmeta>")
+        #expect(try String(contentsOf: photos.appendingPathComponent("IMG_0002.xmp"), encoding: .utf8)
+            == "<x:xmpmeta>existing</x:xmpmeta>")
+        #expect(!FileManager.default.fileExists(atPath: photos.appendingPathComponent("IMG_0001.xmp").path))
+    }
+
     @Test("Skip Existing imports both same-named sources from two cards")
     func skipExistingKeepsSameNamedBatchFiles() async throws {
         try await withRestoredDefaults {

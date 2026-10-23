@@ -752,11 +752,50 @@ final class ImportViewModel {
         return "\(count) other file\(count == 1 ? "" : "s") won’t be imported (\(kinds.joined(separator: ", ")))."
     }
 
-    /// Discovered files that are neither supported images nor WAV voice memos.
+    /// Copies each copied photo's stem-named `.xmp` sidecar next to its primary and backup copy,
+    /// renamed with the photo. A RAW+JPEG pair shares one sidecar, so an existing destination
+    /// sidecar (from the pair partner, or already on disk) is never replaced. Returns failures.
+    nonisolated static func copyXMPSidecars(
+        for results: [ImportCopyService.CopyResult],
+        imageSources: Set<URL>
+    ) -> [(source: URL, detail: String)] {
+        let fileManager = FileManager.default
+        let sidecars = XMPSidecarService()
+        var failures: [(source: URL, detail: String)] = []
+        for result in results where imageSources.contains(result.source) {
+            let sourceSidecar = sidecars.sidecarURL(for: result.source)
+            guard sourceSidecar != result.source,
+                  fileManager.fileExists(atPath: sourceSidecar.path) else { continue }
+            var destinations: [URL] = []
+            if let primary = result.primaryURL { destinations.append(sidecars.sidecarURL(for: primary)) }
+            if let backup = result.backup, case let .copied(backupURL, _, _, _) = backup {
+                switch result.backupVerification {
+                case .mismatch, .failed: break
+                case .verified, .skipped, nil: destinations.append(sidecars.sidecarURL(for: backupURL))
+                }
+            }
+            for destination in destinations where !fileManager.fileExists(atPath: destination.path) {
+                do {
+                    try PhotoSidecarOwnership.copyPreservingSource(from: sourceSidecar, to: destination)
+                } catch {
+                    failures.append((result.source, "XMP sidecar not copied: \(error.localizedDescription)"))
+                }
+            }
+        }
+        return failures
+    }
+
+    /// Discovered files that are neither supported images nor WAV voice memos. A stem-named
+    /// `.xmp` beside a supported image travels with that image, so it is not reported.
     nonisolated private static func unsupportedFiles(in urls: [URL]) -> [URL] {
-        urls.filter {
+        let imageStems = Set(urls.filter { SupportedImageFormats.isSupported(url: $0) }.map {
+            $0.deletingPathExtension().path.lowercased()
+        })
+        return urls.filter {
             !SupportedImageFormats.isSupported(url: $0)
                 && $0.pathExtension.caseInsensitiveCompare("wav") != .orderedSame
+                && !($0.pathExtension.caseInsensitiveCompare("xmp") == .orderedSame
+                    && imageStems.contains($0.deletingPathExtension().path.lowercased()))
         }
     }
 
@@ -1628,6 +1667,17 @@ final class ImportViewModel {
                             }
                         )
                         try Task.checkCancellation()
+                        // Bring each photo's existing XMP sidecar (captions, ratings, Camera Raw
+                        // edits) along under the photo's final name, as Photo Mechanic does.
+                        let sidecarFailures = Self.copyXMPSidecars(for: results, imageSources: imageSources)
+                        if !sidecarFailures.isEmpty {
+                            await MainActor.run {
+                                guard self.importRequestID == requestID else { return }
+                                for failure in sidecarFailures {
+                                    self.recordMetadataFailure(source: failure.source, detail: failure.detail)
+                                }
+                            }
+                        }
                         // Persist only relationships whose image and memo both survived the copy and
                         // verification boundary. Each relationship commits on its own, so one failed
                         // WAV leg is reported for its photo instead of failing the whole import.
