@@ -4563,6 +4563,9 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleCropControls() {
+        // Entering needs the photo's own settings: an entry snapshot taken from a still-loading
+        // buffer would make Esc "restore" no crop over the photo's saved one.
+        guard isSelectedImageMetadataReady || cropSession.isToolActive else { return }
         let entryCrop = metadataViewModel.editingMetadata.cameraRaw?.crop
         let isActive = cropSession.toggleTool()
         if isActive {
@@ -4587,6 +4590,10 @@ struct EditWorkspaceView: View {
                 applyAspectRatioToCrop(cropAspectRatio)
             }
             commitEditAdjustments()
+            // Only a single enable step can be reverted by one undo; an aspect reshape adds another.
+            if cropAspectRatio == .free {
+                cropSession.recordAutoEnabledCrop(metadataViewModel.editingMetadata.cameraRaw?.crop)
+            }
         }
         if !isActive {
             // Reset zoom and unlock image rect when hiding controls
@@ -4602,12 +4609,18 @@ struct EditWorkspaceView: View {
     /// Esc in crop mode: close the tool and restore the crop + straighten captured on entry, as one
     /// undoable step (no undo entry when nothing changed).
     private func cancelCropControls() {
-        if let entry = cropSession.cancelTool(),
-           metadataViewModel.editingMetadata.cameraRaw?.crop != entry.crop {
-            updateCameraRaw { cameraRaw in
-                cameraRaw.crop = entry.crop
+        let currentCrop = metadataViewModel.editingMetadata.cameraRaw?.crop
+        if let entry = cropSession.cancelTool(), currentCrop != entry.crop {
+            if entry.crop == nil, let autoEnabled = entry.autoEnabledCrop, currentCrop == autoEnabled {
+                // Untouched since the tool enabled a full-frame crop: undo that step rather than
+                // stacking a second one that leaves a re-enable on the undo stack.
+                persistenceSession.undo()
+            } else {
+                updateCameraRaw { cameraRaw in
+                    cameraRaw.crop = entry.crop
+                }
+                commitEditAdjustments()
             }
-            commitEditAdjustments()
         }
         syncViewportToMetal()
         syncCleanFeed()

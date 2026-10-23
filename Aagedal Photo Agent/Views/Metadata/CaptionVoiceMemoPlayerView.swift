@@ -194,6 +194,13 @@ struct CaptionVoiceMemoPlayerView: View {
             Task { await transcriptModel.reloadPersistedDraftIfIdle(for: url) }
         }
         .onChange(of: transcriptModel.draft) { _, _ in onVoiceMemoChange() }
+        .onChange(of: whisperSetup.detachedTranscription) { finished, current in
+            // A transcription that kept running after the user left this photo saved its draft
+            // without this panel; show it now that the user is back on that photo.
+            guard let finished, current == nil,
+                  finished.imageURL == imageURL?.standardizedFileURL else { return }
+            Task { await transcriptModel.refreshPersistedDraftIfEmpty(for: finished.imageURL) }
+        }
         .onChange(of: refreshID) { _, _ in onVoiceMemoChange() }
         .fileImporter(
             isPresented: $isSelectingRecoveryMemo,

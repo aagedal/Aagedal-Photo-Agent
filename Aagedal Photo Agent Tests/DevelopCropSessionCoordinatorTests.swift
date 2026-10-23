@@ -160,6 +160,16 @@ struct DevelopCropSessionCoordinatorTests {
         coordinator.captureEntryCrop(nil)
         #expect(coordinator.cancelTool() == DevelopCropEntrySnapshot(crop: nil))
 
+        // The full-frame crop the tool enabled on entry is remembered with the snapshot, so an
+        // untouched session can undo that step; without a snapshot nothing is recorded.
+        let fullFrame = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true)
+        coordinator.recordAutoEnabledCrop(fullFrame)
+        #expect(coordinator.entrySnapshot == nil)
+        #expect(coordinator.toggleTool())
+        coordinator.captureEntryCrop(nil)
+        coordinator.recordAutoEnabledCrop(fullFrame)
+        #expect(coordinator.cancelTool() == DevelopCropEntrySnapshot(crop: nil, autoEnabledCrop: fullFrame))
+
         // Done keeps the edit: the snapshot is discarded.
         #expect(coordinator.toggleTool())
         coordinator.captureEntryCrop(entry)

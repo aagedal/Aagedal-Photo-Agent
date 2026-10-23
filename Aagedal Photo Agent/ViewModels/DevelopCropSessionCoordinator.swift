@@ -19,6 +19,8 @@ struct DevelopCropDragSnapshot: Equatable {
 /// tool (Esc) restores it, matching Camera Raw; Done/Return keeps the edited framing.
 struct DevelopCropEntrySnapshot: Equatable {
     let crop: CameraRawCrop?
+    /// The full-frame crop the tool enabled on entry (its own undo step), if it enabled one.
+    var autoEnabledCrop: CameraRawCrop?
 }
 
 /// Owns crop-tool presentation and image-scoped interaction state for the Develop workspace.
@@ -78,6 +80,13 @@ final class DevelopCropSessionCoordinator {
     func captureEntryCrop(_ crop: CameraRawCrop?) {
         guard isToolActive else { return }
         entrySnapshot = DevelopCropEntrySnapshot(crop: crop)
+    }
+
+    /// Records the crop the tool enabled on entry, so cancelling an untouched session can undo
+    /// that step instead of adding a second one.
+    func recordAutoEnabledCrop(_ crop: CameraRawCrop?) {
+        guard isToolActive, entrySnapshot != nil else { return }
+        entrySnapshot?.autoEnabledCrop = crop
     }
 
     /// Closes the tool without keeping its edits. Returns the entry snapshot the caller should
