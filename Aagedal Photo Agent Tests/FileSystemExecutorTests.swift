@@ -565,6 +565,112 @@ struct FileSystemExecutorTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == initialNames)
     }
 
+    @Test("Duplicate copies the .xmp sidecar and never adopts an existing destination .xmp")
+    func duplicateCopiesXMPSidecar() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        try Data("raw".utf8).write(to: raw)
+        let edits = Data("<x:xmpmeta>crs edits</x:xmpmeta>".utf8)
+        try edits.write(to: root.appendingPathComponent("photo.xmp"))
+        let orphan = root.appendingPathComponent("photo copy.xmp")
+        try Data("unrelated".utf8).write(to: orphan)
+
+        let result = await FileSystemService().duplicateImages(
+            [.init(source: ImageFile(url: raw))], in: root,
+            metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.failures.isEmpty)
+        let duplicate = try #require(result.completed.first?.duplicate.url)
+        #expect(duplicate.lastPathComponent == "photo copy 2.ARW")
+        #expect(try Data(contentsOf: root.appendingPathComponent("photo copy 2.xmp")) == edits)
+        #expect(try Data(contentsOf: orphan) == Data("unrelated".utf8))
+        #expect(try Data(contentsOf: root.appendingPathComponent("photo.xmp")) == edits)
+    }
+
+    @Test("Duplicating a RAW+JPEG pair keeps one shared .xmp on a common stem")
+    func duplicatePairSharesXMPSidecar() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        let edits = Data("<x:xmpmeta>shared</x:xmpmeta>".utf8)
+        try edits.write(to: root.appendingPathComponent("photo.xmp"))
+
+        let result = await FileSystemService().duplicateImages(
+            [raw, jpeg].map { .init(source: ImageFile(url: $0)) },
+            in: root, metadataSidecarService: MetadataSidecarService()
+        )
+
+        #expect(result.failures.isEmpty)
+        #expect(result.completed.map { $0.duplicate.filename } == ["photo copy.ARW", "photo copy.JPG"])
+        #expect(try Data(contentsOf: root.appendingPathComponent("photo copy.xmp")) == edits)
+    }
+
+    @Test("Plain Trash takes the photo's own .xmp and JSON sidecars with it")
+    func plainTrashTakesExclusiveSidecars() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let image = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        let metadataFolder = root.appendingPathComponent(".photo_metadata")
+        let record = metadataFolder.appendingPathComponent("photo.JPG.meta.json")
+        try FileManager.default.createDirectory(at: metadataFolder, withIntermediateDirectories: true)
+        try Data("image".utf8).write(to: image)
+        try Data("<xmp/>".utf8).write(to: xmp)
+        try Data(#"{"sourceFile":"photo.JPG"}"#.utf8).write(to: record)
+        let trash = root.appendingPathComponent("Fake Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+
+        let result = await FileSystemService().trashItems([image], using: ExecutorTestTrashHandler { url in
+            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+        })
+
+        #expect(result.completedSourceURLs == [image])
+        #expect(result.failures.isEmpty)
+        for url in [image, xmp, record] {
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+            #expect(FileManager.default.fileExists(atPath: trash.appendingPathComponent(url.lastPathComponent).path))
+        }
+    }
+
+    @Test("Plain Trash keeps a .xmp shared with a remaining RAW+JPEG partner and the partner's JSON")
+    func plainTrashKeepsSharedSidecars() async throws {
+        let root = try trashTestRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = root.appendingPathComponent("photo.ARW")
+        let jpeg = root.appendingPathComponent("photo.JPG")
+        let xmp = root.appendingPathComponent("photo.xmp")
+        let metadataFolder = root.appendingPathComponent(".photo_metadata")
+        let rawRecord = metadataFolder.appendingPathComponent("photo.ARW.meta.json")
+        let jpegRecord = metadataFolder.appendingPathComponent("photo.JPG.meta.json")
+        let legacyRecord = metadataFolder.appendingPathComponent("photo.meta.json")
+        try FileManager.default.createDirectory(at: metadataFolder, withIntermediateDirectories: true)
+        try Data("raw".utf8).write(to: raw)
+        try Data("jpeg".utf8).write(to: jpeg)
+        try Data("<xmp/>".utf8).write(to: xmp)
+        try Data(#"{"sourceFile":"photo.ARW"}"#.utf8).write(to: rawRecord)
+        try Data(#"{"sourceFile":"photo.JPG"}"#.utf8).write(to: jpegRecord)
+        try Data(#"{"sourceFile":"photo.ARW"}"#.utf8).write(to: legacyRecord)
+        let trash = root.appendingPathComponent("Fake Trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+
+        let result = await FileSystemService().trashItems([jpeg], using: ExecutorTestTrashHandler { url in
+            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+        })
+
+        #expect(result.completedSourceURLs == [jpeg])
+        #expect(!FileManager.default.fileExists(atPath: jpeg.path))
+        #expect(!FileManager.default.fileExists(atPath: jpegRecord.path))
+        #expect(FileManager.default.fileExists(atPath: xmp.path))
+        #expect(FileManager.default.fileExists(atPath: rawRecord.path))
+        #expect(FileManager.default.fileExists(atPath: legacyRecord.path))
+        #expect(FileManager.default.fileExists(atPath: raw.path))
+    }
+
     @Test("An unassociated photo skips an orphan relationship and never guesses a same-stem WAV")
     func duplicateWithoutProvenMemo() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

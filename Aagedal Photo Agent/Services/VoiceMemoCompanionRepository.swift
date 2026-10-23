@@ -2,6 +2,8 @@ import Foundation
 import os
 import Darwin
 
+nonisolated private let voiceMemoTrashLog = Logger(subsystem: "com.aagedal.photo-agent", category: "PhotoTrash")
+
 nonisolated struct VoiceMemoRenamePlanningRequest: Sendable {
     let requestID: UUID
     let folderURL: URL
@@ -1487,7 +1489,20 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
         // Keep the old direct path for photos without a persisted relationship, including
         // callers with virtual URLs. Malformed or unavailable saved relationships fail closed.
         guard let companion = try moveCompanion(for: imageURL, to: imageURL) else {
+            // Sidecars left behind would silently attach to a later photo with the same name,
+            // so trash the ones this photo owns exclusively alongside it. Decide ownership
+            // before the photo leaves the folder.
+            let ownedSidecars = Self.exclusivelyOwnedSidecars(of: imageURL)
             try handler.trashItem(at: imageURL)
+            for sidecar in ownedSidecars {
+                do {
+                    try handler.trashItem(at: sidecar)
+                } catch {
+                    // The photo is already in the Trash; a stranded sidecar is not a reason
+                    // to report the photo itself as not deleted.
+                    voiceMemoTrashLog.error("Could not trash sidecar \(sidecar.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .public)")
+                }
+            }
             return
         }
         let folder = imageURL.deletingLastPathComponent()
@@ -1633,6 +1648,33 @@ nonisolated struct VoiceMemoCompanionRepository: Sendable {
             if !recovery.isEmpty { throw RepositoryError.trashRollbackFailed(recovery) }
             throw error
         }
+    }
+
+    /// The `.xmp` and editorial JSON sidecars that belong only to `imageURL`. The stem-named
+    /// `.xmp` (IMG_1.xmp) is shared by a RAW+JPEG pair, so it is kept while any same-stem
+    /// photo remains. A JSON record is included only when it declares this photo as its owner.
+    /// Anything ambiguous, linked, or unreadable is left in place.
+    static func exclusivelyOwnedSidecars(of imageURL: URL) -> [URL] {
+        let fm = FileManager.default
+        let folder = imageURL.deletingLastPathComponent()
+        func isRegularFile(_ url: URL) -> Bool {
+            (try? fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType) == .typeRegular
+        }
+        var owned: [URL] = []
+        let xmp = XMPSidecarService().sidecarURL(for: imageURL)
+        if xmp.standardizedFileURL != imageURL.standardizedFileURL,
+           isRegularFile(xmp),
+           (try? PhotoSidecarOwnership.hasSurvivingStemSibling(of: imageURL, in: folder)) == false {
+            owned.append(xmp)
+        }
+        for record in MetadataSidecarService().relocationDestinationURLs(for: imageURL, in: folder)
+        where isRegularFile(record) {
+            guard let data = try? Data(contentsOf: record),
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  json["sourceFile"] as? String == imageURL.lastPathComponent else { continue }
+            owned.append(record)
+        }
+        return owned
     }
 
     private func trashCarrierExists(at url: URL) throws -> Bool {

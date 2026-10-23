@@ -2580,6 +2580,15 @@ struct DevelopSaveExportRoutingTests {
         #expect(source.contains("copyFailures.isEmpty && overlayFailures.isEmpty"))
     }
 
+    @Test("Develop Save honors the Export Location setting and never overwrites an existing file")
+    func destinationAndCollisionPolicy() throws {
+        let source = try saveImplementation()
+        #expect(source.contains("EditedImageRenderer.resolveOutputFolder("))
+        #expect(source.contains("collisionPolicy: .appendNumber"))
+        #expect(!source.contains("appendingPathComponent(\"Edited\""))
+        #expect(source.contains("revealURL:"))
+    }
+
     @Test("Develop Save retains its single-session owner and cancellation admission")
     func lifecycleBoundary() throws {
         let source = try saveImplementation()

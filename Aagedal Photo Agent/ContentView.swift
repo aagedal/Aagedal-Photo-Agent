@@ -221,7 +221,6 @@ struct ContentView: View {
     @State private var renderExportTotal = 0
     @State private var renderEditedFolderSuccessCount = 0
     @State private var renderEditedFolderFailureCount = 0
-    @State private var renderedOutputFolderURL: URL?
     @State private var renderExportTask: Task<Void, Never>?
     @State private var lastBatchResult: BatchOperationResult?
     @State private var isBatchResultExpanded = false
@@ -3122,7 +3121,6 @@ struct ContentView: View {
         renderExportTotal = selected.count
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
-        renderedOutputFolderURL = nil
 
         renderExportTask = Task {
             defer { renderExportTask = nil }
@@ -3139,6 +3137,8 @@ struct ContentView: View {
                     inMemory: browserViewModel.currentCameraRawSettings
                 )
             } catch is CancellationError {
+                // Release the export gate, or every later Export/Save As/Sign is a no-op.
+                isRenderingEditedFolder = false
                 return
             } catch {
                 isRenderingEditedFolder = false
@@ -3148,7 +3148,8 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
-            var signFailedNames: [String] = []
+            var signFailures: [BatchOperationResult.Failure] = []
+            var signedURLs: [URL] = []
             var createdFolders: Set<String> = []
             var lastOutputFolder: URL?
 
@@ -3171,17 +3172,19 @@ struct ContentView: View {
                         lastOutputFolder = outputFolder
                     } catch {
                         failureCount += 1
-                        signFailedNames.append(image.url.lastPathComponent)
+                        signFailures.append(.init(filename: image.url.lastPathComponent, error: error))
                         continue
                     }
                 }
 
+                var unsignedRenderURL: URL?
                 do {
                     // Step 1: Render + copy source metadata + overlay pending IPTC edits
                     let renderedURL = try await EditExportPipeline.renderForDelivery(
                         sourceURL: image.url, cameraRaw: cameraRaw, kind: .format,
                         outputFolder: outputFolder, folderURL: folderURL,
                         writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
+                    unsignedRenderURL = renderedURL
 
                     // Step 2: Build C2PA actions from edit settings
                     let actions = C2PAAction.fromSettings(cameraRaw)
@@ -3207,15 +3210,20 @@ struct ContentView: View {
                     }
 
                     successCount += 1
+                    signedURLs.append(renderedURL)
                 } catch {
                     failureCount += 1
-                    signFailedNames.append(image.url.lastPathComponent)
+                    signFailures.append(.init(filename: image.url.lastPathComponent, error: error))
+                    // A Signed_* folder must only hold signed files: discard the unsigned
+                    // render so it can't be mistaken for (or delivered as) a signed copy.
+                    if let unsignedRenderURL {
+                        try? FileManager.default.removeItem(at: unsignedRenderURL)
+                    }
                 }
             }
 
             renderEditedFolderSuccessCount = successCount
             renderEditedFolderFailureCount = failureCount
-            renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
 
             // Files written next to the originals land in the current folder — refresh to show them.
@@ -3243,11 +3251,12 @@ struct ContentView: View {
                 outcome: outcome,
                 successCount: successCount,
                 totalCount: selected.count,
-                failedFilenames: signFailedNames,
+                failures: signFailures,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
-                sourceFolderURL: folderURL
+                sourceFolderURL: folderURL,
+                outputURLs: signedURLs
             )
         }
     }
@@ -3569,6 +3578,14 @@ struct ContentView: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
+                if !result.outputURLs.isEmpty {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting(result.outputURLs)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                    .help("Reveal the exported files in Finder")
+                }
                 Button {
                     lastBatchResult = nil
                     isBatchResultExpanded = false
@@ -3583,7 +3600,7 @@ struct ContentView: View {
             if result.hasFailures || result.hasWarnings {
                 DisclosureGroup(isExpanded: $isBatchResultExpanded) {
                     VStack(alignment: .leading, spacing: 2) {
-                        bannerFailureSection(label: "Failed", names: result.failedFilenames, folder: result.sourceFolderURL)
+                        bannerItemFailureSection(label: "Failed", failures: result.failures, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "Metadata copy failed", names: result.copyFailureFilenames, folder: result.sourceFolderURL)
                         bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
                         bannerPathFailureSection(label: "Private cleanup needed", paths: result.cleanupFailurePaths)
@@ -3598,11 +3615,55 @@ struct ContentView: View {
             }
         }
         .task(id: result.id) {
-            // Auto-dismiss success-without-failures after 4 seconds
+            // Auto-dismiss success-without-failures. Keep it up longer when it offers
+            // "Show in Finder" so there is time to reach the exported files.
             guard !result.hasFailures, result.outcome == .success else { return }
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(result.outputURLs.isEmpty ? 4 : 15))
             if lastBatchResult?.id == result.id {
                 lastBatchResult = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bannerItemFailureSection(
+        label: String,
+        failures: [BatchOperationResult.Failure],
+        folder: URL?
+    ) -> some View {
+        if !failures.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(label) (\(failures.count))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(Array(failures.enumerated()), id: \.offset) { _, failure in
+                    HStack(alignment: .top, spacing: 4) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(failure.displayName)
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if let reason = failure.reason, !reason.isEmpty {
+                                Text(reason)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if let folder {
+                            Button {
+                                revealInFinder(folder.appendingPathComponent(failure.filename))
+                            } label: {
+                                Image(systemName: "folder")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Reveal in Finder")
+                        }
+                    }
+                }
             }
         }
     }
@@ -3715,6 +3776,8 @@ struct ContentView: View {
                     inMemory: browserViewModel.currentCameraRawSettings
                 )
             } catch is CancellationError {
+                // Release the export gate, or every later Export/Save As/Sign is a no-op.
+                isRenderingEditedFolder = false
                 return
             } catch {
                 isRenderingEditedFolder = false
@@ -3723,18 +3786,21 @@ struct ContentView: View {
             }
 
             var savedURLs: [URL] = []
-            var saveFailedNames: [String] = []
+            var saveFailures: [BatchOperationResult.Failure] = []
             for (index, url) in urls.enumerated() {
                 guard !Task.isCancelled else { break }
                 renderExportCurrent = index + 1
                 let cameraRaw = metadataByURL[url]?.cameraRaw
                 do {
                     // Resolve destination folder per the configured export location mode.
-                    // Save As always renders SDR (JPEG/PNG), so use isHDR: false for naming.
+                    // Save As always renders SDR (JPEG/PNG), so use isHDR: false for naming,
+                    // and name the format sub-folder after the Save As format rather than
+                    // the configured Export format.
                     let rootFolder = browserViewModel.currentFolderURL ?? url.deletingLastPathComponent()
                     let destinationFolder = EditedImageRenderer.resolveOutputFolder(
                         sourceURL: url, rootFolder: rootFolder,
-                        isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder)
+                        isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder,
+                        sdrFormat: format.exportFormat)
                     if !createdFolders.contains(destinationFolder.path) {
                         _ = try await ExportDirectoryService.shared.ensureDirectory(at: destinationFolder)
                         createdFolders.insert(destinationFolder.path)
@@ -3746,7 +3812,7 @@ struct ContentView: View {
                         writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
                     savedURLs.append(outputURL)
                 } catch {
-                    saveFailedNames.append(url.lastPathComponent)
+                    saveFailures.append(.init(filename: url.lastPathComponent, error: error))
                 }
             }
 
@@ -3774,7 +3840,7 @@ struct ContentView: View {
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if !saveFailedNames.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+            } else if !saveFailures.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -3785,11 +3851,12 @@ struct ContentView: View {
                 outcome: outcome,
                 successCount: savedURLs.count,
                 totalCount: urls.count,
-                failedFilenames: saveFailedNames,
+                failures: saveFailures,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
-                sourceFolderURL: browserViewModel.currentFolderURL
+                sourceFolderURL: browserViewModel.currentFolderURL,
+                outputURLs: savedURLs
             )
         }
     }
@@ -3895,7 +3962,7 @@ struct ContentView: View {
             var createdFolders: Set<String> = []
 
             var convertedURLs: [URL] = []
-            var failedNames: [String] = []
+            var archiveFailures: [BatchOperationResult.Failure] = []
             var cleanupFailurePaths: [String] = []
             for (index, url) in urls.enumerated() where securityScopeClaim != nil {
                 guard !Task.isCancelled else { break }
@@ -3977,7 +4044,7 @@ struct ContentView: View {
                     convertedURLs.append(receipt.archiveURL)
                     cleanupFailurePaths.append(contentsOf: receipt.cleanupResidualURLs.map(\.path))
                 } catch {
-                    failedNames.append(url.lastPathComponent)
+                    archiveFailures.append(.init(filename: url.lastPathComponent, error: error))
                 }
             }
 
@@ -4007,7 +4074,7 @@ struct ContentView: View {
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if !failedNames.isEmpty || !copyFailures.isEmpty
+            } else if !archiveFailures.isEmpty || !copyFailures.isEmpty
                         || !overlayFailures.isEmpty || !cleanupFailurePaths.isEmpty
                         || !staleWarnings.isEmpty {
                 outcome = .partial
@@ -4020,12 +4087,13 @@ struct ContentView: View {
                 outcome: outcome,
                 successCount: convertedURLs.count,
                 totalCount: urls.count,
-                failedFilenames: failedNames,
+                failures: archiveFailures,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 cleanupFailurePaths: cleanupFailurePaths,
                 staleSidecarFilenames: staleWarnings,
-                sourceFolderURL: browserViewModel.currentFolderURL
+                sourceFolderURL: browserViewModel.currentFolderURL,
+                outputURLs: convertedURLs
             )
         }
     }
@@ -4117,7 +4185,6 @@ struct ContentView: View {
         renderExportTotal = urls.count * exportConfigurations.count
         renderEditedFolderSuccessCount = 0
         renderEditedFolderFailureCount = 0
-        renderedOutputFolderURL = nil
 
         renderExportTask = Task {
             defer { renderExportTask = nil }
@@ -4132,6 +4199,8 @@ struct ContentView: View {
                     inMemory: browserViewModel.currentCameraRawSettings
                 )
             } catch is CancellationError {
+                // Release the export gate, or every later Export/Save As/Sign is a no-op.
+                isRenderingEditedFolder = false
                 return
             } catch {
                 isRenderingEditedFolder = false
@@ -4141,7 +4210,8 @@ struct ContentView: View {
 
             var successCount = 0
             var failureCount = 0
-            var renderFailedNames: [String] = []
+            var renderFailures: [BatchOperationResult.Failure] = []
+            var exportedURLs: [URL] = []
             var createdFolders: Set<String> = []
             var lastOutputFolder: URL?
 
@@ -4155,6 +4225,9 @@ struct ContentView: View {
                     renderExportCurrent =
                         urlIndex * exportConfigurations.count + configurationIndex + 1
                     let isSecondary = configurationIndex > 0
+                    let failureDisplayName = isSecondary
+                        ? "\(url.lastPathComponent) (Secondary)"
+                        : url.lastPathComponent
                     let outputFolder = EditedImageRenderer.resolveOutputFolder(
                         sourceURL: url,
                         rootFolder: folderURL,
@@ -4172,17 +4245,17 @@ struct ContentView: View {
                         } catch {
                             browserViewModel.errorMessage = "Failed to create \(outputFolder.lastPathComponent) folder: \(error.localizedDescription)"
                             failureCount += 1
-                            renderFailedNames.append(
-                                isSecondary
-                                    ? "\(url.lastPathComponent) (Secondary)"
-                                    : url.lastPathComponent
-                            )
+                            renderFailures.append(.init(
+                                displayName: failureDisplayName,
+                                filename: url.lastPathComponent,
+                                reason: error.localizedDescription
+                            ))
                             continue
                         }
                     }
 
                     do {
-                        _ = try await EditExportPipeline.renderItem(
+                        let outputURL = try await EditExportPipeline.renderItem(
                             sourceURL: url,
                             cameraRaw: cameraRaw,
                             kind: .format,
@@ -4195,20 +4268,20 @@ struct ContentView: View {
                             collisionPolicy: .appendNumber
                         )
                         successCount += 1
+                        exportedURLs.append(outputURL)
                     } catch {
                         failureCount += 1
-                        renderFailedNames.append(
-                            isSecondary
-                                ? "\(url.lastPathComponent) (Secondary)"
-                                : url.lastPathComponent
-                        )
+                        renderFailures.append(.init(
+                            displayName: failureDisplayName,
+                            filename: url.lastPathComponent,
+                            reason: error.localizedDescription
+                        ))
                     }
                 }
             }
 
             renderEditedFolderSuccessCount = successCount
             renderEditedFolderFailureCount = failureCount
-            renderedOutputFolderURL = lastOutputFolder
             isRenderingEditedFolder = false
 
             // Files written next to the originals land in the current folder — refresh to show them.
@@ -4239,11 +4312,12 @@ struct ContentView: View {
                 outcome: outcome,
                 successCount: successCount,
                 totalCount: urls.count * exportConfigurations.count,
-                failedFilenames: renderFailedNames,
+                failures: renderFailures,
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
-                sourceFolderURL: folderURL
+                sourceFolderURL: folderURL,
+                outputURLs: exportedURLs
             )
         }
     }

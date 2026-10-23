@@ -4,9 +4,10 @@ import os
 
 private nonisolated let editedBackupLog = Logger(subsystem: "com.aagedal.photo-agent", category: "BackupEditedFilesSheet")
 
-/// Sheet for the "Back Up Edited Files…" command. Discovers Edited_*/Signed_*
-/// renders plus `.photo_metadata/` and `.face_data/` under the working folder
-/// and copies them to a chosen destination via `ImportCopyService`.
+/// Sheet for the "Back Up Edited Files…" command. Discovers rendered outputs
+/// (Edited*/Signed_*/export sub-folder/Uploaded) plus `.photo_metadata/`,
+/// `.face_data/` and `.xmp` sidecars under the working folder and copies them
+/// to a chosen destination via `ImportCopyService`.
 struct BackupEditedFilesSheet: View {
     let sourceFolder: URL
     var onDismiss: () -> Void
@@ -30,6 +31,7 @@ struct BackupEditedFilesSheet: View {
         case running
         case complete
         case cancelled
+        case failed
     }
 
     var body: some View {
@@ -39,7 +41,7 @@ struct BackupEditedFilesSheet: View {
                 formContent
             case .running:
                 progressContent
-            case .complete, .cancelled:
+            case .complete, .cancelled, .failed:
                 completionContent
             }
         }
@@ -182,7 +184,7 @@ struct BackupEditedFilesSheet: View {
     private var completionContent: some View {
         VStack(spacing: 12) {
             VerificationSummaryView(
-                title: "Backup Complete",
+                title: phase == .failed ? "Backup Failed" : "Backup Complete",
                 succeededLabel: "copied",
                 copiedFiles: copiedFiles,
                 totalFiles: totalFiles,
@@ -196,7 +198,9 @@ struct BackupEditedFilesSheet: View {
                 backupEnabled: false,
                 failureRecords: failures,
                 summaryLine: summaryLine,
-                cancelled: phase == .cancelled
+                cancelled: phase == .cancelled,
+                cancelledTitle: "Backup Cancelled",
+                failed: phase == .failed
             )
 
             HStack(spacing: 12) {
@@ -214,8 +218,15 @@ struct BackupEditedFilesSheet: View {
 
     private func scanForBackupContent() {
         let source = sourceFolder
+        // Read live (like the export paths) so a renamed export sub-folder is included.
+        let customSubfolderName = UserDefaults.standard.string(
+            forKey: UserDefaultsKeys.exportCustomSubfolderName
+        ) ?? "Exports"
         Task.detached(priority: .userInitiated) {
-            let result = EditedFolderBackupService.discover(in: source)
+            let result = EditedFolderBackupService.discover(
+                in: source,
+                customExportSubfolderName: customSubfolderName
+            )
             await MainActor.run {
                 self.discovery = result
             }
@@ -298,8 +309,8 @@ struct BackupEditedFilesSheet: View {
             } catch {
                 editedBackupLog.error("Edited folder backup failed: \(error.localizedDescription, privacy: .private)")
                 await MainActor.run {
-                    self.summaryLine = error.localizedDescription
-                    self.phase = .complete
+                    self.summaryLine = "\(self.buildSummaryLine()) Backup stopped: \(error.localizedDescription)"
+                    self.phase = .failed
                 }
             }
         }
@@ -346,8 +357,10 @@ struct BackupEditedFilesSheet: View {
         switch kind {
         case .editedRender: return "wand.and.stars"
         case .signedRender: return "checkmark.seal"
+        case .uploadedRender: return "arrow.up.circle"
         case .metadataSidecars: return "doc.text"
         case .faceData: return "person.crop.square"
+        case .xmpSidecars: return "doc.badge.gearshape"
         }
     }
 

@@ -988,6 +988,46 @@ struct FTPUploadGenerationIsolationTests {
         }
     }
 
+    @Test("A signing failure ends in a visible stopped state and records the files as failed")
+    func signingFailureEndsStopped() async throws {
+        try await withFixture(blocked: ["sign"]) { fixture in
+            let history = ActivityHistoryStore()
+            fixture.model.activityHistory = history
+            fixture.startRendered(signing: true)
+            try await fixture.gate.waitFor("sign")
+            let completion = fixture.captureCompletion()
+            await fixture.gate.release("sign", fails: true)
+            await completion()
+            #expect(fixture.model.uploadCompleted && fixture.model.uploadStopped)
+            #expect(!fixture.model.isRendering && !fixture.model.isUploading)
+            #expect(fixture.model.errorMessages.contains { $0.hasPrefix("Upload stopped") })
+            #expect(await fixture.gate.totalUploadCalls == 0)
+            let entry = try #require(history.entries.first)
+            #expect(entry.successCount == 0 && entry.totalCount == 1)
+            #expect(entry.files.map(\.succeeded) == [false])
+        }
+    }
+
+    @Test("Activity history keeps the selected count and lists files that failed to prepare")
+    func activityHistoryIncludesUnpreparedFiles() async throws {
+        try await withFixture(blocked: ["render:new.jpg"]) { fixture in
+            let history = ActivityHistoryStore()
+            fixture.model.activityHistory = history
+            fixture.model.uploadFiles([fixture.old, fixture.new], renderURLs: [fixture.new],
+                to: fixture.connection, readService: SwiftExifReadService(),
+                writeEngine: SwiftExifWriteEngine(), inMemoryCameraRaw: { _ in nil })
+            try await fixture.gate.waitFor("render:new.jpg")
+            let completion = fixture.captureCompletion()
+            await fixture.gate.release("render:new.jpg", fails: true)
+            await completion()
+            #expect(fixture.model.uploadCompleted && !fixture.model.uploadStopped)
+            let entry = try #require(history.entries.first)
+            #expect(entry.totalCount == 2 && entry.successCount == 1)
+            #expect(entry.files.map(\.fileName) == ["new.jpg", "old.jpg"])
+            #expect(entry.files.map(\.succeeded) == [false, true])
+        }
+    }
+
     private func withFixture(blocked: Set<String>,
                              operation: (FTPGenerationFixture) async throws -> Void) async throws {
         let fixture = try FTPGenerationFixture(blocked: blocked)

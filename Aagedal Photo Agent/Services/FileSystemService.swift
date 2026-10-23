@@ -716,9 +716,14 @@ actor FileSystemService {
     ) -> DuplicateResult {
         let fileManager = FileManager.default
         let voiceMemoRepository = VoiceMemoCompanionRepository()
+        let xmpSidecarService = XMPSidecarService()
         var completed: [DuplicateCompletion] = []
         var failures: [ItemFailure] = []
         var cancellationStoppedRemainingItems = false
+        // XMP sidecars this batch created, keyed by destination and valued by their source.
+        // Duplicating a RAW+JPEG pair copies one shared `.xmp`; the partner may reuse that
+        // copy so the duplicates keep a common stem instead of splitting into "copy 2".
+        var duplicatedXMPSources: [URL: URL] = [:]
 
         for request in requests {
             if Task.isCancelled {
@@ -728,14 +733,23 @@ actor FileSystemService {
             let source = request.source
             let fileExtension = source.url.pathExtension
             let baseName = source.url.deletingPathExtension().lastPathComponent
+            let xmpSource = xmpSidecarService.sidecarURL(for: source.url)
             var copyName = "\(baseName) copy"
             var destinationURL = folderURL.appendingPathComponent(copyName)
                 .appendingPathExtension(fileExtension)
+            // An existing destination `.xmp` is an unrelated document that would silently
+            // attach to the duplicate, so reserve it like the image name — unless this batch
+            // just copied it from the same source sidecar (the RAW+JPEG partner case).
+            func isReserved(_ url: URL) -> Bool {
+                guard (try? fileManager.attributesOfItem(atPath: url.path)) != nil else { return false }
+                return duplicatedXMPSources[url.standardizedFileURL] != xmpSource.standardizedFileURL
+            }
             do {
                 var counter = 2
                 while try (voiceMemoRepository.copyDestinationURLs(for: source.url, to: destinationURL)
-                    + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: folderURL))
-                    .contains(where: { (try? fileManager.attributesOfItem(atPath: $0.path)) != nil }) {
+                    + metadataSidecarService.relocationDestinationURLs(for: destinationURL, in: folderURL)
+                    + [xmpSidecarService.sidecarURL(for: destinationURL)])
+                    .contains(where: isReserved) {
                     try Task.checkCancellation()
                     copyName = "\(baseName) copy \(counter)"
                     destinationURL = folderURL.appendingPathComponent(copyName)
@@ -754,6 +768,24 @@ actor FileSystemService {
                     message: error.localizedDescription
                 ))
                 continue
+            }
+
+            // RAW develop edits and descriptive metadata live in the `.xmp` sidecar, so a
+            // duplicate without it would silently lose them. Copy bytes verbatim.
+            if fileManager.fileExists(atPath: xmpSource.path) {
+                let xmpDestination = xmpSidecarService.sidecarURL(for: destinationURL)
+                if !fileManager.fileExists(atPath: xmpDestination.path) {
+                    do {
+                        try PhotoSidecarOwnership.copyPreservingSource(from: xmpSource, to: xmpDestination)
+                        duplicatedXMPSources[xmpDestination.standardizedFileURL] = xmpSource.standardizedFileURL
+                    } catch {
+                        failures.append(ItemFailure(
+                            sourceURL: source.url,
+                            stage: .xmpSidecar,
+                            message: error.localizedDescription
+                        ))
+                    }
+                }
             }
 
             do {

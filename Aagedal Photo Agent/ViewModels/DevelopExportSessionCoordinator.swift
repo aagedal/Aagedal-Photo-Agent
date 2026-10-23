@@ -33,9 +33,12 @@ final class DevelopExportSessionCoordinator {
 
     /// Starts a persistence request only when no export is already active. This preserves the
     /// existing single-export interaction contract enforced by the disabled toolbar button.
+    /// `onPersisted` runs only for a current (not cancelled or superseded) successful result,
+    /// so the caller can confirm the save without racing workspace teardown.
     @discardableResult
     func requestExport(
-        operation: @escaping PersistenceOperation
+        operation: @escaping PersistenceOperation,
+        onPersisted: (@MainActor (DevelopExportPersistenceResult) -> Void)? = nil
     ) -> Bool {
         guard isWorkspaceActive, !isExporting else { return false }
 
@@ -56,6 +59,7 @@ final class DevelopExportSessionCoordinator {
                     errorMessage = "Image saved but metadata copy failed — IPTC data may be missing"
                 }
                 finishExport(requestID: currentRequestID)
+                onPersisted?(result)
             } catch is CancellationError {
                 self?.finishExport(requestID: currentRequestID)
             } catch {

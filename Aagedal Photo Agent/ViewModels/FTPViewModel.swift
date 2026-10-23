@@ -241,6 +241,9 @@ final class FTPViewModel {
     var renderCompletedCount = 0
     var renderTotalCount = 0
     var uploadCompleted = false
+    /// The finished run ended early (preparation or signing failed) rather than running to
+    /// completion; `errorMessages` says why. Only meaningful while `uploadCompleted`.
+    var uploadStopped = false
 
     /// Distinct `Uploaded` sub-folders created by the most recent render-and-upload, so the
     /// owner (ContentView) can reveal them in the sidebar on completion — otherwise the
@@ -442,6 +445,7 @@ final class FTPViewModel {
         isUploading = false
         isRendering = false
         uploadCompleted = false
+        uploadStopped = false
     }
 
     func deleteConnection(_ connection: FTPConnection) {
@@ -514,6 +518,7 @@ final class FTPViewModel {
         isUploading = true
         isRendering = false
         uploadCompleted = false
+        uploadStopped = false
         errorMessages = []
         completedCount = 0
         renderCompletedCount = 0
@@ -546,7 +551,7 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
-                self.isUploading = false
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
                 return
             }
             for (index, url) in urls.enumerated() {
@@ -578,7 +583,11 @@ final class FTPViewModel {
             }
             guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
-            self.showCompletion(connection: connection)
+            self.showCompletion(
+                connection: connection,
+                selectedCount: urls.count,
+                plannedFileNames: urls.map(\.lastPathComponent)
+            )
         }
     }
 
@@ -613,6 +622,7 @@ final class FTPViewModel {
         isRendering = true
         isUploading = false
         uploadCompleted = false
+        uploadStopped = false
         errorMessages = []
         renderCompletedCount = 0
         renderTotalCount = renderTargets.count
@@ -645,7 +655,7 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to inspect upload files: \(error.localizedDescription)"]
-                self.isRendering = false
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
                 return
             }
 
@@ -657,7 +667,7 @@ final class FTPViewModel {
             } catch {
                 guard self.ownsUpload(generation) else { return }
                 self.errorMessages = ["Failed to create temp directory: \(error.localizedDescription)"]
-                self.isRendering = false
+                self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
                 return
             }
 
@@ -702,6 +712,9 @@ final class FTPViewModel {
             // share a basename across folders (e.g. /A/img.jpg and /B/img.jpg, both →
             // img_jpg.jpg) don't end up overwriting each other on the remote server.
             var usedNames: Set<String> = []
+            // Selected files that never reached the upload list, so the activity record
+            // reports them as failed instead of silently omitting them.
+            var unpreparedFileNames: [String] = []
             for (index, url) in urls.enumerated() {
                 guard self.ownsUpload(generation) else { return }
                 guard renderURLs.contains(url) else {
@@ -728,6 +741,7 @@ final class FTPViewModel {
                     } catch {
                         guard self.ownsUpload(generation) else { return }
                         self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
+                        unpreparedFileNames.append(url.lastPathComponent)
                     }
                     continue
                 }
@@ -763,6 +777,7 @@ final class FTPViewModel {
                 } catch {
                     guard self.ownsUpload(generation) else { return }
                     self.errorMessages.append("Failed to prepare \(url.lastPathComponent): \(error.localizedDescription)")
+                    unpreparedFileNames.append(url.lastPathComponent)
                 }
                 self.renderCompletedCount += 1
                 self.overallProgress = Double(self.renderCompletedCount) / Double(self.renderTotalCount) * 0.5
@@ -803,7 +818,7 @@ final class FTPViewModel {
                 }
                 guard !signingFailed else {
                     self.errorMessages.append("Upload stopped because every rendered file must be signed successfully.")
-                    self.isRendering = false
+                    self.showStopped(connection: connection, selectedFileNames: urls.map(\.lastPathComponent))
                     return
                 }
             }
@@ -840,7 +855,12 @@ final class FTPViewModel {
 
             guard self.ownsUpload(generation) else { return }
             self.recordUploadCompletion(id: historyID)
-            self.showCompletion(connection: connection)
+            self.showCompletion(
+                connection: connection,
+                selectedCount: urls.count,
+                plannedFileNames: uploadURLs.map(\.lastPathComponent),
+                unpreparedFileNames: unpreparedFileNames
+            )
         }
     }
 
@@ -910,38 +930,81 @@ final class FTPViewModel {
     /// Shows the sticky completion state and records the upload to the shared
     /// activity history. The banner stays until the user confirms it (a new
     /// upload also replaces it), so the confirmation can't be missed.
-    private func showCompletion(connection: FTPConnection) {
+    /// - Parameters:
+    ///   - selectedCount: how many files the user asked to upload (not just those prepared).
+    ///   - plannedFileNames: upload names that reached the transfer phase.
+    ///   - unpreparedFileNames: selected files that failed before upload (render/staging).
+    private func showCompletion(
+        connection: FTPConnection,
+        selectedCount: Int,
+        plannedFileNames: [String],
+        unpreparedFileNames: [String] = []
+    ) {
         isUploading = false
         isRendering = false
         uploadCompleted = true
         overallProgress = 1.0
-        recordActivity(connection: connection)
+        recordActivity(
+            connection: connection,
+            selectedCount: selectedCount,
+            plannedFileNames: plannedFileNames,
+            unpreparedFileNames: unpreparedFileNames
+        )
+    }
+
+    /// Ends a run that stopped before uploading anything (inspection, staging or signing
+    /// failed) in the same sticky terminal state as a finished upload, so the reasons in
+    /// `errorMessages` stay visible after the sheet has closed.
+    private func showStopped(connection: FTPConnection, selectedFileNames: [String]) {
+        uploadStopped = true
+        showCompletion(
+            connection: connection,
+            selectedCount: selectedFileNames.count,
+            plannedFileNames: [],
+            unpreparedFileNames: selectedFileNames
+        )
+        overallProgress = 0
     }
 
     /// Dismisses the sticky upload-completion banner (the green-check confirm action).
     func dismissUploadCompletion() {
         completionTask?.cancel()
         uploadCompleted = false
+        uploadStopped = false
     }
 
-    private func recordActivity(connection: FTPConnection) {
-        let records: [ActivityFileRecord] = uploadProgress.values
-            .sorted { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
-            .map { progress in
-                ActivityFileRecord(
-                    fileName: progress.fileName,
-                    destination: connection.name,
-                    succeeded: progress.isComplete,
-                    verification: .notApplicable
-                )
-            }
+    private func recordActivity(
+        connection: FTPConnection,
+        selectedCount: Int,
+        plannedFileNames: [String],
+        unpreparedFileNames: [String]
+    ) {
+        func record(_ fileName: String, succeeded: Bool) -> ActivityFileRecord {
+            ActivityFileRecord(
+                fileName: fileName,
+                destination: connection.name,
+                succeeded: succeeded,
+                verification: .notApplicable
+            )
+        }
+        // Every planned file is listed — including ones a server-level abort never reached —
+        // plus the files that failed before upload, so failures aren't silently omitted.
+        var seen: Set<String> = []
+        var records: [ActivityFileRecord] = []
+        for name in plannedFileNames where seen.insert(name).inserted {
+            records.append(record(name, succeeded: uploadProgress[name]?.isComplete == true))
+        }
+        for name in unpreparedFileNames where seen.insert(name).inserted {
+            records.append(record(name, succeeded: false))
+        }
+        records.sort { $0.fileName.localizedStandardCompare($1.fileName) == .orderedAscending }
 
         let entry = ActivityEntry(
             kind: .upload,
             date: Date(),
             title: connection.name,
             successCount: completedCount,
-            totalCount: totalCount,
+            totalCount: max(selectedCount, records.count),
             deliveryTransportSecurity: connection.transportSecurity,
             files: records
         )
