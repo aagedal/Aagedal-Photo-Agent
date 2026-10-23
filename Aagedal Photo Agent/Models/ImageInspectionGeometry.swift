@@ -262,6 +262,29 @@ nonisolated struct SourcePixelRGBA16: Hashable, Sendable {
     let alpha: UInt16
 }
 
+/// Which decode supplied a sample's RGBA values. The bounded preview is only a stand-in
+/// while the full-resolution decode loads, so its values must not be presented as source pixels.
+nonisolated enum ImageInspectionColorSource: Hashable, Sendable {
+    case fullResolution
+    case preview
+
+    /// Prefers the full-resolution decode when it belongs to the displayed source, and falls
+    /// back to the bounded preview otherwise.
+    static func select(
+        fullResolution: CGImage?,
+        fullResolutionMatchesSource: Bool,
+        preview: CGImage?
+    ) -> (image: CGImage, source: ImageInspectionColorSource)? {
+        if fullResolutionMatchesSource, let fullResolution {
+            return (fullResolution, .fullResolution)
+        }
+        if let preview {
+            return (preview, .preview)
+        }
+        return nil
+    }
+}
+
 /// One linked hover location expressed both in representation space and in the
 /// original file's pixel-storage frame.
 nonisolated struct ImageInspectionSample: Hashable, Sendable {
@@ -269,11 +292,13 @@ nonisolated struct ImageInspectionSample: Hashable, Sendable {
     let sourceNormalizedPoint: CGPoint
     let sourcePixel: SourcePixelCoordinate
     let rgba16: SourcePixelRGBA16?
+    let rgbaSource: ImageInspectionColorSource?
 
     init(
         normalizedDisplayPoint: CGPoint,
         transform: DisplayImageTransform,
-        rgba16: SourcePixelRGBA16? = nil
+        rgba16: SourcePixelRGBA16? = nil,
+        rgbaSource: ImageInspectionColorSource? = nil
     ) {
         let displayPoint = CGPoint(
             x: min(1, max(0, normalizedDisplayPoint.x)),
@@ -297,6 +322,7 @@ nonisolated struct ImageInspectionSample: Hashable, Sendable {
             y: Self.pixelIndex(continuousPixel.y, count: transform.sourcePixelHeight)
         )
         self.rgba16 = rgba16
+        self.rgbaSource = rgba16 == nil ? nil : rgbaSource
     }
 
     private static func pixelIndex(_ value: CGFloat, count: Int) -> Int {

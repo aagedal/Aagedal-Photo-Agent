@@ -31,6 +31,9 @@ final class AnalysisWorkspaceModel {
     }
 
     private(set) var loadState: LoadState = .idle
+    /// A failed background save keeps the in-memory case editable; the workspace offers
+    /// Retry Save, which re-persists the current in-memory documents.
+    private(set) var saveError: String?
     private(set) var analysisCase: AnalysisCase? {
         didSet { rebuildPhotoAnnotationCaseIndex() }
     }
@@ -58,6 +61,8 @@ final class AnalysisWorkspaceModel {
     @ObservationIgnored private var workspaceGeneration = UUID()
     @ObservationIgnored private var renameQuiescenceFolderURL: URL?
     @ObservationIgnored private var renameQuiescenceNeedsCaseSave = false
+    @ObservationIgnored private var caseSaveFailed = false
+    @ObservationIgnored private var folderMapSaveFailed = false
     @ObservationIgnored private let analyzers: [any AnalysisAnalyzer]
     @ObservationIgnored private let repositoryFactory: (URL) async throws -> AnalysisCaseRepository
     private var photoAnnotationHistory = AnalysisAnnotationUndoHistory()
@@ -292,10 +297,13 @@ final class AnalysisWorkspaceModel {
         renameQuiescenceNeedsCaseSave = false
         await flushPendingSaves()
 
-        if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder,
-           case .failed(let detail) = loadState {
-            renameQuiescenceFolderURL = nil
-            throw AnalysisRenameQuiescenceError.persistenceFailed(detail)
+        if sourceURL?.deletingLastPathComponent().standardizedFileURL == normalizedFolder {
+            var failureDetail = saveError
+            if case .failed(let detail) = loadState { failureDetail = detail }
+            if let failureDetail {
+                renameQuiescenceFolderURL = nil
+                throw AnalysisRenameQuiescenceError.persistenceFailed(failureDetail)
+            }
         }
     }
 
@@ -354,6 +362,7 @@ final class AnalysisWorkspaceModel {
         folderMapStorage = nil
         sourceChanged = false
         loadState = .idle
+        clearSaveFailures()
         renameQuiescenceFolderURL = nil
         renameQuiescenceNeedsCaseSave = false
     }
@@ -497,6 +506,7 @@ final class AnalysisWorkspaceModel {
         sourceOrientation = image.exifOrientation
         hasDevelopedRepresentation = image.hasDevelopEdits && image.cameraRawSettings != nil
         loadState = .loading
+        clearSaveFailures()
         analysisCase = nil
         currentRevision = nil
         sourceChanged = false
@@ -599,6 +609,48 @@ final class AnalysisWorkspaceModel {
     func retry() {
         guard let openedImage else { return }
         open(openedImage)
+    }
+
+    /// Re-persists the in-memory documents whose last save failed. Unlike `retry()`, this never
+    /// reloads from disk, so edits made after the failure are kept.
+    func retryFailedSave() {
+        let retryCase = caseSaveFailed
+        let retryFolderMap = folderMapSaveFailed
+        clearSaveFailures()
+        if retryCase, let analysisCase {
+            persist(analysisCase)
+        }
+        if retryFolderMap {
+            persistFolderMapDocument(folderMapDocument)
+        }
+    }
+
+    private func clearSaveFailures() {
+        caseSaveFailed = false
+        folderMapSaveFailed = false
+        saveError = nil
+    }
+
+    private func recordSaveFailure(_ error: Error, isFolderMap: Bool) {
+        if isFolderMap {
+            folderMapSaveFailed = true
+        } else {
+            caseSaveFailed = true
+        }
+        saveError = error.localizedDescription.isEmpty
+            ? "Analysis changes could not be saved."
+            : error.localizedDescription
+    }
+
+    private func recordSaveSuccess(isFolderMap: Bool) {
+        if isFolderMap {
+            folderMapSaveFailed = false
+        } else {
+            caseSaveFailed = false
+        }
+        if !caseSaveFailed && !folderMapSaveFailed {
+            saveError = nil
+        }
     }
 
     /// Keeps an open analysis workspace attached to the same source bytes after a successful
@@ -1253,11 +1305,12 @@ final class AnalysisWorkspaceModel {
                 let storage = try await repository.save(updatedCase)
                 guard let self, self.analysisCase?.id == updatedCase.id else { return }
                 self.caseStorage = storage
+                self.recordSaveSuccess(isFolderMap: false)
             } catch is CancellationError {
                 return
             } catch {
                 guard let self, self.analysisCase?.id == updatedCase.id else { return }
-                self.loadState = .failed(error.localizedDescription)
+                self.recordSaveFailure(error, isFolderMap: false)
             }
         }
     }
@@ -1289,11 +1342,12 @@ final class AnalysisWorkspaceModel {
                 let storage = try await repository.saveFolderMapDocument(document)
                 guard let self, self.folderMapDocument.id == document.id else { return }
                 self.folderMapStorage = storage
+                self.recordSaveSuccess(isFolderMap: true)
             } catch is CancellationError {
                 return
             } catch {
                 guard let self, self.folderMapDocument.id == document.id else { return }
-                self.loadState = .failed(error.localizedDescription)
+                self.recordSaveFailure(error, isFolderMap: true)
             }
         }
     }

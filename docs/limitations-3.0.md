@@ -12,10 +12,14 @@ These are material product and evidence boundaries, not a list of unfinished int
   AI-generated.
 - Compression/residual views also react to ordinary recompression, sharpening, denoising, scaling, HDR
   processing, camera pipelines, and format conversion.
+- Pixel views (noise residual, level sweep, clone detection) render from a bounded preview, not the
+  full-resolution source. The Clone Detection view only highlights repeated 8 × 8 block patterns for
+  manual review; it misses rotated, scaled, or retouched copies and flags naturally repeating texture.
 - C2PA validity and signer trust are separate. C2PA signing remains an experimental preview, and carriage
   of a credential into a new rendition does not prove the credential remains valid for that rendition.
-- 3.0 does not ship an AI-origin model, automatic AI-artifact highlighter, clone/copy-move detector, or
-  automatic sun/shadow consistency analyzer. The Meta and Google commands are external links, not local
+- 3.0 does not ship an AI-origin model, automatic AI-artifact highlighter, automated clone/copy-move
+  detector (the Clone Detection pixel view is a visual aid that produces no finding), or automatic
+  sun/shadow consistency analyzer. The Meta and Google commands are external links, not local
   analyzers or integrations.
 
 ## Source, case, and report boundaries
