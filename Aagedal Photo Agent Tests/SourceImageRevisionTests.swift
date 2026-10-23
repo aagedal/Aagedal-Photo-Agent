@@ -204,6 +204,89 @@ struct SourceImageRevisionTests {
         #expect(probe.snapshotURLs == [firstURL, firstURL, secondURL, secondURL])
         #expect(probe.hashURLs == [firstURL, secondURL])
     }
+
+    @Test("an unchanged file reuses its memoized digest without re-reading bytes")
+    func unchangedFileHitsDigestCache() async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+
+        let first = try await service.capture(at: fixture.fileURL)
+        let second = try await service.capture(at: fixture.fileURL, pixelWidth: 7)
+
+        #expect(counter.count == 1)
+        #expect(first.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        #expect(second.sha256 == first.sha256)
+        #expect(second.pixelWidth == 7)
+        #expect(second.relationship(to: first) == .exactRevision)
+    }
+
+    @Test("same-size in-place rewrite with a restored mtime misses the digest cache")
+    func restoredModificationDateStillMisses() async throws {
+        let fixture = try TemporaryFixture(contents: Data("aaaa".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io)
+        let before = try await service.capture(at: fixture.fileURL)
+        // Restore the exact nanosecond mtime the way `touch -r`/rsync would.
+        var original = stat()
+        #expect(stat(fixture.fileURL.path, &original) == 0)
+
+        let handle = try FileHandle(forWritingTo: fixture.fileURL)
+        try handle.write(contentsOf: Data("bbbb".utf8))
+        try handle.close()
+        var times = [original.st_atimespec, original.st_mtimespec]
+        #expect(utimensat(AT_FDCWD, fixture.fileURL.path, &times, 0) == 0)
+        let after = try await service.capture(at: fixture.fileURL)
+
+        #expect(after.byteCount == before.byteCount)
+        #expect(after.contentModificationDate == before.contentModificationDate)
+        #expect(after.fileResourceIdentifier == before.fileResourceIdentifier)
+        #expect(counter.count == 2)
+        #expect(after.sha256 != before.sha256)
+        #expect(before.relationship(to: after) == .sameFileChanged)
+    }
+
+    @Test("digest cache evicts least-recently-used entries beyond its bound")
+    func digestCacheIsBounded() async throws {
+        let first = try TemporaryFixture(contents: Data("one".utf8))
+        let second = try TemporaryFixture(contents: Data("two".utf8))
+        defer {
+            first.remove()
+            second.remove()
+        }
+        let counter = HashCallCounter()
+        let service = SourceImageRevisionCaptureService(io: counter.io, digestCacheCapacity: 1)
+
+        _ = try await service.capture(at: first.fileURL)
+        _ = try await service.capture(at: second.fileURL)
+        _ = try await service.capture(at: second.fileURL)
+        #expect(counter.count == 2)
+        _ = try await service.capture(at: first.fileURL)
+        #expect(counter.count == 3)
+    }
+}
+
+/// Real filesystem primitives with a counted hash, proving when bytes are actually read.
+nonisolated private final class HashCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    var count: Int { lock.withLock { calls } }
+
+    var io: SourceImageRevisionCaptureIO {
+        let system = SourceImageRevisionCaptureIO.system
+        return SourceImageRevisionCaptureIO(
+            canonicalURL: system.canonicalURL,
+            snapshot: system.snapshot,
+            hash: { [self] url in
+                lock.withLock { calls += 1 }
+                return try system.hash(url)
+            },
+            now: system.now
+        )
+    }
 }
 
 @Suite("File system offline availability")
@@ -276,6 +359,29 @@ struct FileSystemOfflineAvailabilityTests {
         #expect(result.files.isEmpty)
         #expect(result.deferredICloudItemCount == 1)
         #expect(requests.urls == [fixture.directoryURL])
+    }
+
+    @Test("scan resolves XMP sidecar dates from its listing exactly like a per-file stat")
+    func scanSidecarDatesMatchPerFileStat() async throws {
+        let fixture = try OfflineFileFixture()
+        defer { fixture.remove() }
+        let paired = try fixture.write("paired.jpg", contents: "photo")
+        let sidecar = try fixture.write("paired.xmp", contents: "<x/>")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: sidecar.path)
+        _ = try fixture.write("raw.cr3", contents: "raw")
+        _ = try fixture.write("RAW.XMP", contents: "<x/>")
+        _ = try fixture.write("lonely.jpg", contents: "photo")
+
+        let result = try await FileSystemService().scanFolderWithStatus(at: fixture.directoryURL)
+
+        #expect(result.files.count == 3)
+        for file in result.files {
+            #expect(file.sidecarModified == ImageFile.sidecarModificationDate(for: file.url), "\(file.filename)")
+        }
+        let byName = Dictionary(uniqueKeysWithValues: result.files.map { ($0.filename, $0) })
+        #expect(byName[paired.lastPathComponent]?.sidecarModified == Date(timeIntervalSince1970: 1_700_000_000))
+        #expect(byName["lonely.jpg"]?.sidecarModified == nil)
     }
 }
 

@@ -70,6 +70,38 @@ struct CaptionVoiceMemoAssociationServiceTests {
         #expect(try VoiceMemoCompanionRepository().lookup(for: image) == .none)
     }
 
+    @Test("Badges skip lookup and discovery when the folder has neither a record nor a same-stem WAV")
+    func badgeShortCircuitsWithoutCandidates() async throws {
+        let (folder, image, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let other = folder.appendingPathComponent("TRA08908.JPG")
+        try Data("other photo".utf8).write(to: other)
+        // An old folder date lets the service reuse its listing across cells.
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -60)],
+                                              ofItemAtPath: folder.path)
+        let calls = OSAllocatedUnfairLock(initialState: [URL]())
+        let badges = CaptionVoiceMemoStatusService(lookup: { url in
+            calls.withLock { $0.append(url) }
+            return try VoiceMemoCompanionRepository().lookup(for: url)
+        }, discoverAssociation: { _ in true })
+
+        #expect(await badges.status(for: other) == CaptionVoiceMemoTranscriptionStatus.none)
+        #expect(await badges.status(for: other) == CaptionVoiceMemoTranscriptionStatus.none)
+        #expect(calls.withLock { $0 }.isEmpty)
+        #expect(await badges.status(for: image) == .needsTranscription)
+        #expect(calls.withLock { $0 } == [image])
+
+        // A newly added same-stem WAV changes the folder date and is seen immediately.
+        try Data("audio".utf8).write(to: folder.appendingPathComponent("TRA08908.wav"))
+        #expect(await badges.status(for: other) == .needsTranscription)
+        // A relationship record alone (memo gone) still reaches lookup and reports missing.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("TRA08908.wav"))
+        let record = VoiceMemoCompanionRecord(profileIdentifier: "test", imageFilename: "TRA08908.JPG",
+                                              memoFilename: "TRA08908.wav")
+        try JSONEncoder().encode(record).write(to: VoiceMemoCompanionRepository().recordURL(for: other))
+        #expect(await badges.status(for: other) == .missing)
+    }
+
     @Test("Discovery is read-only; reviewed confirmation installs identities and preserves originals")
     func explicitConfirmation() async throws {
         let (folder, image, memo) = try fixture()

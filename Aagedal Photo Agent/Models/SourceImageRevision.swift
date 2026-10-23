@@ -123,6 +123,24 @@ nonisolated struct SourceImageRevisionFileSnapshot: Sendable {
     let byteCount: Int64
     let contentModificationDate: Date
     let fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier?
+    /// The inode status-change time (ctime). Any content write, truncate, rename-replace, or
+    /// timestamp restore advances it, and user tools cannot set it back. Only used as part of the
+    /// capture service's digest-cache identity; `nil` disables caching for this snapshot.
+    let statusChangeDate: Date?
+
+    init(
+        isRegularFile: Bool,
+        byteCount: Int64,
+        contentModificationDate: Date,
+        fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier?,
+        statusChangeDate: Date? = nil
+    ) {
+        self.isRegularFile = isRegularFile
+        self.byteCount = byteCount
+        self.contentModificationDate = contentModificationDate
+        self.fileResourceIdentifier = fileResourceIdentifier
+        self.statusChangeDate = statusChangeDate
+    }
 
     func matches(_ other: SourceImageRevisionFileSnapshot) -> Bool {
         isRegularFile == other.isRegularFile
@@ -143,10 +161,13 @@ nonisolated struct SourceImageRevisionCaptureIO: Sendable {
     static let system = SourceImageRevisionCaptureIO(
         canonicalURL: { $0.standardizedFileURL.resolvingSymlinksInPath() },
         snapshot: { url in
-            let values = try url.resourceValues(forKeys: [
+            // A fresh URL never answers from Foundation's per-instance resource-value cache, so
+            // every snapshot (and the digest cache keyed on it) reflects the file as it is now.
+            let values = try URL(fileURLWithPath: url.path).resourceValues(forKeys: [
                 .isRegularFileKey,
                 .fileSizeKey,
                 .contentModificationDateKey,
+                .attributeModificationDateKey,
                 .fileResourceIdentifierKey
             ])
 
@@ -166,7 +187,8 @@ nonisolated struct SourceImageRevisionCaptureIO: Sendable {
                 contentModificationDate: contentModificationDate,
                 fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier(
                     foundationValue: values.fileResourceIdentifier
-                )
+                ),
+                statusChangeDate: values.attributeModificationDate
             )
         },
         hash: { try HashStream.hashFileSynchronously(at: $0) },
@@ -188,12 +210,47 @@ actor SourceImageRevisionCaptureService {
     }
     private let io: SourceImageRevisionCaptureIO
 
+    /// Stat identity that must be unchanged for a memoized digest to be reused. The status-change
+    /// time is the decisive member: unlike the content modification date it cannot be restored by
+    /// user tools, so a same-size rewrite with a preserved mtime still misses.
+    private struct DigestIdentity: Equatable {
+        let fileResourceIdentifier: SourceImageRevision.FileResourceIdentifier
+        let byteCount: Int64
+        let contentModificationDate: Date
+        let statusChangeDate: Date
+
+        init?(_ snapshot: SourceImageRevisionFileSnapshot) {
+            guard snapshot.isRegularFile,
+                  let fileResourceIdentifier = snapshot.fileResourceIdentifier,
+                  let statusChangeDate = snapshot.statusChangeDate else { return nil }
+            self.fileResourceIdentifier = fileResourceIdentifier
+            self.byteCount = snapshot.byteCount
+            self.contentModificationDate = snapshot.contentModificationDate
+            self.statusChangeDate = statusChangeDate
+        }
+    }
+
+    private struct DigestCacheEntry {
+        let identity: DigestIdentity
+        let digest: Data
+        var lastUse: UInt64
+    }
+
+    /// Bounded LRU of verified digests keyed by canonical path. Actor isolation makes it
+    /// thread-safe; selection, rating, and write paths capture the same file several times per
+    /// operation, and only the first capture after a content change needs to read the bytes.
+    private var digestCache: [URL: DigestCacheEntry] = [:]
+    private var digestCacheClock: UInt64 = 0
+    private let digestCacheCapacity: Int
+
     init(io: SourceImageRevisionCaptureIO = .system,
          filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.source-revision.filesystem", qos: .utility
-         )) {
+         ),
+         digestCacheCapacity: Int = 4_096) {
         self.io = io
         self.filesystemQueue = filesystemQueue
+        self.digestCacheCapacity = max(1, digestCacheCapacity)
     }
 
     func capture(
@@ -215,12 +272,22 @@ actor SourceImageRevisionCaptureService {
             throw SourceImageRevisionError.notARegularFile
         }
 
-        let digest = try io.hash(canonicalURL)
-        try Task.checkCancellation()
-        let after = try io.snapshot(canonicalURL)
-        try Task.checkCancellation()
-        guard before.matches(after) else {
-            throw SourceImageRevisionError.sourceChangedDuringHash
+        let identity = DigestIdentity(before)
+        let digest: Data
+        if let identity, let cached = cachedDigest(for: canonicalURL, identity: identity) {
+            // The stat identity proves the bytes are the ones hashed earlier; no read needed.
+            digest = cached
+        } else {
+            digest = try io.hash(canonicalURL)
+            try Task.checkCancellation()
+            let after = try io.snapshot(canonicalURL)
+            try Task.checkCancellation()
+            guard before.matches(after) else {
+                throw SourceImageRevisionError.sourceChangedDuringHash
+            }
+            if let identity, after.statusChangeDate == before.statusChangeDate {
+                storeDigest(digest, for: canonicalURL, identity: identity)
+            }
         }
 
         return SourceImageRevision(
@@ -235,6 +302,28 @@ actor SourceImageRevisionCaptureService {
             sha256: digest.lowercaseHexString,
             hashCompletedAt: io.now()
         )
+    }
+
+    private func cachedDigest(for url: URL, identity: DigestIdentity) -> Data? {
+        guard var entry = digestCache[url] else { return nil }
+        guard entry.identity == identity else {
+            digestCache[url] = nil
+            return nil
+        }
+        digestCacheClock &+= 1
+        entry.lastUse = digestCacheClock
+        digestCache[url] = entry
+        return entry.digest
+    }
+
+    private func storeDigest(_ digest: Data, for url: URL, identity: DigestIdentity) {
+        digestCacheClock &+= 1
+        digestCache[url] = DigestCacheEntry(identity: identity, digest: digest, lastUse: digestCacheClock)
+        guard digestCache.count > digestCacheCapacity else { return }
+        // Evict the least-recently-used quarter in one pass so the O(n) scan is amortized.
+        let evictCount = digestCache.count - max(1, digestCacheCapacity * 3 / 4)
+        let victims = digestCache.sorted { $0.value.lastUse < $1.value.lastUse }.prefix(evictCount)
+        for victim in victims { digestCache[victim.key] = nil }
     }
 }
 
