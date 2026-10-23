@@ -547,6 +547,53 @@ struct FFmpegWhisperTranscriptionProviderTests {
         }
     }
 
+    @Test("Moving to another photo lets a running Caption transcription finish and save")
+    @MainActor
+    func captionNavigationDetachesRunningTranscription() async throws {
+        let association = VoiceMemoAssociation(profileIdentifier: "test", imageURL: image, memoURL: memo)
+        let stable = revision()
+        let locale = Locale(identifier: "en-US")
+        let existing = VoiceMemoTranscriptRecord(
+            sourceImageFilename: image.lastPathComponent, sourceMemoFilename: memo.lastPathComponent,
+            memoByteCount: stable.byteCount, memoSHA256: stable.sha256,
+            associationProfileIdentifier: association.profileIdentifier,
+            localeIdentifier: locale.identifier, provider: "Apple on-device speech",
+            providerModel: "System managed; exact version unavailable",
+            generatedAt: Date(timeIntervalSince1970: 100), generatedText: "Original draft",
+            reviewedText: "Original draft")
+        let runtime = VoiceMemoTranscriptionRuntime(
+            isAvailable: { true }, supportedLocales: { [locale] }, resolveLocale: { _ in locale },
+            assetStatus: { _ in .installed }, installAssets: { _ in },
+            transcribe: { _, _ in "Unexpected Apple result" })
+        let storage = CaptionWhisperTranscriptStorage(existing)
+        let service = VoiceMemoTranscriptionService(runtime: runtime,
+            lookup: { _ in .available(association) }, captureRevision: { _ in stable },
+            loadTranscript: { _, _ in await storage.load() },
+            saveTranscript: { record, _, _ in await storage.save(record) }, startAccess: { _ in false })
+        let model = CaptionVoiceMemoTranscriptModel(service: service)
+        await model.load(image)
+        let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,
+            authorizeArtifacts: { _ in }, run: { request in
+                // Cancellation-aware: a cancelled job throws instead of saving.
+                try await Task.sleep(for: .milliseconds(300))
+                return .init(request: request, transcript: .init(
+                    segments: [.init(start: 0, end: 25, text: "Finished after navigation")],
+                    editableText: "Finished after navigation"))
+            })
+
+        let transcription = Task { await model.transcribe(provider: provider) }
+        while !model.isTranscribing { await Task.yield() }
+        // Mirrors CaptionVoiceMemoPlayerView's photo-change handler.
+        model.detachRunningTranscription()
+        model.cancel(resetDraft: true)
+        #expect(!model.isTranscribing)
+        await transcription.value
+
+        #expect(await storage.load().generatedText == "Finished after navigation")
+        #expect(model.draft == nil)
+        #expect(model.errorMessage == nil)
+    }
+
     @Test("artifact authorization failure cannot reach the runner")
     func authorizationFailure() async {
         let provider = FFmpegWhisperTranscriptionProvider(configuration: configuration,

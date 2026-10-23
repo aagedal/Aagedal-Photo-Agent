@@ -23,6 +23,10 @@ nonisolated enum UserDefaultsKeys {
     /// Settings ▸ Automation shows its review, history and recovery sections.
     static let automationShowsAdvanced = "automationShowsAdvanced"
 
+    // MARK: - Description Assistant
+    /// Last caption language chosen in the Description Assistant (single and batch).
+    static let descriptionAssistantLanguage = "descriptionAssistant.language"
+
     // MARK: - Face Recognition
     static let browserFaceBarCollapsed = "browserFaceBarCollapsed"
     static let faceCleanupPolicy = "faceCleanupPolicy"

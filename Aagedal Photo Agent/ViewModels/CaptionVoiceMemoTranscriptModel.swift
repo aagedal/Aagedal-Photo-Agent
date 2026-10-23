@@ -22,6 +22,9 @@ final class CaptionVoiceMemoTranscriptModel {
     }
 
     func load(_ imageURL: URL?) async {
+        if imageURL?.standardizedFileURL != self.imageURL {
+            detachRunningTranscription()
+        }
         cancel(resetDraft: true)
         self.imageURL = imageURL?.standardizedFileURL
         guard let imageURL = self.imageURL else { return }
@@ -215,6 +218,15 @@ final class CaptionVoiceMemoTranscriptModel {
             availability = nil
             draft = nil
         }
+    }
+
+    /// Moving to another photo must not throw away a transcription that may have taken minutes.
+    /// Let it finish and save its own photo's transcript; only this view's state moves on.
+    func detachRunningTranscription() {
+        guard isTranscribing, task != nil else { return }
+        task = nil
+        generation &+= 1
+        isTranscribing = false
     }
 
     private func startOperation() {

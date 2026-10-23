@@ -165,7 +165,8 @@ struct DescriptionAssistantView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var action: DescriptionAssistantAction = .grammar
-    @State private var language: DescriptionAssistantLanguage = .bokmal
+    @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
+    private var language: DescriptionAssistantLanguage = .bokmal
     @State private var draftDescription: String
     @State private var reportingNotes = ""
     @State private var includePeople = false
@@ -269,6 +270,9 @@ struct DescriptionAssistantView: View {
             }
             .padding(compact ? 16 : 24)
         }.frame(width: compact ? 480 : 720, height: compact ? 400 : 820)
+        // A click outside the compact popover must not throw away a running generation or a
+        // suggestion under review; Close and Apply remain the explicit ways out.
+        .interactiveDismissDisabled(generationTask != nil || proposal != nil)
         .task {
             setup.refreshAppleAvailability()
             if setup.backend == nil { showSetup = true }
@@ -315,7 +319,8 @@ struct BatchDescriptionAssistantView: View {
     let urls: [URL]
     @Bindable var browser: BrowserViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var language: DescriptionAssistantLanguage = .bokmal
+    @AppStorage(UserDefaultsKeys.descriptionAssistantLanguage, store: AppDefaults.store)
+    private var language: DescriptionAssistantLanguage = .bokmal
     @State private var action: DescriptionAssistantAction = .wording
     @State private var proposals: [DescriptionAssistantProposal] = []
     @State private var reviewed: [UUID: String] = [:]

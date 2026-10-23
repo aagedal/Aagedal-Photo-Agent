@@ -293,6 +293,7 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryModel.cancel()
             associationModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.detachRunningTranscription()
             transcriptModel.cancel(resetDraft: true)
             isSelectingRecoveryMemo = false
             isSelectingRelationshipFolder = false
@@ -308,6 +309,7 @@ struct CaptionVoiceMemoPlayerView: View {
             recoveryModel.cancel()
             associationModel.cancel()
             reassociationModel.cancel()
+            transcriptModel.detachRunningTranscription()
             transcriptModel.cancel(resetDraft: true)
             recoveryImageURL = nil
             reassociationImageURL = nil
@@ -462,6 +464,8 @@ struct CaptionVoiceMemoPlayerView: View {
             .accessibilityIdentifier("caption.voiceMemo.transcribe")
             if !isWhisperReady {
                 Text("Set up Whisper in Settings.").foregroundStyle(.secondary)
+            } else if whisperSetup.isTranscribing && !transcriptModel.isTranscribing {
+                Text("Finishing another photo's transcription…").foregroundStyle(.secondary)
             }
         }
     }

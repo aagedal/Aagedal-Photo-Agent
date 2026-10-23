@@ -23,6 +23,7 @@ struct CaptionWorkspaceView: View {
     @State private var session: CaptionSession
     @State private var voiceMemoBadgeRefreshToken: UInt64 = 0
     @State private var preview: NSImage?
+    @State private var previewFailed = false
     @State private var validationReport = MetadataValidationReport(issues: [])
     @State private var errorMessage: String?
     @State private var isWorkspaceActive = false
@@ -240,7 +241,11 @@ struct CaptionWorkspaceView: View {
             isConflictRecoveryBusy = false
         }
         .onChange(of: visibleURLs) { _, _ in
-            synchronizeSessionWithBrowser()
+            synchronizeSessionWithBrowser(capturingDraft: true)
+        }
+        .onChange(of: browserViewModel.isFullScreen) { wasFullScreen, isFullScreen in
+            guard wasFullScreen, !isFullScreen, isWorkspaceActive else { return }
+            adoptBrowserSelectionAfterFullScreen()
         }
         .onChange(of: focusedAction) { _, action in
             if action != nil { activeEditorField = nil }
@@ -639,11 +644,9 @@ struct CaptionWorkspaceView: View {
                     .frame(width: 120)
 
                     Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") {
-                        preservingEditorFocus {
-                            browserViewModel.isFullScreen = true
-                        }
+                        openFullScreen()
                     }
-                    .disabled(currentImage == nil)
+                    .disabled(currentImage == nil || isEditorTransitioning)
 
                     Toggle("Faces", systemImage: "face.smiling", isOn: Binding(
                         get: { showsConfirmedFaces },
@@ -670,6 +673,7 @@ struct CaptionWorkspaceView: View {
 
                 CaptionEditedPreview(
                     image: preview,
+                    isUnavailable: previewFailed,
                     mode: previewMode,
                     confirmedPeople: showsConfirmedFaces ? confirmedPeople : []
                 )
@@ -692,23 +696,35 @@ struct CaptionWorkspaceView: View {
                 openSettings()
             }
             Divider()
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 8) {
-                    ForEach(visibleImages) { image in
-                        CaptionFilmstripItem(
-                            image: image,
-                            thumbnailService: browserViewModel.thumbnailService,
-                            isSelected: session.currentURL == image.url.standardizedFileURL,
-                            voiceMemoRefreshToken: voiceMemoBadgeRefreshToken
-                        ) {
-                            select(image.url)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 8) {
+                        ForEach(visibleImages) { image in
+                            CaptionFilmstripItem(
+                                image: image,
+                                thumbnailService: browserViewModel.thumbnailService,
+                                isSelected: session.currentURL == image.url.standardizedFileURL,
+                                voiceMemoRefreshToken: voiceMemoBadgeRefreshToken
+                            ) {
+                                select(image.url)
+                            }
+                            .id(image.url.standardizedFileURL)
                         }
                     }
+                    .padding(8)
                 }
-                .padding(8)
+                .scrollIndicators(.visible)
+                .frame(height: 92)
+                .onAppear {
+                    if let currentURL = session.currentURL { proxy.scrollTo(currentURL, anchor: .center) }
+                }
+                .onChange(of: session.currentURL) { _, currentURL in
+                    guard let currentURL else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(currentURL, anchor: .center)
+                    }
+                }
             }
-            .scrollIndicators(.visible)
-            .frame(height: 92)
         }
     }
 
@@ -729,15 +745,20 @@ struct CaptionWorkspaceView: View {
                 .help(shortcutHelp(for: .saveAndNext))
                 .focused($focusedAction, equals: .saveAndNext)
 
-                Button("Write & Next", systemImage: "square.and.arrow.down") {
-                    writeAndNext()
+                Button(
+                    session.canGoNext ? "Write & Next" : "Write",
+                    systemImage: "square.and.arrow.down"
+                ) {
+                    if session.canGoNext { writeAndNext() } else { writeCurrent() }
                 }
                 .disabled(
-                    !session.canGoNext
+                    session.currentURL == nil
                         || metadataViewModel.isSaving
                         || isEditorTransitioning
                 )
-                .help("Durably flush, write the current photo, then advance only after the write succeeds. \(shortcutHelp(for: .writeAndNext))")
+                .help(session.canGoNext
+                    ? "Durably flush, write the current photo, then advance only after the write succeeds. \(shortcutHelp(for: .writeAndNext))"
+                    : "Write the last photo. \(shortcutHelp(for: .writeAndNext))")
                 .focused($focusedAction, equals: .writeAndNext)
 
                 Divider().frame(height: 20)
@@ -766,7 +787,10 @@ struct CaptionWorkspaceView: View {
                 Button("Fix Next", systemImage: "wrench.and.screwdriver") {
                     focusNextValidationIssue()
                 }
-                .disabled(validationReport.issues.isEmpty || isEditorTransitioning)
+                .disabled(nextVisibleValidationIssue == nil || isEditorTransitioning)
+                .help(nextVisibleValidationIssue == nil && !validationReport.issues.isEmpty
+                    ? "The remaining issues are in fields hidden in Settings → Metadata."
+                    : "Move to the next field that needs attention")
                 .focused($focusedAction, equals: .fixNext)
 
                 Menu("More", systemImage: "ellipsis.circle") {
@@ -790,7 +814,9 @@ struct CaptionWorkspaceView: View {
                 Button("Close") {
                     closeAfterFlush()
                 }
-                .keyboardShortcut(.escape, modifiers: [])
+                // Escape is routed by the caption key monitor: it leaves a focused field first and
+                // only closes the workspace when no editor or input method owns the key.
+                .help("Close the Caption workspace (Esc when no field is being edited)")
                 .disabled(isEditorTransitioning)
                 .focused($focusedAction, equals: .close)
             }
@@ -803,7 +829,39 @@ struct CaptionWorkspaceView: View {
 
     private var isEditorTransitioning: Bool { session.isTransitioning || flushCoordinator.isTransitioning }
 
-    private func synchronizeSessionWithBrowser() {
+    /// Full screen is a separate window whose arrow keys change the browser selection directly,
+    /// bypassing the session's flush barrier. Capture the buffered caption before it opens.
+    private func openFullScreen() {
+        guard !isEditorTransitioning else { return }
+        do {
+            try enqueueCurrentDraftPersistence()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        preservingEditorFocus {
+            browserViewModel.isFullScreen = true
+        }
+    }
+
+    /// Follows the photo the user navigated to in full screen so the header, preview and editor
+    /// describe the same photo again.
+    private func adoptBrowserSelectionAfterFullScreen() {
+        guard browserViewModel.selectedImageIDs.count == 1,
+              let browserURL = browserViewModel.selectedImageIDs.first,
+              browserURL.standardizedFileURL != session.currentURL,
+              visibleURLs.contains(browserURL) else { return }
+        select(browserURL)
+    }
+
+    private func synchronizeSessionWithBrowser(capturingDraft: Bool = false) {
+        if capturingDraft, isWorkspaceActive, !isEditorTransitioning,
+           let currentURL = session.currentURL,
+           !visibleURLs.contains(where: { $0.standardizedFileURL == currentURL }) {
+            // The focused photo can leave the filtered list (for example after a rating change).
+            // Capture its buffered text before the session moves focus to a neighbour.
+            try? enqueueCurrentDraftPersistence()
+        }
         session.replaceImages(visibleURLs)
         guard let currentURL = session.currentURL else { return }
         let browserURL = originalBrowserURL(for: currentURL)
@@ -926,7 +984,10 @@ struct CaptionWorkspaceView: View {
                         errorMessage = "The previous photo's metadata could not be copied."
                         return
                     }
-                    guard result.changed else { return }
+                    guard result.changed else {
+                        errorMessage = "The previous photo has no different caption fields to copy."
+                        return
+                    }
                     metadataViewModel.editingMetadata = updated
                     metadataViewModel.hasChanges = true
                     session.markCurrentDirty()
@@ -1076,8 +1137,16 @@ struct CaptionWorkspaceView: View {
         }
     }
 
+    /// The next issue in a field the editor actually shows; issues in hidden fields cannot take focus.
+    private var nextVisibleValidationIssue: MetadataValidationIssue? {
+        CaptionWorkspaceChecklistSummary.make(
+            report: validationReport,
+            actionableFields: Set(fieldLayout.priority + fieldLayout.secondary)
+        ).nextIssue
+    }
+
     private func focusNextValidationIssue() {
-        guard let issue = validationReport.nextBlockingIssue ?? validationReport.issues.first else { return }
+        guard let issue = nextVisibleValidationIssue else { return }
         requestFocus(issue.field)
     }
 
@@ -1130,6 +1199,16 @@ struct CaptionWorkspaceView: View {
                 moveCaptionFocus(reverse: modifiers.contains(.shift))
                 return nil
             }
+            if event.keyCode == 53, modifiers.isEmpty {
+                guard !inputState.textEditorOwnsInput,
+                      !inputState.imeHasMarkedText,
+                      !isEditorTransientPresented,
+                      !showingCodeReplacementSettings,
+                      !showingCodeReplacementPreview,
+                      errorMessage == nil else { return event }
+                closeAfterFlush()
+                return nil
+            }
             guard let key = event.charactersIgnoringModifiers,
                   let command = CaptionAdvanceShortcutRouter.resolve(
                     KeyboardShortcutRouteInput(
@@ -1146,10 +1225,10 @@ struct CaptionWorkspaceView: View {
                 guard session.canGoNext, !isEditorTransitioning else { return nil }
                 navigate(previous: false, announcesAdvance: true)
             case .writeAndNext:
-                guard session.canGoNext,
+                guard session.currentURL != nil,
                       !isEditorTransitioning,
                       !metadataViewModel.isSaving else { return nil }
-                writeAndNext()
+                if session.canGoNext { writeAndNext() } else { writeCurrent() }
             }
             return nil
         }
@@ -1183,11 +1262,11 @@ struct CaptionWorkspaceView: View {
         case .previous: session.canGoPrevious && !isEditorTransitioning
         case .saveAndNext: session.canGoNext && !isEditorTransitioning
         case .writeAndNext:
-            session.canGoNext && !isEditorTransitioning && !metadataViewModel.isSaving
+            session.currentURL != nil && !isEditorTransitioning && !metadataViewModel.isSaving
         case .applyTemplate: session.currentURL != nil && !isEditorTransitioning
         case .copyPrevious:
             session.previousURL != nil && !isEditorTransitioning && !isCopyingPrevious
-        case .fixNext: !validationReport.issues.isEmpty && !isEditorTransitioning
+        case .fixNext: nextVisibleValidationIssue != nil && !isEditorTransitioning
         case .more, .close: !isEditorTransitioning
         }
     }
@@ -1225,10 +1304,18 @@ struct CaptionWorkspaceView: View {
 
     private func loadCurrentPreview() async {
         preview = nil
+        previewFailed = false
         confirmedPeople = []
         guard let token = session.beginLoad() else { return }
         let image = currentImage
-        let settings = metadataViewModel.editingMetadata.cameraRaw
+        // The editor's selection load is debounced, so right after navigating its draft still
+        // belongs to the previous photo. Only trust it once it describes this photo.
+        let editorDescribesCurrentPhoto = !metadataViewModel.isLoading
+            && metadataViewModel.selectedURLs.count == 1
+            && metadataViewModel.selectedURLs.first?.standardizedFileURL == token.imageURL
+        let settings = editorDescribesCurrentPhoto
+            ? metadataViewModel.editingMetadata.cameraRaw
+            : image?.cameraRawSettings
         let orientation = image?.exifOrientation ?? 1
         let cgImage = await FullScreenImageCache.decodedEditedPreview(
             for: token.imageURL,
@@ -1245,6 +1332,10 @@ struct CaptionWorkspaceView: View {
         } else {
             loaded = await browserViewModel.thumbnailService.loadThumbnail(for: token.imageURL)
         }
+        guard !Task.isCancelled, session.accepts(load: token) else { return }
+        // Show the photo before the folder's face data, which can be slow on large folders.
+        preview = loaded
+        previewFailed = loaded == nil
         let folderURL = token.imageURL.deletingLastPathComponent()
         let faceDataResult = await FaceDataFolderLoadService.shared.loadDocument(
             folderURL: folderURL
@@ -1256,13 +1347,13 @@ struct CaptionWorkspaceView: View {
         }
         let people = CaptionConfirmedPersonOrdering.people(for: token.imageURL, in: faceData)
         guard !Task.isCancelled, session.accepts(load: token) else { return }
-        preview = loaded
         confirmedPeople = people
     }
 }
 
 private struct CaptionEditedPreview: View {
     let image: NSImage?
+    let isUnavailable: Bool
     let mode: CaptionPreviewMode
     let confirmedPeople: [CaptionConfirmedPerson]
 
@@ -1301,6 +1392,13 @@ private struct CaptionEditedPreview: View {
                         .frame(width: image.size.width, height: image.size.height)
                     }
                 }
+            } else if isUnavailable {
+                ContentUnavailableView(
+                    "Preview Unavailable",
+                    systemImage: "photo.badge.exclamationmark",
+                    description: Text("The photo could not be decoded. You can still edit its caption.")
+                )
+                .foregroundStyle(.white)
             } else {
                 ProgressView()
                     .controlSize(.large)
