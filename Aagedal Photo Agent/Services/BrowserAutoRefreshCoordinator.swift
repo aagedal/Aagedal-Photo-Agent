@@ -214,7 +214,8 @@ final class BrowserAutoRefreshCoordinator {
               !modifiedURLs.isDisjoint(with: selectedURLs) else { return }
         metadataViewModel.loadMetadata(
             for: pane.selectedImages,
-            folderURL: pane.currentFolderURL
+            folderURL: pane.currentFolderURL,
+            preservingUnsavedEdits: true
         )
     }
 }

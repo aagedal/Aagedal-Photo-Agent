@@ -2786,3 +2786,20 @@ nonisolated extension Array where Element: Hashable {
         return filter { seen.insert($0).inserted }
     }
 }
+
+extension IPTCMetadata {
+    /// The descriptive record Copy IPTC carries to other photos (every IPTC Core/Extension field
+    /// the editor shows, incl. location, instructions, source and creator contact info).
+    /// Per-image identity (Digital Image GUID, capture date), rating/label and develop and
+    /// orientation state never travel.
+    nonisolated var copyableIPTCRecord: IPTCMetadata {
+        var copy = self
+        copy.digitalImageGUID = nil
+        copy.captureDate = nil
+        copy.rating = nil
+        copy.label = nil
+        copy.cameraRaw = nil
+        copy.exifOrientation = nil
+        return copy
+    }
+}

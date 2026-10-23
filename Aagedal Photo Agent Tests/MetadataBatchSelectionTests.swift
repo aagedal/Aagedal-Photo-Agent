@@ -292,6 +292,178 @@ struct MetadataBatchSelectionTests {
         #expect(firstXMP.dateCreated == firstDraft.metadata.dateCreated)
     }
 
+    // MARK: - 3.0 metadata write regressions
+
+    private func makeFolder() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MetadataWriteRegression-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func loadSingle(_ model: MetadataViewModel, _ url: URL, in folder: URL,
+                            preservingUnsavedEdits: Bool = false) async throws {
+        model.loadMetadata(for: [ImageFile(url: url)], folderURL: folder,
+                           preservingUnsavedEdits: preservingUnsavedEdits)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.isLoading, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(!model.isLoading)
+        try #require(model.metadata != nil)
+    }
+
+    @Test("single embedded save and batch keyword overwrite keep commas inside list items")
+    func embeddedSavesKeepCommaListItems() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let single = try makeJPEG(in: folder, name: "single.jpg")
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, single, in: folder)
+        model.editingMetadata.keywords = ["Støre, Jonas Gahr", "politikk"]
+        model.editingMetadata.personShown = ["Støre, Jonas Gahr"]
+        model.markChanged()
+        let result = await withCheckedContinuation { continuation in
+            model.commitEditsReportingResult(mode: .writeToFile) { continuation.resume(returning: $0) }
+        }
+        #expect(result == .succeeded)
+        let singleRead = try await SwiftExifReadService().readFullMetadata(url: single)
+        #expect(singleRead.keywords == ["Støre, Jonas Gahr", "politikk"])
+        #expect(singleRead.personShown == ["Støre, Jonas Gahr"])
+
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try model.setBatchMutation(.overwrite(.repeatable(["Støre, Jonas Gahr"])), for: .keywords)
+        model.writeMetadata()
+        try await waitForSave(model)
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).keywords == ["Støre, Jonas Gahr"])
+        }
+    }
+
+    @Test("batch embedded save advances its baseline so a just-added value can be removed again")
+    func batchRemoveJustAddedValue() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+
+        model.editingMetadata.organisationsShownNames = ["Agency, Inc"]
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).organisationsShownNames == ["Agency, Inc"])
+        }
+
+        model.editingMetadata.organisationsShownNames = []
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).organisationsShownNames.isEmpty)
+        }
+    }
+
+    @Test("emptying a batch field that was common to the selection clears it on every photo")
+    func batchClearCommonField() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg")]
+        for (url, credit) in zip(urls, ["Desk A", "Desk B"]) {
+            try await write(IPTCMetadata(credit: credit, city: "Oslo"), to: url)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(model.editingMetadata.city == "Oslo")
+        model.editingMetadata.city = ""
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+        for (url, credit) in zip(urls, ["Desk A", "Desk B"]) {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.city == nil)
+            // A mixed field the user left empty stays untouched.
+            #expect(read.credit == credit)
+        }
+        #expect(MetadataViewModel.batchScalarWriteValue(nil, previous: nil) == nil)
+        #expect(MetadataViewModel.batchScalarWriteValue("", previous: "Oslo") == "")
+        #expect(MetadataViewModel.batchScalarWriteValue("Bergen", previous: "Oslo") == "Bergen")
+    }
+
+    @Test("batch embedded write folds its change into existing pending drafts")
+    func batchEmbeddedWriteUpdatesPendingDraft() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let drafted = try makeJPEG(in: folder, name: "drafted.jpg")
+        let plain = try makeJPEG(in: folder, name: "plain.jpg")
+        try MetadataSidecarService().saveSidecar(.init(sourceFile: drafted.lastPathComponent,
+            pendingChanges: true, metadata: IPTCMetadata(title: "Draft headline"),
+            imageMetadataSnapshot: IPTCMetadata()), for: drafted, in: folder)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: [ImageFile(url: drafted), ImageFile(url: plain)], folderURL: folder)
+        try await waitForBatchLoad(model)
+        model.editingMetadata.city = "Bergen"
+        model.markChanged()
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        #expect(try await SwiftExifReadService().readFullMetadata(url: plain).city == "Bergen")
+        let draft = try #require(MetadataSidecarService().loadSidecar(for: drafted, in: folder))
+        #expect(draft.pendingChanges)
+        #expect(draft.metadata.title == "Draft headline")
+        #expect(draft.metadata.city == "Bergen")
+        #expect(MetadataSidecarService().loadSidecar(for: plain, in: folder) == nil)
+    }
+
+    @Test("auto-refresh of the same photo keeps unsaved edits instead of replacing them")
+    func sameImageReloadKeepsUnsavedEdits() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "photo.jpg")
+        try await write(IPTCMetadata(title: "On disk"), to: url)
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.title = "Typed but unsaved"
+        model.markChanged()
+        try await loadSingle(model, url, in: folder, preservingUnsavedEdits: true)
+        #expect(model.editingMetadata.title == "Typed but unsaved")
+        #expect(model.hasUnpersistedEditorChanges)
+
+        // Without unsaved edits a reload still refreshes from disk.
+        model.editingMetadata.title = "On disk"
+        model.hasChanges = false
+        try await write(IPTCMetadata(title: "Changed externally"), to: url)
+        try await loadSingle(model, url, in: folder, preservingUnsavedEdits: true)
+        #expect(model.editingMetadata.title == "Changed externally")
+    }
+
+    @Test("Copy IPTC record carries every descriptive field but never the per-image GUID")
+    func copyableIPTCRecord() {
+        var source = IPTCMetadata(title: "Headline", digitalImageGUID: "guid-1", city: "Oslo")
+        source.sublocation = "Youngstorget"
+        source.provinceState = "Oslo"
+        source.instructions = "Embargo 12:00"
+        source.source = "NTB"
+        source.locationsCreated = [EditorialLocation(city: "Oslo")]
+        source.creatorContactInfo = CreatorContactInfo(emails: ["desk@example.com"])
+        source.rating = 5
+        let copied = source.copyableIPTCRecord
+        #expect(copied.digitalImageGUID == nil)
+        #expect(copied.rating == nil)
+        #expect(copied.sublocation == "Youngstorget")
+        #expect(copied.provinceState == "Oslo")
+        #expect(copied.instructions == "Embargo 12:00")
+        #expect(copied.source == "NTB")
+        #expect(copied.locationsCreated == source.locationsCreated)
+        #expect(copied.creatorContactInfo == source.creatorContactInfo)
+        #expect(copied.title == "Headline")
+    }
+
     private func makeJPEG(in folder: URL, name: String) throws -> URL {
         let url = folder.appendingPathComponent(name)
         guard let bitmap = NSBitmapImageRep(
