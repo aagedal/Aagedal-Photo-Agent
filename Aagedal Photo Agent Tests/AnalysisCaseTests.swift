@@ -59,6 +59,81 @@ struct AnalysisCaseTests {
         await model.flushPendingSaves()
     }
 
+    @Test("A failed case save keeps the workspace and Retry Save persists the in-memory edit")
+    func failedSaveKeepsWorkspaceAndRetries() async throws {
+        let fixture = try AnalysisFixture(contents: "save failure workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        // Block the folder-local cases directory with a plain file so the next save fails
+        // with an error that does not trigger the Application Support fallback.
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+
+        let annotation = AnalysisAnnotation(
+            kind: .label,
+            geometry: .anchor(.init(x: 0.4, y: 0.4)),
+            text: "Unsaved"
+        )
+        model.setAnnotation(annotation)
+        await model.flushPendingSaves()
+
+        #expect(model.saveError != nil)
+        #expect(model.loadState == .ready)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+
+        #expect(model.saveError == nil)
+        #expect(model.loadState == .ready)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the in-memory case")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
+    @Test("Pixel readout samples full resolution only when it matches the displayed source")
+    func inspectionColorSourceSelection() throws {
+        let context = try #require(CGContext(
+            data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let fullResolution = try #require(context.makeImage())
+        let preview = try #require(context.makeImage())
+
+        let matched = ImageInspectionColorSource.select(
+            fullResolution: fullResolution, fullResolutionMatchesSource: true, preview: preview
+        )
+        #expect(matched?.source == .fullResolution)
+        #expect(matched?.image === fullResolution)
+
+        let stale = ImageInspectionColorSource.select(
+            fullResolution: fullResolution, fullResolutionMatchesSource: false, preview: preview
+        )
+        #expect(stale?.source == .preview)
+        #expect(stale?.image === preview)
+
+        let loading = ImageInspectionColorSource.select(
+            fullResolution: nil, fullResolutionMatchesSource: true, preview: preview
+        )
+        #expect(loading?.source == .preview)
+        #expect(ImageInspectionColorSource.select(
+            fullResolution: nil, fullResolutionMatchesSource: false, preview: nil
+        ) == nil)
+    }
+
     @Test("Version nine annotations decode without counter metadata")
     func migratesVersionNineCounterMetadata() async throws {
         let fixture = try AnalysisFixture(contents: "legacy annotations")

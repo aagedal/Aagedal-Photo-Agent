@@ -548,11 +548,24 @@ Trash fails, the template remains available and the list displays an error.
 
 1. Select one image and open **Image Analysis**.
 2. Choose the original or developed representation. Source-byte findings remain bound to the original.
-3. In Pixel Analysis, choose Normal, channel/luminance, Alpha, Edges, or Compression / Residual. The
-   residual result is a visualization with fixed disclosed parameters, not proof of manipulation.
+3. In Pixel Analysis, choose Normal, channel/luminance, Alpha, Edges, Compression Residual, Noise
+   Residual, Level Sweep, or Clone Detection from **Pixel View**. Every view is a visualization with
+   fixed disclosed parameters, rendered from a bounded preview (at most 2048 px; Clone Detection 1024 px),
+   not proof of manipulation:
+   - **Noise Residual** amplifies the difference between luminance and a median-filtered copy, so
+     regions with different noise or sharpening can stand out.
+   - **Level Sweep** stretches a narrow luminance band around the chosen level to expose subtle tonal
+     edges; drag the level to sweep through the image.
+   - **Clone Detection** tints 8 × 8 blocks whose coarse brightness pattern repeats elsewhere at the same
+     offset. It is a visual aid for manual review, not an automated copy-move detector: it misses
+     rotated, scaled, flat, or heavily altered copies, and repeated textures (sky, walls, fabric) produce
+     harmless matches.
 4. Use the linked hover sample, source-pixel readout, and true-pixel loupe to inspect corresponding areas.
-   Toggle the loupe with **Z** while pointing at the image, or use the **Loupe** button. Its compact
-   panel moves to the corner opposite the pointer to keep the inspected area visible.
+   RGB values come from the full-resolution decode; while it is still loading the readout is marked
+   **Preview pixel**. Toggle the loupe with **Z** while pointing at the image, or use the **Loupe**
+   button. Its compact panel moves to the corner opposite the pointer to keep the inspected area visible.
+   Press **Esc** to cancel an in-progress polygon or map shape, then to return to the Select tool, then to
+   clear the selection; Esc does not close Image Analysis.
 5. Open finding details to read the observation, technical basis, alternatives, limitation, analyzer
    version, and report-inclusion state.
 
@@ -598,6 +611,9 @@ map, and redaction choices before saving. A project archive contains the working
 XMP sidecars, and folder-local Photo Agent case/metadata/version documents. Its manifest checks the size
 and SHA-256 of every payload file before import, and import requires a new or empty destination. Treat the
 archive as sensitive evidence: it is a portable copy of the source images and their associated data.
+Exports and project operations show progress with **Cancel** in the Image Analysis header and keep
+running if you select another photo. If a case change cannot be saved, a banner keeps your edits in
+the workspace and offers **Retry Save**.
 
 ## Compare two images
 
