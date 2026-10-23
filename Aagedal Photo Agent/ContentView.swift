@@ -148,6 +148,16 @@ struct ContentView: View {
             targetPane.loadFolder(url: url, addToOpenFolders: addToOpenFolders)
         }
     }
+
+    /// Close a sidebar root in the sidebar's pane and in any other pane showing it.
+    private func closeFolderInAllPanes(_ url: URL) {
+        performAfterCaptionFlush {
+            sidebarViewModel.closeOpenFolder(url)
+            for pane in panes.panes.dropFirst() {
+                pane.releaseClosedFolder(url)
+            }
+        }
+    }
     @State private var metadataViewModel: MetadataViewModel
     @State private var faceRecognitionViewModel: FaceRecognitionViewModel
     @State private var templateViewModel: TemplateViewModel
@@ -2607,9 +2617,7 @@ struct ContentView: View {
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
                                 openFolder: openFolderInActivePane,
-                                closeFolder: { url in
-                                    performAfterCaptionFlush { sidebarViewModel.closeOpenFolder(url) }
-                                },
+                                closeFolder: closeFolderInAllPanes,
                                 revealInFinder: revealInFinder
                             )
                         }
@@ -2634,9 +2642,7 @@ struct ContentView: View {
                                 viewModel: sidebarViewModel,
                                 currentFolderURL: browserViewModel.currentFolderURL,
                                 openFolder: openFolderInActivePane,
-                                closeFolder: { url in
-                                    performAfterCaptionFlush { sidebarViewModel.closeOpenFolder(url) }
-                                },
+                                closeFolder: closeFolderInAllPanes,
                                 revealInFinder: revealInFinder
                             )
                         }
@@ -4275,12 +4281,13 @@ struct ContentViewModifiers: ViewModifier {
                 if !oldValue.isEmpty {
                     MetadataAutomaticSaveBoundary.perform(.selectionChange, in: mainViewMode,
                         viewModel: metadataViewModel, captionFlush: {}) {
-                        let hadC2PA = browserViewModel.images.contains { image in
-                            metadataViewModel.selectedURLs.contains(image.url) && image.hasC2PA
+                        // Index lookups: scanning the whole folder per selected URL is O(n·m)
+                        // on the main thread for every selection change with unsaved edits.
+                        let previousImages = metadataViewModel.selectedURLs.compactMap { url in
+                            browserViewModel.urlToImageIndex[url].map { browserViewModel.images[$0] }
                         }
-                        let hadRaw = browserViewModel.images.contains { image in
-                            metadataViewModel.selectedURLs.contains(image.url) && SupportedImageFormats.isRaw(url: image.url)
-                        }
+                        let hadC2PA = previousImages.contains(where: \.hasC2PA)
+                        let hadRaw = previousImages.contains { SupportedImageFormats.isRaw(url: $0.url) }
                         let mode = MetadataWriteMode.current(forC2PA: hadC2PA, isRaw: hadRaw)
                         let previousURLs = metadataViewModel.selectedURLs
                         // Admit the save before scheduling the next selection load; its I/O

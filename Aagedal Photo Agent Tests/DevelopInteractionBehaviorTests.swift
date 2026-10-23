@@ -272,6 +272,182 @@ struct DevelopInteractionBehaviorTests {
         #expect(defaults.string(forKey: sortKey) == BrowserViewModel.SortOrder.fileType.rawValue)
     }
 
+    /// Sort changes persist to UserDefaults.standard; restore the user's values afterwards.
+    @MainActor
+    private func withRestoredSortDefaults(_ body: () async throws -> Void) async rethrows {
+        let defaults = UserDefaults.standard
+        let keys = [UserDefaultsKeys.thumbnailSortOrder, UserDefaultsKeys.thumbnailSortReversed]
+        let originals = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, original) in zip(keys, originals) {
+                if let original { defaults.set(original, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        try await body()
+    }
+
+    private func browserImages(_ names: [String]) -> [ImageFile] {
+        names.map { ImageFile(url: URL(fileURLWithPath: "/tmp/browse-sort/\($0).jpg")) }
+    }
+
+    @Test("Rating sort breaks ties by ascending filename, also when reversed")
+    @MainActor
+    func ratingSortTieBreaksByName() async {
+        await withRestoredSortDefaults {
+            // Directory order deliberately differs from name order.
+            var images = browserImages(["b", "a", "c", "d"])
+            for index in images.indices { images[index].starRating = .three }
+            images[2].starRating = .five
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .rating
+            viewModel.images = images
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["c.jpg", "a.jpg", "b.jpg", "d.jpg"])
+
+            viewModel.sortReversed = true
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["a.jpg", "b.jpg", "d.jpg", "c.jpg"])
+        }
+    }
+
+    @Test("Manual sort without an arranged order falls back to name order")
+    @MainActor
+    func manualSortFallsBackToNameOrder() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            viewModel.images = browserImages(["c", "a", "b"])
+            viewModel.batchUpdate {}
+
+            viewModel.sortOrder = .manual
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortedImages.map(\.filename) == ["a.jpg", "b.jpg", "c.jpg"])
+        }
+    }
+
+    @Test("Only an in-grid reorder switches the sort to Manual, seeded from the visible order")
+    @MainActor
+    func inGridReorderSwitchesToManual() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            let images = browserImages(["c", "a", "b"])
+            viewModel.images = images
+            viewModel.batchUpdate {}
+
+            // Dropping onto one of the dragged items is not a reorder.
+            viewModel.reorderManually([images[0].url], to: images[0].url, insertBefore: true)
+            #expect(viewModel.sortOrder == .name)
+
+            viewModel.reorderManually([images[0].url], to: images[1].url, insertBefore: true)
+            viewModel.batchUpdate {}
+            #expect(viewModel.sortOrder == .manual)
+            #expect(viewModel.sortedImages.map(\.filename) == ["c.jpg", "a.jpg", "b.jpg"])
+        }
+    }
+
+    @Test("Shift-arrow selection shrinks back toward its fixed anchor")
+    @MainActor
+    func shiftArrowSelectionShrinks() async {
+        await withRestoredSortDefaults {
+            let viewModel = BrowserViewModel()
+            viewModel.sortReversed = false
+            viewModel.sortOrder = .name
+            let images = browserImages(["a", "b", "c", "d", "e", "f"])
+            viewModel.images = images
+            viewModel.batchUpdate {}
+            let url = images.map(\.url)
+
+            viewModel.applySelection(ids: [url[2]], active: url[2])
+            viewModel.selectNext(extending: true)
+            viewModel.selectNext(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...4]))
+
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...3]))
+            #expect(viewModel.lastClickedImageURL == url[3])
+
+            viewModel.selectPrevious(extending: true)
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[1...2]))
+
+            // Row moves use the same anchor.
+            viewModel.selectDown(columns: 3, extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[2...4]))
+
+            // A plain move resets the anchor.
+            viewModel.selectNext()
+            viewModel.selectPrevious(extending: true)
+            #expect(viewModel.selectedImageIDs == Set(url[4...5]))
+        }
+    }
+
+    @Test("Closing the current folder while it loads returns to an idle no-folder state")
+    @MainActor
+    func closingLoadingFolderResetsState() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let viewModel = BrowserViewModel(favoritesDefaults: defaults)
+        let folder = URL(fileURLWithPath: "/virtual/closing-folder")
+        let image = ImageFile(url: folder.appendingPathComponent("a.jpg"))
+        viewModel.openFolders = [folder]
+        viewModel.currentFolderURL = folder
+        viewModel.isLoading = true
+        viewModel.iCloudDownloadNotice = "Downloading"
+        viewModel.images = [image]
+        viewModel.applySelection(ids: [image.url], active: image.url)
+        viewModel.searchText = "harbour"
+        viewModel.minimumStarRating = .three
+
+        viewModel.closeOpenFolder(folder)
+
+        #expect(viewModel.currentFolderURL == nil)
+        #expect(!viewModel.isLoading)
+        #expect(viewModel.iCloudDownloadNotice == nil)
+        #expect(viewModel.images.isEmpty)
+        #expect(viewModel.selectedImageIDs.isEmpty)
+        #expect(viewModel.lastClickedImageURL == nil)
+        #expect(viewModel.searchText.isEmpty)
+        #expect(viewModel.minimumStarRating == .none)
+    }
+
+    @Test("A split-view pane showing a subfolder of a closed root is released too")
+    @MainActor
+    func secondaryPaneReleasesClosedFolder() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let pane = BrowserViewModel(favoritesDefaults: defaults)
+        let root = URL(fileURLWithPath: "/virtual/closing-root")
+        pane.currentFolderURL = root.appendingPathComponent("Sub")
+        pane.isLoading = true
+
+        pane.releaseClosedFolder(URL(fileURLWithPath: "/virtual/closing-root-other"))
+        #expect(pane.currentFolderURL != nil)
+
+        pane.releaseClosedFolder(root)
+        #expect(pane.currentFolderURL == nil)
+        #expect(!pane.isLoading)
+    }
+
+    @Test("A second file operation waits for the running one instead of cancelling it")
+    @MainActor
+    func fileOperationsAreSerialized() async {
+        let images = urls.prefix(3).map { ImageFile(url: $0) }
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.images = images
+        await Task.yield()
+
+        viewModel.applySelection(ids: [images[0].url], active: images[0].url)
+        viewModel.deleteSelectedImages()
+        viewModel.applySelection(ids: [images[1].url], active: images[1].url)
+        viewModel.deleteSelectedImages()
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [images[2].url])
+        #expect(viewModel.errorMessage == nil)
+    }
+
     @Test("Brush axis follows the first dominant cursor direction")
     func brushAxisInference() {
         let start = CGPoint(x: 40, y: 50)

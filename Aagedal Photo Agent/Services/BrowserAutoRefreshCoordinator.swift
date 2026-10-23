@@ -188,7 +188,7 @@ final class BrowserAutoRefreshCoordinator {
            metadataViewModel.isInEditView
             || metadataViewModel.hasChanges
             || metadataViewModel.isSaving
-            || !pane.searchText.isEmpty {
+            || pane.isEditingSearchText {
             scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: deferredRetryDuration)
             return
         }

@@ -64,6 +64,9 @@ final class BrowserViewModel {
         }
     }
     var lastClickedImageURL: URL?
+    /// Fixed end of a Shift-extended range (Finder/Photo Mechanic). Set by plain and
+    /// Command selections; Shift extensions keep it so they can shrink as well as grow.
+    @ObservationIgnored private(set) var selectionAnchorURL: URL?
     var currentFolderURL: URL?
     var currentFolderName: String?
     var isLoading = false
@@ -132,9 +135,18 @@ final class BrowserViewModel {
         }
     }
     @ObservationIgnored var draggedImageURLs: Set<URL> = []
+    @ObservationIgnored private var lastSearchTextEdit: ContinuousClock.Instant?
+    /// True only while the user is actively typing a search (shortly after the last
+    /// keystroke). Auto-refresh defers during typing but must still run while a search
+    /// stays applied, or tethered/imported files never appear.
+    var isEditingSearchText: Bool {
+        guard let lastSearchTextEdit else { return false }
+        return ContinuousClock.now - lastSearchTextEdit < .seconds(1)
+    }
     var searchText: String = "" {
         didSet {
             guard !isBatchUpdating else { return }
+            lastSearchTextEdit = .now
             searchDebounceTask?.cancel()
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 setNeedsVisibleRebuild()
@@ -396,19 +408,27 @@ final class BrowserViewModel {
         let needsSort = forceSort || sortOrder == .rating || sortOrder == .label || sortOrder == .similarity
         if needsSort {
             let sorted: [ImageFile]
+            // Key sorts apply the reverse toggle to the key only, so equal keys always stay
+            // in ascending filename order (Finder/Photo Mechanic) instead of directory order.
+            var reversalApplied = false
             switch sortOrder {
             case .name:
                 sorted = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
             case .dateCreated:
-                sorted = images.sorted { $0.dateCreated > $1.dateCreated }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateCreated }
+                reversalApplied = true
             case .dateModified:
-                sorted = images.sorted { $0.dateModified > $1.dateModified }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateModified }
+                reversalApplied = true
             case .dateAdded:
-                sorted = images.sorted { $0.dateAdded > $1.dateAdded }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.dateAdded }
+                reversalApplied = true
             case .rating:
-                sorted = images.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+                sorted = sortedWithNameTieBreak(descending: true) { $0.starRating.rawValue }
+                reversalApplied = true
             case .label:
-                sorted = images.sorted { ($0.colorLabel.shortcutIndex ?? 0) < ($1.colorLabel.shortcutIndex ?? 0) }
+                sorted = sortedWithNameTieBreak(descending: false) { $0.colorLabel.shortcutIndex ?? 0 }
+                reversalApplied = true
             case .fileType:
                 sorted = images.sorted {
                     let ext0 = $0.url.pathExtension.lowercased()
@@ -425,17 +445,20 @@ final class BrowserViewModel {
                 sorted = similarityOrder.compactMap { byURL[$0] }
                     + images.filter { !ordered.contains($0.url) }.sorted(by: Self.similarityNameOrder)
             case .manual:
+                // Manual order is session-only (every folder load clears it); files the
+                // user hasn't arranged fall back to name order, never raw directory order.
+                let byName = images.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
                 if manualOrder.isEmpty {
-                    sorted = images
+                    sorted = byName
                 } else {
                     let imagesByURL = Dictionary(uniqueKeysWithValues: images.map { ($0.url, $0) })
                     var result = manualOrder.compactMap { imagesByURL[$0] }
                     let manualSet = Set(manualOrder)
-                    result.append(contentsOf: images.filter { !manualSet.contains($0.url) })
+                    result.append(contentsOf: byName.filter { !manualSet.contains($0.url) })
                     sorted = result
                 }
             }
-            let final = (sortReversed && sortOrder != .manual) ? sorted.reversed() : sorted
+            let final = (sortReversed && sortOrder != .manual && !reversalApplied) ? sorted.reversed() : sorted
             sortedImages = Array(final)
             urlToSortedIndex = Dictionary(uniqueKeysWithValues: sortedImages.enumerated().map { ($1.url, $0) })
         } else {
@@ -444,6 +467,19 @@ final class BrowserViewModel {
             sortedImages = sortedImages.compactMap { imageByURL[$0.url] }
         }
         rebuildVisibleCache()
+    }
+
+    private func sortedWithNameTieBreak<Key: Comparable>(
+        descending: Bool,
+        by key: (ImageFile) -> Key
+    ) -> [ImageFile] {
+        let descending = descending != sortReversed
+        return images.sorted { lhs, rhs in
+            let lhsKey = key(lhs)
+            let rhsKey = key(rhs)
+            if lhsKey != rhsKey { return descending ? lhsKey > rhsKey : lhsKey < rhsKey }
+            return lhs.filename.localizedStandardCompare(rhs.filename) == .orderedAscending
+        }
     }
 
     private func showSortFeedback() {
@@ -791,10 +827,11 @@ final class BrowserViewModel {
 
     @ObservationIgnored private var loadFolderTask: Task<Void, Never>?
 
-    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+    /// Cancels every in-flight load/refresh/metadata task of the current folder so stale
+    /// results can't land after the browser moved on (another folder or no folder at all).
+    private func cancelCurrentFolderWork() {
         resetSimilaritySort()
         fieldMutationDisplayID = UUID()
-        AppStartupSignposts.shared.firstFolderLoadStarted()
 
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
@@ -811,12 +848,10 @@ final class BrowserViewModel {
         // Reset in case the cancelled task's metadata loop left this true,
         // otherwise the images.didSet below won't rebuild urlToImageIndex.
         suppressImagesCascade = false
+    }
 
-        saveCurrentFilterState()
-
-        currentFolderURL = url
-        currentFolderName = url.lastPathComponent
-        isLoading = true
+    /// Clears the per-folder display state shared by a folder switch and closing the folder.
+    private func clearCurrentFolderState() {
         errorMessage = nil
         folderLoadErrorMessage = nil
         iCloudDownloadNotice = nil
@@ -828,7 +863,31 @@ final class BrowserViewModel {
         images = []
         selectedImageIDs.removeAll()
         lastClickedImageURL = nil
+        selectionAnchorURL = nil
         manualOrder.removeAll()
+    }
+
+    /// Returns the browser to the "no folder" state. Closing the folder mid-load must not
+    /// leave "Loading images…" (or an old iCloud notice/filter) behind.
+    private func resetToNoFolder() {
+        cancelCurrentFolderWork()
+        currentFolderURL = nil
+        currentFolderName = nil
+        isLoading = false
+        clearCurrentFolderState()
+        clearFilters()
+    }
+
+    func loadFolder(url: URL, addToOpenFolders: Bool = true) {
+        AppStartupSignposts.shared.firstFolderLoadStarted()
+        cancelCurrentFolderWork()
+
+        saveCurrentFilterState()
+
+        currentFolderURL = url
+        currentFolderName = url.lastPathComponent
+        isLoading = true
+        clearCurrentFolderState()
         fullScreenImageCache.clearAll()
 
         restoreFilterState(for: url)
@@ -1832,9 +1891,7 @@ final class BrowserViewModel {
         let nextIndex = min(currentIndex + 1, visibleImages.count - 1)
         let nextURL = visibleImages[nextIndex].url
         if extending {
-            var updated = selectedImageIDs
-            updated.insert(nextURL)
-            return (ids: updated, active: nextURL)
+            return (ids: extendedSelection(to: nextIndex, from: currentIndex), active: nextURL)
         } else {
             return (ids: [nextURL], active: nextURL)
         }
@@ -1853,9 +1910,7 @@ final class BrowserViewModel {
         let prevIndex = max(currentIndex - 1, 0)
         let prevURL = visibleImages[prevIndex].url
         if extending {
-            var updated = selectedImageIDs
-            updated.insert(prevURL)
-            return (ids: updated, active: prevURL)
+            return (ids: extendedSelection(to: prevIndex, from: currentIndex), active: prevURL)
         } else {
             return (ids: [prevURL], active: prevURL)
         }
@@ -1873,13 +1928,7 @@ final class BrowserViewModel {
         let targetIndex = min(currentIndex + columns, visibleImages.count - 1)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            var updated = selectedImageIDs
-            if targetIndex > currentIndex {
-                for i in (currentIndex + 1)...targetIndex {
-                    updated.insert(visibleImages[i].url)
-                }
-            }
-            return (ids: updated, active: targetURL)
+            return (ids: extendedSelection(to: targetIndex, from: currentIndex), active: targetURL)
         } else {
             return (ids: [targetURL], active: targetURL)
         }
@@ -1897,13 +1946,7 @@ final class BrowserViewModel {
         let targetIndex = max(currentIndex - columns, 0)
         let targetURL = visibleImages[targetIndex].url
         if extending {
-            var updated = selectedImageIDs
-            if targetIndex < currentIndex {
-                for i in targetIndex..<currentIndex {
-                    updated.insert(visibleImages[i].url)
-                }
-            }
-            return (ids: updated, active: targetURL)
+            return (ids: extendedSelection(to: targetIndex, from: currentIndex), active: targetURL)
         } else {
             return (ids: [targetURL], active: targetURL)
         }
@@ -1916,8 +1959,29 @@ final class BrowserViewModel {
         return (ids: Set(visibleImages.map(\.url)), active: active)
     }
 
-    /// Apply a precomputed selection to @Observable state.
-    func applySelection(ids: Set<URL>, active: URL?) {
+    /// The fixed end a Shift extension grows from: the stored anchor while it is still a
+    /// visible part of the selection, else the active item (e.g. after a programmatic change).
+    var shiftSelectionAnchorURL: URL? {
+        if let selectionAnchorURL,
+           selectedImageIDs.contains(selectionAnchorURL),
+           urlToVisibleIndex[selectionAnchorURL] != nil {
+            return selectionAnchorURL
+        }
+        return lastClickedImageURL ?? selectedImageIDs.first
+    }
+
+    /// Shift-extension replaces the selection with the anchor…target range, so moving
+    /// back toward the anchor shrinks it (Finder/Photo Mechanic).
+    private func extendedSelection(to targetIndex: Int, from currentIndex: Int) -> Set<URL> {
+        let anchorIndex = shiftSelectionAnchorURL.flatMap { urlToVisibleIndex[$0] } ?? currentIndex
+        let range = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+        return Set(visibleImages[range].lazy.map(\.url))
+    }
+
+    /// Apply a precomputed selection to @Observable state. Non-extending selections move the
+    /// Shift anchor to `active`; extending ones keep it fixed.
+    func applySelection(ids: Set<URL>, active: URL?, extending: Bool = false) {
+        selectionAnchorURL = extending ? shiftSelectionAnchorURL : active
         selectedImageIDs = ids
         lastClickedImageURL = active
     }
@@ -1926,24 +1990,24 @@ final class BrowserViewModel {
 
     func selectNext(extending: Bool = false) {
         guard let sel = computeNextSelection(extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     func selectPrevious(extending: Bool = false) {
         guard let sel = computePreviousSelection(extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Navigate down one row in a grid layout
     func selectDown(columns: Int, extending: Bool = false) {
         guard let sel = computeDownSelection(columns: columns, extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Navigate up one row in a grid layout
     func selectUp(columns: Int, extending: Bool = false) {
         guard let sel = computeUpSelection(columns: columns, extending: extending) else { return }
-        applySelection(ids: sel.ids, active: sel.active)
+        applySelection(ids: sel.ids, active: sel.active, extending: extending)
     }
 
     /// Select all images in the current folder
@@ -2169,8 +2233,11 @@ final class BrowserViewModel {
         let rejectedURLs = visibleImages.filter { $0.colorLabel == .trash }.map(\.url)
         guard !rejectedURLs.isEmpty else { return }
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.moveRejectedItems(rejectedURLs, in: folderURL)
 
             // The user can navigate while a slow volume is moving bundles. Never let completion
@@ -3201,20 +3268,13 @@ final class BrowserViewModel {
             removeSubfolderCacheRecursively(for: url)
         }
         openFolders.removeAll { $0 == url }
-        folderFilterStates.removeValue(forKey: url)
         // If we closed the current folder (or it was browsing a subfolder of it),
         // switch to another open folder or clear
-        let currentPath = (currentFolderURL ?? URL(fileURLWithPath: "/")).path(percentEncoded: false)
-        let closedPath = url.path(percentEncoded: false)
-        let currentIsDescendant = currentPath.hasPrefix(closedPath + "/")
-        if currentFolderURL == url || currentIsDescendant {
+        if isShowingFolder(atOrBelow: url) {
             if let nextFolder = openFolders.first {
                 loadFolder(url: nextFolder)
             } else {
-                currentFolderURL = nil
-                currentFolderName = nil
-                images = []
-                selectedImageIDs.removeAll()
+                resetToNoFolder()
                 // Only clear subfolder data for non-favorite entries
                 let favoriteURLs = Set(favoriteFolders.map(\.url))
                 for key in subfoldersByOpenFolder.keys {
@@ -3224,6 +3284,25 @@ final class BrowserViewModel {
                 }
             }
         }
+        // After the switch: loadFolder saves the outgoing folder's filters.
+        folderFilterStates.removeValue(forKey: url)
+    }
+
+    /// Split view: the shared sidebar (primary pane) closed `url`. Another pane still
+    /// showing that folder, or one of its subfolders, returns to the no-folder state.
+    func releaseClosedFolder(_ url: URL) {
+        openFolders.removeAll { $0 == url }
+        if isShowingFolder(atOrBelow: url) {
+            resetToNoFolder()
+        }
+        folderFilterStates.removeValue(forKey: url)
+    }
+
+    private func isShowingFolder(atOrBelow url: URL) -> Bool {
+        guard let currentFolderURL else { return false }
+        if currentFolderURL == url { return true }
+        let currentPath = currentFolderURL.path(percentEncoded: false)
+        return currentPath.hasPrefix(url.path(percentEncoded: false) + "/")
     }
 
     private func isSubfolderOfOpenFolder(_ url: URL) -> Bool {
@@ -3663,9 +3742,13 @@ final class BrowserViewModel {
         let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
             ?? orderedURLs.first(where: urlsToDelete.contains)
         let handler = imageTrashHandler
+        let folderURL = currentFolderURL
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.trashItems(Array(urlsToDelete), using: handler)
             let deletedURLs = result.completedSourceURLs
             if !deletedURLs.isEmpty {
@@ -3683,13 +3766,17 @@ final class BrowserViewModel {
                 )
                 rebuildSortedCache(forceSort: true)
 
-                let closestURL = Self.closestSurvivingImageURL(
-                    in: orderedURLs,
-                    around: anchorURL,
-                    deleting: deletedURLs
-                )
-                selectedImageIDs = closestURL.map { Set([$0]) } ?? []
-                lastClickedImageURL = closestURL
+                // A queued delete can finish after the user navigated away or after an
+                // earlier move removed neighbours; only reselect among files still shown.
+                if currentFolderURL == folderURL {
+                    let closestURL = Self.closestSurvivingImageURL(
+                        in: orderedURLs,
+                        around: anchorURL,
+                        deleting: deletedURLs.union(orderedURLs.filter { urlToImageIndex[$0] == nil })
+                    )
+                    selectedImageIDs = closestURL.map { Set([$0]) } ?? []
+                    lastClickedImageURL = closestURL
+                }
                 onImagesDeleted?(deletedURLs)
 
                 for url in deletedURLs {
@@ -3756,8 +3843,11 @@ final class BrowserViewModel {
         let xmpService = xmpSidecarService
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result: FileSystemService.ImageMoveResult
             do {
                 result = try await fileSystemService.moveImageItems(
@@ -3768,6 +3858,7 @@ final class BrowserViewModel {
                     metadataSidecarService: metaService
                 )
             } catch is CancellationError {
+                reportMoveCancellation(moved: 0, requested: urlsToMove.count)
                 return
             } catch FileSystemService.Error.destinationIsNotDirectory {
                 presentMoveErrorAlert(message: "A file named \"\(name)\" already exists in this folder.")
@@ -3790,6 +3881,9 @@ final class BrowserViewModel {
 
             if !result.failures.isEmpty {
                 presentMoveIssues(result)
+            }
+            if result.cancellationStoppedRemainingItems {
+                reportMoveCancellation(moved: moved.count, requested: urlsToMove.count)
             }
 
             if result.destinationWasCreated || !moved.isEmpty {
@@ -3850,8 +3944,11 @@ final class BrowserViewModel {
         let xmpService = xmpSidecarService
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             do {
                 let result = try await fileSystemService.moveImageItems(
                     urlsToMove,
@@ -3874,8 +3971,11 @@ final class BrowserViewModel {
                 if !result.failures.isEmpty {
                     presentMoveIssues(result)
                 }
+                if result.cancellationStoppedRemainingItems {
+                    reportMoveCancellation(moved: result.movedSourceURLs.count, requested: urlsToMove.count)
+                }
             } catch is CancellationError {
-                return
+                reportMoveCancellation(moved: 0, requested: urlsToMove.count)
             } catch {
                 presentMoveErrorAlert(message: "Failed to move items: \(error.localizedDescription)")
             }
@@ -3883,6 +3983,10 @@ final class BrowserViewModel {
     }
 
     // MARK: - Metadata helpers
+
+    private func reportMoveCancellation(moved: Int, requested: Int) {
+        errorMessage = "Move cancelled: \(moved) of \(requested) photo(s) moved; the rest stayed in place."
+    }
 
     private func presentMoveIssues(_ result: FileSystemService.ImageMoveResult) {
         let moved = result.movedSourceURLs.count
@@ -4077,13 +4181,25 @@ final class BrowserViewModel {
         let requests = sorted.map { FileSystemService.DuplicateRequest(source: $0) }
         let metaService = sidecarService
 
-        imageMutationTask?.cancel()
+        // Serialize file operations: a new one waits for the running one instead of
+        // cancelling it, so a slow move is never silently aborted by a later delete.
+        let previousMutation = imageMutationTask
         imageMutationTask = Task {
+            await previousMutation?.value
             let result = await fileSystemService.duplicateImages(
                 requests,
                 in: folderURL,
                 metadataSidecarService: metaService
             )
+            if let firstFailure = result.failures.first {
+                let suffix = result.failures.count == 1
+                    ? ""
+                    : " and \(result.failures.count - 1) other operation(s)"
+                errorMessage = "Couldn’t fully duplicate \(firstFailure.sourceURL.lastPathComponent)\(suffix): \(firstFailure.message)"
+            }
+            // A queued duplicate can finish after the user opened another folder; the
+            // copies are on disk there and appear when that folder is shown again.
+            guard currentFolderURL == folderURL else { return }
             let completedBySource = Dictionary(uniqueKeysWithValues: result.completed.map {
                 ($0.sourceURL, $0.duplicate)
             })
@@ -4103,30 +4219,26 @@ final class BrowserViewModel {
             images = updatedImages
 
             // Update manual order — single-pass O(N+M) rebuild instead of O(N*M) repeated scans.
+            // An empty manual order means "name order" and must stay empty.
             let duplicateURLBySource = completedBySource.mapValues(\.url)
-            var newManualOrder: [URL] = []
-            newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
-            for url in manualOrder {
-                newManualOrder.append(url)
-                if let duplicateURL = duplicateURLBySource[url] {
-                    newManualOrder.append(duplicateURL)
+            if !manualOrder.isEmpty {
+                var newManualOrder: [URL] = []
+                newManualOrder.reserveCapacity(manualOrder.count + result.completed.count)
+                for url in manualOrder {
+                    newManualOrder.append(url)
+                    if let duplicateURL = duplicateURLBySource[url] {
+                        newManualOrder.append(duplicateURL)
+                    }
                 }
+                let addedURLs = Set(newManualOrder)
+                for completion in result.completed where !addedURLs.contains(completion.duplicate.url) {
+                    newManualOrder.append(completion.duplicate.url)
+                }
+                manualOrder = newManualOrder
             }
-            let addedURLs = Set(newManualOrder)
-            for completion in result.completed where !addedURLs.contains(completion.duplicate.url) {
-                newManualOrder.append(completion.duplicate.url)
-            }
-            manualOrder = newManualOrder
 
             selectedImageIDs = newSelectionURLs
             lastClickedImageURL = newSelectionURLs.first
-
-            if let firstFailure = result.failures.first {
-                let suffix = result.failures.count == 1
-                    ? ""
-                    : " and \(result.failures.count - 1) other operation(s)"
-                errorMessage = "Couldn’t fully duplicate \(firstFailure.sourceURL.lastPathComponent)\(suffix): \(firstFailure.message)"
-            }
         }
     }
 
@@ -4412,6 +4524,21 @@ final class BrowserViewModel {
 
     func initializeManualOrder(from currentSorted: [ImageFile]) {
         manualOrder = currentSorted.map(\.url)
+    }
+
+    /// Applies an in-grid drag reorder. This is the only drag outcome that switches the
+    /// browser to Manual sort — drags to Finder, Mail, or a folder must leave the sort alone.
+    /// The new order is seeded from what the user currently sees.
+    func reorderManually(_ draggedURLs: Set<URL>, to targetURL: URL, insertBefore: Bool) {
+        guard !draggedURLs.isEmpty, !draggedURLs.contains(targetURL) else { return }
+        var order = sortedImages.map(\.url)
+        let draggedItems = order.filter { draggedURLs.contains($0) }
+        guard !draggedItems.isEmpty else { return }
+        order.removeAll { draggedURLs.contains($0) }
+        guard let targetIndex = order.firstIndex(of: targetURL) else { return }
+        order.insert(contentsOf: draggedItems, at: insertBefore ? targetIndex : targetIndex + 1)
+        manualOrder = order
+        if sortOrder != .manual { sortOrder = .manual }
     }
 
     /// The sole user-action path for changing browser sort order. Keeping this as an explicit

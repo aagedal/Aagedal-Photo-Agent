@@ -119,6 +119,13 @@ struct BrowserView: View {
                         Text("No supported images found in this folder")
                     }
                 } actions: {
+                    if viewModel.currentFolderURL != nil,
+                       viewModel.iCloudDownloadNotice == nil,
+                       viewModel.fileVisibility == .photos {
+                        Button("Show Videos & Other Media") {
+                            viewModel.fileVisibility = .media
+                        }
+                    }
                     Button("Open Folder") {
                         viewModel.openFolder()
                     }
@@ -323,7 +330,9 @@ struct BrowserView: View {
             )
         }
         .help("Filter images")
-        .disabled(viewModel.images.isEmpty)
+        // Stays enabled for an open folder with nothing visible: "Show" is how a
+        // videos-only folder reveals its files.
+        .disabled(viewModel.currentFolderURL == nil)
     }
 
     private var searchField: some View {
