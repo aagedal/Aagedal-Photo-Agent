@@ -369,6 +369,9 @@ struct FullScreenImageView: View {
     /// which SwiftUI runs the .task body vs the onChange handler on a navigation — either
     /// way the reload is correctly skipped, so we don't discard the prefetched image.
     @State private var lastDecodedURL: URL?
+    /// Photo whose pixels (placeholder or decoded) `currentImage` holds. While it differs
+    /// from the current photo, nothing of that photo is on screen yet.
+    @State private var displayedImageURL: URL?
     @State private var lastDecodedSettings: CameraRawSettings?
     /// Shared linear/nearest-neighbor scaling toggle (View menu + Option+S).
     @ObservedObject private var scaling = ImageScalingController.shared
@@ -552,7 +555,7 @@ struct FullScreenImageView: View {
                     // Cold load only: while there's nothing on screen yet. Once any
                     // preview is up, background quality upgrades (retina Phase 2)
                     // happen silently — no overlay.
-                    if isLoading && currentImage == nil {
+                    if loadFailure == nil, let url = currentImageFile?.url, displayedImageURL != url {
                         loadingOverlay(
                             text: "Loading\u{2026}",
                             guidance: highResolutionLoadingGuidance
@@ -1218,6 +1221,7 @@ struct FullScreenImageView: View {
         guard let url = currentImageFile?.url else {
             presentationFactsRequestID = nil
             currentImage = nil
+            displayedImageURL = nil
             sourcePixelSize = nil
             isLoading = false
             loadFailure = nil
@@ -1228,6 +1232,19 @@ struct FullScreenImageView: View {
         // tell an in-place edit from a navigation (handled by .task(id:)).
         lastDecodedURL = url
         lastDecodedSettings = currentImageFile?.cameraRawSettings
+        // Navigation: never leave the previous photo's pixels under this photo's name while
+        // its presentation facts load. Show its thumbnail, or nothing (cold-load overlay).
+        if displayedImageURL != url {
+            if let thumb = viewModel.thumbnailService.thumbnail(for: url, preferOriginal: !renderEdits),
+               let thumbImage = makeLoadedImage(from: thumb) {
+                currentImage = thumbImage
+                lastLoadedOrientation = currentImageFile?.exifOrientation ?? 1
+                displayedImageURL = url
+            } else {
+                currentImage = nil
+                originalCGImage = nil
+            }
+        }
 
         // Non-image files: show system icon and return
         guard SupportedImageFormats.isSupported(url: url) else {
@@ -1235,6 +1252,7 @@ struct FullScreenImageView: View {
             if let cgIcon = icon.cgImage(forProposedRect: nil, context: nil, hints: nil) {
                 currentImage = makeLoadedImage(from: cgIcon)
             }
+            displayedImageURL = url
             sourcePixelSize = nil
             isLoading = false
             return
@@ -1325,6 +1343,7 @@ struct FullScreenImageView: View {
         ) {
             imageLogger.info("\(filename): Phase 0 cache hit (edited=\(isEdited))")
             currentImage = makeLoadedImage(from: cached)
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
             hiResApplied = true
             isLoading = false
@@ -1341,11 +1360,13 @@ struct FullScreenImageView: View {
         )
         if let displayPreview {
             currentImage = makeLoadedImage(from: displayPreview)
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
-        } else if let thumb = viewModel.thumbnailService.thumbnail(for: url),
+        } else if let thumb = viewModel.thumbnailService.thumbnail(for: url, preferOriginal: !renderEdits),
                   let thumbImage = makeLoadedImage(from: thumb) {
             imageLogger.info("\(filename): Phase 0 thumbnail placeholder")
             currentImage = thumbImage
+            displayedImageURL = url
             lastLoadedOrientation = imageOrientation
         }
 
@@ -1461,6 +1482,7 @@ struct FullScreenImageView: View {
                     if !isFullResLoaded {
                         currentImage = makeLoadedImage(from: image)
                     }
+                    displayedImageURL = url
                     hiResApplied = true
                     lastLoadedOrientation = imageOrientation
                     isLoading = false
@@ -1531,6 +1553,7 @@ struct FullScreenImageView: View {
             if !hiResApplied {
                 imageLogger.info("\(filename): Phase 0.5 in \(String(format: "%.1f", previewElapsed * 1000))ms (\(preview.width)x\(preview.height))")
                 currentImage = makeLoadedImage(from: preview)
+                displayedImageURL = url
                 lastLoadedOrientation = imageOrientation
             } else {
                 imageLogger.info("\(filename): Phase 0.5 ready but retina already applied — keeping hi-res")
@@ -1628,6 +1651,7 @@ struct FullScreenImageView: View {
                 guard let image else { return }
                 imageLogger.info("\(filename): Full resolution loaded in \(String(format: "%.1f", elapsed * 1000))ms (\(image.width)x\(image.height))")
                 currentImage = makeLoadedImage(from: image)
+                displayedImageURL = url
                 lastLoadedOrientation = orientation
                 isFullResLoaded = true
                 hiResApplied = true
@@ -2074,7 +2098,7 @@ struct FullScreenImageView: View {
 
     private func colorLabelButton(_ label: ColorLabel, for file: ImageFile) -> some View {
         Button {
-            viewModel.setLabel(label)
+            viewModel.setLabelOnFullScreenImage(label)
             showLabelPicker = false
         } label: {
             if let color = label.color {
@@ -2122,7 +2146,7 @@ struct FullScreenImageView: View {
             let newRating: StarRating = star == file.starRating.rawValue
                 ? .none
                 : StarRating(rawValue: star) ?? .none
-            viewModel.setRating(newRating)
+            viewModel.setRatingOnFullScreenImage(newRating)
         } label: {
             Image(systemName: star <= file.starRating.rawValue ? "star.fill" : "star")
                 .font(.title3)
@@ -2187,11 +2211,11 @@ struct FullScreenPresenter: ViewModifier {
         } : nil
         window.onSetRating = { [weak viewModel] ratingValue in
             guard let rating = StarRating(rawValue: ratingValue) else { return }
-            viewModel?.setRating(rating)
+            viewModel?.setRatingOnFullScreenImage(rating)
         }
         window.onSetLabel = { [weak viewModel] index in
             guard let label = ColorLabel.fromShortcutIndex(index) else { return }
-            viewModel?.setLabel(label)
+            viewModel?.setLabelOnFullScreenImage(label)
         }
         window.onToggleZoom = { [weak controller] location in
             controller?.toggleZoom(at: location)

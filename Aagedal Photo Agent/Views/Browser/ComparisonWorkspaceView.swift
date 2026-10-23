@@ -384,6 +384,8 @@ struct ComparisonWorkspaceView: View {
                 rightImage: rightImage,
                 leftSource: leftSource,
                 rightSource: rightSource,
+                leftFile: imageFile(in: .left),
+                rightFile: imageFile(in: .right),
                 leftViewport: session.left.viewport,
                 rightViewport: session.right.viewport,
                 focusedPane: session.focusedPane,
@@ -408,6 +410,7 @@ struct ComparisonWorkspaceView: View {
                 pane: pane,
                 image: image,
                 source: source,
+                file: imageFile(in: pane),
                 viewport: session[pane].viewport,
                 isFocused: session.focusedPane == pane,
                 onFocus: { focus(pane) },
@@ -878,6 +881,9 @@ struct ComparisonWorkspaceView: View {
             ),
             profile: KeyboardShortcutProfileRegistry.shared.selectedProfile
         ) else { return .ignored }
+        // Until the previews are ready the Browser selection still holds both photos, so a
+        // rating would land on both. Swallow the key rather than let it reach that selection.
+        guard !isLoading, session != nil else { return .handled }
         switch action {
         case let .rating(value):
             guard let rating = StarRating(rawValue: value) else { return .ignored }
@@ -890,10 +896,32 @@ struct ComparisonWorkspaceView: View {
     }
 }
 
+/// Rating and color label of a compared photo, so culling keys give visible feedback.
+private struct ComparisonCullingBadge: View {
+    let file: ImageFile?
+
+    var body: some View {
+        if let file {
+            if file.starRating != .none {
+                Text(String(repeating: "\u{2605}", count: file.starRating.rawValue))
+                    .foregroundStyle(.yellow)
+                    .accessibilityLabel("\(file.starRating.rawValue) star rating")
+            }
+            if let color = file.colorLabel.color {
+                Circle()
+                    .fill(color)
+                    .frame(width: 9, height: 9)
+                    .accessibilityLabel("\(file.colorLabel.displayName) color label")
+            }
+        }
+    }
+}
+
 private struct ComparisonImagePane: View {
     let pane: ComparisonPane
     let image: CGImage
     let source: ComparisonSource
+    let file: ImageFile?
     let viewport: ViewportState
     let isFocused: Bool
     let onFocus: () -> Void
@@ -989,6 +1017,7 @@ private struct ComparisonImagePane: View {
                     .lineLimit(1)
                 Text(source.representationLabel)
                     .foregroundStyle(.secondary)
+                ComparisonCullingBadge(file: file)
             }
             if source.dynamicRange != .unknown {
                 Text(source.dynamicRange == .hdr ? "HDR" : "SDR")
@@ -1086,6 +1115,8 @@ private struct WipeComparisonPane: View {
     let rightImage: CGImage
     let leftSource: ComparisonSource
     let rightSource: ComparisonSource
+    let leftFile: ImageFile?
+    let rightFile: ImageFile?
     let leftViewport: ViewportState
     let rightViewport: ViewportState
     let focusedPane: ComparisonPane
@@ -1249,6 +1280,7 @@ private struct WipeComparisonPane: View {
             Text(pane == .left ? "A" : "B").fontWeight(.bold)
             Text(source.filename).lineLimit(1)
             Text(source.representationLabel).foregroundStyle(.secondary)
+            ComparisonCullingBadge(file: pane == .left ? leftFile : rightFile)
         }
         .font(.caption)
         .padding(.horizontal, 9)

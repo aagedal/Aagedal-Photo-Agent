@@ -149,6 +149,30 @@ struct FieldMutationCallerTests {
         #expect(model.visibleImages.first?.metadata?.title == "Searchable caption")
     }
 
+    @Test("Full screen rates and labels only the displayed photo of a multi-selection")
+    @MainActor
+    func fullScreenTagsOnlyDisplayedPhoto() async {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-tag")
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(urls)
+        model.lastClickedImageURL = urls[1]
+        model.batchUpdate {}
+        model.isFullScreen = true
+        #expect(model.fullScreenImage?.url == urls[1])
+        model.setRatingOnFullScreenImage(.four)
+        model.setLabelOnFullScreenImage(.green)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(await recorder.captured.map(\.imageURL) == [urls[1], urls[1]])
+        #expect(model.images.map(\.starRating) == [.none, .four, .none])
+        #expect(model.images.map(\.colorLabel) == [.none, .green, .none])
+        #expect(model.fullScreenImage?.starRating == .four)
+        #expect(model.selectedImageIDs == Set(urls))
+    }
+
     @Test("Older background metadata cannot overwrite accepted ratings or labels", arguments: [false, true], ["pending", "accepted during read", "completed during read"])
     @MainActor
     func backgroundReadPreservesPendingTag(isLabel: Bool, phase: String) async throws {

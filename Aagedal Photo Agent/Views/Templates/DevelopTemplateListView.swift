@@ -29,7 +29,7 @@ struct DevelopTemplateListView: View {
                             Spacer()
 
                             if let slot = template.shortcutSlot {
-                                Text("Ctrl+\(slot)")
+                                Text(KeyboardShortcutProfileRegistry.shared.templateShortcutDisplayName(slot: slot))
                                     .font(.caption.monospaced())
                                     .foregroundStyle(.secondary)
                             }
@@ -88,7 +88,7 @@ struct DevelopTemplateEditorView: View {
             Picker("Keyboard Shortcut", selection: $viewModel.editingTemplate.shortcutSlot) {
                 Text("None").tag(nil as Int?)
                 ForEach(1...9, id: \.self) { slot in
-                    Text("Ctrl+\(slot)").tag(slot as Int?)
+                    Text(KeyboardShortcutProfileRegistry.shared.templateShortcutDisplayName(slot: slot)).tag(slot as Int?)
                 }
             }
             .frame(width: 240)

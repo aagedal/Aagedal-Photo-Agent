@@ -14,21 +14,22 @@ final class StructuredKeywordsCoordinator {
     private(set) var hasActiveTarget: Bool = false
 
     @ObservationIgnored private var addHandler: (([String]) -> Void)?
-    @ObservationIgnored private var ownerToken: ObjectIdentifier?
+    @ObservationIgnored private var ownerToken: UUID?
 
     /// Register `handler` as the active target. `owner` lets a later unregister call
     /// guard against clobbering a different panel's registration when this panel
-    /// disappears after another has taken over.
-    func register(owner: AnyObject, handler: @escaping ([String]) -> Void) {
+    /// disappears after another has taken over. It must identify the panel itself: the
+    /// Browser and Caption panels share one metadata view model.
+    func register(owner: UUID, handler: @escaping ([String]) -> Void) {
         addHandler = handler
-        ownerToken = ObjectIdentifier(owner)
+        ownerToken = owner
         hasActiveTarget = true
     }
 
     /// Clear the registration if `owner` is still the current owner. Safe to call
     /// from `onDisappear` even if another panel has already taken over.
-    func unregister(owner: AnyObject) {
-        guard ownerToken == ObjectIdentifier(owner) else { return }
+    func unregister(owner: UUID) {
+        guard ownerToken == owner else { return }
         addHandler = nil
         ownerToken = nil
         hasActiveTarget = false

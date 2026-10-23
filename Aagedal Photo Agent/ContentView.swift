@@ -995,8 +995,19 @@ struct ContentView: View {
                     switch mainViewMode.templateCommandTarget {
                     case .metadata:
                         performAfterCaptionFlush {
-                            templateViewModel.loadTemplates { templates in
+                            templateViewModel.withLoadedTemplates { templates in
+                                guard let templates else {
+                                    metadataViewModel.notice = MetadataPanelNotice(
+                                        title: "Templates couldn’t be loaded",
+                                        detail: [templateViewModel.errorMessage ?? "Template shortcut \(slot) was not applied."],
+                                        severity: .warning)
+                                    return
+                                }
                                 guard let template = templates.first(where: { $0.shortcutSlot == slot }) else {
+                                    metadataViewModel.notice = MetadataPanelNotice(
+                                        title: "No template is assigned to shortcut \(slot)",
+                                        detail: ["Assign a shortcut in the template editor."],
+                                        severity: .info)
                                     return
                                 }
                                 applyTemplate(template)
@@ -3453,6 +3464,29 @@ struct ContentView: View {
     }
 
     private func applyTemplate(_ template: MetadataTemplate, append: Bool = false) {
+        // The template belongs to the photos selected when it was invoked. The editor loads a
+        // new selection only after a debounce, and that load replaces the editor; applying
+        // before it completes would hit the previous photo or be discarded.
+        let targets = browserViewModel.selectedImages
+        let targetURLs = Set(targets.map(\.url))
+        let metadataViewModel = metadataViewModel
+        let editorMatches = Set(metadataViewModel.selectedURLs) == targetURLs
+        if editorMatches, !metadataViewModel.isLoading, !metadataViewModel.isLoadingBatchMetadata {
+            applyTemplateToEditor(template, to: targets, append: append)
+            return
+        }
+        if !editorMatches {
+            metadataViewModel.loadSelectionMetadataNow(for: targets, folderURL: browserViewModel.currentFolderURL)
+        }
+        Task {
+            await metadataViewModel.waitForMetadataLoad()
+            guard Set(metadataViewModel.selectedURLs) == targetURLs,
+                  !metadataViewModel.isLoading, !metadataViewModel.isLoadingBatchMetadata else { return }
+            applyTemplateToEditor(template, to: targets, append: append)
+        }
+    }
+
+    private func applyTemplateToEditor(_ template: MetadataTemplate, to appliedImages: [ImageFile], append: Bool) {
         // Apply raw template values — variables like {date} and {persons}
         // stay as-is until the user clicks "Process Variables"
         var raw: [String: String] = [:]
@@ -3464,7 +3498,6 @@ struct ContentView: View {
             // The user may change the selection while the async variable
             // resolution runs, so the resolved values must be written back to
             // exactly these images, not whatever is selected later.
-            let appliedImages = browserViewModel.selectedImages
             metadataViewModel.applyTemplateFieldsAndProcessVariables(raw, to: appliedImages, append: append)
         } else {
             metadataViewModel.applyTemplateFields(raw, append: append)
@@ -4437,7 +4470,7 @@ struct ContentViewModifiers: ViewModifier {
                     guard !Task.isCancelled else { return }
                     let debounceMs = selectionStart.elapsedMilliseconds()
                     perfLog.info("[Selection] debounce done — \(debounceMs)ms, dispatching loadMetadata")
-                    metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
+                    metadataViewModel.loadSelectionMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                     loadTechnicalMetadata()
                 }
             }
@@ -4475,10 +4508,20 @@ struct ContentViewModifiers: ViewModifier {
                 case .openRecentFolder(let url):
                     let targetPane = panes.active
                     performAfterMetadataFlush { targetPane.loadFolder(url: url, addToOpenFolders: true) }
+                // Full screen shows one photo of a possibly larger selection; menu key
+                // equivalents reach here instead of the full-screen window's key handler.
                 case .setRating(let rating):
-                    browserViewModel.setRating(rating)
+                    if browserViewModel.isFullScreen {
+                        browserViewModel.setRatingOnFullScreenImage(rating)
+                    } else {
+                        browserViewModel.setRating(rating)
+                    }
                 case .setLabel(let label):
-                    browserViewModel.setLabel(label)
+                    if browserViewModel.isFullScreen {
+                        browserViewModel.setLabelOnFullScreenImage(label)
+                    } else {
+                        browserViewModel.setLabel(label)
+                    }
                 case .selectPreviousImage:
                     if mainViewMode != .caption {
                         browserViewModel.selectPrevious()
