@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Interactive tone curve editor with master + per-channel (R/G/B) curves.
@@ -123,9 +124,7 @@ struct CurveEditorView: View {
                     .foregroundStyle(.secondary)
                     .onTapGesture(count: 2) {
                         guard toneCurve != nil else { return }
-                        toneCurve = nil
-                        selectedPointIndex = nil
-                        onDragCurveChanged?(nil)
+                        resetCurve()
                     }
                 Spacer()
                 Button {
@@ -139,9 +138,7 @@ struct CurveEditorView: View {
                 .buttonStyle(.plain)
                 .help(isMuted ? "Show tone curve" : "Hide tone curve")
                 Button {
-                    toneCurve = nil
-                    selectedPointIndex = nil
-                    onDragCurveChanged?(nil)
+                    resetCurve()
                 } label: {
                     Image(systemName: "arrow.counterclockwise")
                         .font(.system(size: 9))
@@ -252,9 +249,11 @@ struct CurveEditorView: View {
                                 isDraggingCurve = false
                                 onEditingChanged?(false)
                             } else {
-                                // Click-to-add: commit immediately
+                                // Double-click point removal (no point is being dragged):
+                                // commit immediately
                                 toneCurve = dragToneCurve
                                 isDraggingCurve = false
+                                onEditingChanged?(false)
                             }
                             didDragAfterMouseDown = false
                         }
@@ -342,10 +341,10 @@ struct CurveEditorView: View {
                 }
             }
 
-            // Double-click detection: same point clicked twice within 0.3s
+            // Double-click detection: same point clicked twice within the system interval
             if let hit = hitIndex {
                 let now = Date()
-                if hit == lastClickIndex && now.timeIntervalSince(lastClickTime) < 0.3 {
+                if hit == lastClickIndex && now.timeIntervalSince(lastClickTime) < NSEvent.doubleClickInterval {
                     // Double-click on a point — delete it (if not an endpoint)
                     if hit > 0 && hit < points.count - 1 {
                         var newPoints = points
@@ -424,5 +423,14 @@ struct CurveEditorView: View {
         points.remove(at: index)
         selectedPointIndex = nil
         setPointsForChannel(selectedChannel, points)
+        onEditingChanged?(false)
+    }
+
+    /// Clears every channel. A finished edit like a drag release, so it is committed.
+    private func resetCurve() {
+        toneCurve = nil
+        selectedPointIndex = nil
+        onDragCurveChanged?(nil)
+        onEditingChanged?(false)
     }
 }

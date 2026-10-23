@@ -68,6 +68,13 @@ final class DevelopPersistenceSessionCoordinator {
     @ObservationIgnored private var primaryPersistenceTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var latestBatchPersistenceRequestID: UUID?
     @ObservationIgnored private var batchPersistenceTasks: [UUID: Task<Void, Never>] = [:]
+    /// The most recent mutation registered on top of the undo stack, eligible for coalescing.
+    @ObservationIgnored private var lastMutation: (
+        sessionID: UUID, before: CameraRawSettings?, after: CameraRawSettings?
+    )?
+    /// Set while a coalesced entry is popped: its restoration must neither publish nor
+    /// register a redo.
+    @ObservationIgnored private var isDiscardingRestoration = false
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
@@ -320,16 +327,33 @@ final class DevelopPersistenceSessionCoordinator {
 
     /// Registers one value transition with an image identity. Undo and redo both restore the
     /// original dirty-state policy: Primary edits are marked changed; named versions are not.
+    ///
+    /// `coalescesWithPrevious` folds this transition into the immediately preceding one when it
+    /// continues from that one's result (a slider double-click reset whose first click already
+    /// committed a value), so a single Undo returns to the state before both.
     @discardableResult
     func recordMutation(
         before: CameraRawSettings?,
         after: CameraRawSettings?,
         editsNamedVersion: Bool,
         actionName: String? = nil,
+        coalescesWithPrevious: Bool = false,
         publisher: @escaping SettingsPublisher
     ) -> DevelopPersistenceIntent {
         guard isWorkspaceActive, activeImageURL != nil, before != after else { return .unchanged }
         let sessionID = imageSessionID
+        var before = before
+        if coalescesWithPrevious, let previous = lastMutation,
+           previous.sessionID == sessionID, previous.after == before,
+           undoManager.canUndo, undoManager.groupingLevel <= 1 {
+            isDiscardingRestoration = true
+            undoManager.undo()
+            isDiscardingRestoration = false
+            before = previous.before
+        }
+        lastMutation = nil
+        // A fold can land back on the original state; there is then nothing left to undo.
+        guard before != after else { return .previewOnly }
         registerRestoration(
             target: before,
             inverse: after,
@@ -338,20 +362,24 @@ final class DevelopPersistenceSessionCoordinator {
             actionName: actionName,
             publisher: publisher
         )
+        lastMutation = (sessionID, before, after)
         return .previewOnly
     }
 
     func undo() {
         guard isWorkspaceActive else { return }
+        lastMutation = nil
         undoManager.undo()
     }
 
     func redo() {
         guard isWorkspaceActive else { return }
+        lastMutation = nil
         undoManager.redo()
     }
 
     func removeAllUndoActions() {
+        lastMutation = nil
         undoManager.removeAllActions()
     }
 
@@ -364,7 +392,8 @@ final class DevelopPersistenceSessionCoordinator {
         publisher: @escaping SettingsPublisher
     ) {
         undoManager.registerUndo(withTarget: self) { coordinator in
-            guard coordinator.isWorkspaceActive,
+            guard !coordinator.isDiscardingRestoration,
+                  coordinator.isWorkspaceActive,
                   coordinator.imageSessionID == sessionID else { return }
             publisher(target, editsNamedVersion)
             coordinator.registerRestoration(
@@ -383,6 +412,7 @@ final class DevelopPersistenceSessionCoordinator {
 
     private func invalidateImageSession() {
         imageSessionID = UUID()
+        lastMutation = nil
         undoManager.removeAllActions()
     }
 

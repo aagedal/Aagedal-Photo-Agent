@@ -167,6 +167,86 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.activeImageURL == second)
     }
 
+    @Test("a slider double-click reset folds into its first click for one undo step")
+    func doubleClickResetCoalesces() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-coalesce.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        let original = CameraRawSettings(exposure2012: 0.4)
+        let clicked = CameraRawSettings(exposure2012: 2.1)
+        let reset: CameraRawSettings? = nil
+        var published: [CameraRawSettings?] = []
+        let publisher: DevelopPersistenceSessionCoordinator.SettingsPublisher = { settings, _ in
+            published.append(settings)
+        }
+
+        _ = coordinator.recordMutation(
+            before: original, after: clicked, editsNamedVersion: false, publisher: publisher
+        )
+        _ = coordinator.recordMutation(
+            before: clicked, after: reset, editsNamedVersion: false,
+            coalescesWithPrevious: true, publisher: publisher
+        )
+        #expect(published.isEmpty)
+
+        coordinator.undo()
+        #expect(published == [original])
+        #expect(!coordinator.canUndo)
+
+        coordinator.redo()
+        #expect(published == [original, reset])
+    }
+
+    @Test("coalescing never folds into an unrelated or undone transition")
+    func coalescingRequiresContinuation() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-no-coalesce.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        let first = CameraRawSettings(exposure2012: 1)
+        let second = CameraRawSettings(exposure2012: 2)
+        let other = CameraRawSettings(contrast2012: 30)
+        var published: [CameraRawSettings?] = []
+        let publisher: DevelopPersistenceSessionCoordinator.SettingsPublisher = { settings, _ in
+            published.append(settings)
+        }
+
+        _ = coordinator.recordMutation(before: nil, after: first, editsNamedVersion: false, publisher: publisher)
+        _ = coordinator.recordMutation(
+            before: other, after: second, editsNamedVersion: false,
+            coalescesWithPrevious: true, publisher: publisher
+        )
+        coordinator.undo()
+        coordinator.undo()
+        #expect(published == [other, nil])
+    }
+
+    @Test("clearing history when a new photo's load completes leaves no placeholder undo")
+    func loadCompletionDiscardsPlaceholderHistory() {
+        let imageURL = URL(fileURLWithPath: "/tmp/develop-persistence-load.raw")
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(imageURL)
+
+        var publicationCount = 0
+        _ = coordinator.recordMutation(
+            before: nil,
+            after: CameraRawSettings(exposure2012: 1),
+            editsNamedVersion: false
+        ) { _, _ in publicationCount += 1 }
+        let retainedManager = coordinator.undoManager
+
+        coordinator.removeAllUndoActions()
+        retainedManager.undo()
+        coordinator.undo()
+
+        #expect(publicationCount == 0)
+        #expect(!coordinator.canUndo)
+    }
+
     @Test("primary persistence owns success failure and cancellation publication")
     func primaryPersistenceOutcomes() async throws {
         let imageURL = URL(fileURLWithPath: "/tmp/develop-primary-persistence.raw")

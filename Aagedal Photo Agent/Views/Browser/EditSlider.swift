@@ -6,6 +6,19 @@ nonisolated private let sliderLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "EditSlider"
 )
 
+/// Marks the `onReset` call of an `EditSlider` double-click whose first click already committed
+/// a jumped-to value. Develop folds that reset into the first click's Undo entry, so one Undo
+/// returns to the value from before the double-click.
+enum EditSliderDoubleClickReset {
+    private(set) static var isActive = false
+
+    static func perform(_ reset: () -> Void) {
+        isActive = true
+        defer { isActive = false }
+        reset()
+    }
+}
+
 /// A custom slider using AppKit mouse event handling for high-frequency updates.
 /// Delivers drag events at the full hardware mouse rate (~60-120 Hz) instead of
 /// SwiftUI DragGesture's throttled ~10 Hz.
@@ -73,7 +86,10 @@ struct EditSlider: NSViewRepresentable {
         var wasPrecision = false
         var precisionAnchorFraction: Double = 0
         var precisionAnchorX: CGFloat = 0
-        var lastMouseDownTime: Date = .distantPast
+        /// The last click committed a jumped-to value without dragging; a double-click reset
+        /// replaces that value rather than adding a second edit.
+        var lastClickCommittedWithoutDrag = false
+        var didDragSinceMouseDown = false
         var lastBindingUpdateTime: ContinuousClock.Instant = .now
         private let bindingThrottleInterval: Duration = .milliseconds(32) // ~30 Hz
 
@@ -83,7 +99,6 @@ struct EditSlider: NSViewRepresentable {
         var lastDragEventTimestamp: ContinuousClock.Instant = .now
 
         private let precisionFactor: Double = 10.0
-        private let doubleClickInterval: TimeInterval = 0.3
 
         init(parent: EditSlider) {
             self.parent = parent
@@ -106,16 +121,19 @@ struct EditSlider: NSViewRepresentable {
             return (value - parent.range.lowerBound) / span
         }
 
-        func handleMouseDown(at locationX: CGFloat, width: CGFloat) {
-            let now = Date()
-            if now.timeIntervalSince(lastMouseDownTime) < doubleClickInterval,
-               let onReset = parent.onReset
-            {
-                onReset()
-                lastMouseDownTime = .distantPast
+        func handleMouseDown(at locationX: CGFloat, width: CGFloat, clickCount: Int) {
+            // AppKit's click count honors the user's double-click speed setting.
+            if clickCount >= 2, let onReset = parent.onReset {
+                if lastClickCommittedWithoutDrag {
+                    EditSliderDoubleClickReset.perform(onReset)
+                } else {
+                    onReset()
+                }
+                lastClickCommittedWithoutDrag = false
                 return
             }
-            lastMouseDownTime = now
+            lastClickCommittedWithoutDrag = false
+            didDragSinceMouseDown = false
             isDragging = true
             wasPrecision = false
             dragEventCount = 0
@@ -136,6 +154,7 @@ struct EditSlider: NSViewRepresentable {
 
         func handleMouseDragged(at locationX: CGFloat, width: CGFloat, isOptionDown: Bool) {
             guard isDragging else { return }
+            didDragSinceMouseDown = true
 
             if isOptionDown {
                 if !wasPrecision {
@@ -184,6 +203,7 @@ struct EditSlider: NSViewRepresentable {
             let rate = totalSeconds > 0 ? Double(dragEventCount) / totalSeconds : 0
             sliderLog.info("⏱ Drag ended: \(self.dragEventCount) events over \(totalMs)ms = \(rate, format: .fixed(precision: 1)) events/sec")
             parent.onEditingChanged?(false)
+            lastClickCommittedWithoutDrag = !didDragSinceMouseDown
         }
 
         /// Update NSView playhead and notify caller — without touching the SwiftUI binding.
@@ -280,7 +300,7 @@ final class EditSliderNSView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        coordinator?.handleMouseDown(at: location.x, width: bounds.width)
+        coordinator?.handleMouseDown(at: location.x, width: bounds.width, clickCount: event.clickCount)
     }
 
     override func mouseDragged(with event: NSEvent) {
