@@ -235,7 +235,7 @@ struct DevelopInteractionBehaviorTests {
     @Test("Explicit sort selection persists across browser model recreation")
     @MainActor
     func explicitSortSelectionPersistsAcrossRecreation() {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let sortKey = UserDefaultsKeys.thumbnailSortOrder
         let reverseKey = UserDefaultsKeys.thumbnailSortReversed
         let originalSort = defaults.object(forKey: sortKey)
@@ -275,7 +275,7 @@ struct DevelopInteractionBehaviorTests {
     /// Sort changes persist to UserDefaults.standard; restore the user's values afterwards.
     @MainActor
     private func withRestoredSortDefaults(_ body: () async throws -> Void) async rethrows {
-        let defaults = UserDefaults.standard
+        let defaults = AppDefaults.store
         let keys = [UserDefaultsKeys.thumbnailSortOrder, UserDefaultsKeys.thumbnailSortReversed]
         let originals = keys.map { defaults.object(forKey: $0) }
         defer {

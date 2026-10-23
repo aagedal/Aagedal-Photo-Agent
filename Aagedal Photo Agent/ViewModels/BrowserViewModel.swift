@@ -99,7 +99,7 @@ final class BrowserViewModel {
     var sortOrder: SortOrder = .name {
         didSet {
             if sortOrder != .similarity { resetSimilaritySort() }
-            UserDefaults.standard.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
+            AppDefaults.store.set(sortOrder.rawValue, forKey: UserDefaultsKeys.thumbnailSortOrder)
             guard !isBatchUpdating else { return }
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
@@ -107,7 +107,7 @@ final class BrowserViewModel {
     }
     var sortReversed: Bool = false {
         didSet {
-            UserDefaults.standard.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
+            AppDefaults.store.set(sortReversed, forKey: UserDefaultsKeys.thumbnailSortReversed)
             guard !isBatchUpdating else { return }
             setNeedsSortRebuild(forceSort: true)
             showSortFeedback()
@@ -185,20 +185,20 @@ final class BrowserViewModel {
 
     var thumbnailScale: Double = 1.0 {
         didSet {
-            UserDefaults.standard.set(thumbnailScale, forKey: UserDefaultsKeys.thumbnailScale)
+            AppDefaults.store.set(thumbnailScale, forKey: UserDefaultsKeys.thumbnailScale)
         }
     }
 
     var fileVisibility: BrowserFileVisibility = .photos {
         didSet {
-            UserDefaults.standard.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             if let url = currentFolderURL { loadFolder(url: url) }
         }
     }
 
     var showOriginalThumbnails: Bool = false {
         didSet {
-            UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails)
+            AppDefaults.store.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails)
         }
     }
 
@@ -361,16 +361,16 @@ final class BrowserViewModel {
         self.voiceMemoRenamePlanningService = voiceMemoRenamePlanningService
         self.favoritesDefaults = favoritesDefaults
         self.favoriteBookmarkService = favoriteBookmarkService
-        if let raw = UserDefaults.standard.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
+        if let raw = AppDefaults.store.string(forKey: UserDefaultsKeys.thumbnailSortOrder),
            let stored = SortOrder(rawValue: raw) {
             sortOrder = stored
         }
-        sortReversed = UserDefaults.standard.bool(forKey: UserDefaultsKeys.thumbnailSortReversed)
-        let storedScale = UserDefaults.standard.double(forKey: UserDefaultsKeys.thumbnailScale)
+        sortReversed = AppDefaults.store.bool(forKey: UserDefaultsKeys.thumbnailSortReversed)
+        let storedScale = AppDefaults.store.double(forKey: UserDefaultsKeys.thumbnailScale)
         if storedScale >= 0.5 && storedScale <= 2.0 {
             thumbnailScale = storedScale
         }
-        self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+        self.showOriginalThumbnails = AppDefaults.store.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.fileVisibility = BrowserFileVisibility.saved()
     }
 

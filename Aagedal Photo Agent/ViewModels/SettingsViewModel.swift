@@ -424,13 +424,13 @@ final class SettingsViewModel {
 
     var fileVisibility: BrowserFileVisibility {
         didSet {
-            UserDefaults.standard.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
+            AppDefaults.store.set(fileVisibility.rawValue, forKey: UserDefaultsKeys.browserFileVisibility)
             NotificationCenter.default.post(name: .showAllFilesChanged, object: nil)
         }
     }
 
     var showOriginalThumbnails: Bool {
-        didSet { UserDefaults.standard.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
+        didSet { AppDefaults.store.set(showOriginalThumbnails, forKey: UserDefaultsKeys.showOriginalThumbnails) }
     }
 
     var hiddenDevelopSliders: Set<DevelopSlider> {
@@ -1041,7 +1041,7 @@ final class SettingsViewModel {
         self.rawDecoderVersionPreference = RAWDecoderVersionPreference(rawValue: decoderVersionRaw ?? "") ?? .auto
         self.fileVisibility = BrowserFileVisibility.saved()
 
-        self.showOriginalThumbnails = UserDefaults.standard.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
+        self.showOriginalThumbnails = AppDefaults.store.bool(forKey: UserDefaultsKeys.showOriginalThumbnails)
         self.hiddenDevelopSliders = DevelopSlider.decodeHidden(
             UserDefaults.standard.stringArray(forKey: UserDefaultsKeys.hiddenDevelopSliders) ?? []
         )
