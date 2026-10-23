@@ -4,6 +4,9 @@ All notable user-visible changes are documented here. Signed, notarized DMGs are
 
 ## Unreleased
 
+- Import: the chosen destination is kept between imports instead of resetting to ~/Photos; failures after copying (metadata, voice-memo links, backup copies) are recorded per file and shown in the sidebar and Activity, and a dead backup drive no longer reports a clean verified import; skipped duplicates are no longer counted as failures; two same-named files in one import get unique names instead of being overwritten or skipped; template metadata follows the write preset (C2PA JPEGs keep their credential under Professional) and now includes Extended Description and Job ID; progress counts skipped files, shows the metadata step and can be cancelled from the sidebar; the source list says which files won't be imported; verification reads back from the disk rather than memory.
+- Output Resolution settings now say which exports the limit applies to.
+
 - Performance: navigating and rating no longer re-read whole RAW files to fingerprint them when nothing changed (large win on network volumes); voice-memo badges and folder scans stop issuing per-file lookups; batch rating and label changes update the grid in place instead of rebuilding it for every photo; idle local folders are no longer rescanned every 30 seconds.
 - Metadata: a RAW+JPEG selection embeds the JPEGs and writes the RAWs' XMP sidecars, like Photo Mechanic, instead of giving every photo a sidecar; batch sidecar and history saves wait for an earlier write instead of cancelling it partway through.
 
