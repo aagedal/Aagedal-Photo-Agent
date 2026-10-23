@@ -865,10 +865,13 @@ nonisolated enum EditedImageRenderer {
     // MARK: - Output Folder Naming
 
     /// Returns a format-aware subfolder name like "Signed_JPEG" or "Edited_HEIC_10bit".
+    /// - Parameter sdrFormat: the SDR format actually being written, when it is not the
+    ///   configured Export format (e.g. Save As PNG). Takes precedence over `configuration`.
     static func formatFolderName(
         prefix: String,
         isHDR: Bool,
-        configuration: AdvancedExportConfiguration? = nil
+        configuration: AdvancedExportConfiguration? = nil,
+        sdrFormat: ExportFormatSDR? = nil
     ) -> String {
         let formatName: String
         if isHDR {
@@ -889,7 +892,8 @@ nonisolated enum EditedImageRenderer {
             case .png16bit: "PNG_16bit"
             }
         } else {
-            let format = configuration?.sdrFormat
+            let format = sdrFormat
+                ?? configuration?.sdrFormat
                 ?? ExportFormatSDR(
                     rawValue: UserDefaults.standard.string(
                         forKey: UserDefaultsKeys.exportFormatSDR
@@ -922,13 +926,15 @@ nonisolated enum EditedImageRenderer {
     ///   - rootFolder: the source folder the export was initiated from.
     ///   - formatPrefix: prefix used for `.formatSubfolder` naming (e.g. "Signed", "Edited").
     ///   - askedFolder: the folder the user picked for `.askOnSave` (resolved once per batch).
+    ///   - sdrFormat: overrides the configured SDR format for `.formatSubfolder` naming.
     static func resolveOutputFolder(
         sourceURL: URL,
         rootFolder: URL,
         isHDR: Bool,
         formatPrefix: String,
         askedFolder: URL?,
-        configuration: AdvancedExportConfiguration? = nil
+        configuration: AdvancedExportConfiguration? = nil,
+        sdrFormat: ExportFormatSDR? = nil
     ) -> URL {
         switch configuration?.locationMode ?? currentLocationMode {
         case .sameAsOriginal:
@@ -945,7 +951,8 @@ nonisolated enum EditedImageRenderer {
                 formatFolderName(
                     prefix: formatPrefix,
                     isHDR: isHDR,
-                    configuration: configuration
+                    configuration: configuration,
+                    sdrFormat: sdrFormat
                 ),
                 isDirectory: true
             )
@@ -1224,6 +1231,14 @@ nonisolated enum EditedImageRenderer {
             switch self {
             case .jpeg: return "jpg"
             case .png: return "png"
+            }
+        }
+
+        /// The matching export format, used to name the `Edited_<format>` sub-folder.
+        var exportFormat: ExportFormatSDR {
+            switch self {
+            case .jpeg: return .jpeg
+            case .png: return .png
             }
         }
     }

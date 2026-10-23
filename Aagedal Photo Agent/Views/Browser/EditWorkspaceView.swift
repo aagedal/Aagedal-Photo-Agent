@@ -954,7 +954,17 @@ struct EditWorkspaceView: View {
         }
         .overlay(alignment: .top) {
             if let feedback = workspaceSession.notice {
-                Text(feedback)
+                HStack(spacing: 10) {
+                    Text(feedback)
+                    if let revealURL = workspaceSession.noticeRevealURL {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([revealURL])
+                        } label: {
+                            Text("Show in Finder").underline()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                     .font(.caption.bold())
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -7425,8 +7435,24 @@ struct EditWorkspaceView: View {
             }
         }
         let folderURL = metadataViewModel.currentFolderURL ?? selectedImageURL.deletingLastPathComponent()
+        // Honor the Export Location setting like the browser's Export/Save As/Sign paths.
+        var askedFolder: URL?
+        if EditedImageRenderer.currentLocationMode == .askOnSave {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Choose"
+            panel.message = "Choose a destination folder for the exported file"
+            panel.directoryURL = folderURL
+            guard panel.runModal() == .OK, let chosen = panel.url else { return }
+            askedFolder = chosen
+        }
+        let outputFolder = EditedImageRenderer.resolveOutputFolder(
+            sourceURL: selectedImageURL, rootFolder: folderURL,
+            isHDR: settings?.hdrEditMode == 1, formatPrefix: "Edited", askedFolder: askedFolder)
         exportSession.requestExport {
-            let outputFolder = selectedImageURL.deletingLastPathComponent().appendingPathComponent("Edited", isDirectory: true)
             let directoryCommit = try await ExportDirectoryService.shared.ensureDirectory(
                 at: outputFolder
             )
@@ -7439,10 +7465,13 @@ struct EditWorkspaceView: View {
             try Task.checkCancellation()
             let engine = browserViewModel.writeEngine
             let failureTracker = MetadataFailureTracker()
+            // Never overwrite: a RAW+JPEG pair (IMG_1.ARW / IMG_1.JPG) or a repeated save
+            // would otherwise silently replace an existing file with the same name.
             let outputURL = try await EditExportPipeline.renderItem(
                 sourceURL: selectedImageURL, cameraRaw: settings, kind: .format,
                 outputFolder: outputFolder, folderURL: folderURL,
-                writeEngine: engine, failureTracker: failureTracker
+                writeEngine: engine, failureTracker: failureTracker,
+                collisionPolicy: .appendNumber
             )
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
@@ -7450,6 +7479,12 @@ struct EditWorkspaceView: View {
             return DevelopExportPersistenceResult(
                 outputURL: outputURL,
                 metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty
+            )
+        } onPersisted: { result in
+            let url = result.outputURL
+            workspaceSession.showNotice(
+                "Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)",
+                revealURL: url
             )
         }
     }

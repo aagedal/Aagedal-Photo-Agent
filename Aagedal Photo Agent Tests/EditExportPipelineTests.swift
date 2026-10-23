@@ -2964,6 +2964,26 @@ struct AdvancedExportTests {
         )
     }
 
+    @Test("Save As names its format sub-folder after the Save As format, not the Export format")
+    func saveAsFolderUsesSaveAsFormat() {
+        // Export is configured for JPEG; "Save as PNG" must still land in Edited_PNG.
+        let root = URL(fileURLWithPath: "/Volumes/Photos/Shoot", isDirectory: true)
+        let source = root.appendingPathComponent("IMG_1.ARW")
+        let folder = EditedImageRenderer.resolveOutputFolder(
+            sourceURL: source, rootFolder: root, isHDR: false,
+            formatPrefix: "Edited", askedFolder: nil,
+            configuration: configuration,
+            sdrFormat: EditedImageRenderer.SaveAsFormat.png.exportFormat
+        )
+        #expect(folder.lastPathComponent == "Edited_PNG")
+        #expect(
+            EditedImageRenderer.formatFolderName(
+                prefix: "Edited", isHDR: false, configuration: configuration,
+                sdrFormat: EditedImageRenderer.SaveAsFormat.jpeg.exportFormat
+            ) == "Edited_JPEG"
+        )
+    }
+
     @Test("preview displays the artifact encoded at the selected JPEG quality")
     func previewDisplaysSelectedJPEGCompression() async throws {
         let directory = FileManager.default.temporaryDirectory

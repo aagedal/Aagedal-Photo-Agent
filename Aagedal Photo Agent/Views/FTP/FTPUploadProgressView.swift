@@ -80,7 +80,7 @@ struct FTPUploadProgressView: View {
         HStack(spacing: 4) {
             Image(systemName: viewModel.errorMessages.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(viewModel.errorMessages.isEmpty ? Color.green : Color.orange)
-            Text("Upload complete")
+            Text(viewModel.uploadStopped ? "Upload stopped" : "Upload complete")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if !viewModel.errorMessages.isEmpty {
