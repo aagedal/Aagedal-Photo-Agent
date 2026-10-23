@@ -2,8 +2,9 @@ import Foundation
 import os
 
 /// Owns filesystem monitors for the currently materialized browser panes and turns
-/// bursts of file events into one folder diff. A slow fallback scan covers providers
-/// that do not reliably surface native FSEvents (some network and cloud volumes).
+/// bursts of file events into one folder diff. A slow fallback scan covers panes whose
+/// FSEvents stream is unavailable or on a non-local volume (network shares do not
+/// reliably surface other machines' changes).
 @MainActor
 final class BrowserAutoRefreshCoordinator {
     private let panes: BrowserPanesModel
@@ -55,7 +56,8 @@ final class BrowserAutoRefreshCoordinator {
                 guard let self, !Task.isCancelled else { return }
                 self.synchronizeMonitors()
                 for pane in self.panesToMonitor() {
-                    guard let folderURL = pane.currentFolderURL else { continue }
+                    guard let folderURL = pane.currentFolderURL,
+                          self.needsFallbackScan(paneID: ObjectIdentifier(pane)) else { continue }
                     self.scheduleRefresh(
                         paneID: ObjectIdentifier(pane),
                         folderURL: folderURL,
@@ -130,6 +132,13 @@ final class BrowserAutoRefreshCoordinator {
         }
     }
 
+    /// A full rescan of a 10,000-photo folder every 30 s is wasted work when a local
+    /// FSEvents stream already delivers every change.
+    func needsFallbackScan(paneID: ObjectIdentifier) -> Bool {
+        guard let monitor = monitors[paneID] else { return true }
+        return !monitor.watchesLocalVolume
+    }
+
     private func panesToMonitor() -> [BrowserViewModel] {
         panes.layout.usesSecondPane ? panes.panes : [panes.active]
     }
@@ -181,6 +190,14 @@ final class BrowserAutoRefreshCoordinator {
               let pane = panes.panes.first(where: { ObjectIdentifier($0) == paneID }),
               pane.currentFolderURL?.standardizedFileURL == folderURL else {
             refreshTasks.removeValue(forKey: paneID)?.cancel()
+            return
+        }
+
+        // Our own rating/label writes echo back as FSEvents for every photo in the batch.
+        // Rescanning mid-batch repeats a full folder diff per debounce window; one diff
+        // after the batch observes the same final state, including external changes.
+        if pane.hasFieldMutationWritesInFlight {
+            scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: deferredRetryDuration)
             return
         }
 

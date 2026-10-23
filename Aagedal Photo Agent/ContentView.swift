@@ -1104,7 +1104,7 @@ struct ContentView: View {
     private var detailContent: some View {
         VStack(spacing: 0) {
             // Face bar shown full-width for non-browser, non-editing modes
-            if !browserViewModel.images.isEmpty, mainViewMode == .faceManagement {
+            if browserViewModel.hasImages, mainViewMode == .faceManagement {
                 faceBar
                 Divider()
             }
@@ -1944,6 +1944,15 @@ struct ContentView: View {
         }
     }
 
+    /// Same predicate as `selectedAnalysisImage != nil` without scanning (and observing)
+    /// every row: a selected, supported photo that is in the current folder.
+    private var hasAnalyzableSelection: Bool {
+        let indexed = browserViewModel.urlToImageIndex
+        return browserViewModel.selectedImageIDs.contains {
+            indexed[$0] != nil && SupportedImageFormats.isSupported(url: $0)
+        }
+    }
+
     private var selectedAnalysisImage: ImageFile? {
         AnalysisSelectionResolver.image(
             images: browserViewModel.images,
@@ -2013,7 +2022,7 @@ struct ContentView: View {
                 // Keep the bar through a folder change: loadFolder clears `images` before the
                 // new scan lands, and gating on emptiness alone makes the bar blink out.
                 // `isLoading` spans that window, so it stays put.
-                if !browserViewModel.images.isEmpty || browserViewModel.isLoading {
+                if browserViewModel.hasImages || browserViewModel.isLoading {
                     faceBar
                     Divider()
                 }
@@ -2068,7 +2077,7 @@ struct ContentView: View {
         FaceBarView(
             viewModel: faceRecognitionViewModel,
             folderURL: browserViewModel.currentFolderURL,
-            images: browserViewModel.images,
+            images: { browserViewModel.images },
             settingsViewModel: settingsViewModel,
             isExpanded: mainViewMode == .faceManagement,
             selectionState: mainViewMode == .faceManagement ? faceSelectionState : nil,
@@ -2160,7 +2169,7 @@ struct ContentView: View {
                         : "waveform.path.ecg.rectangle"
                 )
             }
-            .disabled(selectedAnalysisImage == nil)
+            .disabled(!hasAnalyzableSelection)
 
             Button {
                 openComparison()
@@ -2247,13 +2256,13 @@ struct ContentView: View {
 
             ToolbarItemGroup(placement: .automatic) {
                 ColorLabelFilterBar(selectedLabels: Bindable(browserViewModel).selectedColorLabels)
-                    .disabled(browserViewModel.images.isEmpty)
+                    .disabled(!browserViewModel.hasImages)
                     .padding(8)
             }
 
             ToolbarItemGroup(placement: .automatic) {
                 StarRatingFilterBar(minimumRating: Bindable(browserViewModel).minimumStarRating)
-                    .disabled(browserViewModel.images.isEmpty)
+                    .disabled(!browserViewModel.hasImages)
                     .padding(8)
 
                 metadataReviewFilterMenu
@@ -2281,13 +2290,13 @@ struct ContentView: View {
         if mainViewMode == .editing {
             ToolbarItemGroup(placement: .automatic) {
                 ColorLabelFilterBar(selectedLabels: Bindable(browserViewModel).selectedColorLabels)
-                    .disabled(browserViewModel.images.isEmpty)
+                    .disabled(!browserViewModel.hasImages)
                     .padding(8)
             }
 
             ToolbarItemGroup(placement: .automatic) {
                 StarRatingFilterBar(minimumRating: Bindable(browserViewModel).minimumStarRating)
-                    .disabled(browserViewModel.images.isEmpty)
+                    .disabled(!browserViewModel.hasImages)
                     .padding(8)
 
                 editFilterMenu
@@ -2434,7 +2443,7 @@ struct ContentView: View {
                 .accessibilityLabel("Write All Pending")
                 .accessibilityIdentifier("toolbar.writeAllPending")
                 .help("Write all pending sidecar changes to image files")
-                .disabled(browserViewModel.images.isEmpty)
+                .disabled(!browserViewModel.hasImages)
             }
 
             ToolbarItem(id: "folder-process-variables", placement: .secondaryAction) {
@@ -2448,7 +2457,7 @@ struct ContentView: View {
                 .accessibilityLabel("Process Variables in Folder")
                 .accessibilityIdentifier("toolbar.processVariables")
                 .help("Resolve placeholders across this folder and save the resulting metadata using your configured write mode, including other pending editorial changes.")
-                .disabled(browserViewModel.images.isEmpty)
+                .disabled(!browserViewModel.hasImages)
             }
 
             ToolbarItem(id: "folder-people-database", placement: .secondaryAction) {
@@ -2490,7 +2499,7 @@ struct ContentView: View {
                 .accessibilityLabel("Render and Save Folder")
                 .accessibilityIdentifier("toolbar.renderAndSave")
                 .help("Render all images in the folder to Edited/ as sRGB JPEG")
-                .disabled(browserViewModel.images.isEmpty || isRenderingEditedFolder)
+                .disabled(!browserViewModel.hasImages || isRenderingEditedFolder)
             }
         }
     }
@@ -2535,7 +2544,7 @@ struct ContentView: View {
             )
         }
         .help("Filter images")
-        .disabled(browserViewModel.images.isEmpty)
+        .disabled(!browserViewModel.hasImages)
     }
 
     private var metadataReviewSearchField: some View {
@@ -2556,7 +2565,7 @@ struct ContentView: View {
             .disabled(browserViewModel.searchText.isEmpty)
             .accessibilityHidden(browserViewModel.searchText.isEmpty)
         }
-        .disabled(browserViewModel.images.isEmpty)
+        .disabled(!browserViewModel.hasImages)
     }
 
     private var editFilterMenu: some View {
@@ -2588,7 +2597,7 @@ struct ContentView: View {
             )
         }
         .help("Filter images")
-        .disabled(browserViewModel.images.isEmpty)
+        .disabled(!browserViewModel.hasImages)
     }
 
     @ViewBuilder

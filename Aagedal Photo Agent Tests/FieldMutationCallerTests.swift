@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CoreGraphics
+import Observation
 import Testing
 @testable import Aagedal_Photo_Agent
 
@@ -986,6 +987,210 @@ struct FieldMutationCallerTests {
         let request = try #require(await recorder.captured.first)
         #expect(request.folderURL == folder)
         if case .addPersons(let names) = request.mutation { #expect(names == ["Captured name"]) } else { Issue.record("Name was not captured") }
+    }
+
+    // MARK: - Browser main-thread performance invariants
+
+    @Test("The images cascade still detects same-count identity changes and publishes in-place edits")
+    @MainActor
+    func imagesCascadeTracksIdentityWithoutOldValue() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/cascade-identity")
+        let (a, b, c, d) = (folder.appendingPathComponent("a.jpg"), folder.appendingPathComponent("b.jpg"),
+                            folder.appendingPathComponent("c.jpg"), folder.appendingPathComponent("d.jpg"))
+        model.currentFolderURL = folder
+        model.images = [a, b, c].map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, c])
+        #expect(model.imageCount == 3 && model.hasImages)
+
+        // Same count, different identity (rename/replacement) must force a full re-sort;
+        // reusing the previous sorted order would silently drop the new row.
+        var replaced = model.images
+        replaced[2] = ImageFile(url: d)
+        model.images = replaced
+        model.batchUpdate {}
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, d])
+        #expect(Set(model.visibleImages.map(\.url)) == [a, b, d])
+        #expect(model.urlToImageIndex == [a: 0, b: 1, d: 2])
+
+        // In-place element edits keep identity and reach the derived snapshots.
+        model.images[0].starRating = .three
+        model.batchUpdate {}
+        #expect(model.sortedImages.first { $0.url == a }?.starRating == .three)
+        #expect(model.visibleImages.first { $0.url == a }?.starRating == .three)
+
+        // Order-only change on the same URLs is still an identity change.
+        model.images = model.images.reversed()
+        model.batchUpdate {}
+        #expect(model.urlToImageIndex == [d: 0, b: 1, a: 2])
+        #expect(Set(model.sortedImages.map(\.url)) == [a, b, d])
+
+        model.images = []
+        model.batchUpdate {}
+        #expect(model.imageCount == 0 && !model.hasImages && model.sortedImages.isEmpty)
+    }
+
+    @Test("Full screen and count readers observe only their own row, not every row edit")
+    @MainActor
+    func fullScreenImageIsANarrowRead() {
+        let model = BrowserViewModel()
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-narrow")
+        let (a, b) = (folder.appendingPathComponent("a.jpg"), folder.appendingPathComponent("b.jpg"))
+        model.currentFolderURL = folder
+        model.images = [a, b].map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        model.selectedImageIDs = [a]
+        model.lastClickedImageURL = a
+        model.isFullScreen = true
+        #expect(model.fullScreenImage?.url == a)
+
+        let fullScreenChanges = FieldMutationNotificationCounter()
+        let countChanges = FieldMutationNotificationCounter()
+        withObservationTracking { _ = model.fullScreenImage } onChange: { fullScreenChanges.increment() }
+        withObservationTracking { _ = model.hasImages } onChange: { countChanges.increment() }
+        model.images[1].starRating = .five
+        #expect(fullScreenChanges.value == 0)
+        #expect(countChanges.value == 0)
+        #expect(model.fullScreenImage?.starRating == StarRating.none)
+
+        model.images[0].exifOrientation = 6
+        #expect(fullScreenChanges.value == 1)
+        #expect(model.fullScreenImage?.exifOrientation == 6)
+
+        // Active row outside the selection falls back to the first selected row, as before.
+        model.selectedImageIDs = [b]
+        #expect(model.fullScreenImage?.url == b)
+        model.lastClickedImageURL = b
+        #expect(model.fullScreenImage?.starRating == .five)
+        model.isFullScreen = false
+    }
+
+    @Test("Pending-status refresh updates only its rows in place and keeps the order")
+    @MainActor
+    func pendingStatusRefreshIsInPlace() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = ["c.jpg", "a.jpg", "b.jpg"].map { folder.appendingPathComponent($0) }
+        for url in urls { try Data("x".utf8).write(to: url) }
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(sourceFile: "a.jpg", pendingChanges: true,
+            metadata: IPTCMetadata(title: "New headline"), imageMetadataSnapshot: IPTCMetadata(title: "Old"),
+            history: []), for: urls[1], in: folder)
+
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+        let order = model.sortedImages.map(\.url)
+        let index = model.urlToImageIndex
+
+        model.refreshPendingStatusBatch(for: [urls[1], urls[2]])
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !(model.visibleImages.first { $0.url == urls[1] }?.hasPendingMetadataChanges ?? false),
+              ContinuousClock.now < deadline { await Task.yield() }
+
+        for snapshot in [model.images, model.sortedImages, model.visibleImages] {
+            let pending = try #require(snapshot.first { $0.url == urls[1] })
+            #expect(pending.hasPendingMetadataChanges)
+            #expect(!pending.pendingFieldNames.isEmpty)
+            #expect(snapshot.first { $0.url == urls[2] }?.hasPendingMetadataChanges == false)
+        }
+        #expect(model.sortedImages.map(\.url) == order)
+        #expect(model.urlToImageIndex == index)
+    }
+
+    @Test("A folder refresh keeps unchanged rows' metadata and derived search text")
+    @MainActor
+    func folderRefreshReusesUnchangedRows() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["a.jpg", "b.jpg"] { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
+        // Use the scanner's spelling of the paths (/private/var vs /var) so rows match by URL.
+        let listed = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        let a = try #require(listed.first { $0.lastPathComponent == "a.jpg" })
+        let b = try #require(listed.first { $0.lastPathComponent == "b.jpg" })
+        let c = a.deletingLastPathComponent().appendingPathComponent("c.jpg")
+        let model = BrowserViewModel(refreshSidecarLoader: { _ in [:] })
+        model.currentFolderURL = folder
+        model.images = [a, b].map { url in
+            var image = ImageFile(url: url)
+            image.starRating = .four
+            image.metadata = IPTCMetadata(title: "Kept Caption")
+            image.keywords = ["Alpha"]
+            return image
+        }
+        model.batchUpdate {}
+        try Data("x".utf8).write(to: c)
+
+        await withCheckedContinuation { continuation in
+            let started = model.refreshCurrentFolderIfNeeded { _ in continuation.resume() }
+            #expect(started)
+            if !started { continuation.resume() }
+        }
+        #expect(Set(model.images.map(\.url)) == [a, b, c])
+        for url in [a, b] {
+            let row = try #require(model.images.first { $0.url == url })
+            #expect(row.starRating == .four)
+            #expect(row.metadata?.title == "Kept Caption")
+            #expect(row.metadataSearchLowercased.contains("kept caption"))
+            #expect(row.keywordsLowercased == ["alpha"])
+        }
+    }
+
+    @Test("Browser field writes report in-flight state until the queue drains")
+    @MainActor
+    func fieldWritesReportInFlight() async throws {
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true)
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) })
+        let folder = URL(fileURLWithPath: "/virtual/in-flight")
+        let photo = folder.appendingPathComponent("photo.jpg")
+        model.currentFolderURL = folder
+        model.images = [ImageFile(url: photo)]
+        model.selectedImageIDs = [photo]
+        #expect(!model.hasFieldMutationWritesInFlight)
+        model.setRating(.three)
+        model.setLabel(.red)
+        #expect(model.hasFieldMutationWritesInFlight)
+        try await waitForPause(recorder)
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(!model.hasFieldMutationWritesInFlight)
+    }
+
+    @Test("Key-index sorts reproduce the original comparator orders, ties included")
+    @MainActor
+    func sortHelpersMatchOriginalComparators() {
+        let folder = URL(fileURLWithPath: "/virtual/sort-identity")
+        let names = ["img10.jpg", "IMG2.jpg", "img2.JPG", "a.cr3", "b.jpg", "Ä.jpg", "img1.jpg",
+                     "A.CR3", "z.tif", "img02.jpg", "photo.heic", "Photo.HEIC", "b.cr3"]
+        let ratings: [StarRating] = [.two, .five, .two, .none, .five, .one, .two, .none, .three, .two, .five, .one, .two]
+        let rows = zip(names, ratings).map { name, rating in
+            var image = ImageFile(url: folder.appendingPathComponent(name))
+            image.starRating = rating
+            return image
+        }
+        for input in [rows, rows.reversed(), rows.shuffled()] {
+            let byName = input.sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+            let permutation = BrowserViewModel.filenameSortPermutation(input)
+            #expect(permutation.map { input[$0].url } == byName.map(\.url))
+
+            let byRating = input.sorted { $0.starRating.rawValue > $1.starRating.rawValue }
+            #expect(BrowserViewModel.reordered(input, by: \.starRating.rawValue, >).map(\.url) == byRating.map(\.url))
+
+            let byType = input.sorted {
+                let ext0 = $0.url.pathExtension.lowercased()
+                let ext1 = $1.url.pathExtension.lowercased()
+                if ext0 != ext1 { return ext0.localizedStandardCompare(ext1) == .orderedAscending }
+                return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
+            }
+            var rank = [Int](repeating: 0, count: input.count)
+            for (position, index) in permutation.enumerated() { rank[index] = position }
+            #expect(BrowserViewModel.fileTypeSorted(input, nameRank: rank).map(\.url) == byType.map(\.url))
+        }
     }
 
     @MainActor
