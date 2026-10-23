@@ -81,7 +81,7 @@ struct AnalysisWorkspaceView: View {
     @State private var evidenceExportRequestID: UUID?
     @State private var projectArchiveTask: Task<Void, Never>?
     @State private var projectArchiveStatus: String?
-    @State private var exportedProjectURL: URL?
+    @State private var exportConfirmation: AnalysisExportConfirmation?
     @State private var copiedPhotoAnnotations: [AnalysisAnnotation] = []
     @State private var copiedAnnotationSourceName: String?
     @State private var annotationPasteError: String?
@@ -172,20 +172,36 @@ struct AnalysisWorkspaceView: View {
             Text(reportExportError ?? "The export could not be completed.")
         }
         .alert(
-            "Image Analysis Project Exported",
+            exportConfirmation?.title ?? "Exported",
             isPresented: Binding(
-                get: { exportedProjectURL != nil },
-                set: { if !$0 { exportedProjectURL = nil } }
+                get: { exportConfirmation != nil },
+                set: { if !$0 { exportConfirmation = nil } }
             ),
-            presenting: exportedProjectURL
-        ) { url in
+            presenting: exportConfirmation
+        ) { confirmation in
             Button("Show in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-                exportedProjectURL = nil
+                NSWorkspace.shared.activateFileViewerSelecting([confirmation.url])
+                exportConfirmation = nil
             }
-            Button("OK", role: .cancel) { exportedProjectURL = nil }
-        } message: { url in
-            Text("Saved “\(url.lastPathComponent)”.")
+            Button("OK", role: .cancel) { exportConfirmation = nil }
+        } message: { confirmation in
+            Text("Saved “\(confirmation.url.lastPathComponent)”.")
+        }
+        .alert(
+            "Analysis Changes Not Saved",
+            isPresented: Binding(
+                get: { model.pendingUnsavedChangesExit != nil },
+                set: { if !$0 { model.dismissUnsavedChangesPrompt() } }
+            ),
+            presenting: model.pendingUnsavedChangesExit
+        ) { exit in
+            Button("Retry Save") { completeUnsavedChangesExit(exit, retryingSave: true) }
+            Button("Discard Changes", role: .destructive) {
+                completeUnsavedChangesExit(exit, retryingSave: false)
+            }
+            Button("Cancel", role: .cancel) { model.dismissUnsavedChangesPrompt() }
+        } message: { _ in
+            Text("The latest case or map edits could not be saved. Retry the save before leaving this photo, or discard the unsaved edits.")
         }
         .alert(
             "Annotations Could Not Be Pasted",
@@ -316,8 +332,9 @@ struct AnalysisWorkspaceView: View {
     }
 
     /// Escape cancels the narrowest active state first: an in-progress draft, then a
-    /// non-select markup tool, then the annotation selection. It never closes the workspace.
-    /// Returns false when there is nothing to cancel so the event continues normally.
+    /// non-select markup tool, then the annotation selection; with nothing left to cancel it
+    /// closes the workspace (asking first after a failed save). Returns false while an export
+    /// is running so the event continues normally.
     private func handleEscapeKey() -> Bool {
         if photoPolygonDraftCount > 0 {
             photoPolygonCancelRequestID += 1
@@ -341,7 +358,27 @@ struct AnalysisWorkspaceView: View {
             selectedMapAnnotationID = nil
             return true
         }
-        return false
+        // Closing cancels running exports, so Escape only closes an otherwise idle workspace.
+        guard reportExportTask == nil, evidenceExportTask == nil, projectArchiveTask == nil else {
+            return false
+        }
+        requestClose()
+        return true
+    }
+
+    private func requestClose() {
+        if model.requestClose() { onClose() }
+    }
+
+    private func completeUnsavedChangesExit(
+        _ exit: AnalysisUnsavedChangesExit,
+        retryingSave: Bool
+    ) {
+        Task { @MainActor in
+            if await model.completeUnsavedChangesExit(exit, retryingSave: retryingSave) {
+                onClose()
+            }
+        }
     }
 
     private func updateSelectedAnnotationStyle() {
@@ -469,26 +506,34 @@ struct AnalysisWorkspaceView: View {
                     Button("PDF Report…", systemImage: "doc.richtext") {
                         isReportOptionsPresented = true
                     }
-                    .disabled(model.sourceChanged)
+                    .disabled(model.analysisCase == nil || model.sourceChanged)
 
                     Divider()
 
                     Button("Annotated Image (JPEG)…", systemImage: "photo") {
                         chooseAnnotatedImageDestinationAndExport()
                     }
-                    .disabled(model.sourceChanged || evidenceExportTask != nil)
+                    .disabled(model.analysisCase == nil || model.sourceChanged || evidenceExportTask != nil)
 
-                    Button("Annotated Map (JPEG)…", systemImage: "map") {
+                    Button(
+                        model.mapState.viewport == nil
+                            ? "Annotated Map (JPEG) — Show the OSINT Map First"
+                            : "Annotated Map (JPEG)…",
+                        systemImage: "map"
+                    ) {
                         chooseAnnotatedMapDestinationAndExport()
                     }
                     .disabled(model.mapState.viewport == nil || evidenceExportTask != nil)
+                    .help(model.mapState.viewport == nil
+                        ? "Show this photo's map in the OSINT tab once to choose the area to export"
+                        : "Export the annotated OSINT map as a JPEG")
 
                     Divider()
 
                     Button("Image Analysis Project (.pint)…", systemImage: "archivebox") {
                         chooseProjectDestinationAndExport()
                     }
-                    .disabled(projectArchiveTask != nil)
+                    .disabled(model.sourceURL == nil || projectArchiveTask != nil)
 
                     Button("Import Image Analysis Project…", systemImage: "square.and.arrow.down") {
                         chooseProjectArchiveAndImport()
@@ -497,7 +542,6 @@ struct AnalysisWorkspaceView: View {
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
                 }
-                .disabled(model.analysisCase == nil)
                 .help("Export evidence, or export and import a portable Image Analysis Project")
             }
 
@@ -520,10 +564,10 @@ struct AnalysisWorkspaceView: View {
             .disabled(model.analysisCase == nil)
             .help("Choose which version is displayed; findings based on the source file remain tied to the original")
 
-            // Escape is reserved for cancelling the current draft, tool, or selection
-            // (see handleEscapeKey) so it cannot discard in-progress markup or exports.
-            Button("Close", action: onClose)
-                .help("Return to the browser workspace")
+            // Escape cancels the current draft, tool, or selection first and closes only when
+            // nothing is left to cancel (see handleEscapeKey).
+            Button("Close", action: requestClose)
+                .help("Return to the browser workspace (Esc when nothing is selected or being drawn)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -724,6 +768,10 @@ struct AnalysisWorkspaceView: View {
                 guard reportExportRequestID == requestID else { return }
                 guard case .committed = result else { return }
                 reportExportProgress = 1
+                exportConfirmation = AnalysisExportConfirmation(
+                    title: "Analysis Report Exported",
+                    url: outputURL
+                )
             } catch is CancellationError {
                 return
             } catch AnalysisPDFReportError.cancelled {
@@ -785,11 +833,17 @@ struct AnalysisWorkspaceView: View {
                     annotations: analysisCase.annotations
                 )
                 try Task.checkCancellation()
-                _ = try await AnalysisExportFileService.shared.write(
+                let result = try await AnalysisExportFileService.shared.write(
                     data,
                     to: outputURL,
                     requestID: requestID
                 )
+                if case .committed = result, evidenceExportRequestID == requestID {
+                    exportConfirmation = AnalysisExportConfirmation(
+                        title: "Annotated Image Exported",
+                        url: outputURL
+                    )
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -824,11 +878,17 @@ struct AnalysisWorkspaceView: View {
             do {
                 let data = try await AnalysisEvidenceJPEGRenderer.mapJPEG(evidence: evidence)
                 try Task.checkCancellation()
-                _ = try await AnalysisExportFileService.shared.write(
+                let result = try await AnalysisExportFileService.shared.write(
                     data,
                     to: outputURL,
                     requestID: requestID
                 )
+                if case .committed = result, evidenceExportRequestID == requestID {
+                    exportConfirmation = AnalysisExportConfirmation(
+                        title: "Annotated Map Exported",
+                        url: outputURL
+                    )
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -875,7 +935,12 @@ struct AnalysisWorkspaceView: View {
                 projectArchiveStatus = nil
             }
             do {
-                await model.flushPendingSaves()
+                // A failed save would leave stale case data on disk: retry it, and refuse to
+                // export anything older than what the workspace shows.
+                guard await model.savePendingChanges() else {
+                    reportExportError = "The project was not exported because the latest Analysis changes could not be saved. \(model.saveError ?? "")"
+                    return
+                }
                 try Task.checkCancellation()
                 _ = try await ImageAnalysisProjectArchive.export(
                     sourceFolderURL: sourceFolder,
@@ -886,7 +951,10 @@ struct AnalysisWorkspaceView: View {
                     appBuild: appBuild
                 )
                 // The archive is committed; report it even if Cancel arrived during the final move.
-                exportedProjectURL = destination
+                exportConfirmation = AnalysisExportConfirmation(
+                    title: "Image Analysis Project Exported",
+                    url: destination
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -5441,6 +5509,11 @@ private enum SourcePixelSampler {
 
 /// Window-scoped Escape handling for the Analysis workspace. Escape is left alone while a text
 /// field is editing, a sheet, alert, or modal panel is up, or the workspace is hidden.
+private struct AnalysisExportConfirmation {
+    let title: String
+    let url: URL
+}
+
 private struct AnalysisEscapeKeyMonitor: NSViewRepresentable {
     let onEscape: () -> Bool
 

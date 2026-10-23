@@ -16,9 +16,17 @@ final class CaptionVoiceMemoTranscriptModel {
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var imageURL: URL?
+    /// Publishes a detached transcription (and its failure) where every Caption panel can see it.
+    @ObservationIgnored private let jobs: FFmpegWhisperSetupModel
+    @ObservationIgnored private var detachedJob: (generation: UInt64, id: UUID)?
+    @ObservationIgnored private var detachedFailure: String?
 
-    init(service: VoiceMemoTranscriptionService = VoiceMemoTranscriptionService()) {
+    init(
+        service: VoiceMemoTranscriptionService = VoiceMemoTranscriptionService(),
+        jobs: FFmpegWhisperSetupModel? = nil
+    ) {
         self.service = service
+        self.jobs = jobs ?? .shared
     }
 
     func load(_ imageURL: URL?) async {
@@ -192,7 +200,12 @@ final class CaptionVoiceMemoTranscriptModel {
                 }
             } catch {
                 await MainActor.run {
-                    guard self.generation == requested else { return }
+                    guard self.generation == requested else {
+                        if self.detachedJob?.generation == requested {
+                            self.detachedFailure = error.localizedDescription
+                        }
+                        return
+                    }
                     self.errorMessage = error.localizedDescription
                         + (provider == nil ? "" : (self.draft == nil
                             ? " Apple Speech was not used."
@@ -203,6 +216,11 @@ final class CaptionVoiceMemoTranscriptModel {
         }
         task = work
         await work.value
+        if let detachedJob, detachedJob.generation == requested {
+            self.detachedJob = nil
+            jobs.finishDetachedTranscription(id: detachedJob.id, failure: detachedFailure)
+            detachedFailure = nil
+        }
     }
 
     func cancel(resetDraft: Bool = false) {
@@ -222,8 +240,13 @@ final class CaptionVoiceMemoTranscriptModel {
 
     /// Moving to another photo must not throw away a transcription that may have taken minutes.
     /// Let it finish and save its own photo's transcript; only this view's state moves on.
+    /// The detached job is published on the shared transcription lock owner so Caption can show
+    /// its progress, offer Cancel, and report a failure after this panel moved on.
     func detachRunningTranscription() {
-        guard isTranscribing, task != nil else { return }
+        guard isTranscribing, let running = task, let imageURL else { return }
+        let id = jobs.recordDetachedTranscription(imageURL: imageURL) { running.cancel() }
+        detachedJob = (generation, id)
+        detachedFailure = nil
         task = nil
         generation &+= 1
         isTranscribing = false

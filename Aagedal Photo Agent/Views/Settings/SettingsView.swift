@@ -377,6 +377,7 @@ struct SettingsView: View {
         switch destination {
         case .metadata: showDestination(.metadata)
         case .transcription: showDestination(.transcription)
+        case .descriptionAssistant: showDestination(.descriptionAssistant)
         }
         settingsViewModel.requestedDestination = nil
     }

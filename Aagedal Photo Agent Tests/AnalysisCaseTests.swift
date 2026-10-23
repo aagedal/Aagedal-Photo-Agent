@@ -103,6 +103,123 @@ struct AnalysisCaseTests {
         #expect(persisted.annotations.map(\.id) == [annotation.id])
     }
 
+    @Test("After a failed save, navigation and close wait for Retry Save, Discard, or Cancel")
+    func failedSaveGatesNavigationAndClose() async throws {
+        let fixture = try AnalysisFixture(contents: "gated first image")
+        defer { fixture.remove() }
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("gated second image".utf8).write(to: secondURL)
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.3)), text: "Unsaved"
+        )
+        model.setAnnotation(annotation)
+        await model.flushPendingSaves()
+        #expect(model.saveError != nil)
+
+        // Selecting another rail photo asks instead of reloading; Cancel keeps everything.
+        model.requestOpenInCurrentWorkspace(ImageFile(url: secondURL))
+        guard case .openImage(let target, _) = model.pendingUnsavedChangesExit else {
+            Issue.record("Navigation after a failed save must ask first")
+            return
+        }
+        #expect(target.url == secondURL)
+        #expect(model.sourceURL == fixture.fileURL)
+        model.dismissUnsavedChangesPrompt()
+        #expect(model.pendingUnsavedChangesExit == nil)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        // Close asks too, and a retry that still fails keeps the workspace open.
+        #expect(model.requestClose() == false)
+        guard case .close = model.pendingUnsavedChangesExit else {
+            Issue.record("Close after a failed save must ask first")
+            return
+        }
+        #expect(await model.completeUnsavedChangesExit(.close, retryingSave: true) == false)
+        #expect(model.saveError != nil)
+        #expect(model.annotations.map(\.id) == [annotation.id])
+
+        // A successful Retry Save persists the edit, then performs the navigation.
+        try FileManager.default.removeItem(at: casesDirectory)
+        model.requestOpen(ImageFile(url: secondURL))
+        let exit = try #require(model.pendingUnsavedChangesExit)
+        #expect(await model.completeUnsavedChangesExit(exit, retryingSave: true) == false)
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(model.sourceURL == secondURL)
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the edit before navigating")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+        #expect(model.requestClose())
+    }
+
+    @Test("Discard Changes after a failed save closes without persisting the edit")
+    func failedSaveDiscardCloses() async throws {
+        let fixture = try AnalysisFixture(contents: "discard workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+        model.setAnnotation(AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Discarded"
+        ))
+        await model.flushPendingSaves()
+        #expect(model.requestClose() == false)
+
+        #expect(await model.completeUnsavedChangesExit(.close, retryingSave: false))
+        #expect(model.saveError == nil)
+        #expect(model.pendingUnsavedChangesExit == nil)
+    }
+
+    @Test("Project export saving retries a failed save and reports whether disk is current")
+    func savePendingChangesRetriesFailedSave() async throws {
+        let fixture = try AnalysisFixture(contents: "export save workspace")
+        defer { fixture.remove() }
+        let model = AnalysisWorkspaceModel(analyzers: [])
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        #expect(await model.savePendingChanges())
+        let revision = try #require(model.currentRevision)
+
+        let casesDirectory = fixture.directoryURL
+            .appendingPathComponent(".photo_analysis/cases", isDirectory: true)
+        try FileManager.default.removeItem(at: casesDirectory)
+        try Data("blocker".utf8).write(to: casesDirectory)
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.2, y: 0.6)), text: "Export me"
+        )
+        model.setAnnotation(annotation)
+        #expect(await model.savePendingChanges() == false)
+        #expect(model.saveError != nil)
+
+        try FileManager.default.removeItem(at: casesDirectory)
+        #expect(await model.savePendingChanges())
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(sourceFolderURL: fixture.directoryURL)
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Export must see the retried case on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
+    }
+
     @Test("Pixel readout samples full resolution only when it matches the displayed source")
     func inspectionColorSourceSelection() throws {
         let context = try #require(CGContext(

@@ -21,6 +21,10 @@ struct CaptionWorkspaceView: View {
     let onClose: () -> Void
 
     @State private var session: CaptionSession
+    /// Photo-only browser list, refreshed when the browser's visible items change.
+    @State private var photoList: CaptionPhotoList
+    /// Transient, non-blocking feedback (for example "nothing to copy").
+    @State private var inlineNotice: String?
     @State private var voiceMemoBadgeRefreshToken: UInt64 = 0
     @State private var preview: NSImage?
     @State private var previewFailed = false
@@ -61,15 +65,13 @@ struct CaptionWorkspaceView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(AppCommandRouter.self) private var commandRouter
 
-    private var visibleImages: [ImageFile] {
-        browserViewModel.visibleImages.filter(\.isImageFile)
-    }
+    private var visibleImages: [ImageFile] { photoList.images }
 
-    private var visibleURLs: [URL] { visibleImages.map(\.url) }
+    private var visibleURLs: [URL] { photoList.urls }
 
     private var currentImage: ImageFile? {
         guard let currentURL = session.currentURL else { return nil }
-        return visibleImages.first { $0.url.standardizedFileURL == currentURL }
+        return photoList.image(forStandardizedURL: currentURL)
     }
 
     private var validationProfile: MetadataValidationProfile {
@@ -112,8 +114,9 @@ struct CaptionWorkspaceView: View {
         self.onApplyTemplate = onApplyTemplate
         self.onClose = onClose
 
-        let images = browserViewModel.visibleImages.filter(\.isImageFile)
-        let urls = images.map(\.url)
+        let photoList = CaptionPhotoList(browserImages: browserViewModel.visibleImages)
+        let urls = photoList.urls
+        _photoList = State(initialValue: photoList)
         let selected = browserViewModel.selectedImageIDs
         let focused = browserViewModel.lastClickedImageURL
             .flatMap { selected.contains($0) ? $0 : nil }
@@ -132,6 +135,19 @@ struct CaptionWorkspaceView: View {
         VStack(spacing: 0) {
             statusBar
             if let failure = flushCoordinator.failure { queuedFailureBanner(failure) }
+            if let inlineNotice {
+                Text(inlineNotice)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("caption.inlineNotice")
+                    .task(id: inlineNotice) {
+                        try? await Task.sleep(for: .seconds(4))
+                        guard !Task.isCancelled else { return }
+                        self.inlineNotice = nil
+                    }
+            }
             if let conflictRecoveryNotice {
                 Text(conflictRecoveryNotice)
                     .font(.callout)
@@ -189,17 +205,24 @@ struct CaptionWorkspaceView: View {
                         )
                         Divider()
                         HStack(spacing: 8) {
-                            Text("Additional IPTC fields can be enabled in Settings → Metadata.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Metadata Settings…") {
-                                settingsViewModel.requestedDestination = .metadata
-                                openSettings()
+                            if let deadlineProfile {
+                                Text("Fields come from the “\(deadlineProfile.name)” Deadline profile.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            } else {
+                                Text("Additional IPTC fields can be enabled in Settings → Metadata.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Metadata Settings…") {
+                                    settingsViewModel.requestedDestination = .metadata
+                                    openSettings()
+                                }
+                                .controlSize(.small)
+                                .accessibilityHint("Open Settings at the Metadata field controls")
+                                .accessibilityIdentifier("caption.metadataSettings")
                             }
-                            .controlSize(.small)
-                            .accessibilityHint("Open Settings at the Metadata field controls")
-                            .accessibilityIdentifier("caption.metadataSettings")
                         }
                         .padding(.horizontal, 10)
                         .frame(minHeight: 34)
@@ -219,6 +242,7 @@ struct CaptionWorkspaceView: View {
         .onAppear {
             isWorkspaceActive = true
             workspaceLifetimeID = UUID()
+            photoList = CaptionPhotoList(browserImages: browserViewModel.visibleImages)
             synchronizeSessionWithBrowser()
             updateReadiness()
             installCaptionShortcutMonitor()
@@ -240,8 +264,14 @@ struct CaptionWorkspaceView: View {
             conflictImage = nil
             isConflictRecoveryBusy = false
         }
-        .onChange(of: visibleURLs) { _, _ in
-            synchronizeSessionWithBrowser(capturingDraft: true)
+        .onChange(of: browserViewModel.visibleImages) { _, images in
+            // Rating/label edits replace items without changing the list; only reorder,
+            // filtering, or deletion needs the session to follow.
+            let previousURLs = photoList.urls
+            photoList = CaptionPhotoList(browserImages: images)
+            if photoList.urls != previousURLs {
+                synchronizeSessionWithBrowser(capturingDraft: true)
+            }
         }
         .onChange(of: browserViewModel.isFullScreen) { wasFullScreen, isFullScreen in
             guard wasFullScreen, !isFullScreen, isWorkspaceActive else { return }
@@ -621,7 +651,7 @@ struct CaptionWorkspaceView: View {
         }
         let summary = validationReport.issues.isEmpty
             ? "No validation issues"
-            : "\(validationReport.blockerCount) blockers, \(validationReport.warningCount) warnings"
+            : "\(validationReport.blockerCount) \(validationReport.blockerCount == 1 ? "blocker" : "blockers"), \(validationReport.warningCount) \(validationReport.warningCount == 1 ? "warning" : "warnings")"
         return Label(title, systemImage: icon)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(color)
@@ -789,7 +819,9 @@ struct CaptionWorkspaceView: View {
                 }
                 .disabled(nextVisibleValidationIssue == nil || isEditorTransitioning)
                 .help(nextVisibleValidationIssue == nil && !validationReport.issues.isEmpty
-                    ? "The remaining issues are in fields hidden in Settings → Metadata."
+                    ? (deadlineProfile == nil
+                        ? "The remaining issues are in fields hidden in Settings → Metadata."
+                        : "The remaining issues are in fields the Deadline profile does not show.")
                     : "Move to the next field that needs attention")
                 .focused($focusedAction, equals: .fixNext)
 
@@ -849,9 +881,15 @@ struct CaptionWorkspaceView: View {
     private func adoptBrowserSelectionAfterFullScreen() {
         guard browserViewModel.selectedImageIDs.count == 1,
               let browserURL = browserViewModel.selectedImageIDs.first,
-              browserURL.standardizedFileURL != session.currentURL,
-              visibleURLs.contains(browserURL) else { return }
-        select(browserURL)
+              photoList.contains(browserURL) else {
+            // Full screen ended on a video or a multi-selection that Caption cannot edit. Put the
+            // browser (and so the metadata editor) back on the photo the header shows.
+            publishSessionSelection()
+            return
+        }
+        if browserURL.standardizedFileURL != session.currentURL {
+            select(browserURL)
+        }
     }
 
     private func synchronizeSessionWithBrowser(capturingDraft: Bool = false) {
@@ -863,7 +901,10 @@ struct CaptionWorkspaceView: View {
             try? enqueueCurrentDraftPersistence()
         }
         session.replaceImages(visibleURLs)
-        guard let currentURL = session.currentURL else { return }
+        // Full screen owns the browser selection while it is open (rating, label, or delete there
+        // can change the list); pushing Caption's photo back would snap it to another image.
+        // `adoptBrowserSelectionAfterFullScreen` reconciles on exit.
+        guard !browserViewModel.isFullScreen, let currentURL = session.currentURL else { return }
         let browserURL = originalBrowserURL(for: currentURL)
         if browserViewModel.selectedImageIDs != [browserURL] {
             browserViewModel.selectedImageIDs = [browserURL]
@@ -933,7 +974,7 @@ struct CaptionWorkspaceView: View {
     }
 
     private func originalBrowserURL(for sessionURL: URL) -> URL {
-        visibleImages.first { $0.url.standardizedFileURL == sessionURL }?.url ?? sessionURL
+        photoList.image(forStandardizedURL: sessionURL)?.url ?? sessionURL
     }
 
     private func applyTemplateAfterFlush(append: Bool?) {
@@ -985,7 +1026,7 @@ struct CaptionWorkspaceView: View {
                         return
                     }
                     guard result.changed else {
-                        errorMessage = "The previous photo has no different caption fields to copy."
+                        inlineNotice = "The previous photo has no different caption fields to copy."
                         return
                     }
                     metadataViewModel.editingMetadata = updated

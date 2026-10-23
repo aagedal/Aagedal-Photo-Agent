@@ -1024,3 +1024,31 @@ nonisolated enum MetadataReviewDraftCapture {
         return try encoder.encode(metadata)
     }
 }
+
+/// The Caption workspace's photo-only view of the browser's visible items, built once per
+/// browser change so rendering (which happens on every keystroke) never refilters the folder.
+struct CaptionPhotoList {
+    let images: [ImageFile]
+    let urls: [URL]
+    private let indexByStandardizedURL: [URL: Int]
+
+    init(browserImages: [ImageFile]) {
+        let images = browserImages.filter(\.isImageFile)
+        self.images = images
+        urls = images.map(\.url)
+        var index: [URL: Int] = [:]
+        index.reserveCapacity(images.count)
+        for (offset, image) in images.enumerated() where index[image.url.standardizedFileURL] == nil {
+            index[image.url.standardizedFileURL] = offset
+        }
+        indexByStandardizedURL = index
+    }
+
+    func image(forStandardizedURL url: URL) -> ImageFile? {
+        indexByStandardizedURL[url].map { images[$0] }
+    }
+
+    func contains(_ url: URL) -> Bool {
+        indexByStandardizedURL[url.standardizedFileURL] != nil
+    }
+}

@@ -12,6 +12,21 @@ struct CaptionSessionTests {
         URL(fileURLWithPath: "/tmp/caption-c.jpg"),
     ]
 
+    @Test("Photo list keeps browser order, drops non-photos, and looks up the current photo by URL")
+    func photoListCache() {
+        let video = URL(fileURLWithPath: "/tmp/caption-clip.mov")
+        let list = CaptionPhotoList(browserImages: [
+            ImageFile(url: urls[1]), ImageFile(url: video), ImageFile(url: urls[0]),
+        ])
+        #expect(list.urls == [urls[1], urls[0]])
+        #expect(list.images.map(\.url) == [urls[1], urls[0]])
+        #expect(list.image(forStandardizedURL: urls[0].standardizedFileURL)?.url == urls[0])
+        #expect(list.image(forStandardizedURL: video) == nil)
+        #expect(list.contains(URL(fileURLWithPath: "/tmp/./caption-b.jpg")))
+        #expect(!list.contains(video))
+        #expect(!list.contains(urls[2]))
+    }
+
     @Test("Preparation awaits retained writes, excludes commands and rejects replaced context", arguments: [false, true])
     func durablePreparation(replaceContext: Bool) async throws {
         let queue = CaptionDraftPersistenceQueue(label: "caption.prepare")

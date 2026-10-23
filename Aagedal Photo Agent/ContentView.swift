@@ -1169,7 +1169,7 @@ struct ContentView: View {
                     onSelectImage: { image in
                         browserViewModel.selectedImageIDs = [image.url]
                         browserViewModel.lastClickedImageURL = image.url
-                        analysisWorkspaceModel.openImageInCurrentWorkspace(image)
+                        analysisWorkspaceModel.requestOpenInCurrentWorkspace(image)
                     },
                     onOpenImportedProject: { folderURL in
                         openFolderInActivePane(folderURL, addToOpenFolders: true)
@@ -1975,7 +1975,8 @@ struct ContentView: View {
     private func openImageAnalysis() {
         guard let image = selectedAnalysisImage else { return }
         leaveEditWorkspaceIfNeeded {
-            analysisWorkspaceModel.open(image)
+            // After a failed save the workspace keeps the unsaved case and asks before reloading.
+            analysisWorkspaceModel.requestOpen(image)
             mainViewMode = .imageAnalysis
         }
     }

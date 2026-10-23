@@ -565,7 +565,7 @@ Trash fails, the template remains available and the list displays an error.
    **Preview pixel**. Toggle the loupe with **Z** while pointing at the image, or use the **Loupe**
    button. Its compact panel moves to the corner opposite the pointer to keep the inspected area visible.
    Press **Esc** to cancel an in-progress polygon or map shape, then to return to the Select tool, then to
-   clear the selection; Esc does not close Image Analysis.
+   clear the selection. With nothing left to cancel, Esc closes Image Analysis (not while an export is running).
 5. Open finding details to read the observation, technical basis, alternatives, limitation, analyzer
    version, and report-inclusion state.
 
@@ -613,7 +613,8 @@ and SHA-256 of every payload file before import, and import requires a new or em
 archive as sensitive evidence: it is a portable copy of the source images and their associated data.
 Exports and project operations show progress with **Cancel** in the Image Analysis header and keep
 running if you select another photo. If a case change cannot be saved, a banner keeps your edits in
-the workspace and offers **Retry Save**.
+the workspace and offers **Retry Save**; selecting another photo or closing first asks whether to retry,
+discard the unsaved edits, or cancel, and project export retries the save before it runs.
 
 ## Compare two images
 

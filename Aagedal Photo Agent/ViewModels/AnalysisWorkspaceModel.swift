@@ -10,6 +10,12 @@ struct AnalysisImageMapAnnotation: Identifiable, Sendable {
     var id: String { "\(caseID.uuidString)-\(annotation.id.uuidString)" }
 }
 
+/// Leaving the current case that would discard edits whose save failed.
+enum AnalysisUnsavedChangesExit {
+    case openImage(ImageFile, preferredWorkspaceMode: AnalysisWorkspaceMode?)
+    case close
+}
+
 enum AnalysisRenameQuiescenceError: LocalizedError, Equatable {
     case persistenceFailed(String)
 
@@ -34,6 +40,8 @@ final class AnalysisWorkspaceModel {
     /// A failed background save keeps the in-memory case editable; the workspace offers
     /// Retry Save, which re-persists the current in-memory documents.
     private(set) var saveError: String?
+    /// Navigation or close requested while `saveError` is set; the workspace asks first.
+    private(set) var pendingUnsavedChangesExit: AnalysisUnsavedChangesExit?
     private(set) var analysisCase: AnalysisCase? {
         didSet { rebuildPhotoAnnotationCaseIndex() }
     }
@@ -363,6 +371,7 @@ final class AnalysisWorkspaceModel {
         sourceChanged = false
         loadState = .idle
         clearSaveFailures()
+        pendingUnsavedChangesExit = nil
         renameQuiescenceFolderURL = nil
         renameQuiescenceNeedsCaseSave = false
     }
@@ -507,6 +516,7 @@ final class AnalysisWorkspaceModel {
         hasDevelopedRepresentation = image.hasDevelopEdits && image.cameraRawSettings != nil
         loadState = .loading
         clearSaveFailures()
+        pendingUnsavedChangesExit = nil
         analysisCase = nil
         currentRevision = nil
         sourceChanged = false
@@ -622,6 +632,67 @@ final class AnalysisWorkspaceModel {
         }
         if retryFolderMap {
             persistFolderMapDocument(folderMapDocument)
+        }
+    }
+
+    /// Retries any failed save and waits until every pending document write has finished.
+    /// Returns false when the current edits are still not durable on disk.
+    func savePendingChanges() async -> Bool {
+        await flushPendingSaves()
+        if saveError != nil {
+            retryFailedSave()
+            await flushPendingSaves()
+        }
+        return saveError == nil
+    }
+
+    /// Opening another photo reloads the workspace from disk, so after a failed save it waits
+    /// for the user's Retry Save / Discard Changes / Cancel choice instead of dropping edits.
+    func requestOpen(_ image: ImageFile, preferredWorkspaceMode: AnalysisWorkspaceMode? = nil) {
+        guard saveError == nil else {
+            pendingUnsavedChangesExit = .openImage(image, preferredWorkspaceMode: preferredWorkspaceMode)
+            return
+        }
+        open(image, preferredWorkspaceMode: preferredWorkspaceMode)
+    }
+
+    func requestOpenInCurrentWorkspace(_ image: ImageFile) {
+        requestOpen(image, preferredWorkspaceMode: workspaceMode)
+    }
+
+    /// Returns true when the workspace may close now; otherwise the unsaved-changes prompt is
+    /// raised and the caller closes only if `completeUnsavedChangesExit` says so.
+    func requestClose() -> Bool {
+        guard saveError == nil else {
+            pendingUnsavedChangesExit = .close
+            return false
+        }
+        return true
+    }
+
+    func dismissUnsavedChangesPrompt() {
+        pendingUnsavedChangesExit = nil
+    }
+
+    /// Finishes an exit the user confirmed from the unsaved-changes prompt. A failed retry keeps
+    /// the workspace (and its Retry Save banner) in place. Returns true when the caller should
+    /// now close the workspace.
+    func completeUnsavedChangesExit(
+        _ exit: AnalysisUnsavedChangesExit,
+        retryingSave: Bool
+    ) async -> Bool {
+        pendingUnsavedChangesExit = nil
+        if retryingSave {
+            guard await savePendingChanges() else { return false }
+        } else {
+            clearSaveFailures()
+        }
+        switch exit {
+        case .openImage(let image, let preferredWorkspaceMode):
+            open(image, preferredWorkspaceMode: preferredWorkspaceMode)
+            return false
+        case .close:
+            return true
         }
     }
 

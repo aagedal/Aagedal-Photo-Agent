@@ -162,6 +162,8 @@ struct DescriptionAssistantView: View {
     let compact: Bool
     /// Checks and applies to the editor's captured load, never whichever photo is selected later.
     let apply: (DescriptionAssistantProposal, String) -> Bool
+    /// Opens Settings → Description Assistant when the caller can reach the Settings window.
+    let openSettings: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var setup = DescriptionAssistantModelSetup.shared
     @State private var action: DescriptionAssistantAction = .grammar
@@ -179,9 +181,11 @@ struct DescriptionAssistantView: View {
     @State private var generationTask: Task<Void, Never>?
     @State private var showSetup = false
 
-    init(source: DescriptionAssistantRequest, compact: Bool = false, apply: @escaping (DescriptionAssistantProposal, String) -> Bool) {
+    init(source: DescriptionAssistantRequest, compact: Bool = false, openSettings: (() -> Void)? = nil,
+         apply: @escaping (DescriptionAssistantProposal, String) -> Bool) {
         self.source = source
         self.compact = compact
+        self.openSettings = openSettings
         self.apply = apply
         _draftDescription = State(initialValue: source.originalDescription)
     }
@@ -249,8 +253,18 @@ struct DescriptionAssistantView: View {
                     Text(issue).font(.caption).foregroundStyle(.secondary)
                 }
                 if compact && setup.backend == nil {
-                    Text("Configure a description model in Settings → Description Assistant.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Text("Configure a description model in Settings → Description Assistant.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let openSettings {
+                            Button("Open Settings…") {
+                                generationTask?.cancel()
+                                openSettings()
+                            }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("descriptionAssistant.openSettings")
+                        }
+                    }
                 }
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
                 HStack {

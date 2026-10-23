@@ -114,6 +114,7 @@ private extension EnvironmentValues {
 
 struct MetadataPanel: View {
     @Environment(AppCommandRouter.self) private var commandRouter
+    @Environment(\.openSettings) private var openSettings
     @Bindable var viewModel: MetadataViewModel
     let browserViewModel: BrowserViewModel
     let settingsViewModel: SettingsViewModel
@@ -1697,7 +1698,11 @@ struct MetadataPanel: View {
                     .help("Write or improve description with AI")
                     .accessibilityLabel("Description assistant")
                     .popover(item: $descriptionAssistantSource, arrowEdge: .trailing) { source in
-                        DescriptionAssistantView(source: source, compact: true) { proposal, text in
+                        DescriptionAssistantView(source: source, compact: true, openSettings: {
+                            descriptionAssistantSource = nil
+                            settingsViewModel.requestedDestination = .descriptionAssistant
+                            openSettings()
+                        }) { proposal, text in
                             guard flushBufferedFields(), !viewModel.isLoading, !viewModel.isBatchEdit,
                                   proposal.request.canApply(imageURL: viewModel.selectedURLs.first,
                                     editorLoadID: viewModel.editorBufferLoadID,

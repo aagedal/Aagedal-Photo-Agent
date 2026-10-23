@@ -131,6 +131,7 @@ struct CaptionVoiceMemoPlayerView: View {
                     transcriptionPanel
                 }
             }
+            sharedTranscriptionStatus
             if associationModel.isWorking {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -464,8 +465,36 @@ struct CaptionVoiceMemoPlayerView: View {
             .accessibilityIdentifier("caption.voiceMemo.transcribe")
             if !isWhisperReady {
                 Text("Set up Whisper in Settings.").foregroundStyle(.secondary)
-            } else if whisperSetup.isTranscribing && !transcriptModel.isTranscribing {
-                Text("Finishing another photo's transcription…").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The shared transcription lock is also held by work this panel no longer owns: a Caption
+    /// transcription that continued after navigation, or batch transcription/dictation. Explain
+    /// it for both providers and let the user cancel a detached job.
+    @ViewBuilder
+    private var sharedTranscriptionStatus: some View {
+        if let detached = whisperSetup.detachedTranscription {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(detached.imageURL == imageURL?.standardizedFileURL
+                     ? "Finishing this photo's transcription…"
+                     : "Transcribing \(detached.imageURL.lastPathComponent)…")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Cancel") { whisperSetup.cancelDetachedTranscription() }
+                    .accessibilityIdentifier("caption.voiceMemo.cancelDetachedTranscription")
+            }
+        } else if whisperSetup.isTranscribing, !transcriptModel.isTranscribing,
+                  !transcriptModel.isDownloading, case .available = model.state {
+            Text("Another transcription is running. Transcribe is available again when it finishes.")
+                .foregroundStyle(.secondary)
+        }
+        if let failure = whisperSetup.detachedTranscriptionFailure {
+            HStack(spacing: 6) {
+                Text(failure).foregroundStyle(.red).textSelection(.enabled)
+                Button("Dismiss") { whisperSetup.dismissDetachedTranscriptionFailure() }
+                    .accessibilityIdentifier("caption.voiceMemo.dismissDetachedFailure")
             }
         }
     }
