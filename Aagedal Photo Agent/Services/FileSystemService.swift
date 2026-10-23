@@ -228,10 +228,16 @@ actor FileSystemService {
                     .contentModificationDateKey,
                     .addedToDirectoryDateKey,
                     .isRegularFileKey,
+                    .isUbiquitousItemKey,
                     .ubiquitousItemDownloadingStatusKey,
                 ],
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
+            // Resolve `<name>.xmp` presence from this listing instead of one stat per photo. If
+            // the volume's case rule is unknown, ImageFile falls back to its own per-file stat.
+            let sidecarListing = (try? url.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]))?
+                .volumeSupportsCaseSensitiveNames
+                .map { ImageFile.SidecarListing(entries: contents, caseSensitive: $0) }
 
             var deferredICloudItemCount = 0
             var files: [ImageFile] = []
@@ -247,7 +253,7 @@ actor FileSystemService {
                     || (includeVideos && BrowserFileVisibility.isVideo(item)) else { continue }
                 guard (try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 if locallyAvailableForEnumeration(item) {
-                    files.append(ImageFile(url: item))
+                    files.append(ImageFile(url: item, sidecarListing: sidecarListing))
                 } else {
                     deferredICloudItemCount += 1
                     files.append(ImageFile(url: item, isICloudDownloadPending: true))
@@ -495,6 +501,7 @@ actor FileSystemService {
             includingPropertiesForKeys: [
                 .isDirectoryKey,
                 .isPackageKey,
+                .isUbiquitousItemKey,
                 .ubiquitousItemDownloadingStatusKey,
             ],
             options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
@@ -841,10 +848,11 @@ actor FileSystemService {
     }
 
     nonisolated private static func systemIsLocallyAvailable(_ url: URL) -> Bool {
-        let fileManager = FileManager.default
-        guard fileManager.isUbiquitousItem(at: url) else { return true }
-
-        let values = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+        // Same answer as `FileManager.isUbiquitousItem(at:)`, but read through resource values
+        // so entries from a folder listing answer from the keys prefetched with it instead of
+        // one ubiquity query per file.
+        let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
+        guard values?.isUbiquitousItem == true else { return true }
         return values?.ubiquitousItemDownloadingStatus != .notDownloaded
     }
 }
