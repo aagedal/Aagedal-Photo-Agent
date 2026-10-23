@@ -52,8 +52,45 @@ struct ActivityFileRecord: Codable, Sendable, Identifiable {
 struct ActivityImportResultCounts: Codable, Sendable, Equatable {
     let replaced: Int
     let backupReplaced: Int
+    /// Files intentionally not copied (already at the destination or previously imported).
+    /// These are not failures.
     let skipped: Int
     let renamed: Int
+    /// Files whose backup leg failed, even when the primary copy succeeded.
+    let backupFailed: Int
+    /// Copied photos whose template metadata or voice-memo link could not be saved.
+    let metadataFailed: Int
+
+    init(
+        replaced: Int,
+        backupReplaced: Int,
+        skipped: Int,
+        renamed: Int,
+        backupFailed: Int = 0,
+        metadataFailed: Int = 0
+    ) {
+        self.replaced = replaced
+        self.backupReplaced = backupReplaced
+        self.skipped = skipped
+        self.renamed = renamed
+        self.backupFailed = backupFailed
+        self.metadataFailed = metadataFailed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case replaced, backupReplaced, skipped, renamed, backupFailed, metadataFailed
+    }
+
+    /// History written before backup/metadata failures were tracked decodes them as zero.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        replaced = try container.decode(Int.self, forKey: .replaced)
+        backupReplaced = try container.decode(Int.self, forKey: .backupReplaced)
+        skipped = try container.decode(Int.self, forKey: .skipped)
+        renamed = try container.decode(Int.self, forKey: .renamed)
+        backupFailed = try container.decodeIfPresent(Int.self, forKey: .backupFailed) ?? 0
+        metadataFailed = try container.decodeIfPresent(Int.self, forKey: .metadataFailed) ?? 0
+    }
 }
 
 /// A single completed (or cancelled) background operation — the Layer 1 summary row.
@@ -78,7 +115,8 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     let importResultCounts: ActivityImportResultCounts?
     /// Credential-free upload transport evidence. `nil` for imports, face scans, and legacy data.
     let deliveryTransportSecurity: DeliveryTransportSecurity?
-    /// Durable-write failure, retained separately from per-photo detection counts.
+    /// Durable-write failure, retained separately from per-photo detection counts. For an
+    /// import, the error that stopped it after copying had started.
     let persistenceError: String?
     let files: [ActivityFileRecord]
 
@@ -112,8 +150,14 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         self.files = files
     }
 
-    /// Failed files (attempted but not completed).
-    var failureCount: Int { max(0, totalCount - successCount) }
+    /// Failed files (attempted but not completed). Skipped import files were deliberately
+    /// not copied and are not failures.
+    var failureCount: Int {
+        max(0, totalCount - successCount - (importResultCounts?.skipped ?? 0))
+    }
+
+    private var backupFailureCount: Int { importResultCounts?.backupFailed ?? 0 }
+    private var metadataFailureCount: Int { importResultCounts?.metadataFailed ?? 0 }
 
     /// One-line headline for the completion banner and the Layer 1 row.
     var summary: String {
@@ -136,13 +180,17 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         } else {
             line = "\(noun) of \(successCount) file\(successCount == 1 ? "" : "s") completed"
         }
-        if kind == .importJob && verificationEnabled && verificationFailures == 0 && failureCount == 0 {
+        if kind == .importJob && verificationEnabled && verificationFailures == 0 && failureCount == 0
+            && backupFailureCount == 0 {
             line += " with copy verification"
         }
         var problems: [String] = []
+        if let skipped = importResultCounts?.skipped, skipped > 0 { problems.append("\(skipped) skipped") }
         if failureCount > 0 { problems.append("\(failureCount) failed") }
         if verificationFailures > 0 { problems.append("\(verificationFailures) verification issue\(verificationFailures == 1 ? "" : "s")") }
-        if persistenceError != nil { problems.append("save failed") }
+        if backupFailureCount > 0 { problems.append("backup failed for \(backupFailureCount)") }
+        if metadataFailureCount > 0 { problems.append("metadata failed for \(metadataFailureCount)") }
+        if persistenceError != nil { problems.append(kind == .importJob ? "stopped early" : "save failed") }
         if !problems.isEmpty { line += " (\(problems.joined(separator: ", ")))" }
         return line
     }
@@ -150,6 +198,7 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
     /// True when every attempted file succeeded and nothing failed verification.
     var isClean: Bool {
         !wasCancelled && failureCount == 0 && verificationFailures == 0 && persistenceError == nil
+            && backupFailureCount == 0 && metadataFailureCount == 0
     }
 }
 

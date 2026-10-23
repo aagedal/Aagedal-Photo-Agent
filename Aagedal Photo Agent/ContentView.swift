@@ -2631,8 +2631,11 @@ struct ContentView: View {
     private var sidebarOverallProgress: Double? {
         var fractions: [Double] = []
         if importViewModel.isImporting {
-            guard importViewModel.importPhase == .copying else { return nil }
-            fractions.append(Double(importViewModel.copiedFiles) / Double(max(importViewModel.totalFiles, 1)))
+            if importViewModel.importPhase == .applyingMetadata {
+                fractions.append(Double(importViewModel.metadataProcessedFiles) / Double(max(importViewModel.metadataTotalFiles, 1)))
+            } else {
+                fractions.append(Double(importViewModel.processedFiles) / Double(max(importViewModel.totalFiles, 1)))
+            }
         }
         if ftpViewModel.isRendering {
             fractions.append(Double(ftpViewModel.renderCompletedCount) / Double(max(ftpViewModel.renderTotalCount, 1)))
@@ -2727,17 +2730,25 @@ struct ContentView: View {
             if importViewModel.isImporting {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    if importViewModel.importPhase == .copying {
-                        Text("Importing \(importViewModel.copiedFiles) of \(importViewModel.totalFiles)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ProgressView(value: Double(importViewModel.copiedFiles), total: Double(max(importViewModel.totalFiles, 1)))
-                    } else if importViewModel.importPhase == .applyingMetadata {
-                        Text("Writing metadata…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ProgressView()
-                            .controlSize(.small)
+                    HStack {
+                        if importViewModel.importPhase == .applyingMetadata {
+                            Text("Writing metadata \(importViewModel.metadataProcessedFiles) of \(importViewModel.metadataTotalFiles)")
+                        } else {
+                            Text("Importing \(importViewModel.processedFiles) of \(importViewModel.totalFiles)")
+                        }
+                        Spacer()
+                        Button("Cancel") {
+                            importViewModel.cancelImport()
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if importViewModel.importPhase == .applyingMetadata {
+                        ProgressView(value: Double(importViewModel.metadataProcessedFiles), total: Double(max(importViewModel.metadataTotalFiles, 1)))
+                    } else {
+                        ProgressView(value: Double(importViewModel.processedFiles), total: Double(max(importViewModel.totalFiles, 1)))
                     }
                 }
                 .padding(.horizontal, 12)

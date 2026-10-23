@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 
 /// Streaming hash used by `ImportCopyService` for copy verification.
 ///
@@ -29,12 +30,23 @@ nonisolated struct HashStream: Sendable {
     /// Synchronous core used by serialized filesystem actors that must keep a larger
     /// stat-hash-stat transaction non-reentrant. Callers are responsible for entering an
     /// executor that is not the MainActor. Cancellation is still sampled between chunks.
-    static func hashFileSynchronously(at url: URL, chunkSize: Int = 1 << 20) throws -> Data {
+    ///
+    /// `bypassingCache` sets `F_NOCACHE` on the descriptor so the bytes come from the device
+    /// rather than pages the kernel still holds from the write — copy verification must prove
+    /// what is on the disk, not what is in memory.
+    static func hashFileSynchronously(
+        at url: URL,
+        chunkSize: Int = 1 << 20,
+        bypassingCache: Bool = false
+    ) throws -> Data {
         precondition(chunkSize > 0)
         try Task.checkCancellation()
 
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+        if bypassingCache {
+            _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+        }
 
         var hasher = SHA256()
         while true {

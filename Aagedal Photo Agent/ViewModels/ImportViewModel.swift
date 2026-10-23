@@ -24,6 +24,8 @@ struct ImportFailureRecord: Identifiable, Sendable, Hashable {
         case copyFailed
         case verificationMismatch
         case backupFailed
+        /// The file was copied, but its template metadata or voice-memo link could not be saved.
+        case metadataFailed
     }
 }
 
@@ -349,14 +351,138 @@ struct ImportDateGroup: Identifiable {
     }
 }
 
+/// The write destinations the current metadata-write preset chooses for imported files,
+/// captured once per import on the main actor (the preset lives in app defaults).
+nonisolated struct ImportMetadataWriteModes: Sendable, Equatable {
+    let raw: MetadataWriteMode
+    let c2pa: MetadataWriteMode
+    let other: MetadataWriteMode
+
+    @MainActor static var current: ImportMetadataWriteModes {
+        ImportMetadataWriteModes(
+            raw: .current(forC2PA: false, isRaw: true),
+            c2pa: .current(forC2PA: true, isRaw: false),
+            other: .current(forC2PA: false, isRaw: false)
+        )
+    }
+
+    /// RAW never needs a C2PA probe (it always gets a sidecar), and neither does any file when
+    /// the preset treats credentialed and plain files alike.
+    func mode(for url: URL, hasC2PA: @Sendable (URL) async -> Bool) async -> MetadataWriteMode {
+        if SupportedImageFormats.isRaw(url: url) { return raw }
+        guard c2pa != other else { return other }
+        return await hasC2PA(url) ? c2pa : other
+    }
+}
+
+/// Plans destination names for one import batch so no two sources ever share a destination
+/// file, whatever the conflict policy (which only governs files already on disk). Names are
+/// compared case-insensitively, like the default APFS/HFS+ volumes. Files of one exposure (same
+/// source folder and stem, e.g. RAW + JPEG) keep a common suffix where possible, and a voice memo
+/// always takes its image's suffix.
+nonisolated struct ImportBatchNamePlanner: Sendable {
+    struct PlannedName: Sendable, Equatable {
+        let image: URL
+        let memo: URL?
+        let wasRenamed: Bool
+    }
+
+    private var claimedImages: Set<String> = []
+    private var memoOwners: [String: URL] = [:]
+    private var suffixByExposure: [String: Int] = [:]
+
+    mutating func plan(
+        source: URL,
+        folder: URL,
+        exposureFolder: URL,
+        memoSource: URL?,
+        memoExtension: String?
+    ) -> PlannedName {
+        let stem = source.deletingPathExtension().lastPathComponent
+        let exposureKey = [
+            Self.key(exposureFolder),
+            Self.key(source.deletingLastPathComponent()),
+            stem.lowercased(),
+        ].joined(separator: "|")
+        let memoOwner = memoSource?.standardizedFileURL
+
+        func candidate(_ suffix: Int) -> PlannedName? {
+            let name = suffix == 0 ? stem : "\(stem)-\(suffix)"
+            let image = folder.appendingPathComponent(
+                source.pathExtension.isEmpty ? name : "\(name).\(source.pathExtension)"
+            )
+            guard !claimedImages.contains(Self.key(image)) else { return nil }
+            var memo: URL?
+            if memoOwner != nil {
+                let memoURL = folder.appendingPathComponent(name)
+                    .appendingPathExtension(memoExtension ?? "wav")
+                if let owner = memoOwners[Self.key(memoURL)], owner != memoOwner { return nil }
+                memo = memoURL
+            }
+            return PlannedName(image: image, memo: memo, wasRenamed: suffix > 0)
+        }
+
+        let result: PlannedName
+        if let preferred = suffixByExposure[exposureKey].flatMap(candidate) {
+            result = preferred
+        } else {
+            var suffix = 0
+            var found = candidate(suffix)
+            while found == nil {
+                suffix += 1
+                found = candidate(suffix)
+            }
+            // `candidate` only fails on names claimed earlier in this batch, which is finite.
+            result = found ?? PlannedName(image: folder.appendingPathComponent(source.lastPathComponent), memo: nil, wasRenamed: false)
+            if suffixByExposure[exposureKey] == nil {
+                suffixByExposure[exposureKey] = suffix
+            }
+        }
+        claimedImages.insert(Self.key(result.image))
+        if let memo = result.memo, let memoOwner {
+            memoOwners[Self.key(memo)] = memoOwner
+        }
+        return result
+    }
+
+    private static func key(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+}
+
 @Observable
 final class ImportViewModel {
-    var configuration = ImportConfiguration()
-    var sourceFiles: [URL] = []
+    var configuration = ImportConfiguration() {
+        didSet {
+            if oldValue.fileTypeFilter != configuration.fileTypeFilter {
+                refreshFilteredSourceFiles()
+            }
+        }
+    }
+    var sourceFiles: [URL] = [] {
+        didSet { refreshDerivedSourceLists() }
+    }
     var sourceVoiceMemoFiles: [URL] = []
-    var voiceMemoSourceFiles: [URL] = []
+    var voiceMemoSourceFiles: [URL] = [] {
+        didSet { refreshDerivedSourceLists() }
+    }
     var voiceMemoAssociationReport: VoiceMemoAssociationReport?
-    @ObservationIgnored private var canonicalVoiceMemoImageURLBySource: [URL: URL] = [:]
+    @ObservationIgnored private var canonicalVoiceMemoImageURLBySource: [URL: URL] = [:] {
+        didSet { refreshDerivedSourceLists() }
+    }
+    /// Supported images across both sources, de-duplicated by exposure. Stored (not computed)
+    /// because the import sheet reads these lists many times per render; they are rebuilt only
+    /// when their inputs change.
+    private(set) var allSourceImages: [URL] = []
+    /// `allSourceImages` narrowed by the RAW/JPEG file-type filter.
+    private(set) var filteredSourceFiles: [URL] = []
+    /// `filteredSourceFiles` narrowed to the included capture-date groups when sorting by date.
+    private(set) var selectedSourceFiles: [URL] = []
+    /// Files found on the selected sources that this importer will not copy (videos, sidecars,
+    /// other documents). Surfaced so nothing on the card is dropped silently.
+    private(set) var ignoredSourceFiles: [URL] = []
+    @ObservationIgnored private var ignoredPrimarySourceFiles: [URL] = []
+    @ObservationIgnored private var ignoredSecondSourceFiles: [URL] = []
     var sourceScanProgress = ImportSourceDiscoveryProgress()
     var voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
     var isDiscoveringVoiceMemoSource: Bool = false
@@ -375,6 +501,11 @@ final class ImportViewModel {
     var mismatchedFiles: Int = 0
     var backupCopiedFiles: Int = 0
     var backupFailedFiles: Int = 0
+    /// Copied photos whose template metadata or voice-memo link could not be saved.
+    var metadataFailedFiles: Int = 0
+    /// Metadata-phase progress: photos processed so far out of `metadataTotalFiles`.
+    var metadataProcessedFiles: Int = 0
+    var metadataTotalFiles: Int = 0
     var currentFile: String = ""
     var importSummary: String = ""
     var errorMessage: String?
@@ -389,11 +520,14 @@ final class ImportViewModel {
     private(set) var lastCompletionEntry: ActivityEntry?
 
     /// Capture-date groups detected from source files.
-    var dateGroups: [ImportDateGroup] = []
+    var dateGroups: [ImportDateGroup] = [] {
+        didSet { refreshSelectedSourceFiles() }
+    }
     /// Whether the user wants to sort files into per-date folders.
     var sortByDate: Bool = false {
         didSet {
             AppDefaults.store.set(sortByDate, forKey: UserDefaultsKeys.importSortByDate)
+            refreshSelectedSourceFiles()
         }
     }
     /// When `sortByDate` is on, optionally wrap date folders in a parent folder.
@@ -424,6 +558,15 @@ final class ImportViewModel {
     /// Per-file copy results accumulated during the current run, used to build the
     /// activity-history entry (per-file destination + verification) on finish.
     @ObservationIgnored private var copyResults: [ImportCopyService.CopyResult] = []
+    /// Per-source detail for copied photos whose metadata or voice-memo link failed.
+    @ObservationIgnored private var metadataFailureDetailBySource: [URL: String] = [:]
+    /// Sources given a unique suffix at planning time because another file in the same import
+    /// targeted the same destination name.
+    @ObservationIgnored private var plannedRenamedSources: Set<URL> = []
+    /// Set once destination folders exist and the sheet has handed off to the sidebar, so a
+    /// later error is recorded in Activity instead of only in the (closed) sheet.
+    @ObservationIgnored private var importDidStartCopying = false
+    @ObservationIgnored private let c2paDetector: @Sendable (URL) async -> Bool
     private let interpolator = PresetVariableInterpolator()
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var voiceMemoScanTask: Task<Void, Never>?
@@ -465,9 +608,13 @@ final class ImportViewModel {
         pathContainmentService: SafePathContainmentService = .shared,
         executionSecurityScopeService: ImportExecutionSecurityScopeService = .shared,
         bookmarkDefaults: UserDefaults = AppDefaults.store,
-        destinationBookmarkService: ImportDestinationBookmarkService = .shared
+        destinationBookmarkService: ImportDestinationBookmarkService = .shared,
+        c2paDetector: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.readService = readService
+        self.c2paDetector = c2paDetector ?? { url in
+            ((try? await readService.readTechnicalMetadata(url: url, includeNativeImageInfo: false))?.hasC2PA) ?? false
+        }
         self.writeEngine = writeEngine
         self.activityHistory = activityHistory
         self.preflightService = preflightService
@@ -535,32 +682,74 @@ final class ImportViewModel {
         }
     }
 
-    var allSourceImages: [URL] {
+    private func refreshDerivedSourceLists() {
         let secondSourceImages = voiceMemoSourceFiles.filter {
             SupportedImageFormats.isSupported(url: $0)
         }
         var seen = Set<URL>()
-        return (sourceFiles + secondSourceImages).filter {
+        allSourceImages = (sourceFiles + secondSourceImages).filter {
             seen.insert(canonicalVoiceMemoImageURL(for: $0)).inserted
         }
+        refreshFilteredSourceFiles()
     }
 
-    var filteredSourceFiles: [URL] {
+    private func refreshFilteredSourceFiles() {
         switch configuration.fileTypeFilter {
         case .rawOnly:
-            return allSourceImages.filter { SupportedImageFormats.isRaw(url: $0) }
+            filteredSourceFiles = allSourceImages.filter { SupportedImageFormats.isRaw(url: $0) }
         case .jpegOnly:
-            return allSourceImages.filter { SupportedImageFormats.isJPEG(url: $0) }
+            filteredSourceFiles = allSourceImages.filter { SupportedImageFormats.isJPEG(url: $0) }
         case .both:
-            return allSourceImages
+            filteredSourceFiles = allSourceImages
+        }
+        refreshSelectedSourceFiles()
+    }
+
+    private func refreshSelectedSourceFiles() {
+        guard sortByDate else {
+            selectedSourceFiles = filteredSourceFiles
+            return
+        }
+        let includedFiles = Set(dateGroups.filter(\.isIncluded).flatMap(\.files))
+        selectedSourceFiles = filteredSourceFiles.filter { includedFiles.contains($0) }
+    }
+
+    private func refreshIgnoredSourceFiles() {
+        ignoredSourceFiles = ignoredPrimarySourceFiles + ignoredSecondSourceFiles
+    }
+
+    /// "N other files won't be imported (videos, sidecars…)" for the source section, or nil.
+    var ignoredSourceFilesNotice: String? {
+        Self.ignoredFilesNotice(for: ignoredSourceFiles)
+    }
+
+    nonisolated static func ignoredFilesNotice(for files: [URL]) -> String? {
+        guard !files.isEmpty else { return nil }
+        let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "mts", "m2ts", "avi", "mxf", "3gp"]
+        let sidecarExtensions: Set<String> = ["xmp", "thm", "xml", "lrv"]
+        var kinds: [String] = []
+        let extensions = Set(files.map { $0.pathExtension.lowercased() })
+        if !extensions.isDisjoint(with: videoExtensions) { kinds.append("videos") }
+        if !extensions.isDisjoint(with: sidecarExtensions) { kinds.append("sidecars") }
+        if !extensions.subtracting(videoExtensions).subtracting(sidecarExtensions).isEmpty {
+            kinds.append("other files")
+        }
+        let count = files.count
+        return "\(count) other file\(count == 1 ? "" : "s") won’t be imported (\(kinds.joined(separator: ", ")))."
+    }
+
+    /// Discovered files that are neither supported images nor WAV voice memos.
+    nonisolated private static func unsupportedFiles(in urls: [URL]) -> [URL] {
+        urls.filter {
+            !SupportedImageFormats.isSupported(url: $0)
+                && $0.pathExtension.caseInsensitiveCompare("wav") != .orderedSame
         }
     }
 
-    var selectedSourceFiles: [URL] {
-        let filtered = filteredSourceFiles
-        guard sortByDate else { return filtered }
-        let includedFiles = Set(dateGroups.filter(\.isIncluded).flatMap(\.files))
-        return filtered.filter { includedFiles.contains($0) }
+    /// Files processed so far in the copy phase, including skips and failures, so the
+    /// progress bar advances for every file rather than only successful copies.
+    var processedFiles: Int {
+        copiedFiles + skippedFiles + failedFiles
     }
 
     var selectedVoiceMemoAssociations: [VoiceMemoAssociation] {
@@ -637,6 +826,8 @@ final class ImportViewModel {
         importPhase = .scanning
         sourceFiles = []
         sourceVoiceMemoFiles = []
+        ignoredPrimarySourceFiles = []
+        refreshIgnoredSourceFiles()
         voiceMemoAssociationReport = nil
         canonicalVoiceMemoImageURLBySource = [:]
         dateGroups = []
@@ -659,6 +850,8 @@ final class ImportViewModel {
                 self.sourceVoiceMemoFiles = allURLs
                     .filter { $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame }
                     .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+                self.ignoredPrimarySourceFiles = Self.unsupportedFiles(in: allURLs)
+                self.refreshIgnoredSourceFiles()
                 self.importPhase = .idle
                 self.refreshVoiceMemoAssociations()
                 // Re-detect capture dates for the new folder when date sorting is on.
@@ -698,6 +891,8 @@ final class ImportViewModel {
         voiceMemoAssociationTask?.cancel()
         configuration.voiceMemoSourceURL = nil
         voiceMemoSourceFiles = []
+        ignoredSecondSourceFiles = []
+        refreshIgnoredSourceFiles()
         voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
         isDiscoveringVoiceMemoSource = false
         refreshVoiceMemoAssociations()
@@ -711,6 +906,8 @@ final class ImportViewModel {
         voiceMemoAssociationTask?.cancel()
         voiceMemoAssociationRequestID = UUID()
         voiceMemoSourceFiles = []
+        ignoredSecondSourceFiles = []
+        refreshIgnoredSourceFiles()
         voiceMemoAssociationReport = nil
         canonicalVoiceMemoImageURLBySource = [:]
         voiceMemoSourceScanProgress = ImportSourceDiscoveryProgress()
@@ -719,19 +916,22 @@ final class ImportViewModel {
 
         voiceMemoScanTask = Task(priority: .userInitiated) { [sourceDiscoveryService] in
             do {
-                let files = try await sourceDiscoveryService.discoverFiles(at: url) { progress in
+                let allURLs = try await sourceDiscoveryService.discoverFiles(at: url) { progress in
                     await MainActor.run {
                         guard self.configuration.voiceMemoSourceURL == url,
                               self.isDiscoveringVoiceMemoSource else { return }
                         self.voiceMemoSourceScanProgress = progress
                     }
-                }.filter {
+                }
+                let files = allURLs.filter {
                     SupportedImageFormats.isSupported(url: $0)
                         || $0.pathExtension.caseInsensitiveCompare("wav") == .orderedSame
                 }
                 try Task.checkCancellation()
                 guard self.configuration.voiceMemoSourceURL == url else { return }
                 self.isDiscoveringVoiceMemoSource = false
+                self.ignoredSecondSourceFiles = Self.unsupportedFiles(in: allURLs)
+                self.refreshIgnoredSourceFiles()
                 self.voiceMemoSourceFiles = files.sorted {
                     $0.path.localizedStandardCompare($1.path) == .orderedAscending
                 }
@@ -909,6 +1109,7 @@ final class ImportViewModel {
             switch field.fieldKey {
             case "title": configuration.metadata.title = value
             case "description": configuration.metadata.description = value
+            case "extendedDescription": configuration.metadata.extendedDescription = value
             case "keywords":
                 configuration.metadata.keywords = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "personShown":
@@ -953,6 +1154,7 @@ final class ImportViewModel {
                 if let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
                     configuration.metadata.imageSuppliers = values
                 }
+            case "jobId": configuration.metadata.jobId = value
             case "dateCreated":
                 if MetadataTemplatePlaceholderDetector.containsPlaceholder(value)
                     || (try? EditorialDateCreated(parsing: value)) != nil {
@@ -1026,12 +1228,17 @@ final class ImportViewModel {
         mismatchedFiles = 0
         backupCopiedFiles = 0
         backupFailedFiles = 0
+        metadataFailedFiles = 0
+        metadataProcessedFiles = 0
+        metadataTotalFiles = 0
         currentFile = ""
         importSummary = ""
         errorMessage = nil
         failureRecords = []
         // A fresh import replaces any previous (un-dismissed) completion banner.
         copyResults = []
+        metadataFailureDetailBySource = [:]
+        importDidStartCopying = false
         showCompletionBanner = false
         lastCompletionEntry = nil
 
@@ -1084,6 +1291,8 @@ final class ImportViewModel {
         var primaryDestinations: [URL] = []
         var allDestFolders: Set<URL> = []
         var allRevealFolders: Set<URL> = []
+        var batchNamePlanner = ImportBatchNamePlanner()
+        var renamedSources: Set<URL> = []
         let flatImportDate = String(destURL.lastPathComponent.prefix(10))
         for file in filesToCopy {
             let baseFolder: URL
@@ -1114,7 +1323,23 @@ final class ImportViewModel {
             allRevealFolders.insert(shootBaseFolder)
             allDestFolders.insert(primaryFolder)
 
-            let primaryURL = primaryFolder.appendingPathComponent(file.lastPathComponent)
+            let canonicalImage = canonicalVoiceMemoImageURL(for: file)
+            let memoSource = voiceMemoByImage[canonicalImage]
+            let memoExtension = memoSource.map { $0.pathExtension.isEmpty ? "wav" : $0.pathExtension }
+            // Two sources with the same name (two bodies, a counter reset) must never target
+            // the same file within one import, whatever the conflict policy: give the later one
+            // a unique suffix now, and keep its voice memo on that same suffix.
+            let plannedName = batchNamePlanner.plan(
+                source: file,
+                folder: primaryFolder,
+                exposureFolder: shootBaseFolder,
+                memoSource: memoSource,
+                memoExtension: memoExtension
+            )
+            let primaryURL = plannedName.image
+            if plannedName.wasRenamed {
+                renamedSources.insert(file)
+            }
             primaryDestinations.append(primaryURL)
 
             // Mirror the relative path (under destinationBaseURL) into the backup destination.
@@ -1127,14 +1352,8 @@ final class ImportViewModel {
                 }
             }
 
-            let canonicalImage = canonicalVoiceMemoImageURL(for: file)
-            let memoSource = voiceMemoByImage[canonicalImage]
             var bundleRequestID: UUID?
-            if let memoSource {
-                let memoExtension = memoSource.pathExtension.isEmpty ? "wav" : memoSource.pathExtension
-                let desiredMemo = primaryFolder
-                    .appendingPathComponent(primaryURL.deletingPathExtension().lastPathComponent)
-                    .appendingPathExtension(memoExtension)
+            if memoSource != nil, let desiredMemo = plannedName.memo {
                 let desiredMemoBackup: URL?
                 if let backupRoot = backupDestination?.url,
                    let relative = Self.relativePath(of: desiredMemo, under: baseURL) {
@@ -1165,6 +1384,7 @@ final class ImportViewModel {
             ))
         }
 
+        plannedRenamedSources = renamedSources
         let initialFolders = allDestFolders
         let folderToOpen = Self.commonAncestor(of: Array(allRevealFolders)) ?? destURL
         let verifyBackup = backupDestination?.verifyAfterWrite ?? true
@@ -1377,6 +1597,7 @@ final class ImportViewModel {
                         try Task.checkCancellation()
                         await MainActor.run {
                             guard self.importRequestID == requestID else { return }
+                            self.importDidStartCopying = true
                             NotificationCenter.default.post(name: .importStarted, object: folderToOpen)
                         }
 
@@ -1393,99 +1614,92 @@ final class ImportViewModel {
                             }
                         )
                         try Task.checkCancellation()
-                        // Persist only relationships whose image and memo both survived the primary copy
-                        // and verification boundary. A missing or ambiguous destination is surfaced as an
-                        // import failure rather than reconstructing a relationship from filenames later.
-                        try VoiceMemoCompanionRepository().saveImportedAssociations(
-                            voiceMemoAssociationsToPersist,
-                            results: results
-                        )
-                        // Pull successful primary URLs (verified or verification disabled) for metadata pass.
-                        let copiedURLs = results.compactMap { result in
-                            imageSources.contains(result.source) ? result.primaryURL : nil
-                        }
-
-                        if copiedURLs.isEmpty {
-                            await MainActor.run {
-                                guard self.importRequestID == requestID else { return }
-                                if self.skippedFiles > 0 {
-                                    self.importPhase = .complete
-                                    self.importSummary = self.buildImportSummary()
-                                    self.recordCompletion(cancelled: false)
-                                } else if self.failedFiles > 0 || self.mismatchedFiles > 0 {
-                                    self.importPhase = .complete
-                                    self.importSummary = self.buildImportSummary()
-                                    self.recordCompletion(cancelled: false)
-                                } else {
-                                    self.importPhase = .failed("No files were imported.")
-                                    self.errorMessage = "No files were imported."
+                        // Persist only relationships whose image and memo both survived the copy and
+                        // verification boundary. Each relationship commits on its own, so one failed
+                        // WAV leg is reported for its photo instead of failing the whole import.
+                        let associationRepository = VoiceMemoCompanionRepository()
+                        for association in voiceMemoAssociationsToPersist {
+                            try Task.checkCancellation()
+                            do {
+                                _ = try associationRepository.saveImportedAssociations(
+                                    [association],
+                                    results: results
+                                )
+                            } catch {
+                                let detail = "Voice memo link not saved: \(error.localizedDescription)"
+                                await MainActor.run {
+                                    guard self.importRequestID == requestID else { return }
+                                    self.recordMetadataFailure(source: association.imageURL, detail: detail)
                                 }
                             }
-                            return
+                        }
+                        // Pull successful primary URLs (verified or verification disabled) for metadata pass.
+                        let copiedImages = results.compactMap { result -> (source: URL, destination: URL)? in
+                            guard imageSources.contains(result.source),
+                                  let destination = result.primaryURL else { return nil }
+                            return (result.source, destination)
                         }
 
                         // Apply metadata if configured
-                        if applyMetadata {
-                            let shouldApplyMetadata = await MainActor.run {
-                                guard self.importRequestID == requestID else { return false }
+                        if applyMetadata && !copiedImages.isEmpty {
+                            let writeModes = await MainActor.run { () -> ImportMetadataWriteModes? in
+                                guard self.importRequestID == requestID else { return nil }
                                 self.importPhase = .applyingMetadata
-                                return true
+                                self.metadataTotalFiles = copiedImages.count
+                                self.metadataProcessedFiles = 0
+                                return ImportMetadataWriteModes.current
                             }
-                            guard shouldApplyMetadata else { return }
+                            guard let writeModes else { return }
 
-                            // Never embed into a proprietary RAW container: RAW gets the
-                            // template through its XMP sidecar (merge keeps any develop block).
-                            let sidecarBoundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
-                            if processVariables {
-                                var sequenceNumber = 1
-                                for url in copiedURLs {
-                                    try Task.checkCancellation()
-                                    let resolved = await self.resolveMetadataForFile(url, metadata: metadata, interpolator: interpolator, sequenceIndex: sequenceNumber)
-                                    sequenceNumber += 1
-                                    if SupportedImageFormats.isRaw(url: url) {
-                                        _ = try await sidecarBoundary.write(
-                                            metadata: resolved, for: url,
-                                            requestedMode: .writeToXMPSidecar, semantics: .merge
-                                        )
-                                        continue
-                                    }
-                                    let fields = await Self.buildMetadataFields(from: resolved)
-                                    if !fields.isEmpty {
-                                        try await self.writeEngine.writeFields(
-                                            fields,
-                                            to: [url],
-                                            structuredData: StructuredWriteData(
-                                                editorial: EditorialStructuredWriteData(metadata: resolved),
-                                                listValues: EditorialListWriteData(metadata: resolved)
-                                            )
-                                        )
-                                    }
-                                }
-                            } else {
-                                let rawURLs = copiedURLs.filter { SupportedImageFormats.isRaw(url: $0) }
-                                let embeddableURLs = copiedURLs.filter { !SupportedImageFormats.isRaw(url: $0) }
-                                for url in rawURLs {
-                                    try Task.checkCancellation()
-                                    _ = try await sidecarBoundary.write(
-                                        metadata: metadata, for: url,
-                                        requestedMode: .writeToXMPSidecar, semantics: .merge
+                            // Each file goes to the destination its write preset chooses: RAW always
+                            // gets an XMP sidecar (merge keeps any develop block), and a C2PA file is
+                            // only embedded into when the preset allows invalidating its credential.
+                            let boundary = DescriptiveMetadataWriteBoundary(writeEngine: self.writeEngine)
+                            let c2paDetector = self.c2paDetector
+                            var sequenceNumber = 1
+                            for image in copiedImages {
+                                try Task.checkCancellation()
+                                let fileMetadata: IPTCMetadata
+                                if processVariables {
+                                    var resolved = await self.resolveMetadataForFile(
+                                        image.destination,
+                                        metadata: metadata,
+                                        interpolator: interpolator,
+                                        sequenceIndex: sequenceNumber
                                     )
+                                    // Coordinates read from the file only feed place variables;
+                                    // the file already carries them.
+                                    resolved.latitude = metadata.latitude
+                                    resolved.longitude = metadata.longitude
+                                    fileMetadata = resolved
+                                    sequenceNumber += 1
+                                } else {
+                                    fileMetadata = metadata
                                 }
-                                let fields = await Self.buildMetadataFields(from: metadata)
-                                if !fields.isEmpty {
-                                    let batchSize = 20
-                                    for batchStart in stride(from: 0, to: embeddableURLs.count, by: batchSize) {
-                                        try Task.checkCancellation()
-                                        let batchEnd = min(batchStart + batchSize, embeddableURLs.count)
-                                        let batch = Array(embeddableURLs[batchStart..<batchEnd])
-                                        try await self.writeEngine.writeFields(
-                                            fields,
-                                            to: batch,
-                                            structuredData: StructuredWriteData(
-                                                editorial: EditorialStructuredWriteData(metadata: metadata),
-                                                listValues: EditorialListWriteData(metadata: metadata)
-                                            )
-                                        )
+                                var failureDetail: String?
+                                do {
+                                    let mode = await writeModes.mode(
+                                        for: image.destination,
+                                        hasC2PA: c2paDetector
+                                    )
+                                    // Merge never clears: drop empty values so a blank field
+                                    // can't erase what the camera wrote.
+                                    _ = try await boundary.write(
+                                        metadata: IPTCMetadata().merged(preferring: fileMetadata),
+                                        for: image.destination,
+                                        requestedMode: mode,
+                                        semantics: .merge
+                                    )
+                                } catch is CancellationError {
+                                    throw CancellationError()
+                                } catch {
+                                    failureDetail = "Metadata not written: \(error.localizedDescription)"
+                                }
+                                await MainActor.run {
+                                    guard self.importRequestID == requestID else { return }
+                                    self.metadataProcessedFiles += 1
+                                    if let failureDetail {
+                                        self.recordMetadataFailure(source: image.source, detail: failureDetail)
                                     }
                                 }
                             }
@@ -1525,6 +1739,12 @@ final class ImportViewModel {
                     self.importPhase = .failed(error.localizedDescription)
                     self.errorMessage = error.localizedDescription
                     importLog.error("Import failed: \(error.localizedDescription)")
+                    // Once copying started the sheet has closed: report the stop in the sidebar
+                    // banner and Activity history, where the user can still see it.
+                    if self.importDidStartCopying {
+                        self.importSummary = self.buildImportSummary()
+                        self.recordCompletion(cancelled: false, stopError: error.localizedDescription)
+                    }
                 }
             }
         }
@@ -1564,7 +1784,7 @@ final class ImportViewModel {
             if result.source.pathExtension.lowercased() == "wav" {
                 voiceMemoCopiedFiles += 1
             }
-            if renamed { renamedFiles += 1 }
+            if renamed || plannedRenamedSources.contains(result.source) { renamedFiles += 1 }
             if replaced { replacedFiles += 1 }
         case .skipped(let reason):
             skippedFiles += 1
@@ -1602,10 +1822,25 @@ final class ImportViewModel {
         }
     }
 
+    /// Records a copied photo whose template metadata or voice-memo link could not be saved.
+    /// The import continues; the failure is listed in the summary and Activity history.
+    @MainActor
+    private func recordMetadataFailure(source: URL, detail: String) {
+        let key = source.standardizedFileURL
+        if metadataFailureDetailBySource[key] == nil {
+            metadataFailedFiles += 1
+        }
+        metadataFailureDetailBySource[key] = [metadataFailureDetailBySource[key], detail]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        failureRecords.append(ImportFailureRecord(source: source, kind: .metadataFailed, detail: detail))
+    }
+
     /// Builds an activity-history entry from the accumulated per-file results,
     /// records it to the shared history, and raises the sticky completion banner.
+    /// `stopError` is set when the import stopped with an error after it had started copying.
     @MainActor
-    private func recordCompletion(cancelled: Bool) {
+    private func recordCompletion(cancelled: Bool, stopError: String? = nil) {
         let verificationEnabled = configuration.verificationMode == .on
         let files: [ActivityFileRecord] = copyResults.map { result in
             let destination: String
@@ -1627,7 +1862,8 @@ final class ImportViewModel {
                 fileName: result.source.lastPathComponent,
                 destination: destination,
                 succeeded: succeeded,
-                verification: verification
+                verification: verification,
+                statusDetail: statusDetail(for: result)
             )
         }
 
@@ -1645,14 +1881,41 @@ final class ImportViewModel {
                 replaced: replacedFiles,
                 backupReplaced: backupReplacedFiles,
                 skipped: skippedFiles,
-                renamed: renamedFiles
+                renamed: renamedFiles,
+                backupFailed: backupFailedFiles,
+                metadataFailed: metadataFailedFiles
             ),
+            persistenceError: stopError,
             files: files
         )
 
         activityHistory?.record(entry)
         lastCompletionEntry = entry
         showCompletionBanner = true
+    }
+
+    /// Why a file needs attention, for the Activity detail row. Nil for a clean copy.
+    private func statusDetail(for result: ImportCopyService.CopyResult) -> String? {
+        var parts: [String] = []
+        switch result.primary {
+        case .copied:
+            break
+        case .skipped(let reason):
+            switch reason {
+            case .destinationExists: parts.append("Skipped: already exists at the destination")
+            case .previouslyImported: parts.append("Skipped: already imported")
+            case .associatedImageFailed: parts.append("Skipped: its photo was not imported")
+            }
+        case .failed(let detail):
+            parts.append(detail)
+        }
+        if case .failed(let detail) = result.backup {
+            parts.append("Backup failed: \(detail)")
+        }
+        if let metadataDetail = metadataFailureDetailBySource[result.source.standardizedFileURL] {
+            parts.append(metadataDetail)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Dismisses the sticky completion banner (the green-check confirm action).
@@ -1743,6 +2006,7 @@ final class ImportViewModel {
         if duplicateSkippedFiles > 0 { parts.append("already imported \(duplicateSkippedFiles)") }
         if failedFiles > 0 { parts.append("failed \(failedFiles)") }
         if mismatchedFiles > 0 { parts.append("verification failures \(mismatchedFiles)") }
+        if metadataFailedFiles > 0 { parts.append("metadata failed \(metadataFailedFiles)") }
         if backupCopiedFiles > 0 || backupFailedFiles > 0 {
             parts.append("backup \(backupCopiedFiles) of \(backupCopiedFiles + backupFailedFiles)")
         }
@@ -1919,7 +2183,20 @@ final class ImportViewModel {
                         title: self.configuration.importTitle
                     )
                 }
+                // A re-scan of the same card (second source added, filter changed) keeps the
+                // user's choices for capture dates that still exist: an unchecked date stays
+                // unchecked and a hand-renamed (unsplit) date folder keeps its name.
+                let previousGroupsByDate = Dictionary(grouping: self.dateGroups, by: \.dateString)
+                for index in currentGroups.indices {
+                    guard let previous = previousGroupsByDate[currentGroups[index].dateString] else { continue }
+                    currentGroups[index].isIncluded = previous.contains(where: \.isIncluded)
+                    if previous.count == 1, let only = previous.first, only.shootFolderName == nil,
+                       only.folderName != self.autoLeafName(for: only, title: self.configuration.importTitle) {
+                        currentGroups[index].folderName = only.folderName
+                    }
+                }
                 self.dateGroups = currentGroups
+                self.ensureUniqueFolderNames()
                 self.isScanningDates = false
                 self.refreshPreviousImportFolderSuggestions()
             case .cancelled:
@@ -2000,14 +2277,26 @@ final class ImportViewModel {
 
     /// "yyyy-MM-dd" display form derived from a group's "yyyy:MM:dd" capture-date key.
     func displayDate(for group: ImportDateGroup) -> String {
-        let parse = DateFormatter()
-        parse.locale = Locale(identifier: "en_US_POSIX")
-        parse.dateFormat = "yyyy:MM:dd"
-        let display = DateFormatter()
-        display.dateFormat = "yyyy-MM-dd"
-        if let parsed = parse.date(from: group.dateString) { return display.string(from: parsed) }
+        if let parsed = Self.captureDateKeyFormatter.date(from: group.dateString) {
+            return Self.folderDateFormatter.string(from: parsed)
+        }
         return group.dateString
     }
+
+    /// Shared formatters: `displayDate(for:)` runs for every file when an import is planned and
+    /// for every group on each render, so building formatters per call scaled with card size.
+    private static let captureDateKeyFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy:MM:dd"
+        return formatter
+    }()
+
+    private static let folderDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     /// The auto-generated leaf folder name for a group given an import title.
     private func autoLeafName(for group: ImportDateGroup, title: String) -> String {
@@ -2199,16 +2488,12 @@ final class ImportViewModel {
         }
 
         // Reset folder name to a clean date-derived base (drop " – Shoot N").
-        let parse = DateFormatter()
-        parse.locale = Locale(identifier: "en_US_POSIX")
-        parse.dateFormat = "yyyy:MM:dd"
-        let display = DateFormatter()
-        display.dateFormat = "yyyy-MM-dd"
-        if let parsed = parse.date(from: merged.dateString) {
+        if let parsed = Self.captureDateKeyFormatter.date(from: merged.dateString) {
             let title = configuration.importTitle.trimmingCharacters(in: .whitespaces)
+            let display = Self.folderDateFormatter.string(from: parsed)
             merged.folderName = title.isEmpty
-                ? display.string(from: parsed)
-                : "\(display.string(from: parsed)) \u{2013} \(title)"
+                ? display
+                : "\(display) \u{2013} \(title)"
         }
         merged.shootFolderName = nil
 
@@ -2324,9 +2609,13 @@ final class ImportViewModel {
         let preservedVerificationMode = configuration.verificationMode
         let preservedBackup = configuration.backupDestination
         let preservedSkipPreviouslyImported = configuration.skipPreviouslyImported
+        let preservedDestinationBaseURL = configuration.destinationBaseURL
         let preservedSortByDate = sortByDate
         configuration = ImportConfiguration()
-        // Preserve the user's import-mode choices across "Import More".
+        // Preserve the user's import-mode choices and destinations across sessions. The
+        // destination root is restored from its bookmark only at launch, so a fresh
+        // configuration would otherwise fall back to ~/Photos every time the sheet opens.
+        configuration.destinationBaseURL = preservedDestinationBaseURL
         configuration.fileTypeFilter = preservedFileTypeFilter
         configuration.conflictPolicy = preservedConflictPolicy
         configuration.createSubFolders = preservedCreateSubFolders
@@ -2355,11 +2644,20 @@ final class ImportViewModel {
         mismatchedFiles = 0
         backupCopiedFiles = 0
         backupFailedFiles = 0
+        metadataFailedFiles = 0
+        metadataProcessedFiles = 0
+        metadataTotalFiles = 0
         duplicateSkippedFiles = 0
         currentFile = ""
         importSummary = ""
         errorMessage = nil
         failureRecords = []
+        metadataFailureDetailBySource = [:]
+        plannedRenamedSources = []
+        importDidStartCopying = false
+        ignoredPrimarySourceFiles = []
+        ignoredSecondSourceFiles = []
+        refreshIgnoredSourceFiles()
         overwritePreflight = nil
         confirmedOverwriteSignature = nil
         dateGroups = []

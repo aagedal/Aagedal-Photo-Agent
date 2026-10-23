@@ -188,6 +188,11 @@ struct ImportView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if viewModel.importPhase != .scanning, let notice = viewModel.ignoredSourceFilesNotice {
+                    Label(notice, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 // When not sorting into per-date folders, the date rows (and their
                 // strips) are hidden, so offer a single preview of the whole import.
@@ -1081,7 +1086,7 @@ struct ImportView: View {
         let backupEnabled = viewModel.configuration.backupDestination != nil
         CopyProgressView(
             title: "Copying files…",
-            primaryCopied: viewModel.copiedFiles,
+            primaryCopied: viewModel.processedFiles,
             totalFiles: viewModel.totalFiles,
             backupCopied: backupEnabled ? viewModel.backupCopiedFiles : nil,
             backupTotal: backupEnabled ? viewModel.totalFiles : nil,
@@ -1090,6 +1095,8 @@ struct ImportView: View {
             mismatchedCount: viewModel.mismatchedFiles,
             currentFile: viewModel.currentFile,
             isApplyingMetadata: viewModel.importPhase == .applyingMetadata,
+            metadataProcessed: viewModel.metadataProcessedFiles,
+            metadataTotal: viewModel.metadataTotalFiles,
             onCancel: {
                 viewModel.cancelImport()
             }

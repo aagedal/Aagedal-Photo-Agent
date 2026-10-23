@@ -28,7 +28,7 @@ actor ImportCopyService {
 
     init(
         verificationHasher: @escaping VerificationHasher = { url in
-            try HashStream.hashFileSynchronously(at: url)
+            try HashStream.hashFileSynchronously(at: url, bypassingCache: true)
         },
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.import-copy", qos: .utility
@@ -352,7 +352,7 @@ actor ImportCopyService {
 
         let staged: StagedCopy
         do {
-            staged = try stageCopy(source: source, destination: destination)
+            staged = try stageCopy(source: source, destination: destination, forVerification: shouldVerify)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -400,7 +400,11 @@ actor ImportCopyService {
 
     /// Copy `source` into a unique hidden sibling of `destination`, hashing as bytes flow.
     /// The caller owns promotion and cleanup after this method succeeds.
-    private func stageCopy(source: URL, destination: URL) throws -> StagedCopy {
+    ///
+    /// When the copy will be verified, the staged file is written uncached (`F_NOCACHE`) and
+    /// flushed with `F_FULLFSYNC`, so the verification read-back (also uncached) hashes bytes
+    /// from the device itself rather than kernel pages or the drive's volatile write cache.
+    private func stageCopy(source: URL, destination: URL, forVerification: Bool) throws -> StagedCopy {
         let fm = FileManager.default
         let partialURL = destination.deletingLastPathComponent().appendingPathComponent(
             ".\(destination.lastPathComponent).\(UUID().uuidString).partial"
@@ -440,6 +444,9 @@ actor ImportCopyService {
             try? readHandle.close()
             try? writeHandle.close()
         }
+        if forVerification {
+            _ = fcntl(writeHandle.fileDescriptor, F_NOCACHE, 1)
+        }
 
         var hasher = HashStream()
         let chunkSize = 1 << 20  // 1 MB
@@ -452,7 +459,11 @@ actor ImportCopyService {
                 hasher.update(chunk)
                 try writeHandle.write(contentsOf: chunk)
             }
-            try writeHandle.synchronize()
+            // F_FULLFSYNC also drains the drive's write cache; volumes that don't support it
+            // (network shares, some FAT/exFAT drivers) fall back to a plain fsync.
+            if !forVerification || fcntl(writeHandle.fileDescriptor, F_FULLFSYNC) == -1 {
+                try writeHandle.synchronize()
+            }
         } catch is CancellationError {
             try? writeHandle.close()
             try? readHandle.close()
