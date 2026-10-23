@@ -41,6 +41,7 @@ final class ThumbnailItemView: NSView {
     // Badge layers (top-right)
     private let c2paBadge = CALayer()
     private let editedBadge = CALayer()
+    private let pendingBadge = CALayer()
     private let cropBadge = CALayer()
     private let hdrBadge = CALayer()
     private let voiceMemoBadge = CALayer()
@@ -214,11 +215,13 @@ final class ThumbnailItemView: NSView {
         // Badge layers — fully composited at 2x
         configureBadge(c2paBadge, color: .systemBlue, systemName: "checkmark.seal.fill")
         configureBadge(editedBadge, color: .systemOrange, systemName: "slider.horizontal.3")
+        // Same yellow dot as full screen's "Pending" badge; distinct from develop edits.
+        configureBadge(pendingBadge, color: .systemYellow, systemName: "circle.fill")
         configureBadge(cropBadge, color: .systemGreen, systemName: "crop")
         configureBadge(hdrBadge, color: .systemPurple, systemName: "sun.max.fill")
         configureBadge(voiceMemoBadge, color: .systemOrange, systemName: "waveform")
 
-        for badge in [c2paBadge, editedBadge, cropBadge, hdrBadge, voiceMemoBadge] {
+        for badge in [c2paBadge, editedBadge, pendingBadge, cropBadge, hdrBadge, voiceMemoBadge] {
             badge.isHidden = true
             layer?.addSublayer(badge)
         }
@@ -324,7 +327,7 @@ final class ThumbnailItemView: NSView {
         // Badge positions (top-right of image, in view coordinates)
         let badgeX = imageFrame.maxX - 24
         var badgeY = imageFrame.maxY - 24
-        for badge in [c2paBadge, editedBadge, cropBadge, hdrBadge] where !badge.isHidden {
+        for badge in [c2paBadge, editedBadge, pendingBadge, cropBadge, hdrBadge] where !badge.isHidden {
             badge.position = CGPoint(x: badgeX, y: badgeY)
             badgeY -= 24
         }
@@ -364,7 +367,8 @@ final class ThumbnailItemView: NSView {
 
         // Badges
         c2paBadge.isHidden = !data.hasC2PA
-        editedBadge.isHidden = !(data.hasDevelopEdits || data.hasPendingMetadataChanges)
+        editedBadge.isHidden = !data.hasDevelopEdits
+        pendingBadge.isHidden = !data.hasPendingMetadataChanges
         cropBadge.isHidden = !data.hasCropEdits
         hdrBadge.isHidden = !data.isHDR
 

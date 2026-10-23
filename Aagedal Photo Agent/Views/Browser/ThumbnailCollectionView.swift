@@ -147,11 +147,8 @@ final class ThumbnailCollectionView: NSCollectionView {
         guard !urls.isEmpty else { return }
         isDragging = true
 
-        // Switch to manual sort on first drag
-        if viewModel.sortOrder != .manual {
-            viewModel.initializeManualOrder(from: viewModel.sortedImages)
-            viewModel.sortOrder = .manual
-        }
+        // Sort switches to Manual only when the drop actually reorders inside the grid
+        // (see reorderDraggedItems); drags to Finder, Mail, or a sidebar folder keep it.
         viewModel.draggedImageURLs = Set(urls)
 
         let items = makeDraggingItems(for: urls)
@@ -207,7 +204,7 @@ final class ThumbnailCollectionView: NSCollectionView {
                 newIDs = updated
                 newActive = url
             } else if modifiers.contains(.shift) {
-                let anchor = viewModel.lastClickedImageURL ?? viewModel.selectedImageIDs.first
+                let anchor = viewModel.shiftSelectionAnchorURL
                 if let anchor,
                    let anchorIndex = viewModel.urlToVisibleIndex[anchor],
                    let currentIndex = viewModel.urlToVisibleIndex[url] {
@@ -226,9 +223,10 @@ final class ThumbnailCollectionView: NSCollectionView {
                 newActive = url
             }
 
+            let extending = modifiers.contains(.shift) && !modifiers.contains(.command)
             refreshVisibleSelections(selectedIDs: newIDs, activeURL: newActive)
             DispatchQueue.main.async { [weak viewModel] in
-                viewModel?.applySelection(ids: newIDs, active: newActive)
+                viewModel?.applySelection(ids: newIDs, active: newActive, extending: extending)
             }
         }
     }
@@ -269,7 +267,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 124: // Right arrow
             guard let sel = viewModel.computeNextSelection(extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -277,7 +275,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 125: // Down arrow
             guard let sel = viewModel.computeDownSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -285,7 +283,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 126: // Up arrow
             guard let sel = viewModel.computeUpSelection(columns: columnCount, extending: shift) else { break }
             if !shift, let newActive = sel.active {
@@ -293,7 +291,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             } else {
                 refreshVisibleSelections(selectedIDs: sel.ids, activeURL: sel.active)
             }
-            viewModel.applySelection(ids: sel.ids, active: sel.active)
+            viewModel.applySelection(ids: sel.ids, active: sel.active, extending: shift)
         case 49: // Space
             // Only handle when no text field is focused
             guard viewModel.firstSelectedImage != nil else {
@@ -355,7 +353,9 @@ final class ThumbnailCollectionView: NSCollectionView {
             }
         }
 
+        // Items carry explicit enablement; AppKit auto-validation would ignore isEnabled.
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         // Reveal in Finder
         let revealItem = NSMenuItem(title: "Reveal in Finder", action: #selector(contextRevealInFinder(_:)), keyEquivalent: "")
@@ -416,6 +416,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         // Rating submenu
         let ratingMenu = NSMenu()
+        ratingMenu.autoenablesItems = false
         for rating in StarRating.allCases {
             let title = rating == .none ? "No Rating" : rating.displayString
             let ratingItem = NSMenuItem(title: title, action: #selector(contextSetRating(_:)), keyEquivalent: "")
@@ -429,6 +430,7 @@ final class ThumbnailCollectionView: NSCollectionView {
 
         // Label submenu
         let labelMenu = NSMenu()
+        labelMenu.autoenablesItems = false
         for label in ColorLabel.allCases {
             let labelItem = NSMenuItem(title: label.displayName, action: #selector(contextSetLabel(_:)), keyEquivalent: "")
             labelItem.target = self
@@ -463,6 +465,7 @@ final class ThumbnailCollectionView: NSCollectionView {
             .count
         if rawSelectionCount > 0 {
             let archiveMenu = NSMenu()
+            archiveMenu.autoenablesItems = false
             let discovery = AdobeDNGDiscoveryStore.shared
             discovery.refreshInBackground()
             // Unknown availability remains actionable; the action awaits a fresh probe.
@@ -542,6 +545,12 @@ final class ThumbnailCollectionView: NSCollectionView {
         let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(contextDelete(_:)), keyEquivalent: "")
         deleteItem.target = self
         menu.addItem(deleteItem)
+
+        // Every grid action works on the selection; a right-click on empty space with
+        // nothing selected shows the menu disabled rather than offering no-op actions.
+        if viewModel.selectedImageIDs.isEmpty {
+            for item in menu.items { item.isEnabled = false }
+        }
 
         return menu
     }
@@ -681,15 +690,19 @@ final class ThumbnailCollectionView: NSCollectionView {
         let windowPoint = window.convertPoint(fromScreen: screenPoint)
         let localPoint = convert(windowPoint, from: nil)
 
+        // No indicator means no reorder target: a drop elsewhere must not reuse the
+        // last item the drag passed over.
         guard let viewModel,
               let indexPath = indexPathForItem(at: localPoint),
               indexPath.item < viewModel.visibleImages.count else {
+            pendingReorderTarget = nil
             hideDropIndicator()
             return
         }
 
         let targetURL = viewModel.visibleImages[indexPath.item].url
         guard !viewModel.draggedImageURLs.contains(targetURL) else {
+            pendingReorderTarget = nil
             hideDropIndicator()
             return
         }
@@ -725,20 +738,11 @@ final class ThumbnailCollectionView: NSCollectionView {
 
     private func reorderDraggedItems(to targetURL: URL, insertBefore: Bool) {
         guard let viewModel else { return }
-        let draggedURLs = viewModel.draggedImageURLs
-        guard !draggedURLs.isEmpty, !draggedURLs.contains(targetURL) else { return }
-
-        // Collect dragged items in their current order
-        let draggedItems = viewModel.manualOrder.filter { draggedURLs.contains($0) }
-        guard !draggedItems.isEmpty else { return }
-
-        // Remove dragged items
-        viewModel.manualOrder.removeAll { draggedURLs.contains($0) }
-
-        // Insert at the indicated position
-        guard let targetIndex = viewModel.manualOrder.firstIndex(of: targetURL) else { return }
-        let insertionIndex = insertBefore ? targetIndex : targetIndex + 1
-        viewModel.manualOrder.insert(contentsOf: draggedItems, at: insertionIndex)
+        viewModel.reorderManually(
+            viewModel.draggedImageURLs,
+            to: targetURL,
+            insertBefore: insertBefore
+        )
     }
 
     // MARK: - Drop Indicator

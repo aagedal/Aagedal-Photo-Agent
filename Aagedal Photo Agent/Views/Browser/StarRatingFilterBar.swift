@@ -34,6 +34,19 @@ struct StarRatingFilterBar: View {
                     }
                 }
         )
+        // The drag gesture is pointer-only; VoiceOver adjusts the minimum rating instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Minimum star rating filter")
+        .accessibilityValue(minimumRating == .none ? "Off" : "\(minimumRating.rawValue) stars and up")
+        .accessibilityAdjustableAction { direction in
+            let step: Int
+            switch direction {
+            case .increment: step = 1
+            case .decrement: step = -1
+            @unknown default: return
+            }
+            minimumRating = StarRating(rawValue: min(max(minimumRating.rawValue + step, 0), 5)) ?? .none
+        }
     }
 
     private func ratingAt(x: CGFloat) -> StarRating {
