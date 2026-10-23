@@ -15,6 +15,12 @@ struct DevelopCropDragSnapshot: Equatable {
     let region: NormalizedCropRegion?
 }
 
+/// The image's stored crop (rect + straighten) when the crop tool was entered. Cancelling the
+/// tool (Esc) restores it, matching Camera Raw; Done/Return keeps the edited framing.
+struct DevelopCropEntrySnapshot: Equatable {
+    let crop: CameraRawCrop?
+}
+
 /// Owns crop-tool presentation and image-scoped interaction state for the Develop workspace.
 ///
 /// The coordinator deliberately does not write XMP or named-version JSON. It mutates the value
@@ -33,9 +39,13 @@ final class DevelopCropSessionCoordinator {
     var lockedImageRect: CGRect?
     private(set) var dragAngle: Double?
     private(set) var dragRegion: NormalizedCropRegion?
+    /// Captured on tool entry for the current image only. A tool left open across navigation has
+    /// no snapshot for the new image, so cancelling it simply closes the tool.
+    private(set) var entrySnapshot: DevelopCropEntrySnapshot?
 
     func beginImageSession(_ imageURL: URL?, isCropEnabled: Bool) {
         activeImageURL = imageURL
+        entrySnapshot = nil
         resetPreviewZoom()
         cancelInteraction()
         if !isCropEnabled {
@@ -46,6 +56,7 @@ final class DevelopCropSessionCoordinator {
     func endImageSession() {
         activeImageURL = nil
         isToolActive = false
+        entrySnapshot = nil
         aspectRatio = .original
         resetPreviewZoom()
         cancelInteraction()
@@ -55,10 +66,30 @@ final class DevelopCropSessionCoordinator {
     func toggleTool() -> Bool {
         isToolActive.toggle()
         if !isToolActive {
+            entrySnapshot = nil
             resetPreviewZoom()
             cancelInteraction()
         }
         return isToolActive
+    }
+
+    /// Records the crop to restore if this crop session is cancelled. Call on tool entry, before
+    /// the tool enables or reshapes the crop.
+    func captureEntryCrop(_ crop: CameraRawCrop?) {
+        guard isToolActive else { return }
+        entrySnapshot = DevelopCropEntrySnapshot(crop: crop)
+    }
+
+    /// Closes the tool without keeping its edits. Returns the entry snapshot the caller should
+    /// restore, or `nil` when no snapshot belongs to this image session.
+    @discardableResult
+    func cancelTool() -> DevelopCropEntrySnapshot? {
+        let snapshot = entrySnapshot
+        entrySnapshot = nil
+        isToolActive = false
+        resetPreviewZoom()
+        cancelInteraction()
+        return snapshot
     }
 
     func resetPreviewZoom() {
@@ -139,6 +170,7 @@ final class DevelopCropSessionCoordinator {
         )
         aspectRatio = .original
         isToolActive = false
+        entrySnapshot = nil
         resetPreviewZoom()
         cancelInteraction()
         return .commit

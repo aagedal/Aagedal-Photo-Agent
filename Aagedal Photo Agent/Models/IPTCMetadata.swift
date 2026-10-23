@@ -207,27 +207,31 @@ nonisolated struct EllipseMaskGeometry: Codable, Sendable, Equatable {
         radiusY = ax * sin(theta) + ay * cos(theta)
     }
 
-    /// Rigidly rotate the whole ellipse by `degrees` about the frame center
-    /// (0.5, 0.5) — the continuous analogue of `transformedForDisplay`, used to
-    /// follow a crop STRAIGHTEN angle. The display path renders the mask effect
-    /// in source space and then rotates the whole image view by the straighten
-    /// angle, so the overlay (a non-rotated sibling) must bake the same rotation
-    /// in to stay aligned. Rotation happens in aspect-corrected (pixel) space so
-    /// the ellipse isn't sheared; the true semi-axes are preserved and re-encoded
-    /// at the new angle. `aspect` is the display frame's pixel width/height.
-    /// `degrees` uses the screen convention (positive = clockwise, matching
-    /// SwiftUI's `.rotationEffect(.degrees(_:))`). Inverse: negate `degrees`.
-    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> EllipseMaskGeometry {
+    /// Rigidly rotate the whole ellipse by `degrees` about `pivot` (normalized
+    /// display UV, default the frame center) — the continuous analogue of
+    /// `transformedForDisplay`, used to follow a crop STRAIGHTEN angle. A
+    /// confirmed crop renders through the Metal crop viewport, which rotates
+    /// sampling around the viewport (crop) centre, so the overlay (drawn through
+    /// the un-rotated viewport) must bake the same rotation about that pivot.
+    /// Rotation happens in aspect-corrected (pixel) space so the ellipse isn't
+    /// sheared; the true semi-axes are preserved and re-encoded at the new angle.
+    /// `aspect` is the display frame's pixel width/height. `degrees` uses the
+    /// screen convention (positive = clockwise). Inverse: negate `degrees` (same pivot).
+    func rotatedInDisplay(
+        byDegrees degrees: Double,
+        aspect: Double,
+        around pivot: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    ) -> EllipseMaskGeometry {
         guard abs(degrees) > 1e-12 else { return self }
         let a = aspect > 0 ? aspect : 1
         let rad = degrees * .pi / 180
         let semi = trueRadii(aspect: a)   // rotation-invariant ellipse shape
         var result = self
-        // Rotate the center about (0.5, 0.5) in aspect-corrected space.
-        let dx = (centerX - 0.5) * a
-        let dy = centerY - 0.5
-        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
-        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        // Rotate the center about the pivot in aspect-corrected space.
+        let dx = (centerX - pivot.x) * a
+        let dy = centerY - pivot.y
+        result.centerX = pivot.x + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = pivot.y + (dx * sin(rad) + dy * cos(rad))
         result.rotation = rotation + degrees
         result.setTrueRadii(x: semi.x, y: semi.y, aspect: a)
         return result
@@ -516,18 +520,22 @@ nonisolated struct WatermarkGeometry: Codable, Sendable, Equatable {
         return transformedForDisplay(orientation: inverse)
     }
 
-    /// Rigidly rotate the anchor point by `degrees` about the frame center (0.5, 0.5), to
-    /// follow a crop STRAIGHTEN angle — mirrors `EllipseMaskGeometry.rotatedInDisplay`'s
+    /// Rigidly rotate the anchor point by `degrees` about `pivot` (default the frame center),
+    /// to follow a crop STRAIGHTEN angle — mirrors `EllipseMaskGeometry.rotatedInDisplay`'s
     /// center rotation. `aspect` is the display frame's pixel width/height.
-    func rotatedInDisplay(byDegrees degrees: Double, aspect: Double) -> WatermarkGeometry {
+    func rotatedInDisplay(
+        byDegrees degrees: Double,
+        aspect: Double,
+        around pivot: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    ) -> WatermarkGeometry {
         guard abs(degrees) > 1e-12 else { return self }
         let a = aspect > 0 ? aspect : 1
         let rad = degrees * .pi / 180
         var result = self
-        let dx = (centerX - 0.5) * a
-        let dy = centerY - 0.5
-        result.centerX = 0.5 + (dx * cos(rad) - dy * sin(rad)) / a
-        result.centerY = 0.5 + (dx * sin(rad) + dy * cos(rad))
+        let dx = (centerX - pivot.x) * a
+        let dy = centerY - pivot.y
+        result.centerX = pivot.x + (dx * cos(rad) - dy * sin(rad)) / a
+        result.centerY = pivot.y + (dx * sin(rad) + dy * cos(rad))
         return result
     }
 

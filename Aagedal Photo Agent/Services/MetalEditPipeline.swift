@@ -74,6 +74,29 @@ struct BrushDabParams {
 
 /// One slice in the shared raster-alpha array. Brush strokes and AI-selected subject mattes use
 /// the same downstream sampling path; they differ only in how a slice is populated.
+/// Per-image layer limits imposed by the Metal edit pipeline's fixed-size GPU buffers. Enabled
+/// local layers past the limit are skipped by preview *and* export, so creation is gated here.
+nonisolated enum DevelopLayerLimits {
+    /// Max enabled local adjustment layers (ellipse/brush/AI masks, extra Global and LUT/CST
+    /// layers). The Metal shaders (EditAdjustments.metal, ScopeShaders.metal) mirror this as 8.
+    static let maxEnabledMasks = 8
+
+    static let limitReachedMessage =
+        "Layer limit reached: up to \(maxEnabledMasks) enabled mask/adjustment layers. Disable or delete one to add another."
+
+    static func enabledMaskCount(in settings: CameraRawSettings?) -> Int {
+        settings?.localAdjustments?.reduce(0) { $0 + ($1.enabled ? 1 : 0) } ?? 0
+    }
+
+    static func canAddMask(to settings: CameraRawSettings?) -> Bool {
+        enabledMaskCount(in: settings) < maxEnabledMasks
+    }
+
+    static func exceedsMaskLimit(_ settings: CameraRawSettings?) -> Bool {
+        enabledMaskCount(in: settings) > maxEnabledMasks
+    }
+}
+
 nonisolated enum MaskAlphaSource: Sendable, Equatable {
     case brush(BrushMaskGeometry)
     case ai(AIMaskGeometry)
@@ -208,7 +231,11 @@ actor ColorLUTImportService {
 }
 
 nonisolated enum CubeLUTParser {
+    /// Largest `.cube` file accepted (a 65³ text cube is ~7 MB).
+    static let maxFileSize = 8_000_000
+
     enum ParseError: LocalizedError {
+        case tooLarge(Int)
         case notUTF8
         case missingSize
         case unsupportedSize(Int)
@@ -217,6 +244,7 @@ nonisolated enum CubeLUTParser {
 
         var errorDescription: String? {
             switch self {
+            case .tooLarge: return "The LUT file is too large (max 8 MB)."
             case .notUTF8: return "The LUT is not a UTF-8 .cube file."
             case .missingSize: return "The LUT has no LUT_3D_SIZE directive."
             case .unsupportedSize(let size): return "The LUT size \(size) is unsupported (2…65 expected)."
@@ -227,8 +255,15 @@ nonisolated enum CubeLUTParser {
         }
     }
 
+    /// Parses on the global concurrent executor so a multi-MB import never blocks the main actor.
+    @concurrent
+    static func parseOffMain(_ data: Data) async throws -> ParsedCubeLUT {
+        try parse(data)
+    }
+
     static func parse(_ data: Data) throws -> ParsedCubeLUT {
-        guard data.count <= 8_000_000, let text = String(data: data, encoding: .utf8) else {
+        guard data.count <= maxFileSize else { throw ParseError.tooLarge(data.count) }
+        guard let text = String(data: data, encoding: .utf8) else {
             throw ParseError.notUTF8
         }
         var title: String?
@@ -804,6 +839,10 @@ final class MetalEditPipeline: @unchecked Sendable {
             var lutInterleaveBuffer: [Float]
             var lastBuiltColorLUTData: [Data?]
             var parsedColorLUTs: [ParsedCubeLUT?]
+            /// Parsed + resampled LUTs keyed by their file bytes, so a LUT whose slot shifts
+            /// (an earlier layer deleted, muted, or reordered) is re-uploaded, not re-parsed.
+            /// Pruned to the LUTs in use after every refresh.
+            var colorLUTsByData: [Data: (parsed: ParsedCubeLUT, halfSlices: [[UInt16]])] = [:]
             var cachedWBKey: (Double, Double, Double, Double)?
             var cachedWBMatrix: simd_float3x3?
         }
@@ -1119,7 +1158,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         set { updateLiveState { $0.onParamsChanged = newValue } }
     }
 
-    nonisolated private static let maxMasks = 8
+    nonisolated private static let maxMasks = DevelopLayerLimits.maxEnabledMasks
     /// Every imported cube is CPU-resampled to this dimension, then packed into 33 consecutive
     /// slices of one 2D-array texture. This supports several independently ordered LUT nodes
     /// without declaring a variable number of Metal texture arguments.
@@ -1717,11 +1756,13 @@ final class MetalEditPipeline: @unchecked Sendable {
     /// before committing imports, but this defensive fallback also protects hand-edited XMP.
     nonisolated private func refreshColorLUTs(_ masks: [MaskAdjustment]) {
         withExecutorOwnedCacheState { cacheState in
+            var lutsInUse = Set<Data>()
             for slot in 0..<Self.maxMasks {
                 let data: Data? = masks.indices.contains(slot)
                     && masks[slot].colorTransform?.mode == .lut
                     ? masks[slot].colorTransform?.lutData
                     : nil
+                if let data { lutsInUse.insert(data) }
                 guard data != cacheState.lastBuiltColorLUTData[slot] else { continue }
                 cacheState.lastBuiltColorLUTData[slot] = data
                 cacheState.parsedColorLUTs[slot] = nil
@@ -1729,26 +1770,35 @@ final class MetalEditPipeline: @unchecked Sendable {
                     uploadIdentityColorLUT(slot: slot)
                     continue
                 }
-                do {
-                    let parsed = try CubeLUTParser.parse(data)
-                    cacheState.parsedColorLUTs[slot] = parsed
-                    for (blue, floats) in parsed.resampledSlices(size: Self.colorLUTSize).enumerated() {
-                        var halfs = Self.floatsToHalfs(floats)
-                        colorLUTTextureHandle.resource.replace(
-                            region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
-                            mipmapLevel: 0,
-                            slice: slot * Self.colorLUTSize + blue,
-                            withBytes: &halfs,
-                            bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
-                            bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
-                                * MemoryLayout<UInt16>.size
-                        )
+                let entry: (parsed: ParsedCubeLUT, halfSlices: [[UInt16]])
+                if let cached = cacheState.colorLUTsByData[data] {
+                    entry = cached
+                } else {
+                    do {
+                        let parsed = try CubeLUTParser.parse(data)
+                        entry = (parsed, parsed.resampledSlices(size: Self.colorLUTSize).map(Self.floatsToHalfs))
+                        cacheState.colorLUTsByData[data] = entry
+                    } catch {
+                        metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
+                        uploadIdentityColorLUT(slot: slot)
+                        continue
                     }
-                } catch {
-                    metalPipelineLog.error("Invalid color LUT in slot \(slot): \(error.localizedDescription)")
-                    uploadIdentityColorLUT(slot: slot)
+                }
+                cacheState.parsedColorLUTs[slot] = entry.parsed
+                for (blue, halfSlice) in entry.halfSlices.enumerated() {
+                    var halfs = halfSlice
+                    colorLUTTextureHandle.resource.replace(
+                        region: MTLRegionMake2D(0, 0, Self.colorLUTSize, Self.colorLUTSize),
+                        mipmapLevel: 0,
+                        slice: slot * Self.colorLUTSize + blue,
+                        withBytes: &halfs,
+                        bytesPerRow: Self.colorLUTSize * 4 * MemoryLayout<UInt16>.size,
+                        bytesPerImage: Self.colorLUTSize * Self.colorLUTSize * 4
+                            * MemoryLayout<UInt16>.size
+                    )
                 }
             }
+            cacheState.colorLUTsByData = cacheState.colorLUTsByData.filter { lutsInUse.contains($0.key) }
         }
     }
 

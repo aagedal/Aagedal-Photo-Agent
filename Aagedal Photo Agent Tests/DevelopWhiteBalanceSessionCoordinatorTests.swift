@@ -170,4 +170,49 @@ struct DevelopWhiteBalanceSessionCoordinatorTests {
         #expect(!source.contains("@State private var isPickingWhiteBalance"))
         #expect(!source.contains("@State private var wbPickDragRect"))
     }
+
+    @Test("eyedropper region follows the straightened crop viewport's rotation about its centre")
+    func sourceRegionAppliesCropRotation() throws {
+        let coordinator = DevelopWhiteBalanceSessionCoordinator()
+        let extent = CGRect(x: 0, y: 0, width: 2_000, height: 1_000)
+        // Off-centre crop viewport: centre (0.7, 0.3) in top-left UV.
+        let origin = SIMD2<Float>(0.5, 0.1)
+        let size = SIMD2<Float>(0.4, 0.4)
+        let pane = CGSize(width: 400, height: 400)
+        // 2×2 pt sample centred at pane (300, 200): 0.25 of the pane right of centre
+        // = 0.25·0.4·2000 = 200 source px right of the viewport centre before rotation.
+        let rect = CGRect(x: 299, y: 199, width: 2, height: 2)
+
+        let straight = try #require(coordinator.sourceRegion(
+            forPaneRect: rect, paneSize: pane,
+            viewportOrigin: origin, viewportSize: size,
+            sourceExtent: extent
+        ))
+        // Unrotated: uv (0.8, 0.3) → Core Image (1600, 700).
+        #expect(abs(straight.midX - 1_600) < 0.5)
+        #expect(abs(straight.midY - 700) < 0.5)
+
+        let rotated = try #require(coordinator.sourceRegion(
+            forPaneRect: rect, paneSize: pane,
+            viewportOrigin: origin, viewportSize: size,
+            rotationRadians: .pi / 2,
+            sourceExtent: extent
+        ))
+        // Shader: uv = centre + R(90°)·(200, 0)px / size = (0.7, 0.3 + 200/1000) = (0.7, 0.5)
+        // → Core Image (1400, 500). Rotating about (0.5, 0.5) would land elsewhere.
+        #expect(abs(rotated.midX - 1_400) < 0.5)
+        #expect(abs(rotated.midY - 500) < 0.5)
+        #expect(rotated.width < 10 && rotated.height < 10)
+
+        // The viewport centre is the pivot, so it samples the same pixel at any angle.
+        let centre = CGRect(x: 199, y: 199, width: 2, height: 2)
+        let pivot = try #require(coordinator.sourceRegion(
+            forPaneRect: centre, paneSize: pane,
+            viewportOrigin: origin, viewportSize: size,
+            rotationRadians: 0.3,
+            sourceExtent: extent
+        ))
+        #expect(abs(pivot.midX - 1_400) < 0.5)
+        #expect(abs(pivot.midY - 700) < 0.5)
+    }
 }

@@ -242,6 +242,9 @@ struct EditWorkspaceView: View {
     let settingsViewModel: SettingsViewModel
     let scopeViewModel: ScopeViewModel
     let cleanFeedController: CleanFeedController
+    /// A ContentView-level overlay (template palettes) sits above the workspace and owns
+    /// keyboard input while shown; the workspace key monitor must not act on the photo behind.
+    var isOverlayPresented: Bool = false
     let onExit: () -> Void
     var onPendingStatusChanged: (() -> Void)?
 
@@ -727,16 +730,31 @@ struct EditWorkspaceView: View {
             displayImageSize: currentImageSize ?? .zero,
             crop: displayCrop,
             straightenAngle: displayCropAngle,
+            straightenPivot: straightenPivot,
             zoomScale: editZoomScale
+        )
+    }
+
+    /// The display-UV point the preview's straighten rotation pivots on. Confirmed crops render
+    /// through the Metal crop viewport, which rotates sampling around the viewport centre (crop
+    /// centre shifted by pan); elsewhere the frame centre is kept.
+    private var straightenPivot: CGPoint {
+        guard isCropEnabled, !showCropControls, !isShowingBefore,
+              let imageSize = metalImageSize ?? currentImageSize else { return CGPoint(x: 0.5, y: 0.5) }
+        let viewport = editCropViewport(in: previewPaneFrame.size, imageSize: imageSize)
+        return CGPoint(
+            x: Double(viewport.origin.x) + Double(viewport.size.x) / 2,
+            y: Double(viewport.origin.y) + Double(viewport.size.y) / 2
         )
     }
 
     /// Sensor (stored) → display geometry for the overlay. Two stacked
     /// transforms, applied in pipeline order: (1) EXIF orientation (the source
-    /// texture is display-oriented), then (2) the crop STRAIGHTEN angle (the
-    /// image view is rotated by `.rotationEffect(.degrees(-displayCropAngle))`,
-    /// so the overlay must bake the same rotation). The straighten step is the
-    /// identity when no angled crop is active (`displayCropAngle` == 0).
+    /// texture is display-oriented), then (2) the crop STRAIGHTEN angle (the Metal
+    /// crop viewport rotates sampling around the viewport/crop centre, while the
+    /// overlay maps through the un-rotated viewport, so it bakes the same rotation
+    /// about `straightenPivot`). The straighten step is the identity when no
+    /// angled crop is active (`displayCropAngle` == 0).
     private func maskGeometryForDisplay(_ geometry: EllipseMaskGeometry) -> EllipseMaskGeometry {
         layerGeometryInteraction.maskForDisplay(
             geometry,
@@ -1008,6 +1026,12 @@ struct EditWorkspaceView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             releaseHeldDevelopInput()
+        }
+        .onChange(of: isOverlayPresented, initial: true) { _, presented in
+            // The key monitor closure captured this view value at install time, so the
+            // flag must live in the reference-typed input session to be read live.
+            workspaceInput.isOverlayPresented = presented
+            if presented { releaseHeldDevelopInput() }
         }
         .onChange(of: commandRouter.latestDelivery) { _, delivery in
             guard let delivery else { return }
@@ -1364,13 +1388,15 @@ struct EditWorkspaceView: View {
                                         probe: { rect in
                                             probeLinearRGB(
                                                 forPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size,
+                                                rotationDegrees: displayCropAngle
                                             )
                                         },
                                         onPick: { rect in
                                             performWhiteBalancePick(
                                                 inPaneRect: rect, paneSize: geometry.size,
-                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size
+                                                viewportOrigin: cropViewport.origin, viewportSize: cropViewport.size,
+                                                rotationDegrees: displayCropAngle
                                             )
                                         }
                                     )
@@ -1804,7 +1830,12 @@ struct EditWorkspaceView: View {
                     } else {
                         if metadataViewModel.hasEmbeddedCropNotLoaded {
                             Button {
-                                metadataViewModel.importEmbeddedCrop()
+                                // One undoable, named-version-aware crop mutation like every
+                                // other Develop crop change.
+                                guard let embeddedCrop = metadataViewModel.embeddedCropForImport else { return }
+                                updateCameraRaw { cameraRaw in
+                                    cameraRaw.crop = embeddedCrop
+                                }
                                 if !showCropControls {
                                     toggleCropControls()
                                 }
@@ -4532,8 +4563,15 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleCropControls() {
+        let entryCrop = metadataViewModel.editingMetadata.cameraRaw?.crop
         let isActive = cropSession.toggleTool()
         if isActive {
+            // Esc restores this framing (Camera Raw's Cancel); Done/Return keeps the edit.
+            cropSession.captureEntryCrop(entryCrop)
+            // Crop is exclusive with the other image-interaction tools.
+            whiteBalanceSession.deactivatePicker()
+            maskInteraction.stopBrushPainting()
+            if isSelectingAIMask { cancelAIMaskSelection() }
             // Deselect mask and reset edit zoom when entering crop mode
             selectedLayer = .global
             metalPipeline?.updateOverlayParams(geometry: nil, visible: false)
@@ -4559,6 +4597,20 @@ struct EditWorkspaceView: View {
             // Crop tool deactivated — push the now-confirmed crop to the clean feed.
             syncCleanFeed()
         }
+    }
+
+    /// Esc in crop mode: close the tool and restore the crop + straighten captured on entry, as one
+    /// undoable step (no undo entry when nothing changed).
+    private func cancelCropControls() {
+        if let entry = cropSession.cancelTool(),
+           metadataViewModel.editingMetadata.cameraRaw?.crop != entry.crop {
+            updateCameraRaw { cameraRaw in
+                cameraRaw.crop = entry.crop
+            }
+            commitEditAdjustments()
+        }
+        syncViewportToMetal()
+        syncCleanFeed()
     }
 
     private func resetCrop() {
@@ -5131,7 +5183,8 @@ struct EditWorkspaceView: View {
     /// then UV (top-left origin) → CIImage extent (bottom-left origin) with a Y flip.
     private func sourceRegion(
         forPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double
     ) -> CGRect? {
         guard let source = sourceCIImage else { return nil }
         return whiteBalanceSession.sourceRegion(
@@ -5139,6 +5192,7 @@ struct EditWorkspaceView: View {
             paneSize: paneSize,
             viewportOrigin: vpOrigin,
             viewportSize: vpSize,
+            rotationRadians: rotationDegrees * .pi / 180,
             sourceExtent: source.extent
         )
     }
@@ -5147,21 +5201,25 @@ struct EditWorkspaceView: View {
     /// Returns the same linear value that would be fed to the solver for this pane rect.
     private func probeLinearRGB(
         forPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double = 0
     ) -> SIMD3<Float>? {
         guard let source = sourceCIImage,
               let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
-                                        viewportOrigin: vpOrigin, viewportSize: vpSize) else { return nil }
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize,
+                                        rotationDegrees: rotationDegrees) else { return nil }
         return Self.averageLinearRGB(of: source, in: region)
     }
 
     private func performWhiteBalancePick(
         inPaneRect rect: CGRect, paneSize: CGSize,
-        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>
+        viewportOrigin vpOrigin: SIMD2<Float>, viewportSize vpSize: SIMD2<Float>,
+        rotationDegrees: Double = 0
     ) {
         guard let source = sourceCIImage, let pipeline = metalPipeline, pipeline.hasSourceTexture,
               let region = sourceRegion(forPaneRect: rect, paneSize: paneSize,
-                                        viewportOrigin: vpOrigin, viewportSize: vpSize),
+                                        viewportOrigin: vpOrigin, viewportSize: vpSize,
+                                        rotationDegrees: rotationDegrees),
               let request = whiteBalanceSession.beginPickRequest() else { return }
 
         Task {
@@ -5274,6 +5332,15 @@ struct EditWorkspaceView: View {
                 }
                 .padding(.vertical, 2)
                 .padding(.horizontal, 1)
+            }
+            if DevelopLayerLimits.exceedsMaskLimit(metadataViewModel.editingMetadata.cameraRaw) {
+                Label(
+                    "Only the first \(DevelopLayerLimits.maxEnabledMasks) enabled mask/adjustment layers render. Disable or delete layers to see the rest.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
             if let id = selectedMaskID {
                 maskActionRow(id)
@@ -5653,24 +5720,27 @@ struct EditWorkspaceView: View {
     }
 
     private var addLayerButton: some View {
-        Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+        let atLimit = !canAddMaskLayer
+        return Grid(horizontalSpacing: 4, verticalSpacing: 4) {
             GridRow {
-                addLayerTile(kind: .ellipseMask, tint: .blue, help: "Add ellipse mask") {
+                addLayerTile(kind: .ellipseMask, tint: .blue, help: "Add ellipse mask", atMaskLimit: atLimit) {
                     addNewMask()
                 }
-                addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask") {
-                    _ = addNewBrushMask()
+                addLayerTile(kind: .brushMask, tint: .blue, help: "Add brush mask", atMaskLimit: atLimit) {
+                    guard addNewBrushMask() != nil else { return }
                     maskInteraction.beginBrushPainting()
                     whiteBalanceSession.deactivatePicker()
                     syncMaskOverlayTarget()
                 }
-                addLayerTile(kind: .aiMask, tint: .blue, help: "Select a person or object with AI") {
+                addLayerTile(
+                    kind: .aiMask, tint: .blue, help: "Select a person or object with AI", atMaskLimit: atLimit
+                ) {
                     startAIMaskSelection()
                 }
             }
             GridRow {
-                addGlobalLayerTile()
-                addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer") {
+                addGlobalLayerTile(atMaskLimit: atLimit)
+                addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer", atMaskLimit: atLimit) {
                     addNewColorTransformLayer()
                 }
                 addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer") {
@@ -5734,6 +5804,7 @@ struct EditWorkspaceView: View {
         kind: LayerKind,
         tint: Color,
         help: String,
+        atMaskLimit: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -5754,11 +5825,12 @@ struct EditWorkspaceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? kind : nil }
-        .help(help)
+        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : help)
     }
 
-    private func addGlobalLayerTile() -> some View {
+    private func addGlobalLayerTile(atMaskLimit: Bool) -> some View {
         Button {
             addNewGlobalLayer()
         } label: {
@@ -5780,8 +5852,9 @@ struct EditWorkspaceView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? .secondaryGlobal : nil }
-        .help("Add Global adjustment layer")
+        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : "Add Global adjustment layer")
     }
 
     @ViewBuilder
@@ -6847,7 +6920,23 @@ struct EditWorkspaceView: View {
         )
     }
 
+    /// The pipeline renders at most `DevelopLayerLimits.maxEnabledMasks` enabled local layers.
+    private var canAddMaskLayer: Bool {
+        DevelopLayerLimits.canAddMask(to: metadataViewModel.editingMetadata.cameraRaw)
+    }
+
+    /// Gate for every new local layer; explains the limit instead of adding a layer that would
+    /// silently not render in preview or export.
+    private func ensureCanAddMaskLayer() -> Bool {
+        guard canAddMaskLayer else {
+            workspaceSession.showNotice(DevelopLayerLimits.limitReachedMessage)
+            return false
+        }
+        return true
+    }
+
     private func addNewMask(center: CGPoint? = nil, cornerRadius: Double? = nil) {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         var geo = EllipseMaskGeometry()
         geo.cornerRadius = cornerRadius
@@ -6882,6 +6971,7 @@ struct EditWorkspaceView: View {
     /// node untouched. The oversized zero-feather ellipse is an Adobe Camera Raw fallback;
     /// Photo Agent uses `fullFrame` for exact edge-to-edge coverage independent of aspect ratio.
     private func addNewGlobalLayer() {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .filter(\.isFullFrame).count ?? 0
         var fallbackGeometry = EllipseMaskGeometry()
@@ -6909,6 +6999,7 @@ struct EditWorkspaceView: View {
     }
 
     private func addNewColorTransformLayer() {
+        guard ensureCanAddMaskLayer() else { return }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .filter { $0.colorTransform != nil }.count ?? 0
         var fallbackGeometry = EllipseMaskGeometry()
@@ -6949,7 +7040,7 @@ struct EditWorkspaceView: View {
                     requestID: requestID
                 )
             },
-            parse: CubeLUTParser.parse
+            parse: { try await CubeLUTParser.parseOffMain($0) }
         ) { intent in
             updateCameraRaw { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
@@ -6969,6 +7060,7 @@ struct EditWorkspaceView: View {
 
     private func startAIMaskSelection(replacing maskID: UUID? = nil) {
         guard canEditSingleImage, sourceCIImage != nil, !isGeneratingAIMask else { return }
+        if maskID == nil { guard ensureCanAddMaskLayer() else { return } }
         clearMaskMattePreview()
         maskInteraction.beginExclusiveSelection()
         whiteBalanceSession.deactivatePicker()
@@ -7144,7 +7236,8 @@ struct EditWorkspaceView: View {
 
     /// Creates an empty freeform brush mask, selects it, and returns its id. Called lazily on the
     /// first paint gesture when no brush mask is selected (like `addNewMask` for ellipses).
-    private func addNewBrushMask() -> UUID {
+    private func addNewBrushMask() -> UUID? {
+        guard ensureCanAddMaskLayer() else { return nil }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         let newMask = MaskAdjustment(name: "Brush \(existingCount + 1)", brush: BrushMaskGeometry(strokes: []))
         updateCameraRaw { cameraRaw in
@@ -7164,7 +7257,7 @@ struct EditWorkspaceView: View {
     private func brushSliceIndex(forMaskID id: UUID) -> Int? {
         guard let masks = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments else { return nil }
         var slice = 0
-        for mask in masks.filter({ $0.enabled }).prefix(8) {
+        for mask in masks.filter({ $0.enabled }).prefix(DevelopLayerLimits.maxEnabledMasks) {
             if mask.id == id { return mask.brush != nil ? slice : nil }
             if mask.brush != nil || mask.aiMask != nil { slice += 1 }
         }
@@ -7190,7 +7283,8 @@ struct EditWorkspaceView: View {
            masks.first(where: { $0.id == id })?.brush != nil {
             targetID = id
         } else {
-            targetID = addNewBrushMask()
+            guard let newID = addNewBrushMask() else { return nil }
+            targetID = newID
         }
         // Rebuild params so a freshly-created mask's alpha slice is allocated before live
         // stamping, and turn on the red coverage overlay for this mask so the stroke is visible
@@ -8097,7 +8191,8 @@ struct EditWorkspaceView: View {
     private func handleKeyEvent(_ event: NSEvent) -> NSEvent? {
         // Recovery and save panels own their key events. The workspace's application-wide
         // monitor must not turn typing or Escape in a sheet into another Develop mutation.
-        guard keyboardWindow.ownsKeyEvent(in: event.window),
+        guard !workspaceInput.isOverlayPresented,
+              keyboardWindow.ownsKeyEvent(in: event.window),
               NSApp.modalWindow == nil, event.window?.attachedSheet == nil,
               event.window?.sheetParent == nil else {
             releaseHeldDevelopInput()
@@ -8150,8 +8245,18 @@ struct EditWorkspaceView: View {
                 cancelAIMaskSelection()
                 return nil
             }
+            // Esc cancels the active tool first (Camera Raw/Lightroom); only an idle workspace exits.
             if showCropControls {
-                toggleCropControls()
+                cancelCropControls()
+                return nil
+            }
+            if whiteBalanceSession.isPickerActive {
+                whiteBalanceSession.deactivatePicker()
+                return nil
+            }
+            if isBrushPainting {
+                maskInteraction.stopBrushPainting()
+                syncMaskOverlayTarget()
                 return nil
             }
             requestEditWorkspaceExit()
@@ -8243,6 +8348,8 @@ struct EditWorkspaceView: View {
         // Cmd+C — copy develop settings
         if chord == KeyboardShortcutChord(key: "c", modifiers: .command) {
             guard canEditSingleImage else { return event }
+            // Like paste: a still-loading buffer is a placeholder, not this photo's settings.
+            guard isSelectedImageMetadataReady else { return nil }
             browserViewModel.copiedCameraRawSettings = metadataViewModel.editingMetadata.cameraRaw
             showCopyPasteFeedback("Copied")
             return nil
@@ -8261,7 +8368,8 @@ struct EditWorkspaceView: View {
         // Cmd+J still works too (menu item).
         if chars == "j" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
-            guard isSelectedImageMetadataReady else { return nil }
+            // Crop mode owns the image; finish or cancel it before using another tool.
+            guard isSelectedImageMetadataReady, !showCropControls else { return nil }
             addNewMask(center: maskCenterUnderCursor())
             return nil
         }
@@ -8270,6 +8378,7 @@ struct EditWorkspaceView: View {
         // deselects the WB eyedropper so the two drag-driven tools don't fight over the mouse.
         if chars == "b" && modifiers.isDisjoint(with: [.command, .option, .control]) {
             guard canEditSingleImage else { return event }
+            guard !showCropControls else { return nil }
             maskInteraction.toggleBrushPainting()
             if isBrushPainting { whiteBalanceSession.deactivatePicker() }
             syncMaskOverlayTarget()

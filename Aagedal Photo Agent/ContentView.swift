@@ -2117,6 +2117,7 @@ struct ContentView: View {
             settingsViewModel: settingsViewModel,
             scopeViewModel: scopeViewModel,
             cleanFeedController: CleanFeedController.shared,
+            isOverlayPresented: isShowingTemplatePalette || isShowingDevelopTemplatePalette,
             onExit: {
                 mainViewMode = .browser
                 browserViewModel.shouldRestoreGridFocus = true

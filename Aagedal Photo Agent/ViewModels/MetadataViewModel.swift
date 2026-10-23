@@ -257,9 +257,15 @@ final class MetadataViewModel {
 
     var hasXmpMetadata: Bool { xmpMetadata != nil }
     var hasEmbeddedCropNotLoaded: Bool {
-        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
-              embeddedCrop.hasCrop == true else { return false }
+        guard embeddedCropForImport != nil else { return false }
         return editingMetadata.cameraRaw?.crop?.hasCrop != true
+    }
+    /// The file-embedded crop "Load Embedded Crop" applies. Develop routes it through its own
+    /// undoable, version-aware settings mutation instead of `importEmbeddedCrop()`.
+    var embeddedCropForImport: CameraRawCrop? {
+        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
+              embeddedCrop.hasCrop == true else { return nil }
+        return embeddedCrop
     }
     var referenceMetadata: IPTCMetadata? {
         referenceMetadata(
@@ -1389,8 +1395,7 @@ final class MetadataViewModel {
     }
 
     func importEmbeddedCrop() {
-        guard let embeddedCrop = embeddedMetadata?.cameraRaw?.crop,
-              embeddedCrop.hasCrop == true else { return }
+        guard let embeddedCrop = embeddedCropForImport else { return }
         if editingMetadata.cameraRaw == nil {
             editingMetadata.cameraRaw = CameraRawSettings()
         }
