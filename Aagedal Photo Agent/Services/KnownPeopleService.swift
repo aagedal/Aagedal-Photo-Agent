@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Vision
 import AppKit
 import Darwin
@@ -3610,4 +3611,92 @@ final class KnownPeopleService {
     func getAllPeople() -> [KnownPerson] {
         return loadDatabase().people
     }
+
+    /// Person names for autocomplete without loading the full database on the caller.
+    /// Uses the in-memory database when it is loaded; otherwise reads only names from the
+    /// person files off the main actor (no repair, migration or GC writes — `loadDatabase`
+    /// still owns those, and decoding every embedding is what made the cold read slow).
+    func personNamesForSuggestions() async -> [String] {
+        if let database { return database.people.map(\.name) }
+        let root = knownPeopleDirectory
+        guard !Self.isReservedDestination(root) else { return [] }
+        return await Self.readPersonNames(in: peopleDirectory, tombstoneRetention: Self.tombstoneRetention)
+    }
+
+    @concurrent
+    nonisolated private static func readPersonNames(in directory: URL, tombstoneRetention: TimeInterval) async -> [String] {
+        let entries = (try? CloudCoordinatedIO.contentsOfDirectory(at: directory)) ?? []
+        let decoder = JSONDecoder()
+        let now = Date()
+        var tombstoned = Set<UUID>()
+        for url in entries where url.pathExtension == "deleted" {
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            if let data = try? CloudCoordinatedIO.readData(at: url),
+               let tombstone = try? decoder.decode(KnownPersonTombstone.self, from: data),
+               tombstone.id == id, now.timeIntervalSince(tombstone.deletedAt) >= tombstoneRetention {
+                continue
+            }
+            tombstoned.insert(id)
+        }
+        return entries.compactMap { url in
+            guard url.pathExtension == "json",
+                  let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                  !tombstoned.contains(id),
+                  let data = try? CloudCoordinatedIO.readData(at: url),
+                  let record = try? decoder.decode(KnownPersonNameRecord.self, from: data),
+                  record.id == id else { return nil }
+            return record.name
+        }
+    }
+}
+
+/// Only the identity and name of a person file — decoding skips the embeddings payload.
+private nonisolated struct KnownPersonNameRecord: Decodable, Sendable {
+    let id: UUID
+    let name: String
+}
+
+/// Cached Known People names for the metadata panel's Person Shown suggestions. SwiftUI
+/// bodies read `currentNames` on every render, so it never touches disk: the first access
+/// warms the list off the main actor, and database-change notifications refresh it.
+@Observable
+final class KnownPeopleNameSuggestions {
+    static let shared = KnownPeopleNameSuggestions()
+
+    private(set) var names: [String] = []
+    @ObservationIgnored private let service: KnownPeopleService
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var observer: (any NSObjectProtocol)?
+
+    init(service: KnownPeopleService = .shared) {
+        self.service = service
+    }
+
+    /// Cached names; the first read starts the warm-up and change subscription.
+    var currentNames: [String] {
+        startIfNeeded()
+        return names
+    }
+
+    func startIfNeeded() {
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(
+            forName: .knownPeopleDatabaseDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        refresh()
+    }
+
+    func refresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self, service] in
+            let loaded = await service.personNamesForSuggestions()
+            guard !Task.isCancelled, let self, self.names != loaded else { return }
+            self.names = loaded
+        }
+    }
+
+    /// Waits for the in-flight refresh (tests).
+    func waitForRefresh() async { await refreshTask?.value }
 }

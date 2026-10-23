@@ -245,4 +245,41 @@ struct MetadataEditorXMPBaselineTests {
         #expect(try Data(contentsOf: f.json) == json)
     }
 
+    @Test("Keyword and person picks made while the editor loads are applied and saved after the load")
+    func picksDuringLoadAreAppliedAfterLoad() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        try #require(f.model.isEditorLoading)
+        #expect(f.model.isShowingLoadPlaceholder)
+        var commits = 0
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Picked"]) > 0 }
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendPersonShown(["Doe, Jane"]) > 0 }
+        #expect(f.model.editingMetadata.keywords.isEmpty)
+        await f.model.waitForMetadataLoad()
+        #expect(!f.model.isEditorLoading)
+        #expect(f.model.editingMetadata.title == "Pending headline")
+        #expect(f.model.editingMetadata.keywords == ["Picked"])
+        #expect(f.model.editingMetadata.personShown == ["Doe, Jane"])
+        #expect(commits == 1)
+        #expect(await save(f, route: .xmp) == .succeeded)
+        let physical = try #require(XMPSidecarService().loadSidecar(for: f.image))
+        #expect(physical.keywords == ["Picked"])
+        #expect(physical.personShown == ["Doe, Jane"])
+    }
+
+    @Test("Picks deferred for one photo are dropped when the selection moves to another photo")
+    func deferredPicksDroppedOnSelectionChange() async throws {
+        let f = try fixture(masked: false); defer { try? FileManager.default.removeItem(at: f.folder) }
+        let other = f.folder.appendingPathComponent("other.png")
+        try FileManager.default.copyItem(at: f.image, to: other)
+        f.model.loadMetadata(for: [ImageFile(url: f.image)], folderURL: f.folder)
+        var commits = 0
+        f.model.performAfterEditorLoad(commit: { commits += 1 }) { f.model.appendKeywords(["Wrong photo"]) > 0 }
+        f.model.loadMetadata(for: [ImageFile(url: other)], folderURL: f.folder)
+        await f.model.waitForMetadataLoad()
+        #expect(f.model.selectedURLs == [other])
+        #expect(f.model.editingMetadata.keywords.isEmpty)
+        #expect(commits == 0)
+    }
+
 }

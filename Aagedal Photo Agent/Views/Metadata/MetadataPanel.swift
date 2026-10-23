@@ -130,6 +130,7 @@ struct MetadataPanel: View {
     var onTabTraversalRequested: ((MetadataFieldID, Bool) -> Void)?
 
     @State private var isShowingDescriptionVariables = false
+    @State private var personSuggestionMemo = SuggestionCandidateMemo()
     @State private var isShowingVariableReference = false
     @State private var variableInsertTarget: VariableInsertTarget = .description
     @State private var fieldSelections: [String: NSRange] = [:]
@@ -257,7 +258,7 @@ struct MetadataPanel: View {
 
         KeywordsEditorWithDiff(
             label: "Keywords",
-            keywords: $viewModel.editingMetadata.keywords,
+            keywords: loadSafeListBinding(\.keywords),
             differs: viewModel.keywordsDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("keywords"),
             partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialKeywords : [],
@@ -324,18 +325,18 @@ struct MetadataPanel: View {
         // Names come from every source the app already maintains: the quick
         // list, the structured Person Shown tree, and Known People from face
         // recognition.
-        let candidates = Self.mergeSuggestionCandidates(
+        let candidates = personSuggestionMemo.merged([
             quickList,
             StructuredKeywordService.personShown.allSearchableNames(),
-            KnownPeopleService.shared.getAllPeople().map(\.name)
-        )
+            KnownPeopleNameSuggestions.shared.currentNames
+        ], using: Self.mergeSuggestionCandidates)
         let suggestionProvider: ((String) -> [ApprovedListSuggestion])? = candidates.isEmpty
             ? nil
             : { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
 
         KeywordsEditorWithDiff(
             label: "Person Shown",
-            keywords: $viewModel.editingMetadata.personShown,
+            keywords: loadSafeListBinding(\.personShown),
             differs: viewModel.personShownDiffer(),
             hasMultipleValues: viewModel.isBatchEdit && viewModel.fieldHasMultipleValues("personShown"),
             partialKeywords: viewModel.isBatchEdit ? viewModel.batchPartialPersonShown : [],
@@ -366,7 +367,11 @@ struct MetadataPanel: View {
                 StructuredKeywordService.personShown.activation(forName: name)
             },
             onSuggestionExpansionCommit: { activation in
-                addStructuredPersonSideKeywords(for: activation)
+                guard viewModel.isEditorLoading else {
+                    return addStructuredPersonSideKeywords(for: activation)
+                }
+                applyPickAfterLoad { addStructuredPersonSideKeywords(for: activation) }
+                return false
             },
             onShowStructuredKeywords: {
                 showingStructuredPersonShown = true
@@ -598,6 +603,10 @@ struct MetadataPanel: View {
     /// case-insensitively. First occurrence wins, so earlier sources control
     /// the casing shown in the suggestions popover.
     private static func mergeSuggestionCandidates(_ sources: [String]...) -> [String] {
+        mergeSuggestionCandidates(sources)
+    }
+
+    private static func mergeSuggestionCandidates(_ sources: [[String]]) -> [String] {
         var seen = Set<String>()
         var merged: [String] = []
         for source in sources {
@@ -760,8 +769,7 @@ struct MetadataPanel: View {
                     provenance: .structuredPersonShown
                 )
             }
-            seeds += KnownPeopleService.shared.getAllPeople()
-                .map(\.name)
+            seeds += KnownPeopleNameSuggestions.shared.currentNames
                 .sorted { CaptionAutocompleteService.normalized($0) < CaptionAutocompleteService.normalized($1) }
                 .map { CaptionAutocompleteSeed(field: field, displayValue: $0, provenance: .knownPeople) }
         }
@@ -803,7 +811,6 @@ struct MetadataPanel: View {
         // circuit when on (the default). When the toggle is off, structured
         // keywords get validated against the approved list like any other source.
         let validated = ApprovedListService.shared.validateBulk(expanded, in: .keywords, source: .structuredTree)
-        let added = viewModel.appendKeywords(validated.accepted)
         if !validated.rejected.isEmpty {
             let count = validated.rejected.count
             let word = count == 1 ? "keyword" : "keywords"
@@ -813,18 +820,47 @@ struct MetadataPanel: View {
                 severity: .warning
             )
         }
-        guard added > 0 else { return }
-        commitEdits()
+        let accepted = validated.accepted
+        applyPickAfterLoad { viewModel.appendKeywords(accepted) > 0 }
+    }
+
+    /// Applies a keyword/person pick and commits it — after the current load when the editor
+    /// is still loading, since the placeholder editor can't be saved and the load replaces it.
+    private func applyPickAfterLoad(_ pick: @escaping @MainActor () -> Bool) {
+        viewModel.performAfterEditorLoad(commit: { commitEdits() }, pick)
+    }
+
+    /// Keyword/Person Shown editor binding that holds additions made while the editor is
+    /// loading until that load completes (see `applyPickAfterLoad`).
+    private func loadSafeListBinding(_ keyPath: WritableKeyPath<IPTCMetadata, [String]>) -> Binding<[String]> {
+        Binding(
+            get: { viewModel.editingMetadata[keyPath: keyPath] },
+            set: { newValue in
+                let current = viewModel.editingMetadata[keyPath: keyPath]
+                let added = newValue.filter { !current.contains($0) }
+                guard viewModel.isEditorLoading, !added.isEmpty else {
+                    viewModel.editingMetadata[keyPath: keyPath] = newValue
+                    return
+                }
+                applyPickAfterLoad {
+                    let count = keyPath == \IPTCMetadata.keywords
+                        ? viewModel.appendKeywords(added)
+                        : viewModel.appendPersonShown(added)
+                    return count > 0
+                }
+            }
+        )
     }
 
     /// Adds names picked from the structured Person Shown tree. Person Shown has
     /// no approved list, so names are appended directly; related `#keyword`
     /// entries are routed through the approved-keyword validation path.
     private func addStructuredPeople(_ expanded: [String], activation: StructuredKeywordActivation? = nil) {
-        let addedPeople = viewModel.appendPersonShown(expanded)
-        let addedSideKeywords = activation.map(addStructuredPersonSideKeywords(for:)) ?? false
-        guard addedPeople > 0 || addedSideKeywords else { return }
-        commitEdits()
+        applyPickAfterLoad {
+            let addedPeople = viewModel.appendPersonShown(expanded)
+            let addedSideKeywords = activation.map(addStructuredPersonSideKeywords(for:)) ?? false
+            return addedPeople > 0 || addedSideKeywords
+        }
     }
 
     @discardableResult
@@ -1177,6 +1213,9 @@ struct MetadataPanel: View {
     private func commitEdits() {
         commitDebounceTask?.cancel()
         flushBufferedFields()
+        // The placeholder editor shown during a load has no verified XMP baseline and is
+        // replaced by the load; picks made meanwhile commit via `applyPickAfterLoad`.
+        guard !viewModel.isShowingLoadPlaceholder else { return }
         // A pending draft loaded from disk is not a new edit. Moving focus (including to
         // voice-memo playback) must not automatically rewrite that draft or its XMP mirror.
         guard viewModel.hasUnpersistedEditorChanges else { return }
@@ -4053,5 +4092,20 @@ private struct EditorialDateCreatedEditor: View {
             let magnitude = abs(minutes)
             return String(format: "%@%02d:%02d", sign, magnitude / 60, magnitude % 60)
         }
+    }
+}
+
+/// Keeps the last merged suggestion list across renders. The panel body re-evaluates on every
+/// keystroke while its candidate sources rarely change, so re-merging is skipped when they match.
+private final class SuggestionCandidateMemo {
+    private var sources: [[String]]?
+    private var result: [String] = []
+
+    func merged(_ sources: [[String]], using merge: ([[String]]) -> [String]) -> [String] {
+        if sources != self.sources {
+            result = merge(sources)
+            self.sources = sources
+        }
+        return result
     }
 }

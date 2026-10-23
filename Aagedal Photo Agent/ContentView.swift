@@ -4583,10 +4583,13 @@ struct ContentViewModifiers: ViewModifier {
                     folderURL: browserViewModel.currentFolderURL)
             }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { _ in
-                guard !metadataViewModel.hasChanges else { return }
-                let selected = browserViewModel.selectedImages
-                metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL)
                 browserViewModel.refreshPendingStatus()
+                // A loaded pending draft sets `hasChanges` but is not an unsaved edit; the face
+                // write lands in that draft, so the editor must reload to show the names.
+                guard !metadataViewModel.hasUnpersistedEditorChanges else { return }
+                let selected = browserViewModel.selectedImages
+                metadataViewModel.loadMetadata(for: selected, folderURL: browserViewModel.currentFolderURL,
+                    preservingUnsavedEdits: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .showAllFilesChanged)) { _ in
                 browserViewModel.fileVisibility = BrowserFileVisibility.saved()
@@ -4600,6 +4603,9 @@ struct ContentViewModifiers: ViewModifier {
                         cleanupPolicy: settingsViewModel.faceCleanupPolicy
                     )
                     metadataViewModel.currentFolderURL = folderURL
+                } else {
+                    // The active pane has no folder (e.g. an empty second pane).
+                    faceRecognitionViewModel.clearDisplayedFolder()
                 }
             }
             .onChange(of: metadataViewModel.variableBatchOutcome?.requestID) { _, requestID in

@@ -144,6 +144,16 @@ final class FaceRecognitionViewModel {
     }
     var errorMessage: String?
 
+    /// Whether Apply All has anything to write: named face groups, or — with the Sports lens
+    /// active — confirmed jersey players (sports resolution never names face groups). Partial
+    /// data from a cancelled or partly failed scan is still applicable; `scanComplete` only
+    /// drives the "resume scanning" affordance.
+    var canApplyAllNames: Bool {
+        guard faceData != nil else { return false }
+        if !namedGroups.isEmpty { return true }
+        return activeLens == .sports && !confirmedPlayerCards.isEmpty
+    }
+
     // Keep compressed crops for the displayed folder so an evicted decoded image can be
     // recreated when its card scrolls back into view.
     @ObservationIgnored private var thumbnailDataByFaceID: [UUID: Data] = [:]
@@ -764,6 +774,23 @@ final class FaceRecognitionViewModel {
     }
 
     // MARK: - Load Existing Data
+
+    /// The active browser pane has no folder: stop presenting the previous folder's faces.
+    /// A background scan keeps running (its folder is tracked by `scanningFolderURL`).
+    func clearDisplayedFolder() {
+        guard displayedFolderURL != nil || faceData != nil else { return }
+        matchRosterLoadTask?.cancel()
+        matchRosterLoadRequestID = UUID()
+        matchRoster = nil
+        lensPrewarmTask?.cancel()
+        faceDataLoadTask?.cancel()
+        faceDataLoadRequestID = UUID()
+        displayedFolderURL = nil
+        faceData = nil
+        scanComplete = false
+        thumbnailCache.removeAllObjects()
+        thumbnailDataByFaceID.removeAll()
+    }
 
     func loadFaceData(for folderURL: URL, cleanupPolicy: FaceCleanupPolicy) {
         let isSameFolder = displayedFolderURL == folderURL.standardizedFileURL
@@ -2937,9 +2964,12 @@ final class FaceRecognitionViewModel {
 
     func applyNameToMetadata(groupID: UUID) {
         guard let data = faceData,
-              !fieldMutationIsPaused(in: data.folderURL),
               let group = groupLookup[groupID], !group.isExcludedFromPersonShown,
               let name = group.name, !name.isEmpty else { return }
+        guard !fieldMutationIsPaused(in: data.folderURL) else {
+            errorMessage = "Face metadata writing is paused while files in this folder are being renamed."
+            return
+        }
 
         let names = splitPersonNames(name)
         guard !names.isEmpty else { return }
@@ -3055,7 +3085,6 @@ final class FaceRecognitionViewModel {
         let ordinaryMode = fieldMutationModeResolver(false, false)
         let c2paMode = fieldMutationModeResolver(true, false)
         let rawMode = fieldMutationModeResolver(false, true)
-        let revision = faceDataRevision
         let urls = namesByURL.keys.sorted { $0.path < $1.path }
         let previous = metadataWriteTask
         let writer = injectedFieldMutationWriter
@@ -3086,10 +3115,10 @@ final class FaceRecognitionViewModel {
                 let result = if let writer { await writer(request) } else { await service.write(request) }
                 results.append(result)
             }
-            guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL),
-                  faceDataRevision == revision else { return }
-            fieldMutationResults = results
-            if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
+            // Files changed on disk regardless of what the face bar shows now: always announce
+            // them so open editors refresh. Results and errors are scoped to the folder that is
+            // still displayed — not its face-data revision, which every naming/merge edit made
+            // during the write bumps (that hid earlier write failures).
             let changed = results.filter {
                 $0.installedSidecar != nil || $0.didWriteEmbedded || $0.didWriteXMP
                     || $0.embeddedWriteMayHaveOccurred || $0.committedButUnverifiedSidecarURL != nil
@@ -3098,16 +3127,19 @@ final class FaceRecognitionViewModel {
                 NotificationCenter.default.post(name: .faceMetadataDidChange, object: nil,
                     userInfo: ["imageURLs": changed])
             }
+            guard faceData.map({ Self.fieldMutationFolderIdentity($0.folderURL) }) == Self.fieldMutationFolderIdentity(folderURL) else { return }
+            fieldMutationResults = results
+            if let failure = MetadataFieldMutationFeedback.failureSummary(results) { errorMessage = failure }
         }
     }
 
     func waitForPendingFieldMutationWrites() async { await metadataWriteTask?.value }
 
+    /// A face group (or confirmed player) is one person: its name is written as a single
+    /// Person Shown entry. Splitting on commas broke Photo Mechanic style "Last, First" names.
     private func splitPersonNames(_ rawName: String) -> [String] {
-        rawName
-            .components(separatedBy: CharacterSet(charactersIn: ",;"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? [] : [trimmed]
     }
 
     private func loadC2PALookup(urls: [URL]) async -> [URL: Bool] {

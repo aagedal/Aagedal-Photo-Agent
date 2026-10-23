@@ -945,7 +945,7 @@ struct FieldMutationCallerTests {
         let recorder = FieldMutationCallerRecorder(failingNames: allFail ? ["bad.jpg", "good.jpg"] : ["bad.jpg"])
         let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
             fieldMutationWriter: { await recorder.write($0) }, fieldMutationModeResolver: { _, _ in .writeToFileAndXMPSidecar })
-        model.faceData = faceData(folder: folder, urls: urls, name: "Ada; Lin")
+        model.faceData = faceData(folder: folder, urls: urls, name: "Lovelace, Ada")
         let counter = FieldMutationNotificationCounter()
         let observer = NotificationCenter.default.addObserver(forName: .faceMetadataDidChange, object: nil, queue: nil) { _ in counter.increment() }
         defer { NotificationCenter.default.removeObserver(observer) }
@@ -962,7 +962,8 @@ struct FieldMutationCallerTests {
         #expect(requests.count == 2)
         for request in requests {
             #expect(request.requestedMode == .writeToFileAndXMPSidecar)
-            if case .addPersons(let names) = request.mutation { #expect(names == ["Ada", "Lin"]) } else { Issue.record("Captured person names changed") }
+            // One face group is one person: a Photo Mechanic "Last, First" name stays intact.
+            if case .addPersons(let names) = request.mutation { #expect(names == ["Lovelace, Ada"]) } else { Issue.record("Captured person names changed") }
         }
     }
 
@@ -1011,6 +1012,112 @@ struct FieldMutationCallerTests {
         let request = try #require(await recorder.captured.first)
         #expect(request.folderURL == folder)
         if case .addPersons(let names) = request.mutation { #expect(names == ["Captured name"]) } else { Issue.record("Name was not captured") }
+    }
+
+    @Test("A single face group named \"Last, First\" is written as one person")
+    @MainActor
+    func faceGroupNameWithCommaIsOnePerson() async throws {
+        // Single-group writes resolve content-credential status from the file, so it must exist.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("comma-name-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("face.png")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .png, properties: [:])).write(to: photo)
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        let data = faceData(folder: folder, urls: [photo], name: "  Doe, Jane ")
+        model.faceData = data
+        model.applyNameToMetadata(groupID: try #require(data.groups.first?.id))
+        await model.waitForPendingFieldMutationWrites()
+        let request = try #require(await recorder.captured.first)
+        if case .addPersons(let names) = request.mutation { #expect(names == ["Doe, Jane"]) } else { Issue.record("No person mutation") }
+    }
+
+    @Test("Apply All stays available for named groups from a cancelled or partially failed scan")
+    @MainActor
+    func applyAllAvailableAfterIncompleteScan() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/incomplete-scan")
+        let photo = folder.appendingPathComponent("face.jpg")
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        #expect(!model.canApplyAllNames)
+        var data = faceData(folder: folder, urls: [photo], name: "Partial name")
+        data.scanComplete = false
+        model.faceData = data
+        #expect(!model.scanComplete)
+        #expect(model.canApplyAllNames)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        await model.waitForPendingFieldMutationWrites()
+        #expect(await recorder.captured.count == 1)
+
+        var unnamed = faceData(folder: folder, urls: [photo], name: "x")
+        unnamed.groups[0].name = nil
+        model.faceData = unnamed
+        #expect(!model.canApplyAllNames)
+    }
+
+    @Test("Confirmed jersey players enable Apply All in the Sports lens without any named face group")
+    @MainActor
+    func confirmedPlayersEnableApplyInSportsLens() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/sports-apply")
+        let photo = folder.appendingPathComponent("match.jpg")
+        let recorder = FieldMutationCallerRecorder()
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        var data = faceData(folder: folder, urls: [photo], name: "x")
+        data.groups[0].name = nil
+        data.numberDetections = [NumberDetection(imageURL: photo, number: 10, numberConfidence: 0.9,
+            boundingBox: .zero, resolvedPlayerName: "Hansen, Ola", claimState: .confirmed)]
+        model.faceData = data
+        #expect(model.activeLens == .face)
+        #expect(!model.canApplyAllNames)
+        data.activeLens = .sports
+        model.faceData = data
+        try #require(model.activeLens == .sports)
+        #expect(model.canApplyAllNames)
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        await model.waitForPendingFieldMutationWrites()
+        let request = try #require(await recorder.captured.first)
+        if case .addPersons(let names) = request.mutation { #expect(names == ["Hansen, Ola"]) } else { Issue.record("No person mutation") }
+    }
+
+    @Test("A write failure is still reported when face data is edited while the write runs")
+    @MainActor
+    func faceWriteFailureSurvivesMidWriteFaceEdit() async throws {
+        let folder = URL(fileURLWithPath: "/virtual/mid-write-edit")
+        let photo = folder.appendingPathComponent("bad.jpg")
+        let recorder = FieldMutationCallerRecorder(pausesFirst: true, failingNames: ["bad.jpg"])
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            fieldMutationWriter: { await recorder.write($0) })
+        var data = faceData(folder: folder, urls: [photo], name: "First name")
+        model.faceData = data
+        model.applyAllNamesToMetadata(images: [ImageFile(url: photo)], folderURL: folder)
+        try await waitForPause(recorder)
+        data.groups[0].name = "Renamed meanwhile"
+        model.faceData = data
+        await recorder.resume()
+        await model.waitForPendingFieldMutationWrites()
+        #expect(model.fieldMutationResults.count == 1)
+        #expect(model.errorMessage?.contains("bad.jpg") == true)
+    }
+
+    @Test("Clearing the displayed folder drops the previous folder's faces")
+    @MainActor
+    func clearDisplayedFolderDropsFaces() {
+        let folder = URL(fileURLWithPath: "/virtual/previous-faces")
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.faceData = faceData(folder: folder, urls: [folder.appendingPathComponent("a.jpg")], name: "Someone")
+        #expect(!model.namedGroups.isEmpty)
+        model.clearDisplayedFolder()
+        #expect(model.faceData == nil)
+        #expect(model.namedGroups.isEmpty)
+        #expect(model.displayedFolderURL == nil)
+        #expect(!model.canApplyAllNames)
     }
 
     // MARK: - Browser main-thread performance invariants

@@ -308,10 +308,12 @@ struct ExpandedFaceManagementView: View {
                     guard let folderURL else { return }
                     viewModel.scanFolder(imageURLs: images.map(\.url).filter { SupportedImageFormats.isSupported(url: $0) }, folderURL: folderURL, forceFullScan: true)
                 }
+                .disabled(viewModel.isScanning)
                 Button("Scan Faces + Jerseys") {
                     guard let folderURL else { return }
                     confirmFaceAndJerseyScan(viewModel: viewModel, imageURLs: images.map(\.url), folderURL: folderURL)
                 }
+                .disabled(viewModel.isScanning)
                 Button("Delete Face Data", role: .destructive) {
                     guard let folderURL else { return }
                     viewModel.deleteFaceData(for: folderURL)

@@ -350,6 +350,14 @@ final class MetadataViewModel {
     @ObservationIgnored private var metadataLoadRequestID: UUID? {
         didSet { if oldValue != metadataLoadRequestID { editorXMPWriteBaseline = nil; primaryDevelopSourceBaseline = nil } }
     }
+    /// The selection the current (or most recent) metadata load is for. Set before the load
+    /// publishes `selectedURLs`, so picks made while waiting key to the photos being loaded.
+    @ObservationIgnored private var loadingSelection: (urls: [URL], folderURL: URL?)?
+    /// Keyword / Person Shown picks made while the editor was still loading. The empty
+    /// placeholder editor cannot be saved and the load replaces it, so these run once the
+    /// load for the same selection completes (and are dropped if the selection changes).
+    @ObservationIgnored private var deferredLoadActions: (urls: [URL], folderURL: URL?,
+        actions: [@MainActor () -> Bool], commit: @MainActor () -> Void)?
     @ObservationIgnored private var writeTask: Task<Void, Never>? {
         willSet {
             historyRestoreRequestID = nil
@@ -579,6 +587,12 @@ final class MetadataViewModel {
         // The replacement request owns both flags, including single/batch transitions.
         isLoading = false
         isLoadingBatchMetadata = false
+        let loadFolderURL = folderURL ?? currentFolderURL
+        loadingSelection = (images.map(\.url), loadFolderURL)
+        if let deferred = deferredLoadActions,
+           deferred.urls != images.map(\.url) || deferred.folderURL != loadFolderURL {
+            deferredLoadActions = nil
+        }
         if images.count == 1,
            let image = images.first,
            let phase = captionCleanupOwners[MetadataIOKey.key(for: image.url)] {
@@ -655,6 +669,7 @@ final class MetadataViewModel {
             isLoading = false
             isLoadingBatchMetadata = false
             batchMetadataByURL = [:]
+            deferredLoadActions = nil
             return
         }
 
@@ -672,6 +687,7 @@ final class MetadataViewModel {
             isLoading = true
 
             metadataLoadTask = Task {
+                var loaded = false
                 let loadStart = ContinuousClock.now
                 self.perfLog.info("[MetadataVM] loadMetadata START — \(imageURL.lastPathComponent, privacy: .private(mask: .hash))")
                 do {
@@ -700,6 +716,7 @@ final class MetadataViewModel {
                     if let recovery = self.primaryDevelopRecoveryLoadGuard, recovery.loadID == requestID,
                        self.editingMetadata != recovery.edited {
                         self.isLoading = false
+                        self.deferredLoadActions = nil
                         return
                     }
                     if let sourceBefore, let sourceAfter, sourceBefore.canonicalURL == sourceAfter.canonicalURL,
@@ -776,6 +793,7 @@ final class MetadataViewModel {
                     if self.metadataReferenceSource == .xmp, self.xmpMetadata == nil {
                         self.metadataReferenceSource = .embedded
                     }
+                    loaded = true
                 } catch {
                     guard self.metadataLoadRequestID == requestID,
                           self.currentFolderURL == folderSnapshot,
@@ -791,6 +809,7 @@ final class MetadataViewModel {
                       self.currentFolderURL == folderSnapshot,
                       self.selectedURLs == [imageURL] else { return }
                 self.isLoading = false
+                if loaded { self.runDeferredLoadActions() } else { self.deferredLoadActions = nil }
             }
         } else {
             // Batch mode: load metadata for all selected images and find common values
@@ -823,6 +842,7 @@ final class MetadataViewModel {
                       self.currentFolderURL == folderSnapshot,
                       self.selectedURLs == images.map(\.url) else { return }
                 self.isLoadingBatchMetadata = false
+                self.runDeferredLoadActions()
             }
         }
     }
@@ -1327,6 +1347,46 @@ final class MetadataViewModel {
 
     func markChanged() {
         hasChanges = true
+    }
+
+    /// True while a single-photo or batch metadata load still owns the editor.
+    var isEditorLoading: Bool { isLoading || isLoadingBatchMetadata }
+
+    /// The editor shows the empty placeholder of an in-flight load (not a same-selection
+    /// reload, which keeps the loaded fields). It has no verified baseline to save against.
+    var isShowingLoadPlaceholder: Bool {
+        (isLoading && metadata == nil) || (isLoadingBatchMetadata && batchCommonMetadata == nil)
+    }
+
+    /// Runs `action` now, or — while the editor is still loading — once the load for the
+    /// photos being loaded completes. Picks made against the empty placeholder editor would
+    /// otherwise fail the save's XMP evidence check and then be replaced by the load.
+    /// `action` returns whether it changed the editor; `commit` runs once afterwards if any
+    /// deferred action did (the latest caller's commit wins).
+    func performAfterEditorLoad(
+        commit: @escaping @MainActor () -> Void,
+        _ action: @escaping @MainActor () -> Bool
+    ) {
+        guard isEditorLoading, let selection = loadingSelection else {
+            if action() { commit() }
+            return
+        }
+        if let deferred = deferredLoadActions,
+           deferred.urls == selection.urls, deferred.folderURL == selection.folderURL {
+            deferredLoadActions?.actions.append(action)
+            deferredLoadActions?.commit = commit
+        } else {
+            deferredLoadActions = (selection.urls, selection.folderURL, [action], commit)
+        }
+    }
+
+    private func runDeferredLoadActions() {
+        guard let deferred = deferredLoadActions else { return }
+        deferredLoadActions = nil
+        guard deferred.urls == selectedURLs, deferred.folderURL == currentFolderURL else { return }
+        var changed = false
+        for action in deferred.actions where action() { changed = true }
+        if changed { deferred.commit() }
     }
 
     /// Append `incoming` to `editingMetadata.keywords`, skipping empties and entries
