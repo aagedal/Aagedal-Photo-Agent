@@ -80,9 +80,13 @@ nonisolated enum MetadataCommitResult: Sendable, Equatable {
 nonisolated enum EditorBoundaryCommitOutcome: Sendable, Equatable {
     case nothingToCommit
     case saved
+    /// A newer save of the same photo replaced this one; it carries these edits, so this is
+    /// neither a failure nor a reason to write a fallback draft.
+    case superseded
     /// The configured write failed; the edit was kept as a pending metadata draft instead.
     case keptAsDraft(message: String)
-    /// Neither the write nor a pending draft succeeded. The edit exists only in the editor.
+    /// Neither the write nor a pending draft succeeded (for example a read-only card). The edit
+    /// exists only in the editor. `message` reads "Couldn't save your metadata edits to …: …".
     case failed(message: String)
 
     var preservesEdits: Bool {
@@ -92,8 +96,35 @@ nonisolated enum EditorBoundaryCommitOutcome: Sendable, Equatable {
 
     var attentionMessage: String? {
         switch self {
-        case .nothingToCommit, .saved: nil
+        case .nothingToCommit, .saved, .superseded: nil
         case .keptAsDraft(let message), .failed(let message): message
+        }
+    }
+
+    static func failureMessage(files: String, reason: String) -> String {
+        "Couldn't save your metadata edits to \(files): \(reason)"
+    }
+}
+
+/// What a boundary that is leaving the Browser editor's photos does with a save outcome.
+nonisolated enum EditorBoundaryDecision: Equatable {
+    /// Continue the transition; show `attention` (if any) once it has happened.
+    case proceed(attention: String?)
+    /// Nothing durable holds the edit. Ask: discard the edits and continue, or stay.
+    case askToDiscard(message: String)
+
+    /// A selection change has already happened, so it cannot ask; a failed save there is
+    /// reported as discarded. Folder, workspace and close transitions can still ask.
+    static func resolve(_ outcome: EditorBoundaryCommitOutcome, canStay: Bool) -> EditorBoundaryDecision {
+        switch outcome {
+        case .nothingToCommit, .saved, .superseded:
+            return .proceed(attention: nil)
+        case .keptAsDraft(let message):
+            return .proceed(attention: message)
+        case .failed(let message):
+            return canStay
+                ? .askToDiscard(message: message)
+                : .proceed(attention: message + " The edits were discarded.")
         }
     }
 }
@@ -311,7 +342,9 @@ final class MetadataViewModel {
             imageURL: selectedURLs.count == 1 ? selectedURLs.first : nil
         )
     }
-    var canWriteMetadataToImage: Bool {
+    var canWriteMetadataToImage: Bool { canWriteMetadataToImage() }
+
+    func canWriteMetadataToImage(knownC2PAURLs: Set<URL> = []) -> Bool {
         if isSaving { return false }
         if hasChanges || selectedHavePendingSidecars { return true }
         // The editor can show values the file itself lacks (for example an XMP reference copy
@@ -319,7 +352,7 @@ final class MetadataViewModel {
         // never updates `embeddedMetadata`, so comparing it there kept Write enabled forever.
         if selectedCount == 1, let embedded = embeddedMetadata,
            let url = selectedURLs.first, !SupportedImageFormats.isRaw(url: url),
-           editorWriteMode().writesEmbedded {
+           editorWriteMode(knownC2PAURLs: knownC2PAURLs).writesEmbedded {
             return editingMetadata != embedded
         }
         return false
@@ -878,6 +911,9 @@ final class MetadataViewModel {
                             newEditingMetadata = EffectiveMetadataResolver.applyingPendingDraft(
                                 sidecar, to: newEditingMetadata)
                             self.hasChanges = true
+                            // A loaded draft still needs an explicit Write (and offers Discard),
+                            // as it does for a batch.
+                            self.selectedHavePendingSidecars = true
                         }
                     }
                     // Always update on first load. A same-photo reload keeps unsaved edits and
@@ -1983,8 +2019,8 @@ final class MetadataViewModel {
     }
 
     /// Reports the result of the exact commit request to an external lifecycle owner.
-    /// `historyOnly` retains its established fire-and-forget contract; Develop uses the two
-    /// durable modes whose completions occur only after their metadata/history work finishes.
+    /// Every mode completes only after its metadata/history work finishes (History Only once
+    /// its pending draft is durable), so boundaries never race a save they believe is done.
     func commitEditsReportingResult(
         mode: MetadataWriteMode,
         onComplete: @escaping (MetadataCommitResult) -> Void
@@ -1995,8 +2031,10 @@ final class MetadataViewModel {
         catch { saveError = error.localizedDescription; onComplete(.failed(message: error.localizedDescription)); return }
         switch mode {
         case .historyOnly:
-            saveToSidecar()
-            onComplete(.succeeded)
+            // Report when the draft is durable, so a boundary waits for it instead of racing it.
+            saveToSidecar { failure in
+                onComplete(failure.map { .failed(message: $0) } ?? .succeeded)
+            }
         case .writeToXMPSidecar:
             writeXMPSidecarAndPreserveHistory(onComplete: onComplete)
         case .writeToFile, .writeToFileAndXMPSidecar:
@@ -2019,22 +2057,28 @@ final class MetadataViewModel {
             let fallback = boundaryDraftFallback()
             let edited = editingMetadata
             let loadID = metadataLoadRequestID
+            let folder = currentFolderURL
             commitEditsReportingResult(mode: mode) { [weak self] result in
                 switch result {
                 case .succeeded:
                     onComplete(.saved)
-                case .failed(let message), .cancelled(let message):
+                case .cancelled:
+                    // Superseded by a newer save of this photo, which carries these edits.
+                    onComplete(.superseded)
+                case .failed(let message):
                     guard let fallback else {
-                        onComplete(.failed(message: "Metadata for \(names) was not saved. \(message)"))
+                        onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                            files: names, reason: message)))
                         return
                     }
                     Task { @MainActor in
                         do {
                             try await fallback.persistAsync()
-                            self?.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID)
+                            self?.adoptBoundaryDraft(fallback, edited: edited, loadID: loadID, folderURL: folder)
                             onComplete(.keptAsDraft(message: "Metadata for \(names) could not be written and was kept as a pending draft. Use Write to retry. \(message)"))
                         } catch {
-                            onComplete(.failed(message: "Metadata for \(names) was not saved, and no pending draft could be kept. \(message) \(error.localizedDescription)"))
+                            onComplete(.failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                                files: names, reason: "\(message) A pending draft could not be kept either: \(error.localizedDescription)")))
                         }
                     }
                 }
@@ -2073,15 +2117,32 @@ final class MetadataViewModel {
             changes: changes, imageURL: imageURL, folderURL: folderURL))
     }
 
-    /// When the editor still shows the photo whose save fell back to a draft, it now holds a
-    /// pending draft (Write enabled) rather than an unsaved edit that would be saved again.
-    private func adoptBoundaryDraft(_ draft: CaptionDraftPersistence, edited: IPTCMetadata, loadID: UUID?) {
+    /// When the editor still shows the photo whose save fell back to a draft, reload it: the
+    /// photo now holds a pending draft (Write enabled), and the reload refreshes the JSON and XMP
+    /// baselines the next save is checked against — keeping the old ones would make that save
+    /// fail as an ownership or stale-sidecar conflict.
+    private func adoptBoundaryDraft(_ draft: CaptionDraftPersistence, edited: IPTCMetadata,
+                                    loadID: UUID?, folderURL: URL?) {
         guard selectedURLs == [draft.imageURL], metadataLoadRequestID == loadID,
               editingMetadata == edited else { return }
-        previousEditingMetadata = edited
-        sidecarHistory = draft.sidecar.history
-        hasChanges = true
-        selectedHavePendingSidecars = true
+        var image = ImageFile(url: draft.imageURL)
+        image.hasC2PA = selectedC2PAURLs.contains(draft.imageURL)
+        loadMetadata(for: [image], folderURL: folderURL ?? draft.folderURL)
+    }
+
+    /// "Discard Edits and Continue" at a boundary whose save failed: drop the editor's unsaved
+    /// changes (pending drafts on disk are untouched) so the transition can go ahead.
+    func discardUnsavedEditorChanges() {
+        if let previous = previousEditingMetadata { editingMetadata = previous }
+        if isBatchEdit {
+            batchFieldMutations = [:]
+            batchLocationsShownMutation = .untouched
+            batchImageSupplierMutation = .untouched
+            hasChanges = false
+        } else {
+            hasChanges = selectedHavePendingSidecars
+        }
+        saveError = nil
     }
 
     func writeMetadata() {
@@ -3513,9 +3574,9 @@ final class MetadataViewModel {
 
     /// Automatic saves (navigation, backgrounding, quit) must not embed literal `{variable}`
     /// tokens. Keep the edit as a pending draft instead and tell the user why.
-    func keepUnresolvedVariablesAsPendingDraft() {
+    func keepUnresolvedVariablesAsPendingDraft(onComplete: ((String?) -> Void)? = nil) {
         let names = selectedURLs.map(\.lastPathComponent)
-        withEditorFolder { saveToSidecar() }
+        withEditorFolder { saveToSidecar(onComplete: onComplete) }
         notice = MetadataPanelNotice(
             title: "Unresolved variables were kept as a pending draft. Use Process Variables, then Write, to update the file.",
             detail: names,
@@ -4543,12 +4604,16 @@ final class MetadataViewModel {
 
     // MARK: - Sidecar Management
 
-    func saveToSidecar() {
+    /// `onComplete` receives this save's own failure, or nil once the draft is durable.
+    func saveToSidecar(onComplete: ((String?) -> Void)? = nil) {
         do { try requirePrimaryDevelopWritesPersisted() }
-        catch { saveError = error.localizedDescription; return }
+        catch { saveError = error.localizedDescription; onComplete?(saveError); return }
         do { try requireVariableDiscardedEditorReconciled() }
-        catch { saveError = error.localizedDescription; return }
-        guard let folderURL = currentFolderURL else { return }
+        catch { saveError = error.localizedDescription; onComplete?(saveError); return }
+        guard let folderURL = currentFolderURL else {
+            onComplete?("No folder is open for this photo's metadata draft.")
+            return
+        }
         let generation = writeTaskGeneration + 1
         if selectedCount == 1, let imageURL = selectedURLs.first {
             let edited = editingMetadata
@@ -4595,11 +4660,16 @@ final class MetadataViewModel {
                             hasChanges = true
                             selectedHavePendingSidecars = true
                         }
-                    } else if matchesSelection() {
-                        saveError = Self.writeCompletionFailure(result, imageWasWritten: false)
+                        onComplete?(nil)
+                    } else {
+                        let message = Self.writeCompletionFailure(result, imageWasWritten: false)
+                        if matchesSelection() { saveError = message }
+                        onComplete?(message)
                     }
                 } catch {
-                    if matchesSelection() { saveError = "Failed to save sidecar: \(error.localizedDescription)" }
+                    let message = "Failed to save sidecar: \(error.localizedDescription)"
+                    if matchesSelection() { saveError = message }
+                    onComplete?(message)
                 }
             }
             registerSingleSave(imageURL: imageURL, loadID: loadID)
@@ -4614,11 +4684,14 @@ final class MetadataViewModel {
             let write = Task {
                 defer { endBatchWriteTracking(batchTracking) }
                 await priorWrite?.value
-                await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
+                let failure = await saveBatchSidecars(folderURL: folderURL, pendingChanges: true,
                     updateState: true, capture: capture)
                 if writeTaskGeneration == generation { isSaving = false }
+                onComplete?(failure)
             }
             writeTask = Task { await write.value }
+        } else {
+            onComplete?(nil)
         }
     }
 

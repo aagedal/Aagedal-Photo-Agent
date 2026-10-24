@@ -1469,9 +1469,12 @@ struct ContentView: View {
         guard metadataViewModel.hasUnpersistedEditorChanges else { return }
         let editorURLs = metadataViewModel.selectedURLs
         if metadataViewModel.shouldDeferAutomaticCommitForVariables {
-            metadataViewModel.keepUnresolvedVariablesAsPendingDraft()
+            let failure: String? = await withCheckedContinuation { continuation in
+                metadataViewModel.keepUnresolvedVariablesAsPendingDraft { continuation.resume(returning: $0) }
+            }
             await metadataViewModel.waitForPendingWrites()
             browserViewModel.refreshPendingStatusBatch(for: editorURLs)
+            if let failure { throw CaptionWorkspaceFlushError.persistenceFailed(failure) }
             return
         }
         let mode = metadataViewModel.editorWriteMode(knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs))
@@ -1516,8 +1519,9 @@ struct ContentView: View {
 
     /// Folder switches, folder closes and workspace exits leave the Browser editor's photos.
     /// Save them first — with the editor's own mode and folder, before the browser arrays are
-    /// replaced — then run the usual flush. A failed write keeps a pending draft and continues;
-    /// only when even that fails does the transition stop, leaving the edit on screen.
+    /// replaced — then run the usual flush. A failed write keeps a pending draft and continues.
+    /// When nothing durable can hold the edit (a read-only card), ask whether to discard it and
+    /// continue or stay, so Close Folder, Open Folder and workspace exits are never a dead end.
     private func performAfterBrowserEditorCommit(_ operation: @escaping @MainActor () -> Void) {
         let workspace = mainViewMode
         guard workspace == .browser || workspace == .faceManagement,
@@ -1526,37 +1530,66 @@ struct ContentView: View {
             return
         }
         metadataViewModel.captureFocusedEditorText()
-        guard metadataViewModel.hasUnpersistedEditorChanges else {
+        guard metadataViewModel.hasUnpersistedEditorChanges || metadataViewModel.isSaving else {
             performAfterCaptionFlush(operation)
             return
         }
         guard !isCommittingBrowserEditor else { return }
         isCommittingBrowserEditor = true
-        let editorURLs = metadataViewModel.selectedURLs
         Task { @MainActor in
             defer { isCommittingBrowserEditor = false }
-            let outcome: EditorBoundaryCommitOutcome
-            if metadataViewModel.shouldDeferAutomaticCommitForVariables {
-                metadataViewModel.keepUnresolvedVariablesAsPendingDraft()
-                await metadataViewModel.waitForPendingWrites()
-                outcome = .saved
-            } else {
-                outcome = await withCheckedContinuation { continuation in
-                    metadataViewModel.commitDepartingEditor(
-                        knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs)
-                    ) { continuation.resume(returning: $0) }
-                }
-            }
+            let editorURLs = metadataViewModel.selectedURLs
+            let outcome = await commitDepartingBrowserEditor()
             browserViewModel.refreshPendingStatusBatch(for: editorURLs)
-            guard outcome.preservesEdits else {
-                metadataViewModel.saveError = outcome.attentionMessage
-                return
+            switch EditorBoundaryDecision.resolve(outcome, canStay: true) {
+            case .proceed(let attention):
+                guard mainViewMode == workspace else { return }
+                performAfterCaptionFlush(operation)
+                // After the operation: a folder load clears the browser's error banner.
+                if let attention { browserViewModel.errorMessage = attention }
+            case .askToDiscard(let message):
+                metadataViewModel.saveError = message
+                guard confirmDiscardAfterFailedSave(message) else { return }
+                metadataViewModel.discardUnsavedEditorChanges()
+                guard mainViewMode == workspace else { return }
+                performAfterCaptionFlush(operation)
             }
-            guard mainViewMode == workspace else { return }
-            performAfterCaptionFlush(operation)
-            // After the operation: a folder load clears the browser's error banner.
-            if let message = outcome.attentionMessage { browserViewModel.errorMessage = message }
         }
+    }
+
+    /// Waits for saves already running (they may carry these edits, and History Only drafts
+    /// finish asynchronously), then saves whatever is still unsaved and waits for it too.
+    private func commitDepartingBrowserEditor() async -> EditorBoundaryCommitOutcome {
+        await metadataViewModel.waitForPendingWrites()
+        metadataViewModel.captureFocusedEditorText()
+        guard metadataViewModel.hasUnpersistedEditorChanges else { return .nothingToCommit }
+        let editorURLs = metadataViewModel.selectedURLs
+        if metadataViewModel.shouldDeferAutomaticCommitForVariables {
+            let failure: String? = await withCheckedContinuation { continuation in
+                metadataViewModel.keepUnresolvedVariablesAsPendingDraft { continuation.resume(returning: $0) }
+            }
+            guard let failure else { return .saved }
+            return .failed(message: EditorBoundaryCommitOutcome.failureMessage(
+                files: editorURLs.map(\.lastPathComponent).joined(separator: ", "), reason: failure))
+        }
+        let outcome = await withCheckedContinuation { continuation in
+            metadataViewModel.commitDepartingEditor(
+                knownC2PAURLs: browserViewModel.c2paURLs(among: editorURLs)
+            ) { continuation.resume(returning: $0) }
+        }
+        await metadataViewModel.waitForPendingWrites()
+        return outcome
+    }
+
+    private func confirmDiscardAfterFailedSave(_ message: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Metadata Edits Not Saved"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Stay")
+        alert.addButton(withTitle: "Discard Edits and Continue")
+        alert.buttons.last?.hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     private func performAfterCaptionFlush(_ operation: @escaping @MainActor () -> Void) {
@@ -4747,7 +4780,9 @@ struct ContentViewModifiers: ViewModifier {
                             knownC2PAURLs: browser.c2paURLs(among: previousURLs)
                         ) { outcome in
                             browser.refreshPendingStatusBatch(for: previousURLs)
-                            if let message = outcome.attentionMessage { browser.errorMessage = message }
+                            if case .proceed(let attention?) = EditorBoundaryDecision.resolve(outcome, canStay: false) {
+                                browser.errorMessage = attention
+                            }
                         }
                     }
                 }
@@ -4776,9 +4811,20 @@ struct ContentViewModifiers: ViewModifier {
                                 throw CaptionWorkspaceFlushError.handlerUnavailable
                             }
                         }, commitConfigured: {
-                            let mode = metadataViewModel.editorWriteMode(knownC2PAURLs:
-                                browserViewModel.c2paURLs(among: metadataViewModel.selectedURLs))
-                            metadataViewModel.commitEdits(mode: mode)
+                            let model = metadataViewModel
+                            let browser = browserViewModel
+                            let commit = {
+                                guard model.hasUnpersistedEditorChanges else { return }
+                                model.commitEdits(mode: model.editorWriteMode(
+                                    knownC2PAURLs: browser.c2paURLs(among: model.selectedURLs)))
+                            }
+                            // A running save may already carry these edits; superseding it would
+                            // write the same change twice.
+                            guard model.isSaving else { commit(); return }
+                            Task { @MainActor in
+                                await model.waitForPendingWrites()
+                                commit()
+                            }
                         })
                 } catch {
                     if mainViewMode == .metadataReview {

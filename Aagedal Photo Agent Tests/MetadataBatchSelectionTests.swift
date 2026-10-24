@@ -1131,3 +1131,158 @@ extension MetadataBatchSelectionTests {
         #expect(!registry.commitPendingInputs())
     }
 }
+
+/// Fails embedded descriptive writes until `recover()`, like a card that is remounted writable.
+private nonisolated final class RecoveringDescriptiveWriteEngine: MetadataWriteEngine, @unchecked Sendable {
+    private let inner = SwiftExifWriteEngine()
+    private let lock = NSLock()
+    private var failing = true
+    func recover() { lock.withLock { failing = false } }
+    private func failIfNeeded() throws {
+        if lock.withLock({ failing }) { throw CocoaError(.fileWriteVolumeReadOnly) }
+    }
+    func writeFields(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try failIfNeeded()
+        try await inner.writeFields(fields, to: urls, structuredData: structuredData)
+    }
+    func writeFieldsToRenderedFiles(_ fields: [MetadataFieldKey: String], to urls: [URL], structuredData: StructuredWriteData) async throws {
+        try await inner.writeFieldsToRenderedFiles(fields, to: urls, structuredData: structuredData)
+    }
+    func addRemoveListValues(add: [MetadataFieldKey: [String]], remove: [MetadataFieldKey: [String]], to urls: [URL]) async throws {
+        try failIfNeeded()
+        try await inner.addRemoveListValues(add: add, remove: remove, to: urls)
+    }
+    func writeRating(_ rating: StarRating, to urls: [URL]) async throws { try await inner.writeRating(rating, to: urls) }
+    func writeLabel(_ label: ColorLabel, to urls: [URL]) async throws { try await inner.writeLabel(label, to: urls) }
+    func writeOrientation(_ orientation: Int, to urls: [URL]) async throws { try await inner.writeOrientation(orientation, to: urls) }
+    func stripIPTCAndXMP(from urls: [URL]) async throws { try await inner.stripIPTCAndXMP(from: urls) }
+    func copyMetadataToRenderedFile(from source: URL, to destination: URL, bakedCameraRaw: CameraRawSettings?) async throws {
+        try await inner.copyMetadataToRenderedFile(from: source, to: destination, bakedCameraRaw: bakedCameraRaw)
+    }
+}
+
+// MARK: - Boundary failure handling (3.0 review follow-ups)
+
+extension MetadataBatchSelectionTests {
+    @Test("boundary decisions: drafts continue with a notice, failures ask or report a discard")
+    func boundaryDecisionLogic() {
+        #expect(EditorBoundaryDecision.resolve(.saved, canStay: true) == .proceed(attention: nil))
+        #expect(EditorBoundaryDecision.resolve(.nothingToCommit, canStay: true) == .proceed(attention: nil))
+        #expect(EditorBoundaryDecision.resolve(.superseded, canStay: false) == .proceed(attention: nil))
+        #expect(EditorBoundaryDecision.resolve(.keptAsDraft(message: "kept"), canStay: true) == .proceed(attention: "kept"))
+        let failure = EditorBoundaryCommitOutcome.failureMessage(files: "card.jpg", reason: "Read-only volume.")
+        #expect(failure == "Couldn't save your metadata edits to card.jpg: Read-only volume.")
+        #expect(EditorBoundaryDecision.resolve(.failed(message: failure), canStay: true) == .askToDiscard(message: failure))
+        guard case .proceed(let attention?) = EditorBoundaryDecision.resolve(.failed(message: failure), canStay: false) else {
+            Issue.record("A selection change cannot ask; it must report the discard")
+            return
+        }
+        #expect(attention.hasPrefix(failure))
+        #expect(attention.contains("discarded"))
+    }
+
+    @Test("a read-only folder fails the boundary save, and Discard lets the transition continue")
+    func readOnlyFolderFailsAndCanBeDiscarded() async throws {
+        let folder = try makeFolder()
+        let url = try makeJPEG(in: folder, name: "card.jpg")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: FailingDescriptiveWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "Cannot land"
+        model.markChanged()
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        var outcome: EditorBoundaryCommitOutcome?
+        await withProfessionalPreset {
+            model.commitDepartingEditor { outcome = $0 }
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while outcome == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let result = try #require(outcome)
+        guard case .failed(let message) = result else {
+            Issue.record("Expected a failure when neither the write nor a draft can land, got \(result)")
+            return
+        }
+        #expect(message.hasPrefix("Couldn't save your metadata edits to card.jpg:"))
+        #expect(EditorBoundaryDecision.resolve(result, canStay: true) == .askToDiscard(message: message))
+        #expect(model.hasUnpersistedEditorChanges)
+        model.discardUnsavedEditorChanges()
+        #expect(!model.hasUnpersistedEditorChanges, "Discard must clear the edit so the transition is not blocked again")
+        #expect(model.editingMetadata.description == nil)
+    }
+
+    @Test("an unresolved-variables draft that cannot be written reports its failure")
+    func variablesDraftFailureIsReported() async throws {
+        let folder = try makeFolder()
+        let url = try makeJPEG(in: folder, name: "vars.jpg")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "{filename}"
+        model.markChanged()
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        let failure: String? = await withCheckedContinuation { continuation in
+            model.keepUnresolvedVariablesAsPendingDraft { continuation.resume(returning: $0) }
+        }
+        #expect(failure != nil)
+    }
+
+    @Test("after a draft fallback the photo reloads, so its next save is not a stale-sidecar conflict")
+    func draftFallbackReloadsBaselines() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "retry.jpg")
+        let engine = RecoveringDescriptiveWriteEngine()
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: engine)
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "First try"
+        model.markChanged()
+        var outcome: EditorBoundaryCommitOutcome?
+        await withProfessionalPreset {
+            model.commitDepartingEditor { outcome = $0 }
+        }
+        var deadline = ContinuousClock.now + .seconds(5)
+        while outcome == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        guard case .keptAsDraft = try #require(outcome) else {
+            Issue.record("Expected a pending draft, got \(String(describing: outcome))")
+            return
+        }
+        deadline = ContinuousClock.now + .seconds(5)
+        while (model.isLoading || !model.selectedHavePendingSidecars), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.selectedHavePendingSidecars)
+        #expect(model.editingMetadata.description == "First try")
+        engine.recover()
+        model.editingMetadata.description = "Second try"
+        model.markChanged()
+        let result = await withCheckedContinuation { continuation in
+            model.commitEditsReportingResult(mode: .writeToXMPSidecar) { continuation.resume(returning: $0) }
+        }
+        #expect(result == .succeeded)
+        #expect(XMPSidecarService().loadSidecar(for: url)?.description == "Second try")
+    }
+
+    @Test("History Only reports success only once its draft is durable")
+    func historyOnlyCompletesAfterDraft() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = try makeJPEG(in: folder, name: "draft.jpg")
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        try await loadSingle(model, url, in: folder)
+        model.editingMetadata.description = "Drafted"
+        model.markChanged()
+        var reported: MetadataCommitResult?
+        model.commitEditsReportingResult(mode: .historyOnly) { reported = $0 }
+        #expect(reported == nil, "the completion must not run before the draft is written")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while reported == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(reported == .succeeded)
+        #expect(MetadataSidecarService().loadSidecar(for: url, in: folder)?.metadata.description == "Drafted")
+    }
+}

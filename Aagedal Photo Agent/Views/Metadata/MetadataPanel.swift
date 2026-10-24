@@ -1157,11 +1157,13 @@ struct MetadataPanel: View {
 
     /// Synchronously copies only a registered scalar/multiline buffer belonging to this load.
     @discardableResult
-    private func flushBufferedFields() -> Bool {
+    private func flushBufferedFields(includingPendingTokens: Bool = false) -> Bool {
         guard !viewModel.isLoading else { return false }
         let marked = (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
-        // A keyword or name typed without Return/comma is part of the edit too.
-        if !marked { editorBuffers.commitPendingInputs() }
+        // A keyword or name typed without Return/comma is part of the edit at navigation, Write,
+        // workspace and quit boundaries (field focus loss commits it in the chip editor itself).
+        // Ordinary saves leave it alone, so a rejected token does not re-flash on every save.
+        if includingPendingTokens, !marked { editorBuffers.commitPendingInputs() }
         var updated = viewModel.editingMetadata
         let result = editorBuffers.capture(key: focusedField, loadID: viewModel.editorBufferLoadID,
             hasMarkedText: marked, metadata: &updated)
@@ -1545,7 +1547,7 @@ struct MetadataPanel: View {
             }
             return
         }
-        guard flushBufferedFields() else {
+        guard flushBufferedFields(includingPendingTokens: true) else {
             throw CaptionWorkspaceFlushError.persistenceFailed(
                 "Finish the active text composition or wait for the photo to load before saving Caption edits."
             )
@@ -2872,7 +2874,7 @@ struct MetadataPanel: View {
                 // (from History Only, Caption or a template) still needs an explicit Write.
                 if mode != .writeToFile || viewModel.selectedHavePendingSidecars {
                     Button {
-                        flushBufferedFields()
+                        flushBufferedFields(includingPendingTokens: true)
                         // RAW photos are written to their XMP sidecar, which keeps credentials intact.
                         if browserViewModel.selectedImages.contains(where: {
                             $0.hasC2PA && !SupportedImageFormats.isRaw(url: $0.url)
@@ -2886,7 +2888,8 @@ struct MetadataPanel: View {
                         Image(systemName: "square.and.arrow.down")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!viewModel.canWriteMetadataToImage)
+                    .disabled(!viewModel.canWriteMetadataToImage(
+                        knownC2PAURLs: browserViewModel.c2paURLs(among: viewModel.selectedURLs)))
                     .help("Write metadata to image")
                 }
             }
@@ -3008,6 +3011,8 @@ struct KeywordsEditorWithDiff: View {
     @Environment(\.metadataEditorSelection) private var editorSelection
     @State private var pendingInputOwner = UUID()
     @State private var inputText = ""
+    /// A token the validator just rejected stays typed for editing; flushes must not retry it.
+    @State private var rejectedInput: String?
     @State private var promotingKeyword: String?
     @State private var visibleSuggestions: [ApprovedListSuggestion] = []
     @State private var highlightedIndex: Int? = nil
@@ -3035,6 +3040,7 @@ struct KeywordsEditorWithDiff: View {
                 Spacer()
                 if quickListMenuVisible {
                     Button {
+                        abandonTypedToken()
                         quickListPopoverShown.toggle()
                     } label: {
                         Image(systemName: "list.bullet")
@@ -3067,6 +3073,7 @@ struct KeywordsEditorWithDiff: View {
                 }
                 if let onShowStructuredKeywords {
                     Button {
+                        abandonTypedToken()
                         onShowStructuredKeywords()
                     } label: {
                         Image(systemName: "list.bullet.indent")
@@ -3111,6 +3118,7 @@ struct KeywordsEditorWithDiff: View {
 
                 ForEach(partialKeywords, id: \.self) { keyword in
                     Button {
+                        abandonTypedToken()
                         promotingKeyword = keyword
                     } label: {
                         Text(keyword)
@@ -3175,19 +3183,14 @@ struct KeywordsEditorWithDiff: View {
             inputText = ""
             updateSuggestions(for: "")
         }
-        .onAppear {
-            guard let editorBuffers else { return }
-            let input = $inputText
-            let commitToken = { addKeywords(useHighlightedSuggestion: false, commits: false) }
-            editorBuffers.registerPendingInput(key: focusKey ?? label, owner: pendingInputOwner) {
-                guard !input.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-                return commitToken()
-            }
-        }
+        .onAppear { registerPendingInput() }
         .onDisappear {
             editorBuffers?.unregisterPendingInput(key: focusKey ?? label, owner: pendingInputOwner)
         }
         .onChange(of: inputText) { _, newValue in
+            if newValue != rejectedInput { rejectedInput = nil }
+            // Re-register so the flush uses this render's validator, not the one from onAppear.
+            registerPendingInput()
             // Comma/semicolon trigger immediate commit (existing behavior). The popover
             // is deliberately bypassed so paste of "berlin, paris" doesn't expand.
             if newValue.contains(",") || newValue.contains(";") {
@@ -3218,7 +3221,10 @@ struct KeywordsEditorWithDiff: View {
                 onSubmit: { addKeywords(useHighlightedSuggestion: true) },
                 onArrowDown: { moveHighlight(by: 1) },
                 onArrowUp: { moveHighlight(by: -1) },
-                onEscape: { dismissPopover() }
+                onEscape: {
+                    // Escape cancels: first the suggestions, then the typed token itself.
+                    if visibleSuggestions.isEmpty { inputText = "" } else { dismissPopover() }
+                }
             )
             .frame(height: 22)
         } else if let focusedField, let focusKey {
@@ -3227,6 +3233,11 @@ struct KeywordsEditorWithDiff: View {
                 .font(.body)
                 .focused(focusedField, equals: focusKey)
                 .onSubmit { addKeywords(useHighlightedSuggestion: false) }
+                .onKeyPress(.escape) {
+                    // The panel's Escape then drops focus; that must not confirm the token.
+                    inputText = ""
+                    return .ignored
+                }
                 .onChange(of: focusedField.wrappedValue == focusKey) { wasFocused, isFocused in
                     if wasFocused, !isFocused { commitTypedTokenOnFocusLoss() }
                 }
@@ -3319,8 +3330,28 @@ struct KeywordsEditorWithDiff: View {
     // MARK: addKeywords with validation
 
     private func commitTypedTokenOnFocusLoss() {
-        guard !inputText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard !inputText.trimmingCharacters(in: .whitespaces).isEmpty, inputText != rejectedInput else { return }
         addKeywords(useHighlightedSuggestion: false)
+    }
+
+    /// Opening a picker or Quick List moves focus away; a half-typed search ("ber") must not be
+    /// confirmed as a value by that focus loss.
+    private func abandonTypedToken() {
+        inputText = ""
+        updateSuggestions(for: "")
+    }
+
+    private func registerPendingInput() {
+        guard let editorBuffers else { return }
+        let input = $inputText
+        let rejected = $rejectedInput
+        let commitToken = { addKeywords(useHighlightedSuggestion: false, commits: false) }
+        editorBuffers.registerPendingInput(key: focusKey ?? label, owner: pendingInputOwner) {
+            let token = input.wrappedValue
+            guard !token.trimmingCharacters(in: .whitespaces).isEmpty,
+                  token != rejected.wrappedValue else { return false }
+            return commitToken()
+        }
     }
 
     private func removeChipAccessibilityLabel(for value: String) -> String {
@@ -3372,6 +3403,7 @@ struct KeywordsEditorWithDiff: View {
             inputText = ""
         } else if accepted.isEmpty {
             // Keep typed text so user can edit and retry.
+            rejectedInput = inputText
             flashRejectState(rejected: rejected)
         } else {
             inputText = ""
