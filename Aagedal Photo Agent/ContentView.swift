@@ -1405,6 +1405,9 @@ struct ContentView: View {
     private func commitBrowserMetadataEditor() async throws {
         guard mainViewMode == .browser || mainViewMode == .faceManagement else { return }
         metadataViewModel.captureFocusedEditorText()
+        // Quit, rename and Copy/Paste IPTC must also wait for saves already running, even when
+        // the editor itself has nothing new to commit.
+        await metadataViewModel.waitForPendingWrites()
         guard metadataViewModel.hasUnpersistedEditorChanges else { return }
         let selection = browserViewModel.selectedImages
         if metadataViewModel.shouldDeferAutomaticCommitForVariables {

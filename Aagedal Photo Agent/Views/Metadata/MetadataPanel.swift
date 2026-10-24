@@ -1179,9 +1179,18 @@ struct MetadataPanel: View {
             onPendingStatusChanged?()
             return
         }
-        // Simple resolves C2PA to .writeToFile and deliberately ignores content
-        // credentials — no warning, the file is written like any other.
-        let mode = MetadataWriteMode.current(forSelection: browserViewModel.selectedImages)
+        // A delayed focus-loss save can fire after the browser moved on. The selection-change
+        // boundary already saved the editor's photos then; saving again here would use the
+        // new selection's write mode for them.
+        let editorURLs = viewModel.selectedURLs
+        guard Set(browserViewModel.selectedImages.map(\.url)) == Set(editorURLs) else { return }
+        // The mode follows the photos the editor holds. Simple resolves C2PA to .writeToFile
+        // and deliberately ignores content credentials — no warning, the file is written like
+        // any other.
+        let editorImages = editorURLs.map { url in
+            browserViewModel.urlToImageIndex[url].map { browserViewModel.images[$0] } ?? ImageFile(url: url)
+        }
+        let mode = MetadataWriteMode.current(forSelection: editorImages)
         viewModel.commitEdits(
             mode: mode,
             onComplete: onPendingStatusChanged
