@@ -148,8 +148,17 @@ nonisolated struct VideoStillSourceMetadata: Equatable, Sendable {
         return result
     }
 
-    /// Overlays the non-empty descriptive fields of `xmp`.
+    /// Overlays the non-empty fields of `xmp`. A capture date or GPS position in the clip's XMP
+    /// (for example corrected in Photo Mechanic) wins over the QuickTime values.
     mutating func merge(_ xmp: XMPData) {
+        if let date = (xmp.exifDateTimeOriginal ?? xmp.createDate).flatMap(Self.parseXMPDate) {
+            captureDate = date
+        }
+        if let lat = parseXMPGPSCoordinate(xmp.exifGPSLatitude),
+           let lon = parseXMPGPSCoordinate(xmp.exifGPSLongitude) {
+            latitude = lat
+            longitude = lon
+        }
         if !xmp.creator.isEmpty { creators = xmp.creator }
         if let v = xmp.rights.flatMap(Self.trimmedNonEmpty) { copyright = v }
         if let v = xmp.credit.flatMap(Self.trimmedNonEmpty) { credit = v }
@@ -218,9 +227,11 @@ nonisolated struct VideoStillSourceMetadata: Equatable, Sendable {
             addDateCreated(to: &xmp, frameOffset: frameOffset)
             metadata.xmp = xmp
         }
-        if let latitude, let longitude {
+        // The EXIF GPS block always carries a fix time; without a capture date there is no
+        // truthful one, so leave the position to the XMP coordinates instead of stamping "now".
+        if let latitude, let longitude, let fixTime = frameDate(frameOffset: frameOffset) {
             metadata.setGPS(latitude: latitude, longitude: longitude, altitude: altitude,
-                            timestamp: frameDate(frameOffset: frameOffset) ?? Date())
+                            timestamp: fixTime)
         }
         return try metadata.writeToData()
     }
@@ -242,6 +253,24 @@ nonisolated struct VideoStillSourceMetadata: Equatable, Sendable {
     }
 
     /// XMP GPS form: "DDD,MM.mmmmmmN".
+    /// XMP dates are ISO 8601, with or without fractional seconds or a zone (zone-less values are
+    /// local time, as XMP specifies).
+    static func parseXMPDate(_ value: String) -> Date? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: trimmed) { return date }
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: trimmed) { return date }
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        for format in ["yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm"] {
+            local.dateFormat = format
+            if let date = local.date(from: trimmed) { return date }
+        }
+        return nil
+    }
+
     private static func xmpCoordinate(_ value: Double, positive: String, negative: String) -> String {
         let magnitude = abs(value)
         let degrees = Int(magnitude)

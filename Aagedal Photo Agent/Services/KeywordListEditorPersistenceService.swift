@@ -520,8 +520,9 @@ final class KeywordListEditorPersistenceService {
             existing = []
         }
         let incoming = Self.normalizedEntries(imported + entries)
-        var seen = Set(existing)
-        let added = incoming.filter { seen.insert($0).inserted }
+        // Case-insensitive like the list editor's own import: "oslo" doesn't duplicate "Oslo".
+        var seen = Set(existing.map { $0.lowercased() })
+        let added = incoming.filter { seen.insert($0.lowercased()).inserted }
         let combined = existing + added
 
         // A merge that adds nothing leaves the managed file untouched.

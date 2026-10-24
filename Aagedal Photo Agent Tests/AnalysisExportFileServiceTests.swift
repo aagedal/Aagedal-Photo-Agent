@@ -1313,7 +1313,8 @@ struct QuickListFileCreationServiceTests {
         #expect(source.contains("@State private var quickListCreationTask: Task<Void, Never>?"))
         #expect(source.contains("@State private var quickListCreationRequestID: UUID?"))
         #expect(functionSource.contains("cancelQuickListCreation()"))
-        #expect(functionSource.contains("createDestinationIfMissing: true"))
+        // The managed file is created on first use once the storage route is settled.
+        #expect(functionSource.contains("createDestinationIfMissing: KeywordListsStore.shared.isSettledRoute(destinationURL)"))
         #expect(functionSource.contains("guard quickListCreationRequestID == requestID else { return }"))
         // Failures are surfaced to the user, not only logged.
         #expect(functionSource.contains("viewModel.notice = MetadataPanelNotice("))

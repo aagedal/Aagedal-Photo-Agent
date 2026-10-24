@@ -209,6 +209,14 @@ final class KeywordListsStore {
         }
     }
 
+    /// True when `url` lies under a resolved storage root. While iCloud lists are enabled but the
+    /// container hasn't resolved, `resolveRootURL()` answers with the local fallback without
+    /// caching it; creating a file there would split the list from its iCloud copy.
+    func isSettledRoute(_ url: URL) -> Bool {
+        guard let root = testStorageRoot ?? cachedRoot else { return false }
+        return url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/")
+    }
+
     func resolveURL(for key: KeywordListKey) async throws -> URL {
         try await resolveRootURL().appendingPathComponent(key.relativePath)
     }

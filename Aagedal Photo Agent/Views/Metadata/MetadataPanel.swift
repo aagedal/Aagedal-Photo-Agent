@@ -929,11 +929,11 @@ struct MetadataPanel: View {
                 let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
                 guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
                 // Quick lists always live in the managed store, so the first addition simply
-                // creates the managed file — no external file needs to be chosen.
+                // creates the managed file — once the storage route (iCloud or local) is settled.
                 let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
                     values,
                     to: destinationURL,
-                    createDestinationIfMissing: true,
+                    createDestinationIfMissing: KeywordListsStore.shared.isSettledRoute(destinationURL),
                     requestID: requestID
                 )
                 completeQuickListMutation(result, type: type, requestID: requestID)
@@ -971,6 +971,12 @@ struct MetadataPanel: View {
         guard quickListCreationRequestID == requestID else { return }
         quickListCreationTask = nil
         quickListCreationRequestID = nil
+        if case .missingDestination = result {
+            viewModel.notice = MetadataPanelNotice(
+                title: "Quick List not updated yet",
+                detail: ["Keyword list storage (iCloud Drive) isn't ready. Try again in a moment."],
+                severity: .warning)
+        }
     }
 
     private func cancelQuickListCreation() {

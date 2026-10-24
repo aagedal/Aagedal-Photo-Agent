@@ -414,7 +414,9 @@ nonisolated enum RAWArchiveService {
         }
     }
 
-    static func resolveBookmark(key: String) -> URL? {
+    /// `removeOnFailure: false` keeps a bookmark that can't resolve right now (for example an
+    /// unmounted external volume) so the destination comes back when the drive does.
+    static func resolveBookmark(key: String, removeOnFailure: Bool = true) -> URL? {
         guard let data = AppDefaults.store.data(forKey: key) else {
             return nil
         }
@@ -431,7 +433,7 @@ nonisolated enum RAWArchiveService {
             }
             return url
         } catch {
-            AppDefaults.store.removeObject(forKey: key)
+            if removeOnFailure { AppDefaults.store.removeObject(forKey: key) }
             return nil
         }
     }

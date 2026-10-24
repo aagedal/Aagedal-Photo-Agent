@@ -6,10 +6,9 @@ struct WebImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
     @State private var cookies: URL?
-    /// Remembered across sessions like the other import destinations.
-    @State private var destination: URL? = RAWArchiveService.resolveBookmark(
-        key: UserDefaultsKeys.webImportDestinationBookmark
-    )
+    /// Remembered across sessions like the other import destinations; resolved once when the
+    /// sheet appears (a `@State` initial value would re-run bookmark I/O on every view init).
+    @State private var destination: URL?
     @State private var inspection: WebPostInspection?
     @State private var selected = Set<String>()
     @State private var caption = ""
@@ -111,6 +110,14 @@ struct WebImportView: View {
         }
         .padding(24).frame(width: 720, height: 680)
         .interactiveDismissDisabled(task != nil)
+        .onAppear {
+            if destination == nil {
+                destination = RAWArchiveService.resolveBookmark(
+                    key: UserDefaultsKeys.webImportDestinationBookmark,
+                    removeOnFailure: false
+                )
+            }
+        }
         .onDisappear { task?.cancel() }
     }
 
