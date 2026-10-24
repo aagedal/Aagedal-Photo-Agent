@@ -231,13 +231,49 @@ final class KeywordListsStore {
         if let destinationURL, destinationURL != currentURL(for: key) {
             notifyChanged(key)
         } else {
+            // Every caller is an in-app user action (editor save, import, append, clear), so an
+            // empty committed payload means the user emptied the list on purpose.
+            if let entries {
+                setDeliberatelyCleared(entries.isEmpty, for: key)
+            } else if let text {
+                setDeliberatelyCleared(
+                    text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, for: key
+                )
+            }
             notifyChanged(key, entries: entries, text: text, sourceID: sourceID)
         }
     }
 
     /// Publishes a removal already committed by a serialized filesystem service.
     func recordExternalDeletion(to key: KeywordListKey, sourceID: UUID? = nil) {
+        setDeliberatelyCleared(true, for: key)
         notifyChanged(key, sourceID: sourceID)
+    }
+
+    // MARK: - Deliberately cleared lists
+
+    /// Relative paths of lists the user emptied on purpose. Recovery treats an empty list as
+    /// suspicious (possible sync loss) only when it is not in this set.
+    var deliberatelyClearedPaths: Set<String> {
+        Set(defaults.stringArray(forKey: UserDefaultsKeys.keywordListsDeliberatelyCleared) ?? [])
+    }
+
+    /// Drops the "cleared on purpose" mark for every list that no longer reads empty, so a later
+    /// unexpected loss of its content prompts for recovery again.
+    func forgetDeliberatelyCleared(exceptEmpty emptyPaths: Set<String>) {
+        let current = deliberatelyClearedPaths
+        let retained = current.intersection(emptyPaths)
+        guard retained != current else { return }
+        defaults.set(retained.sorted(), forKey: UserDefaultsKeys.keywordListsDeliberatelyCleared)
+    }
+
+    private func setDeliberatelyCleared(_ cleared: Bool, for key: KeywordListKey) {
+        var paths = deliberatelyClearedPaths
+        let changed = cleared
+            ? paths.insert(key.relativePath).inserted
+            : paths.remove(key.relativePath) != nil
+        guard changed else { return }
+        defaults.set(paths.sorted(), forKey: UserDefaultsKeys.keywordListsDeliberatelyCleared)
     }
 
     /// Installs the route chosen by `KeywordListsRoutingService` after its coordinated merge has

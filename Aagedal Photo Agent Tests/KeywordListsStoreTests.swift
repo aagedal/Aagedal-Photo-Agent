@@ -1151,6 +1151,74 @@ struct KeywordListBackupFileServiceTests {
         }
     }
 
+    @Test("A list the user emptied on purpose is excluded from recovery until it has content again")
+    @MainActor
+    func deliberatelyClearedListSkipsRecovery() async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-deliberately-cleared")
+        let suiteName = "KeywordListsDeliberatelyCleared-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        // Every list reads empty while each has a non-empty backup.
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in [directory.appendingPathComponent("version.txt")] },
+            inspectTextFile: { url in .init(url: url, date: .now, text: "Berlin", byteCount: 6) },
+            createDirectory: { _ in },
+            readData: { _ in Data() },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore(defaults: defaults)
+            let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: io), store: store)
+            let city = KeywordListKey.quick(.city)
+            let approved = KeywordListKey.approved(.keywords)
+
+            store.recordExternalWrite(to: city, destinationURL: store.currentURL(for: city), entries: [])
+            store.recordExternalDeletion(to: approved)
+            #expect(store.deliberatelyClearedPaths == [city.relativePath, approved.relativePath])
+
+            await service.refreshRecoverable()
+            #expect(!service.recoverableKeys.isEmpty)
+            #expect(!service.recoverableKeys.contains(city))
+            #expect(!service.recoverableKeys.contains(approved))
+            #expect(service.recoverableKeys.contains(.quick(.keywords)))
+
+            // Adding content again removes the mark so a later unexpected loss prompts again.
+            store.recordExternalWrite(to: city, destinationURL: store.currentURL(for: city), entries: ["Oslo"])
+            #expect(store.deliberatelyClearedPaths == [approved.relativePath])
+            await service.refreshRecoverable()
+            #expect(service.recoverableKeys.contains(city))
+            #expect(!service.recoverableKeys.contains(approved))
+        }
+    }
+
+    @Test("Recovery forgets a cleared mark once the list reads non-empty")
+    @MainActor
+    func deliberatelyClearedMarkIsForgottenWhenContentReturns() async throws {
+        let root = URL(fileURLWithPath: "/virtual/recovery-cleared-content-returns")
+        let suiteName = "KeywordListsDeliberatelyCleared-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let city = KeywordListKey.quick(.city)
+        // Only the city list has content (e.g. synced back from another Mac).
+        let io = KeywordListBackupFileIO(
+            contentsOfDirectory: { directory in [directory.appendingPathComponent("version.txt")] },
+            inspectTextFile: { url in .init(url: url, date: .now, text: "Berlin", byteCount: 6) },
+            createDirectory: { _ in },
+            readData: { url in url.path.hasSuffix(city.relativePath) ? Data("Oslo\n".utf8) : Data() },
+            writeData: { _, _ in }, removeItem: { _ in }
+        )
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let store = KeywordListsStore(defaults: defaults)
+            let service = KeywordListsBackupService(filesystem: KeywordListBackupFileService(io: io), store: store)
+            store.recordExternalDeletion(to: city)
+            store.recordExternalDeletion(to: .quick(.event))
+
+            await service.refreshRecoverable()
+            #expect(store.deliberatelyClearedPaths == [KeywordListKey.quick(.event).relativePath])
+            #expect(!service.recoverableKeys.contains(.quick(.event)))
+        }
+    }
+
     @Test("Inventory Dispatch worker retains caller context and stops after cancelled I/O", arguments: [0, 1, 2])
     @MainActor
     func dispatchInventoryContext(cancellationStage: Int) async {

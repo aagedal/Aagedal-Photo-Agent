@@ -50,6 +50,9 @@ struct StructuredKeywordEditor: View {
     @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
+    /// Serialized tree as loaded, used to detect unsaved edits on Cancel.
+    @State private var savedText: String?
+    @State private var showingDiscardConfirmation = false
     @FocusState private var renameFieldFocused: Bool
 
     var body: some View {
@@ -176,7 +179,7 @@ struct StructuredKeywordEditor: View {
                     .truncationMode(.middle)
             }
             Spacer()
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { requestCancel() }
                 .keyboardShortcut(.cancelAction)
             Button(isSaving ? "Saving…" : "Save") { save() }
                 .disabled(isLoading || isSaving || (initialTree == nil && service.hasReadFailure))
@@ -185,6 +188,12 @@ struct StructuredKeywordEditor: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .alert("Discard Changes?", isPresented: $showingDiscardConfirmation) {
+            Button("Keep Editing", role: .cancel) {}
+            Button("Discard", role: .destructive) { dismiss() }
+        } message: {
+            Text("Your unsaved changes to \u{201C}\(title)\u{201D} will be lost.")
+        }
     }
 
     // MARK: - Row
@@ -503,6 +512,34 @@ struct StructuredKeywordEditor: View {
         }
     }
 
+    /// Cancel / Esc. While renaming, Esc only ends the rename (the Cancel button's key
+    /// equivalent can win over the text field's exit command). Otherwise unsaved edits
+    /// require confirmation before the editor closes.
+    private func requestCancel() {
+        if let id = renamingID {
+            if let node = findNode(id: id, in: root) {
+                cancelRename(node)
+            } else {
+                renamingID = nil
+            }
+            return
+        }
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private var currentText: String {
+        StructuredKeywordSerializer.serialize(root.snapshotChildren().compactMap { strip($0) })
+    }
+
+    private var hasUnsavedChanges: Bool {
+        guard let savedText, !isLoading else { return false }
+        return currentText != savedText
+    }
+
     // MARK: - Keyboard helpers
 
     private func moveFocus(by delta: Int) -> KeyPress.Result {
@@ -592,6 +629,7 @@ struct StructuredKeywordEditor: View {
             expandedIDs.insert(child.id)
         }
         focusedID = root.children.first?.id
+        savedText = currentText
     }
 
     private func save() {

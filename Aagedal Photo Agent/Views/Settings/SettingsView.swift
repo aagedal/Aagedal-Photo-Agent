@@ -49,12 +49,15 @@ struct SettingsView: View {
     @State private var approvedKeywordsImportTask: Task<Void, Never>?
     @State private var approvedKeywordsImportRequestID: UUID?
     @State private var editingApprovedKeywords = false
+    @State private var showClearApprovedKeywordsConfirmation = false
+    @State private var pendingApprovedKeywordsImportURL: URL?
 
     // Structured Person Shown state
     @State private var structuredPersonShownErrorMessage: String?
     @State private var structuredPersonShownImportTask: Task<Void, Never>?
     @State private var structuredPersonShownImportRequestID: UUID?
     @State private var editingStructuredPersonShown = false
+    @State private var showClearStructuredPersonShownConfirmation = false
     @AppStorage(UserDefaultsKeys.structuredPersonShownCategoriesAsKeywords) private var structuredPersonShownCategoriesAsKeywords = false
 
     // Quick Lists state
@@ -1526,11 +1529,7 @@ struct SettingsView: View {
                 }
                 if listConfigured {
                     Button(role: .destructive) {
-                        cancelApprovedKeywordsImport()
-                        Task { @MainActor in
-                            await service.clearList(for: field)
-                            approvedKeywordsErrorMessage = service.loadError
-                        }
+                        showClearApprovedKeywordsConfirmation = true
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
@@ -1539,6 +1538,35 @@ struct SettingsView: View {
                 }
             }
             .disabled(!enabled)
+            .alert("Clear Approved Keywords?", isPresented: $showClearApprovedKeywordsConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) {
+                    cancelApprovedKeywordsImport()
+                    Task { @MainActor in
+                        await service.clearList(for: field)
+                        approvedKeywordsErrorMessage = service.loadError
+                    }
+                }
+            } message: {
+                Text(count > 0
+                     ? "All \(count.formatted()) approved keywords will be removed. Export the list first if you may need it again."
+                     : "The approved keywords list will be removed.")
+            }
+            .alert(
+                "Replace Approved Keywords?",
+                isPresented: Binding(
+                    get: { pendingApprovedKeywordsImportURL != nil },
+                    set: { if !$0 { pendingApprovedKeywordsImportURL = nil } }
+                ),
+                presenting: pendingApprovedKeywordsImportURL
+            ) { url in
+                Button("Cancel", role: .cancel) {}
+                Button("Replace", role: .destructive) {
+                    importApprovedKeywords(from: url)
+                }
+            } message: { url in
+                Text("The \(count.formatted()) existing approved keywords will be replaced with the contents of \u{201C}\(url.lastPathComponent)\u{201D}. To add entries instead, use Edit\u{2026} \u{2192} Import from File\u{2026}.")
+            }
 
             if listConfigured, count > 0 {
                 Text("\(count.formatted()) entries")
@@ -1600,6 +1628,16 @@ struct SettingsView: View {
         panel.allowedContentTypes = [.plainText, .commaSeparatedText]
         panel.message = "Choose an approved keywords list (.txt or .csv)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // The approved list is an authoritative vocabulary, so a file import replaces it.
+        // Confirm before discarding existing entries.
+        if settingsViewModel.approvedLists.entryCount(for: .keywords) > 0 {
+            pendingApprovedKeywordsImportURL = url
+        } else {
+            importApprovedKeywords(from: url)
+        }
+    }
+
+    private func importApprovedKeywords(from url: URL) {
         cancelApprovedKeywordsImport()
         let requestID = UUID()
         approvedKeywordsImportRequestID = requestID
@@ -1663,20 +1701,30 @@ struct SettingsView: View {
                 }
                 if isLoaded {
                     Button(role: .destructive) {
-                        Task {
-                            do {
-                                try await service.clearList()
-                                structuredPersonShownErrorMessage = nil
-                            } catch {
-                                structuredPersonShownErrorMessage = error.localizedDescription
-                            }
-                        }
+                        showClearStructuredPersonShownConfirmation = true
                     } label: {
                         Image(systemName: "xmark.circle")
                     }
                     .buttonStyle(.borderless)
                     .help("Clear structured Person Shown")
                 }
+            }
+            .alert("Clear Structured Person Shown?", isPresented: $showClearStructuredPersonShownConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear", role: .destructive) {
+                    Task {
+                        do {
+                            try await service.clearList()
+                            structuredPersonShownErrorMessage = nil
+                        } catch {
+                            structuredPersonShownErrorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            } message: {
+                Text(nameCount > 0
+                     ? "The structured Person Shown tree (\(nameCount.formatted()) names) will be removed. Export it first if you may need it again."
+                     : "The structured Person Shown tree will be removed.")
             }
 
             if isLoaded, nameCount > 0 {

@@ -567,11 +567,11 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(probe.writtenData == nil)
     }
 
-    @Test("first-use import holds security scope and replaces the managed snapshot before append")
+    @Test("first-use import holds security scope and creates the managed list before append")
     func firstUseImport() async throws {
         let source = URL(fileURLWithPath: "/picked/credit.txt")
         let destination = URL(fileURLWithPath: "/managed/credit.txt")
-        let probe = KeywordListEditorFileAccessProbe(readData: Data("Agency\nDesk\n".utf8))
+        let probe = KeywordListEditorFileAccessProbe(files: [source: Data("Agency\nDesk\n".utf8)])
         let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
 
@@ -586,7 +586,7 @@ struct KeywordListEditorPersistenceServiceTests {
             requestID: requestID,
             destinationURL: destination,
             entries: ["Agency", "Desk", "Freelance"],
-            addedEntries: ["Freelance"],
+            addedEntries: ["Agency", "Desk", "Freelance"],
             byteCount: Data("Agency\nDesk\nFreelance\n".utf8).count,
             cancellationRequestedAfterCommit: false
         )))
@@ -599,7 +599,7 @@ struct KeywordListEditorPersistenceServiceTests {
         let source = URL(fileURLWithPath: "/picked/keywords.csv")
         let destination = URL(fileURLWithPath: "/managed/keywords.txt")
         let probe = KeywordListEditorFileAccessProbe(
-            readData: Data("News,ignored column\nSport,ignored column\n".utf8)
+            files: [source: Data("News,ignored column\nSport,ignored column\n".utf8)]
         )
         let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
         let requestID = UUID()
@@ -615,10 +615,66 @@ struct KeywordListEditorPersistenceServiceTests {
             requestID: requestID,
             destinationURL: destination,
             entries: ["News", "Sport", "Weather"],
-            addedEntries: ["Weather"],
+            addedEntries: ["News", "Sport", "Weather"],
             byteCount: Data("News\nSport\nWeather\n".utf8).count,
             cancellationRequestedAfterCommit: false
         )))
+    }
+
+    @Test("file import merges into an existing managed list instead of replacing it")
+    func importMergesIntoExistingList() async throws {
+        let source = URL(fileURLWithPath: "/picked/city.txt")
+        let destination = URL(fileURLWithPath: "/managed/city.txt")
+        let probe = KeywordListEditorFileAccessProbe(files: [
+            destination: Data("Oslo\nBergen\n".utf8),
+            source: Data("Bergen\nTromsø\n\nOslo\nStavanger\n".utf8),
+        ])
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            [],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        // Existing entries keep their order; only the file's new entries are appended.
+        #expect(result == .committed(QuickListMutationCommit(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Oslo", "Bergen", "Tromsø", "Stavanger"],
+            addedEntries: ["Tromsø", "Stavanger"],
+            byteCount: Data("Oslo\nBergen\nTromsø\nStavanger\n".utf8).count,
+            cancellationRequestedAfterCommit: false
+        )))
+        #expect(probe.writtenData == Data("Oslo\nBergen\nTromsø\nStavanger\n".utf8))
+    }
+
+    @Test("file import that adds nothing leaves the managed list untouched")
+    func importWithNoNewEntriesIsUnchanged() async throws {
+        let source = URL(fileURLWithPath: "/picked/city.txt")
+        let destination = URL(fileURLWithPath: "/managed/city.txt")
+        let probe = KeywordListEditorFileAccessProbe(files: [
+            destination: Data("Oslo\nBergen\n".utf8),
+            source: Data("Bergen\n".utf8),
+        ])
+        let service = KeywordListEditorPersistenceService(access: probe.fileAccess)
+        let requestID = UUID()
+
+        let result = try await service.appendEntries(
+            [],
+            to: destination,
+            importing: source,
+            requestID: requestID
+        )
+
+        #expect(result == .unchanged(
+            requestID: requestID,
+            destinationURL: destination,
+            entries: ["Oslo", "Bergen"]
+        ))
+        #expect(probe.writtenData == nil)
     }
 
     @Test("append publishes exact durable evidence when cancellation arrives in the writer")
@@ -820,6 +876,18 @@ struct KeywordListEditorPersistenceServiceTests {
         ))
         #expect(durablePublication.lowerBound < uiRequestGate.lowerBound)
 
+        // Export must not write an empty file after a failed load.
+        let exportButton = try #require(source.range(of: "Button(\"Export to File…\")"))
+        let exportSuffix = source[exportButton.lowerBound...]
+        let exportButtonEnd = try #require(exportSuffix.range(of: "if let feedback"))
+        #expect(exportSuffix[..<exportButtonEnd.lowerBound].contains(".disabled(!canEdit)"))
+        let exportStart = try #require(source.range(of: "private func exportToFile() {"))
+        #expect(source[exportStart.upperBound...].hasPrefix("\n        guard canEdit else { return }"))
+        // Each save replaces the previous outcome so a stale "Save failed" never lingers.
+        let persistBody = try #require(source.range(of: "private func persist() {"))
+        let firstLaunch = try #require(source[persistBody.upperBound...].range(of: "persistenceTask = Task"))
+        #expect(source[persistBody.upperBound..<firstLaunch.lowerBound].contains("feedback = nil"))
+
         #expect(!source.contains("KeywordListsStore.shared.readEntries(storeKey)"))
         #expect(!source.contains("KeywordListsStore.shared.writeEntries(entries, to: storeKey)"))
         #expect(!source.contains("ApprovedListService.shared.saveEntries(entries"))
@@ -845,6 +913,8 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     private let lock = NSLock()
     private let storedItemExists: Bool
     private let storedReadData: Data
+    /// When set, only these URLs exist and each reads its own bytes.
+    private let storedFiles: [URL: Data]?
     private let cancelDuringWrite: Bool
     private var existsCount = 0
     private var readCount = 0
@@ -858,26 +928,33 @@ private nonisolated final class KeywordListEditorFileAccessProbe: @unchecked Sen
     init(
         itemExists: Bool = true,
         readData: Data = Data(),
+        files: [URL: Data]? = nil,
         cancelDuringWrite: Bool = false
     ) {
         storedItemExists = itemExists
         storedReadData = readData
+        storedFiles = files
         self.cancelDuringWrite = cancelDuringWrite
     }
 
     var fileAccess: KeywordListEditorFileAccess {
         KeywordListEditorFileAccess(
-            itemExists: { [self] _ in
+            itemExists: { [self] url in
                 lock.withLock {
                     existsCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
                 }
+                if let storedFiles { return storedFiles[url] != nil }
                 return storedItemExists
             },
-            readData: { [self] _ in
+            readData: { [self] url in
                 lock.withLock {
                     readCount += 1
                     observedMainThread = observedMainThread || Thread.isMainThread
+                }
+                if let storedFiles {
+                    guard let data = storedFiles[url] else { throw CocoaError(.fileReadNoSuchFile) }
+                    return data
                 }
                 return storedReadData
             },

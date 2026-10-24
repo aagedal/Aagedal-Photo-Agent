@@ -916,8 +916,12 @@ final class KeywordListsBackupService {
         let backedUpKeys = Set(groups.filter { group in
             group.versions.contains { ($0.entryCount ?? 0) > 0 }
         }.map(\.key))
+        // A list the user emptied on purpose is not a loss; skip it until it has content again.
+        store.forgetDeliberatelyCleared(exceptEmpty: emptyIdentifiers)
+        let deliberatelyCleared = store.deliberatelyClearedPaths
         recoverableKeys = Self.allKeys.filter {
             emptyIdentifiers.contains($0.relativePath) && backedUpKeys.contains($0)
+                && !deliberatelyCleared.contains($0.relativePath)
         }
     }
 

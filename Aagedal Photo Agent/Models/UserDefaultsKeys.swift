@@ -232,6 +232,9 @@ nonisolated enum UserDefaultsKeys {
     /// Stable per-list migration identifiers. Successful lists remain complete
     /// while failed sources retry on a later launch.
     static let keywordListsMigrationCompletedKeys = "keywordLists.migrationCompletedKeys"
+    /// Relative paths of keyword lists the user emptied on purpose. The launch recovery
+    /// prompt ignores them until they have content again.
+    static let keywordListsDeliberatelyCleared = "keywordLists.deliberatelyCleared"
 
     // MARK: - iCloud Sync (per-category opt-in; local-only, never synced)
     /// True when app preferences are mirrored via NSUbiquitousKeyValueStore.

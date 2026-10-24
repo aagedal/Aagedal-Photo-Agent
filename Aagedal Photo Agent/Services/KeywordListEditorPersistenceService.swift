@@ -435,9 +435,11 @@ final class KeywordListEditorPersistenceService {
         ))
     }
 
-    /// Appends values to an existing managed Quick List, or imports a user-selected first-use
-    /// file before appending. The read/merge/write transaction shares this actor with editor
-    /// saves, preventing an editor save and a Caption-panel append from overwriting each other.
+    /// Appends values to an existing managed Quick List, optionally merging a user-selected file
+    /// first. Imports never replace the managed list: existing entries keep their order and the
+    /// file's new entries are appended, de-duplicated, like the list editor's Import from File.
+    /// The read/merge/write transaction shares this actor with editor saves, preventing an editor
+    /// save and a Caption-panel append from overwriting each other.
     func appendEntries(
         _ entries: [String],
         to destinationURL: URL,
@@ -452,7 +454,7 @@ final class KeywordListEditorPersistenceService {
         defer { reservation.release() }
 
         let importedData: Data?
-        var destinationExists = false
+        let destinationExists: Bool
         if let sourceURL {
             let didStart = access.startAccessingSecurityScopedResource(sourceURL)
             defer {
@@ -468,6 +470,7 @@ final class KeywordListEditorPersistenceService {
                     byteCount: importedData?.count ?? 0
                 )
             }
+            destinationExists = access.itemExists(destinationURL)
         } else {
             destinationExists = access.itemExists(destinationURL)
             guard !Task.isCancelled else {
@@ -486,7 +489,7 @@ final class KeywordListEditorPersistenceService {
             importedData = nil
         }
 
-        let existing: [String]
+        var imported: [String] = []
         if let importedData, let sourceURL {
             guard importedData.count <= ApprovedListParser.maxFileSizeBytes else {
                 throw ApprovedListParserError.fileTooLarge(
@@ -494,11 +497,13 @@ final class KeywordListEditorPersistenceService {
                     limit: ApprovedListParser.maxFileSizeBytes
                 )
             }
-            existing = try ApprovedListParser.parse(
+            imported = try ApprovedListParser.parse(
                 importedData,
                 csv: sourceURL.pathExtension.lowercased() == "csv"
             )
-        } else if destinationExists {
+        }
+        let existing: [String]
+        if destinationExists {
             let existingData = try access.readData(destinationURL)
             guard !Task.isCancelled else {
                 return .cancelledAfterRead(
@@ -514,14 +519,13 @@ final class KeywordListEditorPersistenceService {
         } else {
             existing = []
         }
-        let incoming = Self.normalizedEntries(entries)
+        let incoming = Self.normalizedEntries(imported + entries)
         var seen = Set(existing)
         let added = incoming.filter { seen.insert($0).inserted }
         let combined = existing + added
 
-        // An import replaces the managed list even when it adds no new values. Without an import,
-        // avoiding a no-op write preserves the former best-effort append behavior.
-        guard sourceURL != nil || !added.isEmpty else {
+        // A merge that adds nothing leaves the managed file untouched.
+        guard !added.isEmpty else {
             return .unchanged(
                 requestID: requestID,
                 destinationURL: destinationURL,

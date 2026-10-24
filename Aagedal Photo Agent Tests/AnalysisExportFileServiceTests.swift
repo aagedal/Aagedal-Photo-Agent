@@ -1290,7 +1290,7 @@ struct QuickListFileCreationServiceTests {
         #expect(try Data(contentsOf: destination).isEmpty)
     }
 
-    @Test("MetadataPanel owns request lifetime and performs no direct file creation")
+    @Test("MetadataPanel owns request lifetime and creates first-use quick lists in the managed store")
     func metadataPanelSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1301,28 +1301,29 @@ struct QuickListFileCreationServiceTests {
             ),
             encoding: .utf8
         )
-        let functionStart = try #require(source.range(of: "private func createQuickListFile("))
+        let functionStart = try #require(source.range(
+            of: "private func appendToQuickList(type: QuickListType, values: [String]) {"
+        ))
         let functionSuffix = source[functionStart.lowerBound...]
         let functionEnd = try #require(functionSuffix.range(
-            of: "\n    private func completeQuickListAddition("
+            of: "\n    private func completeQuickListMutation("
         ))
         let functionSource = String(functionSuffix[..<functionEnd.lowerBound])
-        let promptStart = try #require(source.range(of: "private func promptForQuickListFile("))
-        let promptSuffix = source[promptStart.lowerBound...]
-        let promptEnd = try #require(promptSuffix.range(of: "\n    private func createQuickListFile("))
-        let promptSource = String(promptSuffix[..<promptEnd.lowerBound])
 
         #expect(source.contains("@State private var quickListCreationTask: Task<Void, Never>?"))
         #expect(source.contains("@State private var quickListCreationRequestID: UUID?"))
         #expect(functionSource.contains("cancelQuickListCreation()"))
-        #expect(functionSource.contains("try await QuickListFileCreationService.shared.createIfNeeded("))
+        #expect(functionSource.contains("createDestinationIfMissing: true"))
         #expect(functionSource.contains("guard quickListCreationRequestID == requestID else { return }"))
+        // Failures are surfaced to the user, not only logged.
+        #expect(functionSource.contains("viewModel.notice = MetadataPanelNotice("))
         #expect(source.range(of: #"\.onDisappear\s*\{[^}]*\bcancelQuickListCreation\(\)"#,
             options: .regularExpression) != nil)
         #expect(source.contains("private func cancelQuickListCreation()"))
         #expect(source.contains("quickListCreationTask?.cancel()"))
-        #expect(!promptSource.contains("FileManager.default.fileExists"))
-        #expect(!promptSource.contains(".write(to:"))
+        // No external save panel or direct file creation on first use.
+        #expect(!source.contains("NSSavePanel()"))
+        #expect(!source.contains("FileManager.default.fileExists"))
     }
 }
 

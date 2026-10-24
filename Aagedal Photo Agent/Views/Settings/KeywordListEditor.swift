@@ -145,6 +145,8 @@ struct KeywordListEditor: View {
             Button("Export to File…") {
                 exportToFile()
             }
+            // A failed load leaves `entries` empty; exporting then would write an empty file.
+            .disabled(!canEdit)
             if let feedback {
                 Text(feedback)
                     .font(.caption)
@@ -169,6 +171,7 @@ struct KeywordListEditor: View {
 
     private func loadEntries() {
         loadedDestinationURL = nil
+        feedback = nil
         loadTask?.cancel()
         let requestID = UUID()
         loadRequestID = requestID
@@ -248,6 +251,8 @@ struct KeywordListEditor: View {
         loadTask?.cancel()
         loadTask = nil
         persistenceTask?.cancel()
+        // Each save replaces the previous outcome, so an old "Save failed" never lingers.
+        feedback = nil
 
         let requestID = UUID()
         let snapshot = entries
@@ -260,8 +265,8 @@ struct KeywordListEditor: View {
                 guard activeDestination == destinationURL else {
                     persistenceTask = nil
                     persistenceRequestID = nil
-                    feedback = "List storage changed. Apply the edit again."
                     loadEntries()
+                    feedback = "List storage changed. Apply the edit again."
                     return
                 }
                 let result = try await KeywordListEditorPersistenceService.shared.saveEntries(
@@ -324,8 +329,8 @@ struct KeywordListEditor: View {
                 importRequestID = nil
                 guard loadedDestinationURL == destinationURL,
                       KeywordListsStore.shared.currentURL(for: storeKey) == destinationURL else {
-                    feedback = "List storage changed. Import the file again."
                     loadEntries()
+                    feedback = "List storage changed. Import the file again."
                     return
                 }
                 var seen = Set(entries.map { $0.lowercased() })
@@ -334,8 +339,8 @@ struct KeywordListEditor: View {
                     entries.append(entry)
                     added += 1
                 }
-                feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
                 if added > 0 { persist() }
+                feedback = "Imported \(added) new \(added == 1 ? "entry" : "entries")"
             } catch {
                 guard importRequestID == requestID, !Task.isCancelled else { return }
                 importTask = nil
@@ -346,6 +351,7 @@ struct KeywordListEditor: View {
     }
 
     private func exportToFile() {
+        guard canEdit else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = defaultExportFilename()
@@ -369,7 +375,7 @@ struct KeywordListEditor: View {
                 exportRequestID = nil
                 switch result {
                 case .committed:
-                    feedback = "Exported \(entryCount) entries"
+                    feedback = "Exported \(entryCount) \(entryCount == 1 ? "entry" : "entries")"
                 case .cancelledBeforeWrite:
                     feedback = "Export cancelled"
                 }

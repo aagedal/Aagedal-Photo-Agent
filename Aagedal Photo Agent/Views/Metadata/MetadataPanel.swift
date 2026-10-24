@@ -166,6 +166,19 @@ struct MetadataPanel: View {
         case city
         case country
         case event
+
+        var quickListType: QuickListType {
+            switch self {
+            case .keywords: .keywords
+            case .personShown: .personShown
+            case .copyright: .copyright
+            case .creator: .creator
+            case .credit: .credit
+            case .city: .city
+            case .country: .country
+            case .event: .event
+            }
+        }
     }
 
     enum VariableInsertTarget {
@@ -907,62 +920,6 @@ struct MetadataPanel: View {
         return result
     }
 
-    private func promptForQuickListFile(type: QuickListType) -> URL? {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = type.defaultFilename
-        panel.message = "Create Quick List file for \(type.displayName)"
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url
-    }
-
-    private func createQuickListFile(at url: URL, type: QuickListType, values: [String]) {
-        cancelQuickListCreation()
-        let requestID = UUID()
-        quickListCreationRequestID = requestID
-        quickListCreationTask = Task {
-            do {
-                let result = try await QuickListFileCreationService.shared.createIfNeeded(
-                    at: url,
-                    requestID: requestID
-                )
-                switch result {
-                case .existing, .created:
-                    try await completeQuickListAddition(
-                        from: url,
-                        type: type,
-                        values: values,
-                        requestID: requestID
-                    )
-                case .cancelledBeforeAccess, .cancelledBeforeCreation:
-                    guard quickListCreationRequestID == requestID else { return }
-                    quickListCreationTask = nil
-                    quickListCreationRequestID = nil
-                    break
-                }
-            } catch {
-                guard quickListCreationRequestID == requestID else { return }
-                metadataPanelLog.error("Failed to create or import quick list file at \(url.path, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-                do {
-                    let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
-                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-                    let fallback = try await KeywordListEditorPersistenceService.shared.appendEntries(
-                        values,
-                        to: destinationURL,
-                        createDestinationIfMissing: true,
-                        requestID: requestID
-                    )
-                    completeQuickListMutation(fallback, type: type, requestID: requestID)
-                } catch {
-                    guard quickListCreationRequestID == requestID else { return }
-                    quickListCreationTask = nil
-                    quickListCreationRequestID = nil
-                    metadataPanelLog.error("Failed to save managed Quick List fallback: \(error.localizedDescription, privacy: .private)")
-                }
-            }
-        }
-    }
-
     private func appendToQuickList(type: QuickListType, values: [String]) {
         cancelQuickListCreation()
         let requestID = UUID()
@@ -971,51 +928,29 @@ struct MetadataPanel: View {
             do {
                 let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
                 guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
+                // Quick lists always live in the managed store, so the first addition simply
+                // creates the managed file — no external file needs to be chosen.
                 let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
                     values,
                     to: destinationURL,
+                    createDestinationIfMissing: true,
                     requestID: requestID
                 )
-                switch result {
-                case .missingDestination:
-                    guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-                    guard KeywordListsStore.shared.currentURL(for: .quick(type)) == destinationURL else {
-                        appendToQuickList(type: type, values: values)
-                        return
-                    }
-                    guard let url = promptForQuickListFile(type: type) else {
-                        quickListCreationTask = nil
-                        quickListCreationRequestID = nil
-                        return
-                    }
-                    createQuickListFile(at: url, type: type, values: values)
-                default:
-                    completeQuickListMutation(result, type: type, requestID: requestID)
-                }
+                completeQuickListMutation(result, type: type, requestID: requestID)
             } catch {
                 guard quickListCreationRequestID == requestID else { return }
                 quickListCreationTask = nil
                 quickListCreationRequestID = nil
                 metadataPanelLog.error("Failed to append Quick List: \(error.localizedDescription, privacy: .private)")
+                guard !(error is CancellationError) else { return }
+                let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                viewModel.notice = MetadataPanelNotice(
+                    title: "Couldn't add to \(type.displayName) Quick List",
+                    detail: [description],
+                    severity: .error
+                )
             }
         }
-    }
-
-    private func completeQuickListAddition(
-        from url: URL,
-        type: QuickListType,
-        values: [String],
-        requestID: UUID
-    ) async throws {
-        let destinationURL = try await KeywordListsStore.shared.resolveURL(for: .quick(type))
-        guard quickListCreationRequestID == requestID, !Task.isCancelled else { return }
-        let result = try await KeywordListEditorPersistenceService.shared.appendEntries(
-            values,
-            to: destinationURL,
-            importing: url,
-            requestID: requestID
-        )
-        completeQuickListMutation(result, type: type, requestID: requestID)
     }
 
     private func completeQuickListMutation(
@@ -1444,24 +1379,34 @@ struct MetadataPanel: View {
                 let target = listFilePickerTarget
                 Task {
                     do {
+                        // Imports merge into the managed list (never replace it).
+                        let added: Int
                         switch target {
                         case .keywords:
-                            try await settingsViewModel.setKeywordsListURL(url)
+                            added = try await settingsViewModel.setKeywordsListURL(url)
                         case .personShown:
-                            try await settingsViewModel.setPersonShownListURL(url)
+                            added = try await settingsViewModel.setPersonShownListURL(url)
                         case .copyright:
-                            try await settingsViewModel.setCopyrightListURL(url)
+                            added = try await settingsViewModel.setCopyrightListURL(url)
                         case .creator:
-                            try await settingsViewModel.setCreatorListURL(url)
+                            added = try await settingsViewModel.setCreatorListURL(url)
                         case .credit:
-                            try await settingsViewModel.setCreditListURL(url)
+                            added = try await settingsViewModel.setCreditListURL(url)
                         case .city:
-                            try await settingsViewModel.setCityListURL(url)
+                            added = try await settingsViewModel.setCityListURL(url)
                         case .country:
-                            try await settingsViewModel.setCountryListURL(url)
+                            added = try await settingsViewModel.setCountryListURL(url)
                         case .event:
-                            try await settingsViewModel.setEventListURL(url)
+                            added = try await settingsViewModel.setEventListURL(url)
                         }
+                        let listName = "\(target.quickListType.displayName) Quick List"
+                        viewModel.notice = MetadataPanelNotice(
+                            title: added == 0
+                                ? "No new entries for \(listName)"
+                                : "Added \(added) \(added == 1 ? "entry" : "entries") to \(listName)",
+                            detail: [url.lastPathComponent],
+                            severity: .info
+                        )
                     } catch {
                         let description = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                         viewModel.notice = MetadataPanelNotice(

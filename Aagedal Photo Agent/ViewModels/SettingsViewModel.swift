@@ -671,39 +671,55 @@ final class SettingsViewModel {
         return quickListURLs[type]?.path ?? ""
     }
 
-    func setKeywordsListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setKeywordsListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .keywords)
     }
 
-    func setPersonShownListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setPersonShownListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .personShown)
     }
 
-    func setCopyrightListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setCopyrightListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .copyright)
     }
 
-    func setCreatorListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setCreatorListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .creator)
     }
 
-    func setCreditListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setCreditListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .credit)
     }
 
-    func setCityListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setCityListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .city)
     }
 
-    func setCountryListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setCountryListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .country)
     }
 
-    func setEventListURL(_ url: URL) async throws {
+    /// Merges the file into the managed list; returns the number of entries added.
+    @discardableResult
+    func setEventListURL(_ url: URL) async throws -> Int {
         try await importQuickList(from: url, type: .event)
     }
 
-    private func importQuickList(from url: URL, type: QuickListType) async throws {
+    private func importQuickList(from url: URL, type: QuickListType) async throws -> Int {
         let requestID = UUID()
         let destinationURL = try await managedQuickListURL(for: type)
         let result = try await quickListPersistence.appendEntries(
@@ -714,9 +730,10 @@ final class SettingsViewModel {
         )
         guard case .committed(let commit) = result else {
             try Task.checkCancellation()
-            return
+            return 0
         }
         publishQuickListCommit(commit, type: type)
+        return commit.addedEntries.count
     }
 
     func setTemplatesFolderURL(_ url: URL) async {
@@ -1231,10 +1248,6 @@ final class SettingsViewModel {
     /// so this returns nil when the list is empty.
     func quickListURL(for type: QuickListType) -> URL? {
         availableQuickLists.contains(type) ? quickListURLs[type] : nil
-    }
-
-    func setQuickListURL(_ url: URL, for type: QuickListType) async {
-        try? await importQuickList(from: url, type: type)
     }
 
     /// Appends `values` to a quick list, deduplicated, and persists through the
