@@ -891,7 +891,25 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             applyToneCurves(tc, metadata: &metadata)
         }
 
-        if structuredData.masks != nil || structuredData.watermarkLayers != nil
+        if structuredData.appendsLayers, !structuredData.replaceCameraRawBlock {
+            // Develop paste: the file's own layers stay; the copied ones are appended.
+            var copied = CameraRawSettings()
+            copied.localAdjustments = structuredData.masks
+            copied.watermarkLayers = structuredData.watermarkLayers
+            copied.layerOrder = structuredData.layerOrder
+            copied.unparsedMaskCorrections = structuredData.unparsedMaskCorrections
+            let existing = iptcMetadataFromDict(metadata.asMetadataDict(fileURL: url)).cameraRaw
+            let merged = (existing ?? CameraRawSettings()).appendingLayers(
+                from: copied, maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
+            ).settings
+            if merged.localAdjustments != existing?.localAdjustments
+                || merged.watermarkLayers != existing?.watermarkLayers
+                || merged.unparsedMaskCorrections != existing?.unparsedMaskCorrections {
+                applyLayerChain(masks: merged.localAdjustments ?? [], watermarks: merged.watermarkLayers ?? [],
+                                layerOrder: merged.layerOrder,
+                                preserved: merged.unparsedMaskCorrections ?? [], metadata: &metadata)
+            }
+        } else if structuredData.masks != nil || structuredData.watermarkLayers != nil
             || structuredData.unparsedMaskCorrections?.isEmpty == false {
             applyLayerChain(masks: structuredData.masks ?? [], watermarks: structuredData.watermarkLayers ?? [],
                             layerOrder: structuredData.layerOrder,

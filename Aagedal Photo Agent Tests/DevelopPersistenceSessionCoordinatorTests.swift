@@ -400,6 +400,65 @@ struct DevelopPersistenceSessionCoordinatorTests {
         #expect(coordinator.pendingBatchPersistenceCount == 0)
     }
 
+    @Test("undo steps carry action names for the Edit menu")
+    func undoStepsAreNamed() {
+        let coordinator = DevelopPersistenceSessionCoordinator()
+        coordinator.beginWorkspace()
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-persistence-named.raw"))
+        #expect(!coordinator.canUndoFromMenu)
+
+        let revision = coordinator.historyRevision
+        _ = coordinator.recordMutation(
+            before: nil,
+            after: CameraRawSettings(exposure2012: 1),
+            editsNamedVersion: false,
+            actionName: "Exposure"
+        ) { _, _ in }
+        #expect(coordinator.historyRevision != revision)
+        #expect(coordinator.canUndoFromMenu)
+        #expect(coordinator.undoMenuTitle == coordinator.undoManager.undoMenuTitle(forUndoActionName: "Exposure"))
+
+        coordinator.undo()
+        #expect(coordinator.canRedoFromMenu)
+        #expect(coordinator.redoMenuTitle == coordinator.undoManager.redoMenuTitle(forUndoActionName: "Exposure"))
+        coordinator.removeAllUndoActions()
+        #expect(!coordinator.canUndoFromMenu && !coordinator.canRedoFromMenu)
+    }
+
+    @Test("history ends when another photo loads or the settings are replaced from outside")
+    func undoHistoryPolicy() {
+        let photo = URL(fileURLWithPath: "/tmp/develop-history-a.raw")
+        let other = URL(fileURLWithPath: "/tmp/develop-history-b.raw")
+        var edited = CameraRawSettings(exposure2012: 1.2)
+        edited.localAdjustments = [MaskAdjustment(name: "Sky", exposure: -0.5)]
+
+        // Another photo always starts a fresh history.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: other,
+            settingsDevelopPublished: edited, loadedSettings: edited))
+        // Reset All Edits (settings cleared from outside): Undo must not bring the edits back.
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: nil))
+        // A multi-photo paste that included the active photo reloads different settings.
+        var pasted = edited
+        pasted.exposure2012 = 0.4
+        #expect(DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: pasted))
+        // A same-photo reload of what Develop itself published (descriptive change, own save)
+        // keeps Undo, even with the loader's per-image decode facts attached.
+        var reloaded = edited
+        reloaded.asShotNeutralTemperature = 5_200
+        reloaded.sourceHasHDRHeadroom = true
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: edited, loadedSettings: reloaded))
+        #expect(!DevelopUndoHistoryPolicy.shouldClearHistory(
+            historyImageURL: photo, loadedImageURL: photo,
+            settingsDevelopPublished: CameraRawSettings(), loadedSettings: nil))
+    }
+
     @Test("edit workspace delegates undo and dirty URL ownership")
     func editWorkspaceSourceContract() throws {
         let workspace = URL(fileURLWithPath: #filePath)

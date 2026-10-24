@@ -292,6 +292,12 @@ struct EditWorkspaceView: View {
     /// Photo whose metadata load last completed; a load for a different photo starts a fresh
     /// Develop undo history so no entry can restore another photo's (or a placeholder) state.
     @State private var undoHistoryImageURL: URL?
+    /// The settings Develop itself last published for `undoHistoryImageURL`. A same-photo load
+    /// that replaces them from outside ends the history (see `DevelopUndoHistoryPolicy`).
+    @State private var undoHistorySettings: CameraRawSettings?
+    /// RAW whose Phase 2 decode failed (format unsupported by this macOS): Develop is editing
+    /// its embedded preview. Keyed by URL so it can't leak to another photo.
+    @State private var unsupportedRAWPreviewURL: URL?
     /// Latest navigation requested while a version transition was still flushing. Coalesced:
     /// only the most recent request is applied once the transition ends.
     @State private var pendingDevelopNavigation: PendingDevelopNavigation?
@@ -697,12 +703,17 @@ struct EditWorkspaceView: View {
                 // path so it is undoable and reaches the sidecar (or active named version). The
                 // commit publishes it to the ImageFile and drops the cached edited renders —
                 // the RAW decode itself is HDR-state independent (always full EDR headroom).
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "HDR") { cameraRaw in
                     cameraRaw.hdrEditMode = newValue ? 1 : 0
                 }
                 commitEditAdjustments()
             }
         )
+    }
+
+    private var isEditingEmbeddedRAWPreview: Bool {
+        guard let url = selectedImageURL else { return false }
+        return unsupportedRAWPreviewURL == url
     }
 
     private var isCropEnabled: Bool {
@@ -908,7 +919,12 @@ struct EditWorkspaceView: View {
                 loadSelectedImagePreview()
             }
             if metadataViewModel.selectedURLs.count == 1,
-               undoHistoryImageURL != metadataViewModel.selectedURLs.first {
+               DevelopUndoHistoryPolicy.shouldClearHistory(
+                historyImageURL: undoHistoryImageURL,
+                loadedImageURL: metadataViewModel.selectedURLs.first,
+                settingsDevelopPublished: undoHistorySettings,
+                loadedSettings: metadataViewModel.editingMetadata.cameraRaw
+               ) {
                 undoHistoryImageURL = metadataViewModel.selectedURLs.first
                 persistenceSession.removeAllUndoActions()
             }
@@ -917,6 +933,9 @@ struct EditWorkspaceView: View {
             // any XMP hdrEditMode value has been loaded and takes priority.
             autoEnableHDRIfNeeded(includeRawPreference: true)
             installLoadedDevelopVersionIfReady()
+            undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
+            // A crop tool left open across navigation adopts this photo's framing for Esc.
+            captureCropEntryForLoadedPhotoIfNeeded()
             renderPreview()
         }
         .onChange(of: metadataViewModel.primaryDevelopRecoveryReloadGeneration) { _, _ in
@@ -1275,13 +1294,9 @@ struct EditWorkspaceView: View {
                                     },
                                     onCommit: {
                                         // Commit accumulated drag state to ViewModel
+                                        // Region and straighten land as one Undo step.
                                         let cropDrag = cropSession.finishInteraction()
-                                        if let region = cropDrag.region {
-                                            updateCrop(region, commit: false)
-                                        }
-                                        if let angle = cropDrag.angle {
-                                            updateCropAngle(angle, commit: false)
-                                        }
+                                        applyCropDrag(region: cropDrag.region, angle: cropDrag.angle)
                                         commitEditAdjustments()
                                     },
                                     onAspectRatioOverride: { newRatio in
@@ -1337,7 +1352,7 @@ struct EditWorkspaceView: View {
                                         },
                                         onCommit: {
                                             if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
-                                                updateCameraRaw { cameraRaw in
+                                                updateCameraRaw(actionName: "Move Mask") { cameraRaw in
                                                     cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                                 }
                                             }
@@ -1379,7 +1394,7 @@ struct EditWorkspaceView: View {
                                         },
                                         onCommit: {
                                             if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
-                                                updateCameraRaw { cameraRaw in
+                                                updateCameraRaw(actionName: "Move Watermark") { cameraRaw in
                                                     cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                                 }
                                             }
@@ -1484,7 +1499,7 @@ struct EditWorkspaceView: View {
                                     onCommit: {
                                         // Commit final geometry to ViewModel
                                         if let finalGeo = layerGeometryInteraction.consumeMaskGeometry() {
-                                            updateCameraRaw { cameraRaw in
+                                            updateCameraRaw(actionName: "Move Mask") { cameraRaw in
                                                 cameraRaw.localAdjustments?[maskIdx].geometry = finalGeo
                                             }
                                         }
@@ -1522,7 +1537,7 @@ struct EditWorkspaceView: View {
                                     },
                                     onCommit: {
                                         if let finalGeo = layerGeometryInteraction.consumeWatermarkGeometry() {
-                                            updateCameraRaw { cameraRaw in
+                                            updateCameraRaw(actionName: "Move Watermark") { cameraRaw in
                                                 cameraRaw.watermarkLayers?[wmIdx].geometry = finalGeo
                                             }
                                         }
@@ -1801,8 +1816,9 @@ struct EditWorkspaceView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!persistenceSession.canUndo)
-                        .help("Undo (⌘Z)")
+                        .disabled(!persistenceSession.canUndoFromMenu)
+                        .help("\(persistenceSession.undoMenuTitle) (⌘Z)")
+                        .accessibilityLabel(persistenceSession.undoMenuTitle)
 
                         Button {
                             persistenceSession.redo()
@@ -1812,8 +1828,9 @@ struct EditWorkspaceView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!persistenceSession.canRedo)
-                        .help("Redo (⇧⌘Z)")
+                        .disabled(!persistenceSession.canRedoFromMenu)
+                        .help("\(persistenceSession.redoMenuTitle) (⇧⌘Z)")
+                        .accessibilityLabel(persistenceSession.redoMenuTitle)
                     }
                     if canEditSingleImage, hasDevelopAdjustments {
                         Button {
@@ -1825,7 +1842,20 @@ struct EditWorkspaceView: View {
                         }
                         .buttonStyle(.plain)
                         .help("Reset develop adjustments (keep crop)")
+                        .accessibilityLabel("Reset Develop Adjustments")
                     }
+                }
+
+                if canEditSingleImage, isEditingEmbeddedRAWPreview {
+                    // Persistent: every edit and export of this photo is affected.
+                    Label(
+                        "This RAW format isn't supported by this version of macOS — you're editing its embedded preview; exports use the preview's resolution.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
                 }
 
                 if canEditSingleImage {
@@ -1842,7 +1872,7 @@ struct EditWorkspaceView: View {
                                 // One undoable, named-version-aware crop mutation like every
                                 // other Develop crop change.
                                 guard let embeddedCrop = metadataViewModel.embeddedCropForImport else { return }
-                                updateCameraRaw { cameraRaw in
+                                updateCameraRaw(actionName: "Import Crop") { cameraRaw in
                                     cameraRaw.crop = embeddedCrop
                                 }
                                 if !showCropControls {
@@ -2237,7 +2267,9 @@ struct EditWorkspaceView: View {
                     step: 0.01,
                     // The slider's AppKit view consumes mouse-downs, so a SwiftUI tap gesture
                     // never sees the double-click; the slider reports it through onReset.
-                    onReset: resetCropZoom
+                    onReset: resetCropZoom,
+                    label: "Preview Zoom",
+                    valueText: { "\(Int(($0 * 100).rounded()))%" }
                 )
                 .frame(height: 20)
                 .onChange(of: cropZoomScale) { _, _ in
@@ -2292,7 +2324,9 @@ struct EditWorkspaceView: View {
                 onReset: {
                     resetCropAngle()
                     commitEditAdjustments()
-                }
+                },
+                label: "Straighten",
+                valueText: { signedDoubleString($0, precision: 1) + "°" }
             )
             .frame(width: 130, height: 20)
             .help("Straighten angle. Hold Option for precision; double-click to reset.")
@@ -2797,8 +2831,7 @@ struct EditWorkspaceView: View {
         guard selectedImageURL == metadataViewModel.selectedURLs.first,
               metadataViewModel.selectedCount == 1, !metadataViewModel.isLoading else { return }
         let drag = cropSession.finishInteraction()
-        if let region = drag.region { updateCrop(region, commit: false) }
-        if let angle = drag.angle { updateCropAngle(angle, commit: false) }
+        applyCropDrag(region: drag.region, angle: drag.angle)
     }
 
     private var hasUncapturedPrimaryDevelopWork: Bool {
@@ -2925,6 +2958,7 @@ struct EditWorkspaceView: View {
         primaryRecoveryReloadPending = false
         DevelopPrimaryLifecycleCoordinator.shared.unregisterEditor(ownerID: primaryEditorOwnerID)
         metadataViewModel.unregisterPrimaryDevelopRecoveryEditorBarrier(owner: primaryEditorOwnerID)
+        DevelopUndoMenuRouter.shared.unregister(ownerID: primaryEditorOwnerID)
         exportSession.endWorkspaceSession()
         colorLUTImport.endImageSession()
         layerSession.endImageSession()
@@ -3059,6 +3093,7 @@ struct EditWorkspaceView: View {
         // A photo already loaded on entry owns the history; only a later load of another
         // photo starts a fresh one (same-photo reloads keep Undo).
         undoHistoryImageURL = isSelectedImageMetadataReady ? selectedImageURL : nil
+        undoHistorySettings = metadataViewModel.editingMetadata.cameraRaw
         loadDevelopVersionCatalog()
         editLog.info("[\(selectedImageURL?.lastPathComponent ?? "nil")] loadSelectedImagePreview triggered by: onAppear")
         loadSelectedImagePreview()
@@ -3068,6 +3103,23 @@ struct EditWorkspaceView: View {
         if let keyMonitor {
             workspaceInput.installKeyMonitor(keyMonitor) { NSEvent.removeMonitor($0) }
         }
+        // Edit ▸ Undo/Redo drive this history (with step names) while Develop owns input; the
+        // menu falls back to the responder chain for text fields and other windows.
+        DevelopUndoMenuRouter.shared.register(.init(
+            ownerID: primaryEditorOwnerID,
+            session: persistenceSession,
+            canRoute: { [self] in
+                let window = NSApp.keyWindow
+                return keyboardWindow.ownsKeyEvent(in: window) && !isTextFieldActive()
+                    && !workspaceInput.isOverlayPresented && NSApp.modalWindow == nil
+                    && window?.attachedSheet == nil && window?.sheetParent == nil
+            },
+            perform: { [self] redo in
+                // Same gate as the ⌘Z key handler: history belongs to the loaded photo.
+                guard isSelectedImageMetadataReady else { return }
+                if redo { persistenceSession.redo() } else { persistenceSession.undo() }
+            }
+        ))
         // DaVinci Resolve-style grade copy: middle-click the hovered filmstrip thumbnail to
         // apply its develop settings to the current selection without changing that selection.
         let middleMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [self] event in
@@ -3342,6 +3394,9 @@ struct EditWorkspaceView: View {
                     }
                     editLog.info("[\(filename)] Phase 2: decoded in \(decodeElapsed) (result=\(rawCIImage != nil))")
 
+                    // The system RAW decoder can't read this file: the embedded preview stays
+                    // the edit (and export) source. Flag it for the persistent notice.
+                    unsupportedRAWPreviewURL = rawCIImage == nil ? selectedImageURL : nil
                     if let rawCIImage {
                         let uploadStart = ContinuousClock.now
                         // Already target-oriented from the decode task.
@@ -4325,7 +4380,9 @@ struct EditWorkspaceView: View {
         whiteBalanceSession.asShotTint
     }
 
-    private func updateCameraRaw(_ update: (inout CameraRawSettings) -> Void) {
+    /// `actionName` titles the Undo/Redo menu items ("Undo Crop"). Without one, a slider commit
+    /// supplies its own label (see `DevelopUndoActionName`), else a generic "Adjustment".
+    private func updateCameraRaw(actionName: String? = nil, _ update: (inout CameraRawSettings) -> Void) {
         // Until the selected photo's metadata has loaded, the edit buffer is a placeholder (or
         // still the previous photo's) that the load overwrites; an edit — and its Undo entry —
         // recorded against it would be lost or restore the wrong photo's settings.
@@ -4333,6 +4390,7 @@ struct EditWorkspaceView: View {
         let oldSettings = metadataViewModel.editingMetadata.cameraRaw
         let newSettings = DevelopSettingsMutation.applying(update, to: oldSettings)
         metadataViewModel.editingMetadata.cameraRaw = newSettings
+        undoHistorySettings = newSettings
         let editsNamedVersion = developVersionCatalog?.activeVersionID != nil
         if editsNamedVersion {
             metadataViewModel.hasChanges = false
@@ -4344,9 +4402,11 @@ struct EditWorkspaceView: View {
             before: oldSettings,
             after: newSettings,
             editsNamedVersion: editsNamedVersion,
+            actionName: actionName ?? DevelopUndoActionName.current ?? "Adjustment",
             coalescesWithPrevious: EditSliderDoubleClickReset.isActive
         ) { settings, restoresNamedVersion in
             metadataViewModel.editingMetadata.cameraRaw = settings
+            undoHistorySettings = settings
             if restoresNamedVersion {
                 metadataViewModel.hasChanges = false
             } else {
@@ -4443,7 +4503,7 @@ struct EditWorkspaceView: View {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.toneCurve },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Tone Curve") { cameraRaw in
                     cameraRaw.toneCurve = newValue
                 }
             }
@@ -4490,7 +4550,7 @@ struct EditWorkspaceView: View {
                 )
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Anonymizer") { cameraRaw in
                     AnonymizerToggleBehavior.setEnabled(
                         newValue,
                         settings: &cameraRaw.anonymizer
@@ -4505,7 +4565,7 @@ struct EditWorkspaceView: View {
         Binding(
             get: { metadataViewModel.editingMetadata.cameraRaw?.anonymizer?.blackOut ?? false },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Black Out") { cameraRaw in
                     if newValue {
                         if cameraRaw.anonymizer == nil { cameraRaw.anonymizer = AnonymizerSettings() }
                         cameraRaw.anonymizer?.blackOut = true
@@ -4657,6 +4717,8 @@ struct EditWorkspaceView: View {
         if isActive {
             // Esc restores this framing (Camera Raw's Cancel); Done/Return keeps the edit.
             cropSession.captureEntryCrop(entryCrop)
+            // An existing crop keeps its shape: the picker follows it instead of reshaping it.
+            if isCropEnabled { syncCropAspectRatioToCurrentCrop() }
             // Crop is exclusive with the other image-interaction tools.
             whiteBalanceSession.deactivatePicker()
             maskInteraction.stopBrushPainting()
@@ -4669,7 +4731,7 @@ struct EditWorkspaceView: View {
         if isActive && !isCropEnabled {
             // Showing controls — enable crop if not already active
             resetCropZoom()
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Crop") { cameraRaw in
                 _ = cropSession.enableCropIfNeeded(in: &cameraRaw)
             }
             if cropAspectRatio != .free {
@@ -4692,6 +4754,27 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// Selects the aspect preset the current crop already has (Free if none), so entering the
+    /// crop tool never snaps an existing crop to the previously chosen ratio.
+    private func syncCropAspectRatioToCurrentCrop() {
+        // The file's own (display-oriented) dimensions are known before its preview decodes.
+        let imageAspect = nativeDisplayPixelSize().flatMap { size in
+            size.width > 0 && size.height > 0 ? Double(size.width / size.height) : nil
+        } ?? sourceAspectRatio
+        cropAspectRatio = CropAspectRatio.matching(activeCrop, imageAspectRatio: imageAspect)
+    }
+
+    /// The crop tool was left open while switching photos: once the new photo's own settings
+    /// have loaded, take its entry snapshot (so Esc restores its framing) and sync the picker.
+    private func captureCropEntryForLoadedPhotoIfNeeded() {
+        guard isSelectedImageMetadataReady,
+              cropSession.adoptLoadedPhoto(
+                crop: metadataViewModel.editingMetadata.cameraRaw?.crop,
+                isCropEnabled: isCropEnabled
+              ) else { return }
+        syncCropAspectRatioToCurrentCrop()
+    }
+
     /// Esc in crop mode: close the tool and restore the crop + straighten captured on entry, as one
     /// undoable step (no undo entry when nothing changed).
     private func cancelCropControls() {
@@ -4702,7 +4785,7 @@ struct EditWorkspaceView: View {
                 // stacking a second one that leaves a re-enable on the undo stack.
                 persistenceSession.undo()
             } else {
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Cancel Crop") { cameraRaw in
                     cameraRaw.crop = entry.crop
                 }
                 commitEditAdjustments()
@@ -4713,7 +4796,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetCrop() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Crop") { cameraRaw in
             _ = cropSession.resetCrop(in: &cameraRaw)
         }
         commitEditAdjustments()
@@ -4725,7 +4808,8 @@ struct EditWorkspaceView: View {
     }
 
     private func applyAspectRatioToCrop(_ ratio: CropAspectRatio) {
-        guard isCropEnabled else { return }
+        // Without the photo's preview the image aspect is only a 3:2 placeholder.
+        guard isCropEnabled, isSelectedImageMetadataReady, sourceImage != nil else { return }
         let targetRatio: Double?
         if ratio == .original {
             targetRatio = sourceAspectRatio > 0 ? sourceAspectRatio : nil
@@ -4735,6 +4819,12 @@ struct EditWorkspaceView: View {
         guard let targetRatio, targetRatio > 0 else { return }
 
         let current = activeCrop
+        // Already that shape (e.g. the picker was just synced to the existing crop on tool
+        // entry): reshaping would only add a no-op Undo step and a save.
+        if let visible = CropAspectRatio.visibleAspect(of: current, imageAspectRatio: sourceAspectRatio),
+           abs(visible / targetRatio - 1) <= 0.01 {
+            return
+        }
         let resized = current.resizedToActualAspectRatio(
             targetRatio, angleDegrees: activeCropAngle, imageAspectRatio: sourceAspectRatio
         )
@@ -4742,7 +4832,7 @@ struct EditWorkspaceView: View {
     }
 
     private func updateCrop(_ crop: NormalizedCropRegion, commit: Bool) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Crop") { cameraRaw in
             _ = cropSession.updateCrop(
                 crop,
                 sourceAspectRatio: sourceAspectRatio,
@@ -4756,8 +4846,34 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// A finished crop-tool drag: the reshaped region and the straighten angle (dragging outside
+    /// the crop) are applied in one mutation, so one Undo restores both.
+    private func applyCropDrag(region: NormalizedCropRegion?, angle: Double?) {
+        guard region != nil || angle != nil else { return }
+        updateCameraRaw(actionName: angle != nil ? "Straighten" : "Crop") { cameraRaw in
+            if let region {
+                _ = cropSession.updateCrop(
+                    region,
+                    sourceAspectRatio: sourceAspectRatio,
+                    orientation: selectedImageOrientation,
+                    commit: false,
+                    in: &cameraRaw
+                )
+            }
+            if let angle {
+                _ = cropSession.updateCropAngle(
+                    angle,
+                    sourceAspectRatio: sourceAspectRatio,
+                    orientation: selectedImageOrientation,
+                    commit: false,
+                    in: &cameraRaw
+                )
+            }
+        }
+    }
+
     private func updateCropAngle(_ angle: Double, commit: Bool) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Straighten") { cameraRaw in
             _ = cropSession.updateCropAngle(
                 angle,
                 sourceAspectRatio: sourceAspectRatio,
@@ -5337,7 +5453,7 @@ struct EditWorkspaceView: View {
 
     private func applyPickedWhiteBalance(temperatureKelvin: Double, tint: Double) {
         var persistenceIntent = DevelopWhiteBalancePersistenceIntent.previewOnly
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "White Balance") { cameraRaw in
             persistenceIntent = whiteBalanceSession.applyPickedWhiteBalance(
                 temperatureKelvin: temperatureKelvin,
                 tint: tint,
@@ -5409,6 +5525,13 @@ struct EditWorkspaceView: View {
                     hdrToggleBinding.wrappedValue.toggle()
                 }
                 .help("Toggle HDR mode (\u{2318}H)")
+                .accessibilityLabel("HDR")
+                .accessibilityValue(isHDREnabled ? "On" : "Off")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction {
+                    guard canMutateSingleImageDevelop else { return }
+                    hdrToggleBinding.wrappedValue.toggle()
+                }
         }
         .padding(.top, 2)
     }
@@ -5540,7 +5663,7 @@ struct EditWorkspaceView: View {
                     value: aiMaskBlurBinding(index),
                     range: 0...2,
                     step: 0.05,
-                    formatter: { String(format: "%.2f%%", $0) },
+                    formatter: { $0.formatted(.number.precision(.fractionLength(2)).grouping(.never)) + "%" },
                     settingsMutator: { settings, value in
                         setAIMaskBlur(value, index: index, settings: &settings)
                     },
@@ -6079,6 +6202,12 @@ struct EditWorkspaceView: View {
             }
         }
         .help(layerName(ref, mask: mask))
+        // One selectable button per layer for VoiceOver (tap selects; the context menu holds
+        // rename/mute/invert/delete).
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(layerName(ref, mask: mask) + (muted ? ", muted" : ""))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { selectedLayer = ref }
     }
 
     /// Mute / invert / delete controls for the selected mask, shown beneath the strip.
@@ -6096,6 +6225,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help(mask.inverted ? "Inverted: adjustments apply outside the mask" : "Normal: adjustments apply inside the mask")
+                    .accessibilityLabel(mask.inverted ? "Mask Inverted" : "Invert Mask")
                 }
 
                 Button {
@@ -6107,6 +6237,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(mask.enabled ? "Mute mask effect" : "Enable mask effect")
+                .accessibilityLabel(mask.enabled ? "Mute Mask" : "Enable Mask")
 
                 if !mask.isFullFrame {
                     Button {
@@ -6122,6 +6253,7 @@ struct EditWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
                     .help(showsMaskOutlines ? "Hide all mask outlines" : "Show mask outlines")
+                    .accessibilityLabel(showsMaskOutlines ? "Hide Mask Outlines" : "Show Mask Outlines")
                 }
 
                 Spacer()
@@ -6135,6 +6267,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete mask")
+                .accessibilityLabel("Delete Mask")
             }
             .padding(.horizontal, 2)
         }
@@ -6172,7 +6305,7 @@ struct EditWorkspaceView: View {
             return
         }
         guard layerSession.commitRename(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Rename Layer") { $0 = settings }
         commitEditAdjustments()
     }
 
@@ -6187,12 +6320,12 @@ struct EditWorkspaceView: View {
               layerSession.reorder(dragged, onto: target, in: &settings) == .commit else {
             return
         }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Reorder Layers") { $0 = settings }
         commitEditAdjustments()
     }
 
     private func toggleMaskInverted(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Invert Mask") { cameraRaw in
             guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.localAdjustments?[i].inverted.toggle()
         }
@@ -6200,7 +6333,7 @@ struct EditWorkspaceView: View {
     }
 
     private func toggleMaskEnabled(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Toggle Layer") { cameraRaw in
             guard let i = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.localAdjustments?[i].enabled.toggle()
         }
@@ -6256,7 +6389,7 @@ struct EditWorkspaceView: View {
                 HStack {
                     Spacer()
                     Button {
-                        updateCameraRaw { cameraRaw in
+                        updateCameraRaw(actionName: "Color Transform") { cameraRaw in
                             guard let transform = cameraRaw.localAdjustments?[idx].colorTransform
                             else { return }
                             cameraRaw.localAdjustments?[idx].colorTransform?.inputSpace =
@@ -6296,7 +6429,7 @@ struct EditWorkspaceView: View {
                     .colorTransform?.mode ?? .lut
             },
             set: { mode in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Color Transform Mode") { cameraRaw in
                     cameraRaw.localAdjustments?[index].colorTransform?.mode = mode
                 }
                 commitEditAdjustments()
@@ -6315,7 +6448,7 @@ struct EditWorkspaceView: View {
                 return transform[keyPath: keyPath]
             },
             set: { space in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Color Space") { cameraRaw in
                     guard var transform = cameraRaw.localAdjustments?[index].colorTransform
                     else { return }
                     transform[keyPath: keyPath] = space
@@ -6348,7 +6481,9 @@ struct EditWorkspaceView: View {
                 settingsMutator: { settings, value in
                     settings.localAdjustments?[idx].amount = min(max(value / 100, 0), 1)
                 },
-                onReset: { maskAmountBinding(idx).wrappedValue = 100 }
+                onReset: { maskAmountBinding(idx).wrappedValue = 100 },
+                // The default is 100%, not 0: show the reset arrow only when lowered.
+                showReset: maskAmountBinding(idx).wrappedValue < 99.5
             )
 
             sliderRow(
@@ -6923,7 +7058,7 @@ struct EditWorkspaceView: View {
             },
             set: { newValue in
                 guard let newValue else { return }
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Watermark Image") { cameraRaw in
                     guard let layers = cameraRaw.watermarkLayers, index < layers.count else { return }
                     cameraRaw.watermarkLayers?[index].libraryAssetID = newValue
                 }
@@ -7026,7 +7161,7 @@ struct EditWorkspaceView: View {
                 return AnonymizerToggleBehavior.isEnabled(masks[maskIndex].anonymizer)
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Anonymizer") { cameraRaw in
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     var anonymizer = masks[maskIndex].anonymizer
                     AnonymizerToggleBehavior.setEnabled(newValue, settings: &anonymizer)
@@ -7050,7 +7185,7 @@ struct EditWorkspaceView: View {
                 return masks[maskIndex].anonymizer?.blackOut ?? false
             },
             set: { newValue in
-                updateCameraRaw { cameraRaw in
+                updateCameraRaw(actionName: "Black Out") { cameraRaw in
                     guard let masks = cameraRaw.localAdjustments, maskIndex < masks.count else { return }
                     if newValue {
                         if cameraRaw.localAdjustments?[maskIndex].anonymizer == nil {
@@ -7102,7 +7237,7 @@ struct EditWorkspaceView: View {
         geo = maskGeometryForSensor(geo)
         let baseName = geo.isStandardEllipse ? "Mask" : "Rectangle"
         let newMask = MaskAdjustment(name: "\(baseName) \(existingCount + 1)", geometry: geo)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Mask") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -7135,7 +7270,7 @@ struct EditWorkspaceView: View {
             geometry: fallbackGeometry,
             fullFrame: true
         )
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Global Layer") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -7164,7 +7299,7 @@ struct EditWorkspaceView: View {
             fullFrame: true,
             colorTransform: ColorTransformSettings()
         )
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Color Transform") { cameraRaw in
             if cameraRaw.localAdjustments == nil {
                 cameraRaw.localAdjustments = []
             }
@@ -7192,7 +7327,7 @@ struct EditWorkspaceView: View {
             },
             parse: { try await CubeLUTParser.parseOffMain($0) }
         ) { intent in
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Import LUT") { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
                     .firstIndex(where: { $0.id == intent.layerID }),
                       var transform = cameraRaw.localAdjustments?[index].colorTransform
@@ -7264,7 +7399,7 @@ struct EditWorkspaceView: View {
         if let replacementID,
            metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?
             .contains(where: { $0.id == replacementID }) == true {
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Add AI Mask") { cameraRaw in
                 guard let index = cameraRaw.localAdjustments?
                     .firstIndex(where: { $0.id == replacementID }) else { return }
                 let previousRefinements = cameraRaw.localAdjustments?[index].aiMask
@@ -7279,7 +7414,7 @@ struct EditWorkspaceView: View {
         } else {
             let count = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
             let newMask = MaskAdjustment(name: "AI Mask \(count + 1)", aiMask: generated.raster)
-            updateCameraRaw { cameraRaw in
+            updateCameraRaw(actionName: "Add AI Mask") { cameraRaw in
                 if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
                 cameraRaw.localAdjustments?.append(newMask)
                 if cameraRaw.layerOrder != nil {
@@ -7323,7 +7458,7 @@ struct EditWorkspaceView: View {
         }
         geo = watermarkGeometryForSensor(geo)
         let newLayer = WatermarkLayer(name: "Watermark \(existingCount + 1)", libraryAssetID: defaultAsset.id, geometry: geo)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Watermark") { cameraRaw in
             if cameraRaw.watermarkLayers == nil { cameraRaw.watermarkLayers = [] }
             cameraRaw.watermarkLayers?.append(newLayer)
             if cameraRaw.layerOrder != nil {
@@ -7348,12 +7483,12 @@ struct EditWorkspaceView: View {
         guard case .watermark = selectedLayer,
               var settings = metadataViewModel.editingMetadata.cameraRaw,
               layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Delete Watermark") { $0 = settings }
         commitEditAdjustments()
     }
 
     private func toggleWatermarkEnabled(_ id: UUID) {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Toggle Watermark") { cameraRaw in
             guard let i = cameraRaw.watermarkLayers?.firstIndex(where: { $0.id == id }) else { return }
             cameraRaw.watermarkLayers?[i].enabled.toggle()
         }
@@ -7375,6 +7510,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(layer.enabled ? "Mute watermark effect" : "Enable watermark effect")
+                .accessibilityLabel(layer.enabled ? "Mute Watermark" : "Enable Watermark")
 
                 Spacer()
 
@@ -7387,6 +7523,7 @@ struct EditWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete watermark layer")
+                .accessibilityLabel("Delete Watermark")
             }
             .padding(.horizontal, 2)
         }
@@ -7400,7 +7537,7 @@ struct EditWorkspaceView: View {
         guard ensureCanAddMaskLayer() else { return nil }
         let existingCount = metadataViewModel.editingMetadata.cameraRaw?.localAdjustments?.count ?? 0
         let newMask = MaskAdjustment(name: "Brush \(existingCount + 1)", brush: BrushMaskGeometry(strokes: []))
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Add Mask") { cameraRaw in
             if cameraRaw.localAdjustments == nil { cameraRaw.localAdjustments = [] }
             cameraRaw.localAdjustments?.append(newMask)
             if cameraRaw.layerOrder != nil {
@@ -7508,7 +7645,7 @@ struct EditWorkspaceView: View {
     private func commitBrushStroke(_ stroke: BrushStroke) {
         guard let id = selectedMaskID else { return }
         let sensorStroke = brushStrokeForSensor(stroke)
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Brush Stroke") { cameraRaw in
             guard let idx = cameraRaw.localAdjustments?.firstIndex(where: { $0.id == id }) else { return }
             if cameraRaw.localAdjustments?[idx].brush == nil {
                 cameraRaw.localAdjustments?[idx].brush = BrushMaskGeometry(strokes: [])
@@ -7581,11 +7718,12 @@ struct EditWorkspaceView: View {
         guard case .mask = selectedLayer,
               var settings = metadataViewModel.editingMetadata.cameraRaw,
               layerSession.deleteSelectedLayer(in: &settings) == .commit else { return }
-        updateCameraRaw { $0 = settings }
+        updateCameraRaw(actionName: "Delete Mask") { $0 = settings }
         commitEditAdjustments()
     }
 
-    /// Command-W treats every selected node as something that can be "closed": local nodes are
+    /// Remove or Reset Selected Edit Layer (default Control-Option-Delete; Forward Delete when
+    /// unbound) treats every selected node as something that can be "closed": local nodes are
     /// removed, while the permanent Global node has only its own adjustments reset.
     private func removeOrResetSelectedEditLayer() {
         switch selectedLayer {
@@ -7609,7 +7747,7 @@ struct EditWorkspaceView: View {
             showCopyPasteFeedback("Global layer is already reset")
             return
         }
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Global") { cameraRaw in
             GlobalLayerResetBehavior.reset(&cameraRaw, isRaw: isSelectedImageRaw)
         }
         commitEditAdjustments()
@@ -7662,7 +7800,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetColorAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Color") { cameraRaw in
             cameraRaw.whiteBalance = isSelectedImageRaw ? "As Shot" : nil
             cameraRaw.temperature = nil
             cameraRaw.tint = nil
@@ -7676,7 +7814,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetExposureAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Light") { cameraRaw in
             cameraRaw.exposure2012 = nil
             cameraRaw.contrast2012 = nil
             cameraRaw.highlights2012 = nil
@@ -7688,7 +7826,7 @@ struct EditWorkspaceView: View {
     }
 
     private func resetDetailAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Detail") { cameraRaw in
             cameraRaw.sharpness = nil
             cameraRaw.clarity2012 = nil
             cameraRaw.dehaze = nil
@@ -7697,28 +7835,28 @@ struct EditWorkspaceView: View {
     }
 
     private func resetHSLAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset HSL") { cameraRaw in
             cameraRaw.hslAdjustments = nil
         }
         commitEditAdjustments()
     }
 
     private func resetAnonymizerAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Anonymizer") { cameraRaw in
             cameraRaw.anonymizer = nil
         }
         commitEditAdjustments()
     }
 
     private func resetFilmAdjustments() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset Film") { cameraRaw in
             cameraRaw.filmEmulation = nil
         }
         commitEditAdjustments()
     }
 
     private func resetDevelopAdjustmentsKeepingCrop() {
-        updateCameraRaw { cameraRaw in
+        updateCameraRaw(actionName: "Reset") { cameraRaw in
             DevelopAdjustmentsResetBehavior.reset(&cameraRaw, isRaw: isSelectedImageRaw)
         }
         selectedLayer = .global
@@ -7816,8 +7954,8 @@ struct EditWorkspaceView: View {
     }
 
     private func signedDoubleString(_ value: Double, precision: Int = 2) -> String {
-        let format = "%.\(precision)f"
-        let absValue = String(format: format, abs(value))
+        // Locale-aware decimal separator (Norwegian shows "1,25").
+        let absValue = abs(value).formatted(.number.precision(.fractionLength(precision)).grouping(.never))
         if value > 0 { return "+\(absValue)" }
         if value < 0 { return "-\(absValue)" }
         return absValue
@@ -7848,15 +7986,13 @@ struct EditWorkspaceView: View {
     /// case uses the existing multi-image writer.
     private func pasteCopiedSettings(to urls: Set<URL>) {
         guard let settings = browserViewModel.copiedCameraRawSettings, !urls.isEmpty else { return }
-        let feedback = "Pasted to \(urls.count) image\(urls.count == 1 ? "" : "s")"
         if urls.count == 1, urls.first == selectedImageURL {
             performWhenSelectedImageReady("Paste") {
-                pasteCameraRawSettings(settings, includeCrop: false)
-                showCopyPasteFeedback(feedback)
+                pasteCameraRawSettings(settings, includeCrop: false, feedback: "Pasted to 1 image")
             }
         } else {
+            // Feedback with the real counts comes from the write's completion.
             pasteToMultipleImages(settings, urls: urls, includeCrop: false)
-            showCopyPasteFeedback(feedback)
         }
     }
 
@@ -7898,26 +8034,29 @@ struct EditWorkspaceView: View {
         pasteCopiedSettings(to: targets)
     }
 
-    private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool) {
-        // Same merge as the multi-image paste (only the copied collections replace the
-        // target's), with fresh mask IDs so pasted masks are independent of the source's.
-        updateCameraRaw { cameraRaw in
-            cameraRaw = CameraRawSettings.pastedIntoEditor(
-                source, onto: cameraRaw, includeCrop: includeCrop
-            )
+    private func pasteCameraRawSettings(_ source: CameraRawSettings, includeCrop: Bool, feedback: String) {
+        // Same merge as the multi-image paste (the photo's own masks and watermarks stay, the
+        // copied ones are appended), with fresh mask IDs so pasted masks are independent of the
+        // source's.
+        let result = CameraRawSettings.pastedIntoEditorResult(
+            source, onto: metadataViewModel.editingMetadata.cameraRaw, includeCrop: includeCrop
+        )
+        updateCameraRaw(actionName: "Paste Settings") { cameraRaw in
+            cameraRaw = result.settings
         }
         commitEditAdjustments()
+        showCopyPasteFeedback([feedback, result.skippedLayersMessage].compactMap { $0 }.joined(separator: ". "))
     }
 
     private func applyDevelopTemplate(_ template: DevelopTemplate) {
         let current = metadataViewModel.editingMetadata.cameraRaw
-        let applied = template.settingsForApplication(preserving: current)
+        let result = template.applicationResult(preserving: current)
 
         resetCropZoom()
         selectedLayer = .global
         maskInteraction.stopBrushPainting()
-        updateCameraRaw { cameraRaw in
-            cameraRaw = applied
+        updateCameraRaw(actionName: "Apply Template") { cameraRaw in
+            cameraRaw = result.settings
         }
 
         if metadataViewModel.editingMetadata.cameraRaw == nil {
@@ -7925,7 +8064,8 @@ struct EditWorkspaceView: View {
         } else {
             commitEditAdjustments()
         }
-        showCopyPasteFeedback("Applied \(template.name)")
+        showCopyPasteFeedback(["Applied \(template.name)", result.skippedLayersMessage]
+            .compactMap { $0 }.joined(separator: ". "))
     }
 
     private func pasteToMultipleImages(_ source: CameraRawSettings, urls: Set<URL>, includeCrop: Bool) {
@@ -7937,12 +8077,20 @@ struct EditWorkspaceView: View {
         }
         cameraRaw.hasSettings = true
 
-        // Update in-memory ImageFile state for immediate visual feedback
+        // Update in-memory ImageFile state for immediate visual feedback, keeping each photo's
+        // previous state so files whose write fails or is refused can be restored.
+        var previousState: [URL: (settings: CameraRawSettings?, hasDevelopEdits: Bool, hasCropEdits: Bool)] = [:]
+        var skippedLayers = 0
         for url in urls {
             if let index = browserViewModel.urlToImageIndex[url] {
-                browserViewModel.images[index].cameraRawSettings = CameraRawSettings.pasted(
-                    cameraRaw, onto: browserViewModel.images[index].cameraRawSettings, includeCrop: includeCrop
+                let image = browserViewModel.images[index]
+                previousState[url] = (image.cameraRawSettings, image.hasDevelopEdits, image.hasCropEdits)
+                let result = CameraRawSettings.pastedResult(
+                    cameraRaw, onto: image.cameraRawSettings, includeCrop: includeCrop,
+                    maskIdentity: .keepUnlessTaken, watermarkIdentity: .keepUnlessTaken
                 )
+                skippedLayers += result.skippedLayerCount
+                browserViewModel.images[index].cameraRawSettings = result.settings
                 browserViewModel.images[index].hasDevelopEdits = true
                 if includeCrop, cameraRaw.crop?.isEffectiveCrop == true {
                     browserViewModel.images[index].hasCropEdits = true
@@ -7950,6 +8098,17 @@ struct EditWorkspaceView: View {
                 browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
                 browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
                 persistenceSession.recordPublishedSettingsChanges(for: [url])
+            }
+        }
+        @MainActor func restorePreviousState(of failedURLs: some Sequence<URL>) {
+            for url in failedURLs {
+                guard let previous = previousState[url],
+                      let index = browserViewModel.urlToImageIndex[url] else { continue }
+                browserViewModel.images[index].cameraRawSettings = previous.settings
+                browserViewModel.images[index].hasDevelopEdits = previous.hasDevelopEdits
+                browserViewModel.images[index].hasCropEdits = previous.hasCropEdits
+                browserViewModel.thumbnailService.invalidateEditedThumbnail(for: url)
+                browserViewModel.fullScreenImageCache.invalidateEditedImage(for: url)
             }
         }
 
@@ -7965,14 +8124,26 @@ struct EditWorkspaceView: View {
         // Reload the currently displayed image once its paste has landed, so the editor doesn't
         // read the pre-paste sidecar back over the in-memory result.
         let reloadedURL = selectedImageURL.flatMap { urls.contains($0) ? $0 : nil }
+        // Per-file outcome: a failing or refused file never stops the rest of the batch.
+        var failures: [URL: String] = [:]
+        var finishedURLs = Set<URL>()
         @MainActor func pasteWrites() async throws {
             // Sidecar probes and per-file header reads stay off the main thread.
             let sidecarURLs = await Self.pasteSidecarTargets(Array(urls), sidecarService: sidecarService)
             for url in sidecarURLs {
                 try Task.checkCancellation()
-                try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+                do {
+                    try await sidecarService.pasteCameraRawSerialized(cameraRaw, includeCrop: includeCrop, for: url)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failures[url] = error.localizedDescription
+                }
+                if SupportedImageFormats.isRaw(url: url) { finishedURLs.insert(url) }
             }
-            guard !targetURLs.isEmpty else { return }
+            // A file whose sidecar failed isn't half-written into its embedded XMP as well.
+            let embedURLs = targetURLs.filter { failures[$0] == nil }
+            guard !embedURLs.isEmpty else { return }
 
             // Simple crs scalar fields via the canonical serializer (ACR-style signed
             // ints, +exposure) — shared with the export engine and MetadataViewModel so
@@ -8006,54 +8177,85 @@ struct EditWorkspaceView: View {
 
             // Carry tone curve and masks too — a paste without them leaves the
             // targets rendering differently from the source. Masks only when the
-            // source has some (merge-style, no replaceCameraRawBlock): pasting
-            // from a mask-less image must not strip the targets' masks or other
-            // settings the paste doesn't carry.
+            // source has some (merge-style, no replaceCameraRawBlock), and appended to
+            // each file's own layers: a paste must never strip the targets' masks
+            // (Anonymizer redactions included), watermarks or other settings the paste
+            // doesn't carry.
             let structuredData = StructuredWriteData(
                 toneCurve: cameraRaw.toneCurve,
                 masks: (cameraRaw.localAdjustments?.isEmpty == false) ? cameraRaw.localAdjustments : nil,
                 watermarkLayers: (cameraRaw.watermarkLayers?.isEmpty == false) ? cameraRaw.watermarkLayers : nil,
                 hslAdjustments: (cameraRaw.hslAdjustments?.isEmpty == false) ? cameraRaw.hslAdjustments : nil,
                 layerOrder: cameraRaw.layerOrder,
-                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil
+                anonymizer: (cameraRaw.anonymizer?.isEmpty == false) ? cameraRaw.anonymizer : nil,
+                appendsLayers: true
             )
 
             // Camera Raw-only embed: no descriptive rewrite, never into a file whose metadata
             // wouldn't fit, and (outside Simple) never into a file with Content Credentials.
+            // One file per write so a failure is attributed to that file and the rest continue.
             let allowsCredentialedEmbed = MetadataWritePreset.current == .simple
-            var report = DevelopEmbedReport()
-            if let crop, cropIsAngled {
-                // crs crop fields use Adobe's un-rotated-frame corner encoding,
-                // which depends on each target's pixel aspect — encode per
-                // aspect group instead of one shared field set.
-                let aspectGroups = await Self.pixelAspectGroups(targetURLs)
-                for (aspect, urls) in aspectGroups {
-                    var groupFields = fields
-                    groupFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
-                    let groupReport = try await writeEngine.writeDevelopFields(
-                        groupFields, to: urls, structuredData: structuredData,
+            var aspectByURL: [URL: Double?] = [:]
+            if crop != nil, cropIsAngled {
+                // crs crop fields use Adobe's un-rotated-frame corner encoding, which depends
+                // on each target's pixel aspect.
+                for (aspect, groupURLs) in await Self.pixelAspectGroups(embedURLs) {
+                    for url in groupURLs { aspectByURL[url] = aspect }
+                }
+            }
+            for url in embedURLs {
+                try Task.checkCancellation()
+                var urlFields = fields
+                if let crop, cropIsAngled {
+                    let aspect = aspectByURL[url] ?? nil
+                    urlFields.merge(cropFields(for: crop.encodedForACR(aspect: aspect))) { _, new in new }
+                }
+                do {
+                    let report = try await writeEngine.writeDevelopFields(
+                        urlFields, to: [url], structuredData: structuredData,
                         allowsCredentialedEmbed: allowsCredentialedEmbed
                     )
-                    report.refusedForContentCredentials += groupReport.refusedForContentCredentials
-                    report.refusedForMetadataSize += groupReport.refusedForMetadataSize
-                    report.refusedForRoundTripMismatch += groupReport.refusedForRoundTripMismatch
+                    if let message = report.message { failures[url] = message }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failures[url] = error.localizedDescription
                 }
-            } else {
-                report = try await writeEngine.writeDevelopFields(
-                    fields, to: targetURLs, structuredData: structuredData,
-                    allowsCredentialedEmbed: allowsCredentialedEmbed
-                )
+                finishedURLs.insert(url)
             }
-            if !report.isEmpty { throw DevelopEmbedRefusedError(report: report) }
         }
 
+        let total = urls.count
+        let cropSuffix = includeCrop ? " (with crop)" : ""
         persistenceSession.scheduleBatchPersistence {
-            try await pasteWrites()
-            guard let reloadedURL, workspaceSession.isWorkspaceActive,
-                  selectedImageURL == reloadedURL else { return }
-            metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
-            editLog.info("[\(reloadedURL.lastPathComponent)] loadSelectedImagePreview triggered by: pasteCameraRaw")
-            loadSelectedImagePreview()
+            do {
+                try await pasteWrites()
+            } catch {
+                // Cancelled (or unexpected) mid-batch: files never written keep their old state.
+                restorePreviousState(of: urls.filter { !finishedURLs.contains($0) || failures[$0] != nil })
+                throw error
+            }
+            restorePreviousState(of: failures.keys)
+            let pastedCount = total - failures.count
+            var feedback = failures.isEmpty
+                ? "Pasted to \(total) image\(total == 1 ? "" : "s")\(cropSuffix)"
+                : "Pasted to \(pastedCount) of \(total) images\(cropSuffix); \(failures.count) failed: "
+                    + failures.keys.map(\.lastPathComponent).sorted().joined(separator: ", ")
+            if skippedLayers > 0 {
+                feedback += ". \(skippedLayers) layer\(skippedLayers == 1 ? "" : "s") skipped (layer limit)"
+            }
+            showCopyPasteFeedback(feedback)
+            if let reloadedURL, workspaceSession.isWorkspaceActive, selectedImageURL == reloadedURL {
+                // The active photo's settings are replaced from disk; its history no longer
+                // describes them, so it can't be undone back over the paste.
+                persistenceSession.removeAllUndoActions()
+                metadataViewModel.loadMetadata(for: browserViewModel.selectedImages, folderURL: folderURL)
+                editLog.info("[\(reloadedURL.lastPathComponent)] loadSelectedImagePreview triggered by: pasteCameraRaw")
+                loadSelectedImagePreview()
+            }
+            if !failures.isEmpty {
+                throw DevelopPasteFailedError(failures: failures, total: total)
+            }
         }
 
         onPendingStatusChanged?()
@@ -8634,12 +8836,12 @@ struct EditWorkspaceView: View {
             if selectedURLs.count == 1 {
                 // The selected photo's saved settings must be loaded before they are merged.
                 performWhenSelectedImageReady("Paste") {
-                    pasteCameraRawSettings(copied, includeCrop: withCrop)
-                    showCopyPasteFeedback(withCrop ? "Pasted (with crop)" : "Pasted")
+                    pasteCameraRawSettings(copied, includeCrop: withCrop,
+                                           feedback: withCrop ? "Pasted (with crop)" : "Pasted")
                 }
             } else {
+                // Feedback with the real counts comes from the write's completion.
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: withCrop)
-                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images")
             }
             return nil
         }
@@ -8654,12 +8856,10 @@ struct EditWorkspaceView: View {
 
             if selectedURLs.count == 1 {
                 performWhenSelectedImageReady("Paste") {
-                    pasteCameraRawSettings(copied, includeCrop: true)
-                    showCopyPasteFeedback("Pasted (with crop)")
+                    pasteCameraRawSettings(copied, includeCrop: true, feedback: "Pasted (with crop)")
                 }
             } else {
                 pasteToMultipleImages(copied, urls: selectedURLs, includeCrop: true)
-                showCopyPasteFeedback("Pasted to \(selectedURLs.count) images (with crop)")
             }
             return nil
         }

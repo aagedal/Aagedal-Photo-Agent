@@ -200,6 +200,8 @@ struct Aagedal_Photo_AgentApp: App {
 
             CommandGroup(replacing: .printItem) { }
 
+            DevelopUndoCommands()
+
             RatingLabelCommands(commandRouter: commandRouter)
 
             CommandGroup(after: .newItem) {
@@ -604,6 +606,23 @@ extension Notification.Name {
     static let rawDecodeSettingsDidChange = Notification.Name("rawDecodeSettingsDidChange")
 }
 
+
+/// Edit ▸ Undo/Redo. In Develop (no text field editing) they drive the Develop history and show
+/// its step names ("Undo Exposure"); everywhere else they send the standard responder-chain
+/// `undo:`/`redo:`, like the system items they replace. Never disabled: a text field's undo
+/// relies on the menu key equivalent even when the Develop history is empty.
+private struct DevelopUndoCommands: Commands {
+    @State private var router = DevelopUndoMenuRouter.shared
+
+    var body: some Commands {
+        CommandGroup(replacing: .undoRedo) {
+            Button(router.undoTitle) { router.undo() }
+                .keyboardShortcut("z", modifiers: .command)
+            Button(router.redoTitle) { router.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+    }
+}
 
 /// Observes profile edits directly so native menu key equivalents update with the editor.
 private struct RatingLabelCommands: Commands {

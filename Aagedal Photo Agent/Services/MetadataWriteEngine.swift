@@ -81,6 +81,12 @@ nonisolated struct StructuredWriteData: Sendable {
     /// develop-settings paste must leave fields they don't carry untouched.
     var replaceCameraRawBlock: Bool = false
 
+    /// Develop paste: append `masks`/`watermarkLayers` to the file's own layers (deduplicated,
+    /// limited, see `CameraRawSettings.appendingLayers`) instead of replacing them, so a paste
+    /// can't delete the target's Anonymizer masks or watermarks. Ignored with
+    /// `replaceCameraRawBlock`.
+    var appendsLayers: Bool = false
+
     var isEmpty: Bool {
         (toneCurve == nil || (toneCurve?.isEmpty ?? true))
             && (masks == nil || (masks?.isEmpty ?? true))

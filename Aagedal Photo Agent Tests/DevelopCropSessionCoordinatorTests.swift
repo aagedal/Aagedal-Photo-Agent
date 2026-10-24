@@ -102,6 +102,7 @@ struct DevelopCropSessionCoordinatorTests {
         #expect(committed == .commit)
         #expect(settings.crop?.angle == 45)
 
+        // With the tool closed, Reset clears the crop entirely.
         #expect(coordinator.resetCrop(in: &settings) == .commit)
         #expect(settings.crop?.hasCrop == false)
         #expect(coordinator.aspectRatio == .original)
@@ -176,12 +177,76 @@ struct DevelopCropSessionCoordinatorTests {
         #expect(!coordinator.toggleTool())
         #expect(coordinator.entrySnapshot == nil)
 
-        // A tool left open across navigation has no snapshot for the next image.
+        // A tool left open across navigation has no snapshot until the next image's own
+        // settings load; then it adopts that image's framing for Esc.
         #expect(coordinator.toggleTool())
         coordinator.captureEntryCrop(entry)
         coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-next.raw"), isCropEnabled: true)
         #expect(coordinator.isToolActive)
-        #expect(coordinator.cancelTool() == nil)
+        #expect(coordinator.entrySnapshot == nil)
+        let nextCrop = CameraRawCrop(top: 0.2, left: 0.1, bottom: 0.9, right: 0.7, angle: -1, hasCrop: true)
+        #expect(coordinator.adoptLoadedPhoto(crop: nextCrop, isCropEnabled: true))
+        #expect(!coordinator.adoptLoadedPhoto(crop: nil, isCropEnabled: false))
+        #expect(coordinator.cancelTool() == DevelopCropEntrySnapshot(crop: nextCrop))
+    }
+
+    @Test("an open tool closes when the next photo turns out to have no crop")
+    func openToolClosesForUncroppedLoadedPhoto() {
+        let coordinator = DevelopCropSessionCoordinator()
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-a.raw"), isCropEnabled: true)
+        #expect(coordinator.toggleTool())
+        // The stale buffer still describes the previous (cropped) photo during navigation.
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-b.raw"), isCropEnabled: true)
+        #expect(coordinator.isToolActive)
+        #expect(!coordinator.adoptLoadedPhoto(crop: nil, isCropEnabled: false))
+        #expect(!coordinator.isToolActive)
+        // A same-image session restart (preview reload) keeps the entry snapshot.
+        #expect(coordinator.toggleTool())
+        let entry = CameraRawCrop(top: 0.1, left: 0.1, bottom: 0.9, right: 0.9, angle: 0, hasCrop: true)
+        coordinator.captureEntryCrop(entry)
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-b.raw"), isCropEnabled: true)
+        #expect(coordinator.entrySnapshot == DevelopCropEntrySnapshot(crop: entry))
+    }
+
+    @Test("Reset inside an open crop tool keeps the tool open on the full frame")
+    func resetKeepsOpenToolOpen() {
+        let coordinator = DevelopCropSessionCoordinator()
+        coordinator.beginImageSession(URL(fileURLWithPath: "/tmp/develop-crop-reset.raw"), isCropEnabled: true)
+        #expect(coordinator.toggleTool())
+        let entry = CameraRawCrop(top: 0.1, left: 0.2, bottom: 0.8, right: 0.9, angle: 4, hasCrop: true)
+        coordinator.captureEntryCrop(entry)
+        var settings = CameraRawSettings()
+        settings.crop = entry
+
+        #expect(coordinator.resetCrop(in: &settings) == .commit)
+        #expect(coordinator.isToolActive)
+        #expect(settings.crop == CameraRawCrop(top: 0, left: 0, bottom: 1, right: 1, angle: 0, hasCrop: true))
+        // Esc after Reset still restores the framing the tool was opened on.
+        #expect(coordinator.cancelTool() == DevelopCropEntrySnapshot(crop: entry))
+    }
+
+    @Test("Re-entering crop selects the preset the existing crop already has")
+    func aspectPresetMatchesExistingCrop() {
+        let landscape = 3.0 / 2.0
+        // Full frame of a 3:2 image is "Original".
+        #expect(CropAspectRatio.matching(.full, imageAspectRatio: landscape) == .original)
+        // A 16:9 crop on a 3:2 image: normalized width/height = (16/9) / 1.5.
+        let wide = NormalizedCropRegion(top: 0.1, left: 0, bottom: 0.1 + 1.5 / (16.0 / 9.0), right: 1)
+        #expect(CropAspectRatio.matching(wide, imageAspectRatio: landscape) == .ratio16x9)
+        // A square crop.
+        let square = NormalizedCropRegion(top: 0, left: 0.2, bottom: 0.9, right: 0.2 + 0.9 / landscape)
+        #expect(CropAspectRatio.matching(square, imageAspectRatio: landscape) == .square)
+        // Portrait 2:3 crop on a landscape image picks the portrait preset, not 3:2.
+        let portrait = NormalizedCropRegion(top: 0, left: 0.3, bottom: 1, right: 0.3 + (2.0 / 3.0) / landscape)
+        #expect(CropAspectRatio.matching(portrait, imageAspectRatio: landscape) == .ratio2x3)
+        // On a portrait image, its own shape is "Original" and a 3:2 landscape crop is 3:2.
+        let portraitImage = 2.0 / 3.0
+        #expect(CropAspectRatio.matching(.full, imageAspectRatio: portraitImage) == .original)
+        let landscapeOnPortrait = NormalizedCropRegion(top: 0.3, left: 0, bottom: 0.3 + portraitImage / 1.5, right: 1)
+        #expect(CropAspectRatio.matching(landscapeOnPortrait, imageAspectRatio: portraitImage) == .ratio3x2)
+        // Anything else is Free, so entering the tool never reshapes it.
+        let odd = NormalizedCropRegion(top: 0.1, left: 0.1, bottom: 0.73, right: 0.9)
+        #expect(CropAspectRatio.matching(odd, imageAspectRatio: landscape) == .free)
     }
 
     @Test("Develop routes Esc in crop mode through cancel and Load Embedded Crop through undo")

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -31,6 +32,35 @@ nonisolated enum DevelopPrimaryPersistenceCompletion: Equatable, Sendable {
     case failed(message: String)
 }
 
+/// Decides when a completed metadata load ends the Develop undo history.
+///
+/// History belongs to one photo *and* to the settings Develop itself produced. A load of another
+/// photo, or a same-photo load that replaced the settings from outside (Reset All Edits, a
+/// multi-photo paste that included it, an external sidecar edit), makes every entry describe
+/// state that is gone; Undo would bring discarded edits back and write them. A same-photo
+/// reload that leaves the settings as Develop last published them (descriptive-only reloads,
+/// self-initiated saves) keeps the history.
+nonisolated enum DevelopUndoHistoryPolicy {
+    static func shouldClearHistory(
+        historyImageURL: URL?,
+        loadedImageURL: URL?,
+        settingsDevelopPublished: CameraRawSettings?,
+        loadedSettings: CameraRawSettings?
+    ) -> Bool {
+        guard historyImageURL == loadedImageURL else { return true }
+        return comparable(settingsDevelopPublished) != comparable(loadedSettings)
+    }
+
+    /// Per-image decode facts are attached by the loader, not edits; an empty record equals none.
+    private static func comparable(_ settings: CameraRawSettings?) -> CameraRawSettings? {
+        guard var settings else { return nil }
+        settings.asShotNeutralTemperature = nil
+        settings.asShotNeutralTint = nil
+        settings.sourceHasHDRHeadroom = nil
+        return settings.isEmpty ? nil : settings
+    }
+}
+
 /// The observable result of the latest Primary metadata/history request in an image session.
 nonisolated enum DevelopPrimaryPersistenceOutcome: Equatable, Sendable {
     case succeeded(requestID: UUID)
@@ -60,6 +90,9 @@ final class DevelopPersistenceSessionCoordinator {
     private(set) var latestPrimaryPersistenceOutcome: DevelopPrimaryPersistenceOutcome?
     private(set) var pendingBatchPersistenceCount = 0
     private(set) var latestBatchPersistenceOutcome: DevelopBatchPersistenceOutcome?
+    /// Bumped whenever the undo stack may have changed, so observers (the Edit menu's
+    /// Undo/Redo titles) re-read the otherwise unobservable `UndoManager`.
+    private(set) var historyRevision = 0
 
     @ObservationIgnored private(set) var undoManager = UndoManager()
     @ObservationIgnored private var imageSessionID = UUID()
@@ -78,6 +111,23 @@ final class DevelopPersistenceSessionCoordinator {
 
     var canUndo: Bool { undoManager.canUndo }
     var canRedo: Bool { undoManager.canRedo }
+    /// "Undo Exposure" etc. for the Edit menu; observable through `historyRevision`.
+    var undoMenuTitle: String {
+        _ = historyRevision
+        return undoManager.undoMenuItemTitle
+    }
+    var redoMenuTitle: String {
+        _ = historyRevision
+        return undoManager.redoMenuItemTitle
+    }
+    var canUndoFromMenu: Bool {
+        _ = historyRevision
+        return isWorkspaceActive && undoManager.canUndo
+    }
+    var canRedoFromMenu: Bool {
+        _ = historyRevision
+        return isWorkspaceActive && undoManager.canRedo
+    }
     var isPrimaryPersistenceInProgress: Bool { pendingPrimaryPersistenceCount > 0 }
     var primaryPersistenceErrorMessage: String? {
         guard case .failed(_, let message) = latestPrimaryPersistenceOutcome else { return nil }
@@ -363,6 +413,7 @@ final class DevelopPersistenceSessionCoordinator {
             publisher: publisher
         )
         lastMutation = (sessionID, before, after)
+        historyRevision &+= 1
         return .previewOnly
     }
 
@@ -370,17 +421,20 @@ final class DevelopPersistenceSessionCoordinator {
         guard isWorkspaceActive else { return }
         lastMutation = nil
         undoManager.undo()
+        historyRevision &+= 1
     }
 
     func redo() {
         guard isWorkspaceActive else { return }
         lastMutation = nil
         undoManager.redo()
+        historyRevision &+= 1
     }
 
     func removeAllUndoActions() {
         lastMutation = nil
         undoManager.removeAllActions()
+        historyRevision &+= 1
     }
 
     private func registerRestoration(
@@ -414,6 +468,7 @@ final class DevelopPersistenceSessionCoordinator {
         imageSessionID = UUID()
         lastMutation = nil
         undoManager.removeAllActions()
+        historyRevision &+= 1
     }
 
     private func finishBatchPersistence(
@@ -449,5 +504,57 @@ final class DevelopPersistenceSessionCoordinator {
         case .failed(let message):
             latestPrimaryPersistenceOutcome = .failed(requestID: requestID, message: message)
         }
+    }
+}
+
+/// Routes the Edit menu's Undo/Redo to the Develop history while the Develop workspace owns the
+/// key window and no text field is editing; everywhere else the menu falls back to the standard
+/// responder-chain `undo:`/`redo:` (text fields, the Metadata panel, sheets, Settings).
+///
+/// The keyboard shortcut path is unchanged: the Develop and Analysis key monitors consume ⌘Z
+/// before the menu sees it, and pass it on untouched while a text field edits.
+@MainActor
+@Observable
+final class DevelopUndoMenuRouter {
+    static let shared = DevelopUndoMenuRouter()
+
+    struct Registration {
+        let ownerID: UUID
+        let session: DevelopPersistenceSessionCoordinator
+        /// True when the Develop workspace may take the menu action now (its window is key, no
+        /// text field or overlay owns input).
+        let canRoute: @MainActor () -> Bool
+        let perform: @MainActor (_ redo: Bool) -> Void
+    }
+
+    private(set) var registration: Registration?
+
+    func register(_ registration: Registration) {
+        self.registration = registration
+    }
+
+    func unregister(ownerID: UUID) {
+        if registration?.ownerID == ownerID { registration = nil }
+    }
+
+    /// The Develop session the menu reflects, if Develop is up.
+    var activeSession: DevelopPersistenceSessionCoordinator? {
+        guard let session = registration?.session, session.isWorkspaceActive else { return nil }
+        return session
+    }
+
+    var undoTitle: String { activeSession?.undoMenuTitle ?? "Undo" }
+    var redoTitle: String { activeSession?.redoMenuTitle ?? "Redo" }
+
+    func undo() { route(redo: false) }
+    func redo() { route(redo: true) }
+
+    private func route(redo: Bool) {
+        if let registration, registration.session.isWorkspaceActive, registration.canRoute() {
+            registration.perform(redo)
+            return
+        }
+        let selector = redo ? Selector(("redo:")) : Selector(("undo:"))
+        NSApp.sendAction(selector, to: nil, from: nil)
     }
 }

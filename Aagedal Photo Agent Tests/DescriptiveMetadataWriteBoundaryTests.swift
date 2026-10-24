@@ -685,6 +685,63 @@ struct DescriptiveMetadataWriteBoundaryTests {
         #expect(merged.hasSettings == true)
     }
 
+    @Test("Embedded Develop paste appends to the file's own masks and is idempotent")
+    func embeddedDevelopPasteAppendsMasks() async throws {
+        let (directory, source) = try makeJPEGWorkspace()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = SwiftExifWriteEngine()
+
+        var ownBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        _ = try await engine.writeDevelopFields(
+            [.crsExposure2012: "+0.30"], to: [source],
+            structuredData: StructuredWriteData(masks: [ownBlur]), allowsCredentialedEmbed: false
+        )
+
+        var pastedBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 60, blackOut: nil))
+        pastedBlur.geometry.centerX = 0.2
+        for _ in 0..<2 {
+            let report = try await engine.writeDevelopFields(
+                [:], to: [source],
+                structuredData: StructuredWriteData(masks: [pastedBlur], appendsLayers: true),
+                allowsCredentialedEmbed: false
+            )
+            #expect(report.isEmpty)
+        }
+
+        let masks = try #require(try await SwiftExifReadService().readFullMetadata(url: source).cameraRaw?.localAdjustments)
+        #expect(masks.count == 2)
+        #expect(masks.contains { $0.anonymizer?.amount == 90 && abs($0.geometry.centerX - 0.7) < 1e-4 })
+        #expect(masks.contains { $0.anonymizer?.amount == 60 && abs($0.geometry.centerX - 0.2) < 1e-4 })
+    }
+
+    @Test("Sidecar Develop paste appends to the RAW's own masks and is idempotent")
+    func sidecarDevelopPasteAppendsMasks() async throws {
+        let (directory, source) = try makeWorkspace(extension: "arw")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let service = XMPSidecarService()
+
+        var ownBlur = MaskAdjustment(name: "Face B", anonymizer: AnonymizerSettings(amount: 90, blackOut: nil))
+        ownBlur.geometry.centerX = 0.7
+        var own = CameraRawSettings(exposure2012: 0.3)
+        own.localAdjustments = [ownBlur]
+        try await service.pasteCameraRawSerialized(own, includeCrop: false, for: source)
+
+        var pastedBlur = MaskAdjustment(name: "Face A", anonymizer: AnonymizerSettings(amount: 60, blackOut: nil))
+        pastedBlur.geometry.centerX = 0.2
+        var copied = CameraRawSettings(exposure2012: 1.0)
+        copied.localAdjustments = [pastedBlur]
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+        try await service.pasteCameraRawSerialized(copied, includeCrop: false, for: source)
+
+        let settings = try #require(service.loadSidecar(for: source)?.cameraRaw)
+        #expect(settings.exposure2012 == 1.0)
+        let masks = try #require(settings.localAdjustments)
+        #expect(masks.count == 2)
+        #expect(masks.contains { $0.anonymizer?.amount == 90 })
+        #expect(masks.contains { $0.anonymizer?.amount == 60 })
+    }
+
     @Test("Direct SwiftExif writes refuse RAW loudly instead of silently succeeding")
     func swiftExifRefusesRawEmbed() async throws {
         let (directory, source) = try makeWorkspace(extension: "arw")

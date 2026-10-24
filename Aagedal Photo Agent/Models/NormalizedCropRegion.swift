@@ -55,6 +55,29 @@ enum CropAspectRatio: String, CaseIterable, Identifiable {
         case .ratio7x5: return "7:5"
         }
     }
+
+    /// Visible (pixel) width/height of a display-frame crop region on an image of
+    /// `imageAspectRatio` (the image's displayed width/height).
+    static func visibleAspect(of region: NormalizedCropRegion, imageAspectRatio: Double) -> Double? {
+        guard region.width > 0, region.height > 0, imageAspectRatio > 0 else { return nil }
+        return region.width * imageAspectRatio / region.height
+    }
+
+    /// The picker selection for an existing crop when the crop tool is (re)entered: Original
+    /// when the crop has the image's own shape, else the fixed preset its visible aspect matches
+    /// (portrait and landscape presets are distinct), else Free — so entering the tool never
+    /// snaps an existing crop to a different ratio.
+    static func matching(
+        _ region: NormalizedCropRegion,
+        imageAspectRatio: Double,
+        tolerance: Double = 0.01
+    ) -> CropAspectRatio {
+        guard let visible = visibleAspect(of: region, imageAspectRatio: imageAspectRatio) else { return .free }
+        if abs(visible / imageAspectRatio - 1) <= tolerance { return .original }
+        return menuOrder.first { ratio in
+            ratio.value.map { abs(visible / $0 - 1) <= tolerance } ?? false
+        } ?? .free
+    }
 }
 
 struct NormalizedCropRegion: Equatable {

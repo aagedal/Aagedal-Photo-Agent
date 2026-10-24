@@ -75,29 +75,6 @@ struct BrushDabParams {
 
 /// One slice in the shared raster-alpha array. Brush strokes and AI-selected subject mattes use
 /// the same downstream sampling path; they differ only in how a slice is populated.
-/// Per-image layer limits imposed by the Metal edit pipeline's fixed-size GPU buffers. Enabled
-/// local layers past the limit are skipped by preview *and* export, so creation is gated here.
-nonisolated enum DevelopLayerLimits {
-    /// Max enabled local adjustment layers (ellipse/brush/AI masks, extra Global and LUT/CST
-    /// layers). The Metal shaders (EditAdjustments.metal, ScopeShaders.metal) mirror this as 8.
-    static let maxEnabledMasks = 8
-
-    static let limitReachedMessage =
-        "Layer limit reached: up to \(maxEnabledMasks) enabled mask/adjustment layers. Disable or delete one to add another."
-
-    static func enabledMaskCount(in settings: CameraRawSettings?) -> Int {
-        settings?.localAdjustments?.reduce(0) { $0 + ($1.enabled ? 1 : 0) } ?? 0
-    }
-
-    static func canAddMask(to settings: CameraRawSettings?) -> Bool {
-        enabledMaskCount(in: settings) < maxEnabledMasks
-    }
-
-    static func exceedsMaskLimit(_ settings: CameraRawSettings?) -> Bool {
-        enabledMaskCount(in: settings) > maxEnabledMasks
-    }
-}
-
 nonisolated enum MaskAlphaSource: Sendable, Equatable {
     case brush(BrushMaskGeometry)
     case ai(AIMaskGeometry)
@@ -1291,7 +1268,7 @@ final class MetalEditPipeline: @unchecked Sendable {
     nonisolated static let colorLUTSize = 33
     /// Max simultaneous watermark layers (and, since each references one library asset,
     /// also the texture array's slice cap — fewer if several layers share one asset).
-    nonisolated private static let maxWatermarks = 4
+    nonisolated private static let maxWatermarks = DevelopLayerLimits.maxEnabledWatermarks
     /// Max layer-order entries: every mask, every watermark layer, plus the single global node.
     nonisolated private static let maxOrderEntries = maxMasks + maxWatermarks + 1
     /// Order-buffer entry meaning "run the global adjustment block here".

@@ -19,6 +19,53 @@ enum EditSliderDoubleClickReset {
     }
 }
 
+/// The Undo/Redo title for the Develop mutation a control commits synchronously ("Undo
+/// Exposure"). Sliders set their label around the binding write; `updateCameraRaw` reads it
+/// when no explicit action name is passed.
+enum DevelopUndoActionName {
+    private(set) static var current: String?
+
+    static func perform(_ name: String?, _ body: () -> Void) {
+        let previous = current
+        current = name ?? previous
+        defer { current = previous }
+        body()
+    }
+}
+
+/// Keyboard / VoiceOver stepping shared by the horizontal and vertical Develop sliders.
+nonisolated enum EditSliderStepping {
+    /// One arrow-key step: the slider's own step, but at least 1/200 of the range so fine-step
+    /// sliders (Exposure 0.01) still move visibly. Shift (`large`) steps 10x.
+    static func steppedValue(
+        from value: Double,
+        range: ClosedRange<Double>,
+        step: Double,
+        direction: Int,
+        large: Bool
+    ) -> Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0, direction != 0 else { return value }
+        let unit = max(step, span / 200) * (large ? 10 : 1)
+        let raw = value + Double(direction.signum()) * unit
+        let clamped = min(range.upperBound, max(range.lowerBound, raw))
+        guard step > 0 else { return clamped }
+        let snapped = (clamped / step).rounded() * step
+        return min(range.upperBound, max(range.lowerBound, snapped))
+    }
+
+    /// Up/Right arrow (+1), Down/Left arrow (-1), else nil. Left/Right stay reserved for photo
+    /// navigation in Develop (the workspace key monitor consumes them first), so in practice
+    /// Up/Down step a focused slider.
+    static func direction(forKeyCode keyCode: UInt16) -> Int? {
+        switch keyCode {
+        case 126, 124: return 1
+        case 125, 123: return -1
+        default: return nil
+        }
+    }
+}
+
 /// A custom slider using AppKit mouse event handling for high-frequency updates.
 /// Delivers drag events at the full hardware mouse rate (~60-120 Hz) instead of
 /// SwiftUI DragGesture's throttled ~10 Hz.
@@ -41,6 +88,10 @@ struct EditSlider: NSViewRepresentable {
     /// The binding is NOT updated during drag — only on drag end.
     var onDragValueChanged: ((Double) -> Void)?
     var onReset: (() -> Void)?
+    /// Spoken name (VoiceOver) and Undo/Redo action title for commits from this slider.
+    var label: String?
+    /// Formats the value for VoiceOver; nil reads the raw number.
+    var valueText: ((Double) -> String)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -124,10 +175,12 @@ struct EditSlider: NSViewRepresentable {
         func handleMouseDown(at locationX: CGFloat, width: CGFloat, clickCount: Int) {
             // AppKit's click count honors the user's double-click speed setting.
             if clickCount >= 2, let onReset = parent.onReset {
-                if lastClickCommittedWithoutDrag {
-                    EditSliderDoubleClickReset.perform(onReset)
-                } else {
-                    onReset()
+                DevelopUndoActionName.perform(parent.label) {
+                    if lastClickCommittedWithoutDrag {
+                        EditSliderDoubleClickReset.perform(onReset)
+                    } else {
+                        onReset()
+                    }
                 }
                 lastClickCommittedWithoutDrag = false
                 return
@@ -195,7 +248,9 @@ struct EditSlider: NSViewRepresentable {
             wasPrecision = false
 
             // Commit final value to binding (triggers one SwiftUI update)
-            parent.value = currentDragValue
+            DevelopUndoActionName.perform(parent.label) {
+                parent.value = currentDragValue
+            }
 
             let elapsed = ContinuousClock.now - dragStartTimestamp
             let totalSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
@@ -204,6 +259,29 @@ struct EditSlider: NSViewRepresentable {
             sliderLog.info("⏱ Drag ended: \(self.dragEventCount) events over \(totalMs)ms = \(rate, format: .fixed(precision: 1)) events/sec")
             parent.onEditingChanged?(false)
             lastClickCommittedWithoutDrag = !didDragSinceMouseDown
+        }
+
+        /// One keyboard / VoiceOver step, committed like a click (one Undo entry).
+        func step(direction: Int, large: Bool) {
+            guard !isDragging else { return }
+            let newValue = EditSliderStepping.steppedValue(
+                from: parent.value, range: parent.range, step: parent.step,
+                direction: direction, large: large
+            )
+            guard newValue != parent.value else { return }
+            lastClickCommittedWithoutDrag = false
+            parent.onEditingChanged?(true)
+            DevelopUndoActionName.perform(parent.label) {
+                parent.value = newValue
+            }
+            parent.onEditingChanged?(false)
+            sliderView?.fraction = fractionForValue(newValue)
+            sliderView?.needsDisplay = true
+        }
+
+        var accessibilityValueText: String {
+            let value = isDragging ? currentDragValue : parent.value
+            return parent.valueText?(value) ?? value.formatted(.number.precision(.fractionLength(0...2)))
         }
 
         /// Update NSView playhead and notify caller — without touching the SwiftUI binding.
@@ -257,6 +335,37 @@ final class EditSliderNSView: NSView {
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: 16)
+    }
+
+    // MARK: Accessibility — an adjustable slider element
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
+    override func accessibilityLabel() -> String? { coordinator?.parent.label }
+    override func accessibilityValue() -> Any? { coordinator?.accessibilityValueText }
+    override func accessibilityMinValue() -> Any? { coordinator?.parent.range.lowerBound }
+    override func accessibilityMaxValue() -> Any? { coordinator?.parent.range.upperBound }
+
+    override func accessibilityPerformIncrement() -> Bool {
+        coordinator?.step(direction: 1, large: false)
+        return true
+    }
+
+    override func accessibilityPerformDecrement() -> Bool {
+        coordinator?.step(direction: -1, large: false)
+        return true
+    }
+
+    /// Arrow keys step a focused slider (Shift = 10x). Left/Right are consumed by the Develop
+    /// workspace's photo navigation before they reach here, so Up/Down are the working keys.
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+        guard modifiers.isEmpty,
+              let direction = EditSliderStepping.direction(forKeyCode: event.keyCode) else {
+            super.keyDown(with: event)
+            return
+        }
+        coordinator?.step(direction: direction, large: event.modifierFlags.contains(.shift))
     }
 
     override func draw(_ dirtyRect: NSRect) {
