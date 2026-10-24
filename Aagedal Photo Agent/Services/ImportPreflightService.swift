@@ -123,6 +123,7 @@ actor ImportPreflightService {
     private let fileExists: FileExistenceProbe
     private let directoryStems: DirectoryStemProbe
     private let filesHaveSameIdentity: FileIdentityProbe
+    private let sameExposure: FileIdentityProbe
 
     init(
         findDuplicateSources: @escaping DuplicateSourceFinder = { candidates, destinationBaseURL in
@@ -140,6 +141,9 @@ actor ImportPreflightService {
         filesHaveSameIdentity: @escaping FileIdentityProbe = { source, destination in
             ImportCopyService.filesHaveSameIdentity(source, destination)
         },
+        sameExposure: @escaping FileIdentityProbe = { source, destination in
+            ImportImageIdentity.sameExposure(source, destination)
+        },
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.import-preflight", qos: .utility
         )
@@ -149,6 +153,7 @@ actor ImportPreflightService {
         self.fileExists = fileExists
         self.directoryStems = directoryStems
         self.filesHaveSameIdentity = filesHaveSameIdentity
+        self.sameExposure = sameExposure
     }
 
     /// Lower-cased stems of the visible entries in `folder` (empty when it does not exist).
@@ -264,7 +269,6 @@ actor ImportPreflightService {
         var destinations: [BundleDestination] = []
         destinations.reserveCapacity(requests.count)
         var stemCache: [String: Set<String>] = [:]
-        let fileExistsProbe = fileExists
 
         func cancelled() -> BundlePlanningResult {
             .cancelled(BundlePlanningEvidence(
@@ -403,30 +407,43 @@ actor ImportPreflightService {
                 ))
 
             case .skipExisting:
-                var existingPrimaries: Set<URL> = []
+                // Every file already at a planned primary or backup path must be this exposure's
+                // own camera file: byte-identical, or (an image whose metadata was embedded
+                // since) the same EXIF capture identity. One different file — an export saved
+                // under the original name, another body's shot — and the stem is not this
+                // exposure's; it is copied whole under a new name instead of being skipped.
+                var matchingPaths: Set<URL> = []
                 var samePhotoIsThere = false
+                var differentFileIsThere = false
                 for file in request.files {
                     let primary = Self.url(file.primaryFolder, plannedName, file.pathExtension)
-                    guard fileExists(primary.path) else { continue }
-                    existingPrimaries.insert(primary)
-                    if file.role == .image, filesHaveSameIdentity(file.source, primary) {
-                        samePhotoIsThere = true
+                    let backup = file.backupFolder.map { Self.url($0, plannedName, file.pathExtension) }
+                    for path in [primary, backup].compactMap({ $0 }) where fileExists(path.path) {
+                        let isSameFile = filesHaveSameIdentity(file.source, path)
+                            || (file.role == .image && sameExposure(file.source, path))
+                        if isSameFile {
+                            matchingPaths.insert(path)
+                            if file.role == .image, path == primary { samePhotoIsThere = true }
+                        } else {
+                            differentFileIsThere = true
+                        }
                     }
                 }
                 guard !Task.isCancelled else { return cancelled() }
-                if samePhotoIsThere {
-                    // The exposure is already here. Its existing files (a JPEG may differ only by
-                    // embedded metadata) are skipped; missing partners join them at this stem.
+                if samePhotoIsThere && !differentFileIsThere {
+                    // The exposure is already here: its existing files are skipped, missing
+                    // partners join them at this stem, and a backup leg skips only when the
+                    // backup path holds this same file.
                     claim(request, suffix: planned)
                     destinations.append(destination(
                         request,
                         suffix: planned,
-                        skip: { _, primary in existingPrimaries.contains(primary) ? .destinationExists : nil },
+                        skip: { _, primary in matchingPaths.contains(primary) ? .destinationExists : nil },
                         skipBackup: { _, backup in
-                            backup.map { fileExistsProbe($0.path) } == true ? .destinationExists : nil
+                            backup.map { matchingPaths.contains($0) } == true ? .destinationExists : nil
                         }
                     ))
-                } else if isFree(request, suffix: planned) {
+                } else if !differentFileIsThere, isFree(request, suffix: planned) {
                     claim(request, suffix: planned)
                     destinations.append(destination(request, suffix: planned))
                 } else {

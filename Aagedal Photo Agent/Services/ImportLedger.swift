@@ -34,6 +34,26 @@ nonisolated enum ImportLedger {
         /// Destination path relative to the ledger root.
         let destination: String
         let importedAt: String
+        /// Size of the copy when it was made.
+        var destinationSize: Int64? = nil
+        /// Sampled checksum of a RAW copy (RAW never receives embedded writes, so it must stay
+        /// byte-identical). Nil for formats whose copy may legitimately change.
+        var destinationQuickHash: String? = nil
+        /// False when recorded right after the copy, true once its sidecar and template
+        /// finishing ran. Only finished entries count as imported; a crash in between leaves
+        /// the file to be imported again rather than skipped without its template.
+        var finished: Bool? = nil
+
+        func markingFinished() -> Entry {
+            var entry = self
+            entry.finished = true
+            return entry
+        }
+    }
+
+    /// Ledger destinations compare like the default case-insensitive volumes.
+    static func pathKey(_ relativePath: String) -> String {
+        relativePath.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     static func url(forRoot root: URL) -> URL {
@@ -46,6 +66,7 @@ nonisolated enum ImportLedger {
         destination: URL,
         root: URL,
         captureDate: Date?,
+        finished: Bool = true,
         now: Date = Date()
     ) throws -> Entry {
         let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -53,14 +74,25 @@ nonisolated enum ImportLedger {
         guard let relative = ImportViewModel.relativePath(of: destination, under: root) else {
             throw CocoaError(.fileWriteInvalidFileName)
         }
+        let destinationSize = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let destinationHash = SupportedImageFormats.isRaw(url: destination)
+            ? hex(try HashStream.quickHashFile(at: destination))
+            : nil
         return Entry(
             name: source.lastPathComponent,
             size: Int64(size),
             captureDate: captureDateString(captureDate),
-            quickHash: hash.map { String(format: "%02x", $0) }.joined(),
+            quickHash: hex(hash),
             destination: relative,
-            importedAt: now.ISO8601Format()
+            importedAt: now.ISO8601Format(),
+            destinationSize: Int64(destinationSize),
+            destinationQuickHash: destinationHash,
+            finished: finished
         )
+    }
+
+    static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     /// Appends `entries` to the ledger in one write, creating it if needed.
