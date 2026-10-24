@@ -718,6 +718,113 @@ final class FullScreenImageCache: @unchecked Sendable {
 
     // MARK: - CameraRaw Processing
 
+    /// The orientation the develop edits are applied in for pixels decoded with
+    /// `fileOrientation` baked in and displayed at `displayOrientation` (sidecar-first).
+    ///
+    /// Every develop render (Develop, export, full screen, loupe, edited thumbnails, Clean
+    /// Feed) edits in the DISPLAY frame, exactly like Develop
+    /// (`DevelopSourceDecodeService.orientedToTarget` + upload with the target orientation):
+    /// crops and masks land in the same place either way, but display-frame elements —
+    /// watermark artwork, its width/height-relative size and margins — are only upright when
+    /// the pixels are rotated before the edit. `ImageFile.orientationCorrection` models only
+    /// the four rotations, so a mirrored orientation on either side keeps the file frame.
+    nonisolated static func editFrameOrientation(fileOrientation: Int, displayOrientation: Int) -> Int {
+        let rotationOnly: Set<Int> = [1, 3, 6, 8]
+        guard rotationOnly.contains(fileOrientation),
+              rotationOnly.contains(displayOrientation) else { return fileOrientation }
+        return displayOrientation
+    }
+
+    /// Rotates file-oriented pixels into `editFrameOrientation` and reports the frame the
+    /// returned pixels are in (the `exifOrientation` to hand `applyWithCrop`). A no-op that
+    /// reports `fileOrientation` when no rotation applies, so same-orientation renders are
+    /// unchanged.
+    nonisolated static func orientedForEditing(
+        _ image: CIImage,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> (image: CIImage, pixelOrientation: Int) {
+        let target = editFrameOrientation(
+            fileOrientation: fileOrientation,
+            displayOrientation: displayOrientation
+        )
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: target)
+        guard correction != .up else { return (image, fileOrientation) }
+        return (image.oriented(correction), target)
+    }
+
+    /// Applies `settings` to pixels decoded with `fileOrientation` baked in and returns them in
+    /// `displayOrientation`, editing in the display frame (see `editFrameOrientation`). Any
+    /// rotation that could not happen before the edit (mirrored orientations) is applied after.
+    nonisolated static func applyEditsInDisplayFrame(
+        to image: CIImage,
+        settings: CameraRawSettings?,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> CIImage {
+        let framed = orientedForEditing(
+            image, fileOrientation: fileOrientation, displayOrientation: displayOrientation
+        )
+        var processed = framed.image
+        if let settings {
+            processed = CameraRawApproximation.applyWithCrop(
+                to: processed, settings: settings, exifOrientation: framed.pixelOrientation
+            )
+        }
+        return orientedAfterEditing(
+            processed, pixelOrientation: framed.pixelOrientation, displayOrientation: displayOrientation
+        )
+    }
+
+    /// Async sibling of `applyEditsInDisplayFrame`; suspends on the render queue for the edit.
+    nonisolated static func applyEditsInDisplayFrameAsync(
+        to image: CIImage,
+        settings: CameraRawSettings?,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) async -> CIImage {
+        let framed = orientedForEditing(
+            image, fileOrientation: fileOrientation, displayOrientation: displayOrientation
+        )
+        var processed = framed.image
+        if let settings {
+            processed = await CameraRawApproximation.applyWithCropAsync(
+                to: processed, settings: settings, exifOrientation: framed.pixelOrientation
+            )
+        }
+        return orientedAfterEditing(
+            processed, pixelOrientation: framed.pixelOrientation, displayOrientation: displayOrientation
+        )
+    }
+
+    nonisolated private static func orientedAfterEditing(
+        _ image: CIImage,
+        pixelOrientation: Int,
+        displayOrientation: Int
+    ) -> CIImage {
+        let residual = ImageFile.orientationCorrection(from: pixelOrientation, to: displayOrientation)
+        return residual == .up ? image : image.oriented(residual)
+    }
+
+    /// CGImage form of `applyEditsInDisplayFrame`. Identical to
+    /// `applyCameraRaw(to:settings:exifOrientation:)` when the orientations agree.
+    nonisolated static func applyCameraRaw(
+        to cgImage: CGImage,
+        settings: CameraRawSettings,
+        fileOrientation: Int,
+        displayOrientation: Int
+    ) -> CGImage {
+        let processed = applyEditsInDisplayFrame(
+            to: CIImage(cgImage: cgImage),
+            settings: settings,
+            fileOrientation: fileOrientation,
+            displayOrientation: displayOrientation
+        )
+        let extent = processed.extent
+        guard extent.width > 0, extent.height > 0 else { return cgImage }
+        return CameraRawApproximation.createDisplayCGImage(processed, from: extent) ?? cgImage
+    }
+
     nonisolated static func applyCameraRaw(to cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int = 1) -> CGImage {
         let ciImage = CIImage(cgImage: cgImage)
         let processed = CameraRawApproximation.applyWithCrop(to: ciImage, settings: settings, exifOrientation: exifOrientation)
@@ -755,12 +862,12 @@ final class FullScreenImageCache: @unchecked Sendable {
         // apply the embedded tag). The requested `orientation` (the in-memory/sidecar
         // display orientation) can differ — RAW/C2PA rotations never touch the file.
         // `applyWithCrop`'s exifOrientation parameter means "the frame the PIXELS are in"
-        // (it transforms sensor-frame crop/mask geometry, it does not rotate pixels), so
-        // crop/masks must be applied in the FILE frame and the pixels then rotated
-        // file → target as a separate step — exactly the loupe's two-step approach.
-        // Passing the target orientation to applyWithCrop instead mis-framed the crop and
-        // left the pixels unrotated: cropped-RAW grid thumbnails rendered 180° off from
-        // the edit view for sidecar-rotated files.
+        // (it transforms sensor-frame crop/mask/watermark geometry, it does not rotate
+        // pixels). The pixels are therefore rotated file → target FIRST and edited with the
+        // target as their frame (`applyEditsInDisplayFrame`), exactly like Develop and the
+        // export renderer. Editing in the file frame and rotating afterwards frames the
+        // same crop but draws watermark artwork sideways; passing the target orientation
+        // without rotating mis-frames the crop and leaves the pixels unrotated.
         let rawFileOrientation = isolation.fileOrientation(at: url)
         guard !Task.isCancelled else { return nil }
         let sourceMaxPx: CGFloat
@@ -793,18 +900,14 @@ final class FullScreenImageCache: @unchecked Sendable {
                 guard !Task.isCancelled else { return nil }
             }
             if let ciImage {
-                var processed: CIImage
-                if let settings {
-                    // Suspend while the dedicated Metal queue waits for the GPU so this
-                    // preview executor can accept the next request.
-                    processed = await CameraRawApproximation.applyWithCropAsync(to: ciImage, settings: settings, exifOrientation: rawFileOrientation)
-                } else {
-                    processed = ciImage
-                }
-                let correction = ImageFile.orientationCorrection(from: rawFileOrientation, to: orientation)
-                if correction != .up {
-                    processed = processed.oriented(correction)
-                }
+                // Suspend while the dedicated Metal queue waits for the GPU so this
+                // preview executor can accept the next request.
+                var processed = await applyEditsInDisplayFrameAsync(
+                    to: ciImage,
+                    settings: settings,
+                    fileOrientation: rawFileOrientation,
+                    displayOrientation: orientation
+                )
                 guard !Task.isCancelled else { return nil }
                 // Crop-aware sensor decoding may deliberately retain a larger source.
                 // Bound the final bitmap to the display target so oversized HDR crops
@@ -823,11 +926,15 @@ final class FullScreenImageCache: @unchecked Sendable {
             var loaded = loadedResult.image
             let loadedOrientation = loadedResult.orientation
             guard !Task.isCancelled else { return nil }
-            if let settings {
-                loaded = applyCameraRaw(to: loaded, settings: settings, exifOrientation: loadedOrientation)
-            }
             let correction = ImageFile.orientationCorrection(from: loadedOrientation, to: orientation)
-            if correction != .up {
+            if let settings {
+                loaded = applyCameraRaw(
+                    to: loaded,
+                    settings: settings,
+                    fileOrientation: loadedOrientation,
+                    displayOrientation: orientation
+                )
+            } else if correction != .up {
                 let rotated = CIImage(cgImage: loaded).oriented(correction)
                 if let cg = CameraRawApproximation.createDisplayCGImage(rotated, from: rotated.extent) {
                     loaded = cg

@@ -338,6 +338,178 @@ struct WatermarkRenderingTests {
         #expect(!result.hasFailures)
         #expect(result.summaryLine.contains("watermark image missing for 1 image"))
     }
+
+    // MARK: Sidecar orientation
+
+    private typealias RGB8 = (r: Int, g: Int, b: Int)
+
+    /// Top-row-first 8-bit sRGB pixels of `image`.
+    private func rgbPixels(of image: CGImage) throws -> (width: Int, height: Int, at: (Int, Int) -> RGB8) {
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        let snapshot = bytes
+        return (width, height, { x, y in
+            let i = (y * width + x) * 4
+            return (Int(snapshot[i]), Int(snapshot[i + 1]), Int(snapshot[i + 2]))
+        })
+    }
+
+    /// A display-frame watermark (top half red, bottom half green) must render upright in the
+    /// displayed bottom-right on every browse path — full screen/loupe (`applyCameraRaw` over
+    /// CIImage and CGImage sources), edited thumbnails / Caption preview / prefetch
+    /// (`decodedEditedPreview`) — exactly like the export render, whether the rotation lives
+    /// only in the sidecar or in the file's own tag. Editing in the file frame and rotating
+    /// afterwards drew the artwork sideways (and sized against the wrong edge) for
+    /// sidecar-only rotations.
+    @Test("sidecar-rotated photos draw watermarks upright in full screen, previews and export alike",
+          arguments: [true, false])
+    func sidecarRotatedWatermarkMatchesExport(sidecarOnlyRotation: Bool) async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+        let photoDir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: photoDir) }
+        try FileManager.default.createDirectory(
+            at: photoDir.appendingPathComponent("output"), withIntermediateDirectories: true
+        )
+
+        let pngData = try makeTwoToneVerticalPNGData(
+            width: 40, height: 40, topColor: (255, 0, 0), bottomColor: (0, 255, 0)
+        )
+        let pngURL = photoDir.appendingPathComponent("wm.png")
+        try pngData.write(to: pngURL)
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Two Tone")
+
+        // 128x64 stored gray pixels, displayed 64x128 (orientation 6) via either the sidecar
+        // (embedded tag 1) or the embedded tag itself (no sidecar).
+        let source = photoDir.appendingPathComponent("photo.jpg")
+        let storedWidth = 128, storedHeight = 64
+        let context = try #require(CGContext(
+            data: nil, width: storedWidth, height: storedHeight, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: storedWidth, height: storedHeight))
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            source as CFURL, "public.jpeg" as CFString, 1, nil
+        ))
+        let embeddedOrientation: Int = sidecarOnlyRotation ? 1 : 6
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), [
+            kCGImageDestinationLossyCompressionQuality: 1.0,
+            kCGImagePropertyOrientation: embeddedOrientation,
+        ] as [CFString: Any] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        if sidecarOnlyRotation {
+            var xmp = IPTCMetadata()
+            xmp.exifOrientation = 6
+            try XMPSidecarService().saveSidecar(metadata: xmp, for: source)
+        }
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: source)
+        #expect(fileOrientation == (sidecarOnlyRotation ? 1 : 6))
+        let displayOrientation = FullScreenImageCache.displayOrientation(
+            for: source, fallback: fileOrientation
+        )
+        #expect(displayOrientation == 6)
+
+        // Placed in the displayed frame (y-down): 40% of the 64 px display width, centred in
+        // the bottom-right quadrant. Stored in the sensor frame, like Develop stores it.
+        var displayGeometry = WatermarkGeometry()
+        displayGeometry.centerX = 0.75
+        displayGeometry.centerY = 0.75
+        displayGeometry.sizeDimension = .width
+        displayGeometry.sizeUnit = .percent
+        displayGeometry.sizeValue = 40
+        displayGeometry.marginUnit = .percent
+        displayGeometry.marginValue = 0
+        var layer = WatermarkLayer(
+            name: "Test", libraryAssetID: asset.id,
+            geometry: displayGeometry.transformedForSensor(orientation: 6)
+        )
+        layer.opacity = 1.0
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [layer]
+
+        // Export render (already display-frame since 85e5982) — the reference.
+        let exported = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: photoDir.appendingPathComponent("output"),
+            configuration: AdvancedExportConfiguration(
+                sdrFormat: .png, sdrQuality: 0.92, sdrGamut: .sRGB,
+                hdrFormat: .jpegGainMap, hdrQuality: 0.92, hdrGamut: .displayP3,
+                tiffCompression: .lzw, resolutionLimit: .original,
+                locationMode: .formatSubfolder, customSubfolderName: "Exports"
+            )
+        )
+        let exportSource = try #require(CGImageSourceCreateWithURL(exported as CFURL, nil))
+        let exportImage = try #require(CGImageSourceCreateImageAtIndex(exportSource, 0, nil))
+
+        // Edited thumbnails, Caption preview, prefetch and the full-screen foreground render.
+        let preview = try #require(await FullScreenImageCache.decodedEditedPreview(
+            for: source, settings: settings, orientation: displayOrientation, screenMaxPx: 256
+        ))
+        // Full-screen / loupe HDR (CIImage) and SDR (CGImage) source renders.
+        let hdrDecode = try #require(FullScreenImageCache.loadHDRPreviewWithOrientation(
+            from: source, maxPixelSize: 256
+        ))
+        let hdrEdited = FullScreenImageCache.applyEditsInDisplayFrame(
+            to: hdrDecode.image, settings: settings,
+            fileOrientation: hdrDecode.orientation, displayOrientation: displayOrientation
+        )
+        let fullScreenHDR = try #require(
+            CameraRawApproximation.createDisplayCGImage(hdrEdited, from: hdrEdited.extent)
+        )
+        let sdrDecode = try #require(FullScreenImageCache.loadDownsampledWithOrientation(
+            from: source, maxPixelSize: 256
+        ))
+        let fullScreenSDR = FullScreenImageCache.applyCameraRaw(
+            to: sdrDecode.image, settings: settings,
+            fileOrientation: sdrDecode.orientation, displayOrientation: displayOrientation
+        )
+
+        let reference = try rgbPixels(of: exportImage)
+        func close(_ a: RGB8, _ b: RGB8, tolerance: Int = 70) -> Bool {
+            abs(a.r - b.r) < tolerance && abs(a.g - b.g) < tolerance && abs(a.b - b.b) < tolerance
+        }
+        for (name, image) in [("export", exportImage), ("decodedEditedPreview", preview),
+                              ("full screen HDR", fullScreenHDR), ("full screen SDR", fullScreenSDR)] {
+            let pixels = try rgbPixels(of: image)
+            #expect(pixels.width == 64 && pixels.height == 128,
+                    "\(name): expected the 64x128 display frame, got \(pixels.width)x\(pixels.height)")
+            guard pixels.width == 64, pixels.height == 128 else { continue }
+            // Footprint: x 35...61, y 83...109; red top half, green bottom half on both
+            // sides (a sideways watermark splits red/green left-right instead).
+            for x in [41, 55] {
+                #expect(close(pixels.at(x, 88), (255, 0, 0)),
+                        "\(name): expected the watermark's red top half at (\(x), 88), got \(pixels.at(x, 88))")
+                #expect(close(pixels.at(x, 104), (0, 255, 0)),
+                        "\(name): expected the watermark's green bottom half at (\(x), 104), got \(pixels.at(x, 104))")
+            }
+            #expect(close(pixels.at(16, 32), (128, 128, 128), tolerance: 40),
+                    "\(name): expected untouched gray outside the footprint, got \(pixels.at(16, 32))")
+            #expect(close(pixels.at(48, 70), (128, 128, 128), tolerance: 40),
+                    "\(name): expected gray above the footprint, got \(pixels.at(48, 70))")
+            // Same pixels as the export everywhere (away from anti-aliased edges).
+            var total = 0, count = 0
+            for y in stride(from: 2, to: 126, by: 3) {
+                for x in stride(from: 2, to: 62, by: 3) {
+                    let a = pixels.at(x, y), b = reference.at(x, y)
+                    total += abs(a.r - b.r) + abs(a.g - b.g) + abs(a.b - b.b)
+                    count += 3
+                }
+            }
+            let mean = Double(total) / Double(max(count, 1))
+            #expect(mean < 8, "\(name): mean difference from the export render is \(mean)")
+        }
+    }
 }
 
 @Suite("Watermark unit conversion")
