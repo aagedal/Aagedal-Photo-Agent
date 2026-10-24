@@ -221,6 +221,11 @@ struct FaceGroupDetailView: View {
                 .help("Delete group & photos")
             }
         }
+        // A running scan of this folder publishes its own snapshot; edits now would be lost.
+        .disabled(viewModel.faceEditingPausedForScan())
+        .overlay(alignment: .bottom) {
+            if viewModel.faceEditingPausedForScan() { FaceScanEditingPausedNote() }
+        }
         .padding()
         .frame(width: 340)
         // Force the popover to track the content's required height when

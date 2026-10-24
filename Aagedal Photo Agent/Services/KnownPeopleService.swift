@@ -2052,8 +2052,12 @@ final class KnownPeopleService {
             throw NSError(domain: "KnownPeopleService", code: 10,
                 userInfo: [NSLocalizedDescriptionKey: "Person no longer exists."])
         }
+        let originalName = current.name
         try edit(&current)
         current.updatedAt = Date()
+        // Linked folder face groups follow a rename (FaceRecognitionViewModel listens).
+        let identityChange: [String: Any]? = current.name != originalName
+            ? KnownPeopleIdentityChange.renamed(personID: id, newName: current.name).userInfo : nil
         let root = knownPeopleDirectory
         let recordURL = personFileURL(for: id)
         reserveImportDestinations([current], root: root)
@@ -2066,7 +2070,8 @@ final class KnownPeopleService {
                 database = nil
                 clearFeaturePrintCache()
                 stampLocalWrite(recordURL)
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: identityChange)
             }
         }
         await releaseImportDestinations()
@@ -2117,7 +2122,8 @@ final class KnownPeopleService {
                 stampLocalWrite(markerURL)
                 stampLocalWrite(recordURL)
                 for url in result.removedThumbnailURLs { stampLocalWrite(url) }
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: KnownPeopleIdentityChange.deleted(personID: id).userInfo)
             }
         }
         var upgradeCleanupError: (any Error)?
@@ -2161,7 +2167,8 @@ final class KnownPeopleService {
             )
         }
         deleteThumbnail(for: id)
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+            userInfo: KnownPeopleIdentityChange.deleted(personID: id).userInfo)
     }
 
     func addEmbedding(_ embedding: PersonEmbedding, toPersonID personID: UUID, thumbnailData: Data? = nil) throws {
@@ -2450,7 +2457,9 @@ final class KnownPeopleService {
                     stampLocalWrite(sourceURL)
                     stampLocalWrite(markerURL)
                 }
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil,
+                    userInfo: result.sourceRemoved ? KnownPeopleIdentityChange.merged(sourceID: sourceID,
+                        targetID: intoTargetID, targetName: target.name).userInfo : nil)
             }
         }
         if result.sourceRemoved {

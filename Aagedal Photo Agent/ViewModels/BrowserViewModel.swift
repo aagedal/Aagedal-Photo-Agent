@@ -26,6 +26,9 @@ struct MetadataReviewEditorState {
     var creationEvidence: MetadataSidecarReplayCreationEvidence?
     var textBuffers: [MetadataFieldID: String] = [:]
     var error: String?
+    /// The browser source generation this baseline was loaded under. A lazy row reappearing
+    /// under the same generation reuses a clean editor instead of re-reading the file.
+    var sourceGeneration: UUID? = nil
 }
 
 enum SidebarTree: Hashable {
@@ -338,6 +341,8 @@ final class BrowserViewModel {
     private(set) var metadataReviewLoadErrors: [String: String] = [:]
     private var metadataReviewFreezeOwners: [String: UUID] = [:]
     @ObservationIgnored private var metadataReviewLoadIDs: [String: UUID] = [:]
+    /// Resolved review keys per URL; resolving symlinks on every row render was measurable.
+    @ObservationIgnored private var metadataReviewKeyCache: [URL: String] = [:]
     @ObservationIgnored private let metadataReviewBaselineLoader: (@Sendable (URL, URL) async throws -> MetadataReviewLoadedBaseline)?
     let metadataReviewCoordinator: CaptionWorkspaceFlushCoordinator
     @ObservationIgnored private var batchReadTask: Task<Void, Never>?
@@ -1069,6 +1074,7 @@ final class BrowserViewModel {
     private func cancelCurrentFolderWork() {
         resetSimilaritySort()
         fieldMutationDisplayID = UUID()
+        metadataReviewKeyCache.removeAll()
 
         // Cancel any in-flight folder load to prevent stale results overwriting
         loadFolderTask?.cancel()
@@ -4104,22 +4110,39 @@ final class BrowserViewModel {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
+    /// Cached `metadataReviewKey`; the cache is dropped with the folder's other per-file state.
+    func cachedMetadataReviewKey(_ url: URL) -> String {
+        if let key = metadataReviewKeyCache[url] { return key }
+        let key = Self.metadataReviewKey(url)
+        if metadataReviewKeyCache.count > 20_000 { metadataReviewKeyCache.removeAll(keepingCapacity: true) }
+        metadataReviewKeyCache[url] = key
+        return key
+    }
+
     func metadataReviewEditor(for url: URL) -> MetadataReviewEditorState? {
-        metadataReviewEditors[Self.metadataReviewKey(url)]
+        metadataReviewEditors[cachedMetadataReviewKey(url)]
+    }
+
+    func metadataReviewEditor(forKey key: String) -> MetadataReviewEditorState? {
+        metadataReviewEditors[key]
     }
 
     var metadataReviewSourceGeneration: UUID { fieldMutationDisplayID }
 
-    func prepareMetadataReviewEditor(for url: URL) async {
-        let key = Self.metadataReviewKey(url)
+    /// `reloadClean: false` (lazy Review rows reappearing) keeps a clean editor loaded under the
+    /// current source generation; explicit callers and metadata changes reload it from disk.
+    func prepareMetadataReviewEditor(for url: URL, reloadClean: Bool = true) async {
+        let key = cachedMetadataReviewKey(url)
         if let editor = metadataReviewEditors[key] {
             guard editor.latestRequestID == nil, editor.draft == editor.previous,
                   editor.textBuffers.isEmpty else { return }
+            if !reloadClean, editor.sourceGeneration == metadataReviewSourceGeneration { return }
             metadataReviewEditors[key] = nil
         }
         guard !metadataReviewLoading.contains(key),
               let folder = currentFolderURL else { return }
         let id = UUID()
+        let generation = metadataReviewSourceGeneration
         metadataReviewLoadIDs[key] = id
         metadataReviewLoading.insert(key)
         defer { if metadataReviewLoadIDs[key] == id { metadataReviewLoading.remove(key) } }
@@ -4156,7 +4179,7 @@ final class BrowserViewModel {
             guard metadataReviewLoadIDs[key] == id, !Task.isCancelled else { return }
             metadataReviewEditors[key] = MetadataReviewEditorState(id: id, imageURL: url, folderURL: folder,
                 previous: baseline.metadata, draft: baseline.metadata, sidecar: baseline.sidecar,
-                creationEvidence: baseline.creationEvidence)
+                creationEvidence: baseline.creationEvidence, sourceGeneration: generation)
         } catch {
             if metadataReviewLoadIDs[key] == id { metadataReviewLoadErrors[key] = error.localizedDescription }
         }
@@ -4171,7 +4194,11 @@ final class BrowserViewModel {
 
     func metadataReviewText(for field: MetadataFieldID, imageURL: URL) -> String {
         guard let editor = metadataReviewEditor(for: imageURL) else { return "" }
-        return editor.textBuffers[field] ?? field.textValue(in: editor.draft) ?? ""
+        return Self.metadataReviewText(for: field, in: editor)
+    }
+
+    static func metadataReviewText(for field: MetadataFieldID, in editor: MetadataReviewEditorState) -> String {
+        editor.textBuffers[field] ?? field.reviewTextValue(in: editor.draft) ?? ""
     }
 
     func updateMetadataReviewText(_ text: String, field: MetadataFieldID, for url: URL, editorID: UUID? = nil) {
@@ -4179,7 +4206,7 @@ final class BrowserViewModel {
         guard var editor = metadataReviewEditors[key], !isMetadataReviewFrozen(for: url),
               editorID == nil || editor.id == editorID else { return }
         editor.textBuffers[field] = text
-        field.setTextValue(text, in: &editor.draft)
+        field.setReviewTextValue(text, in: &editor.draft)
         metadataReviewEditors[key] = editor
     }
 
@@ -4191,7 +4218,7 @@ final class BrowserViewModel {
         guard var editor = metadataReviewEditor(for: url), !isMetadataReviewFrozen(for: url),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         var metadata = editor.draft
-        for (field, value) in editor.textBuffers { field.setTextValue(value, in: &metadata) }
+        for (field, value) in editor.textBuffers { field.setReviewTextValue(value, in: &metadata) }
         guard proposal.request.canApply(imageURL: url, editorLoadID: editor.id,
             description: metadataReviewText(for: .description, imageURL: url),
             metadata: DescriptionAssistantMetadata(metadata)) else { return false }
@@ -4213,7 +4240,7 @@ final class BrowserViewModel {
 
     func isMetadataReviewFrozen(for url: URL) -> Bool {
         metadataReviewCoordinator.isTransitioning
-            || metadataReviewFreezeOwners[Self.metadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
+            || metadataReviewFreezeOwners[cachedMetadataReviewKey(url)] != nil || metadataReviewCoordinator.isReviewing(url)
     }
 
     /// Freeze synchronously before capturing the final live buffer, with an owner token that

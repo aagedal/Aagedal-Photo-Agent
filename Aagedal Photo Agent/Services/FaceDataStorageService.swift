@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import ImageIO
 import os.log
 
 nonisolated private let faceDataLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AagedalPhotoAgent", category: "FaceDataStorageService")
@@ -275,6 +277,73 @@ nonisolated struct FaceScanFileClassification: Sendable, Equatable {
     let imageURLsToScan: [URL]
     let removedOrModifiedPaths: Set<String>
     let unchangedPaths: Set<String>
+    /// Unchanged files whose stored signature must be replaced: a metadata-only write moved the
+    /// date/size while the content fingerprint still matches, or a legacy signature gained one.
+    var refreshedSignatures: [String: FileSignature] = [:]
+}
+
+/// Metadata-independent identity of a photo's image content, so a metadata-only write (ours,
+/// Photo Mechanic's, …) does not discard faces detected in unchanged pixels.
+///
+/// JPEG only: SHA-256 over every non-metadata segment before the first scan (frame, tables),
+/// the byte length of the entropy-coded region, three 64 KB samples of it (start, middle, end)
+/// and the EXIF orientation. APPn/COM segments — where EXIF, XMP, IPTC and ICC live — are
+/// excluded. A pixel edit re-encodes the scan data (changing its length and samples) and a
+/// rotation changes the orientation, so either still forces a rescan. The file is memory-mapped
+/// and only the sampled pages are read, so the cost stays small on slow volumes.
+nonisolated enum FaceScanContentFingerprint {
+    static let sampleSize = 64 * 1024
+
+    static func compute(for url: URL) -> String? {
+        guard ["jpg", "jpeg", "jpe"].contains(url.pathExtension.lowercased()),
+              let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
+        return compute(jpegData: data, orientation: orientation(of: data))
+    }
+
+    static func compute(jpegData data: Data, orientation: Int?) -> String? {
+        let count = data.count
+        guard count > 4, data[data.startIndex] == 0xFF, data[data.startIndex + 1] == 0xD8 else { return nil }
+        let base = data.startIndex
+        var hasher = SHA256()
+        var offset = 2
+        var sawFrame = false
+        while offset + 4 <= count {
+            guard data[base + offset] == 0xFF else { return nil }
+            let marker = data[base + offset + 1]
+            if marker == 0xFF { offset += 1; continue }
+            if marker == 0x01 || (0xD0...0xD8).contains(marker) { offset += 2; continue }
+            guard marker != 0xD9 else { return nil }
+            let length = Int(data[base + offset + 2]) << 8 | Int(data[base + offset + 3])
+            let segmentEnd = offset + 2 + length
+            guard length >= 2, segmentEnd <= count else { return nil }
+            if marker == 0xDA {
+                guard sawFrame else { return nil }
+                let scanLength = count - offset
+                withUnsafeBytes(of: UInt64(scanLength).bigEndian) { hasher.update(bufferPointer: $0) }
+                let sampleLength = min(sampleSize, scanLength)
+                let middle = offset + max(0, (scanLength - sampleLength) / 2)
+                for start in [offset, middle, count - sampleLength] {
+                    hasher.update(data: data[(base + start)..<(base + start + sampleLength)])
+                }
+                withUnsafeBytes(of: Int64(orientation ?? 1).bigEndian) { hasher.update(bufferPointer: $0) }
+                return "jpeg-v1:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+            let isMetadata = (0xE0...0xEF).contains(marker) || marker == 0xFE
+            if !isMetadata {
+                if (0xC0...0xCF).contains(marker), ![0xC4, 0xC8, 0xCC].contains(marker) { sawFrame = true }
+                hasher.update(data: data[(base + offset)..<(base + segmentEnd)])
+            }
+            offset = segmentEnd
+        }
+        return nil
+    }
+
+    private static func orientation(of data: Data) -> Int? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) as? [CFString: Any]
+        else { return nil }
+        return (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue
+    }
 }
 
 /// Classification stops at a precise URL boundary when cancellation is observed. Callers must
@@ -305,8 +374,10 @@ actor FaceScanFileSignatureService {
     static let shared = FaceScanFileSignatureService()
 
     typealias SignatureReader = @Sendable (URL) -> FileSignature?
+    typealias FingerprintReader = @Sendable (URL) -> String?
 
     private let readSignature: SignatureReader
+    private let readFingerprint: FingerprintReader
 
     init(
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
@@ -325,10 +396,12 @@ actor FaceScanFileSignatureService {
             }
             guard let fileSize else { return nil }
             return FileSignature(modificationDate: modificationDate, fileSize: fileSize)
-        }
+        },
+        readFingerprint: @escaping FingerprintReader = { FaceScanContentFingerprint.compute(for: $0) }
     ) {
         self.filesystemQueue = filesystemQueue
         self.readSignature = readSignature
+        self.readFingerprint = readFingerprint
     }
 
     /// Run under the caller's folder reservation before reading/resetting saved face data.
@@ -390,6 +463,7 @@ actor FaceScanFileSignatureService {
         let existingPaths = Set(existingSignatures.keys)
         var imageURLsToScan: [URL] = []
         var unchangedPaths: Set<String> = []
+        var refreshedSignatures: [String: FileSignature] = [:]
         var processedFileCount = 0
 
         for url in imageURLs {
@@ -408,9 +482,22 @@ actor FaceScanFileSignatureService {
                 )
             }
 
-            if let existingSignature = existingSignatures[url.path],
-               currentSignature == existingSignature {
+            if let existingSignature = existingSignatures[url.path], let currentSignature,
+               existingSignature.hasSameFileFacts(as: currentSignature) {
                 unchangedPaths.insert(url.path)
+                // Backfill a legacy signature so a later metadata-only write keeps its faces.
+                if existingSignature.contentFingerprint == nil, let fingerprint = readFingerprint(url) {
+                    refreshedSignatures[url.path] = FileSignature(modificationDate: existingSignature.modificationDate,
+                        fileSize: existingSignature.fileSize, contentFingerprint: fingerprint)
+                }
+            } else if let existingSignature = existingSignatures[url.path], let currentSignature,
+                      existingSignature.contentFingerprint != nil,
+                      case let current = FileSignature(modificationDate: currentSignature.modificationDate,
+                          fileSize: currentSignature.fileSize, contentFingerprint: readFingerprint(url)),
+                      FileSignature.storedFacesAreCurrent(stored: existingSignature, current: current) {
+                // Metadata-only change: same pixels and orientation, new date/size.
+                unchangedPaths.insert(url.path)
+                refreshedSignatures[url.path] = current
             } else {
                 imageURLsToScan.append(url)
             }
@@ -422,7 +509,8 @@ actor FaceScanFileSignatureService {
         return .complete(FaceScanFileClassification(
             imageURLsToScan: imageURLsToScan,
             removedOrModifiedPaths: removedOrModifiedPaths,
-            unchangedPaths: unchangedPaths
+            unchangedPaths: unchangedPaths,
+            refreshedSignatures: refreshedSignatures
         ))
     }
 
@@ -430,11 +518,17 @@ actor FaceScanFileSignatureService {
         guard !Task.isCancelled else {
             return .cancelled(imageURL: imageURL, readCompleted: false)
         }
-        let signature = readSignature(imageURL)
+        var signature = readSignature(imageURL)
+        if signature != nil { signature?.contentFingerprint = readFingerprint(imageURL) }
         guard !Task.isCancelled else {
             return .cancelled(imageURL: imageURL, readCompleted: true)
         }
         return .captured(imageURL: imageURL, signature: signature)
+    }
+
+    /// Date/size only (no content read) for cheap before/after comparisons around our own writes.
+    func fileFacts(for imageURL: URL) -> FileSignature? {
+        readSignature(imageURL)
     }
 }
 
@@ -581,7 +675,7 @@ actor FaceDataFolderLoadService {
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
-        let faceData = cachedDocumentFaceData(folderURL)
+        let faceData = cachedDocumentFaceData(folderURL).map { Self.rebased($0, to: folderURL).data }
         guard !Task.isCancelled else {
             return .cancelled(folderURL: standardizedFolderURL)
         }
@@ -617,6 +711,14 @@ actor FaceDataFolderLoadService {
             documentCache[key] = DocumentCacheEntry(identity: before, faceData: faceData)
         }
         return faceData
+    }
+
+    /// A moved or copied folder's document still names the old location. Every read is rebased
+    /// onto the folder actually requested so no edit, Apply or save can target the old folder.
+    private static func rebased(_ data: FolderFaceData, to folderURL: URL) -> (data: FolderFaceData, changed: Bool) {
+        var copy = data
+        let changed = copy.rebase(toFolder: folderURL)
+        return (copy, changed)
     }
 
     private func invalidateDocumentCache(_ folderURL: URL) {
@@ -656,7 +758,7 @@ actor FaceDataFolderLoadService {
                 // Decode without recovery: corrupt, removed, or foreign-owned documents must
                 // never be replaced by an older interactive whole-document snapshot.
                 guard expectedSnapshot.folderURL.standardizedFileURL.path == folderURL.path,
-                      let current = loadDocumentFaceData(folderURL),
+                      let current = loadDocumentFaceData(folderURL).map({ Self.rebased($0, to: folderURL).data }),
                       current.folderURL.standardizedFileURL.path == folderURL.path else {
                     return .failedBeforeCommit(folderURL: folderURL,
                         message: "Face data changed on disk. Reload the folder and reapply the edit.")
@@ -940,7 +1042,7 @@ actor FaceDataFolderLoadService {
             ))
         }
 
-        guard let faceData = (readOnlyRecovery ? loadDocumentFaceData(folderURL) : loadFaceData(folderURL)) else {
+        guard let storedFaceData = (readOnlyRecovery ? loadDocumentFaceData(folderURL) : loadFaceData(folderURL)) else {
             let evidence = FaceDataFolderLoadEvidence(
                 folderURL: standardizedFolderURL,
                 faceData: nil,
@@ -964,6 +1066,15 @@ actor FaceDataFolderLoadService {
                 requestedThumbnailCount: 0,
                 processedThumbnailCount: 0
             ))
+        }
+
+        let (faceData, wasRebased) = Self.rebased(storedFaceData, to: folderURL)
+        if wasRebased, !readOnlyRecovery {
+            // The caller owns the folder reservation; durably adopt the new location so the
+            // document no longer points at the folder it was moved or copied from.
+            if let failure = persist(faceData).failureMessage {
+                faceDataLog.warning("Failed to save rebased face data: \(failure, privacy: .private)")
+            }
         }
 
         let cleanupDisposition: FaceDataFolderLoadEvidence.CleanupDisposition

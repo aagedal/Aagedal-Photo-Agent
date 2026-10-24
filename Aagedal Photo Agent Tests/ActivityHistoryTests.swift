@@ -1259,19 +1259,25 @@ struct ActivityHistoryTests {
         #expect(viewModel.errorMessage == "Failed to delete face data: \(failure.localizedDescription)")
     }
 
-    @Test("Lazy deletion refuses a document owned by another folder")
+    @Test("Lazy deletion rebases a moved folder's document and never writes outside the reserved folder")
     func lazyFaceDeletionWrongOwner() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let other = folder.appendingPathComponent("Other")
-        let document = FolderFaceData(folderURL: other, faces: [], groups: [],
+        let photo = folder.appendingPathComponent("photo.jpg")
+        let face = DetectedFace(id: UUID(), imageURL: other.appendingPathComponent("photo.jpg"), faceRect: .zero,
+            featurePrintData: Data([1]), detectedAt: Date())
+        // The document still names the folder it was moved or copied from.
+        let document = FolderFaceData(folderURL: other, faces: [face], groups: [],
             lastScanDate: Date(), scanComplete: true)
+        let saved = FaceDataSavedFolders()
         let service = FaceDataFolderLoadService(loadFaceData: { _ in document },
-            saveFaceData: { _ in Issue.record("Wrong-folder data must never be written") })
-        do {
-            _ = try await service.deletePhotoFacesWithFolderReservation(folderURL: folder,
-                imageURLs: [folder.appendingPathComponent("photo.jpg")])
-            Issue.record("Expected owner refusal")
-        } catch { #expect(error as? CocoaError == CocoaError(.fileReadCorruptFile)) }
+            saveFaceData: { saved.record($0) }, deleteThumbnail: { _, _ in })
+        let result = try await service.deletePhotoFacesWithFolderReservation(folderURL: folder, imageURLs: [photo])
+        guard case .complete(let evidence) = result.load else { Issue.record("Deletion must complete"); return }
+        #expect(evidence.faceData?.faces.isEmpty == true)
+        #expect(evidence.faceData?.folderURL.standardizedFileURL.path == folder.standardizedFileURL.path)
+        #expect(!saved.folders.isEmpty)
+        #expect(saved.folders.allSatisfy { $0.standardizedFileURL.path == folder.standardizedFileURL.path })
         let released = try MCPProcessReservation.acquireFolder(folder)
         released.release()
     }
@@ -1544,4 +1550,12 @@ private actor FaceThumbnailCancellationGate {
         releaseWaiter?.resume()
         releaseWaiter = nil
     }
+}
+
+
+private nonisolated final class FaceDataSavedFolders: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [URL] = []
+    var folders: [URL] { lock.withLock { stored } }
+    func record(_ data: FolderFaceData) { lock.withLock { stored.append(data.folderURL) } }
 }

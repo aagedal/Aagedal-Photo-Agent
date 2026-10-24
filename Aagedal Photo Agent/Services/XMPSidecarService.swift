@@ -411,7 +411,7 @@ struct XMPSidecarService: Sendable {
         guard try fieldMutationData(for: imageURL) == expectedSnapshot.data else { throw MetadataFieldMutationConflict() }
         return try await updateXMPTransaction(for: imageURL, expectedSnapshot: expectedSnapshot,
             onInstalled: onInstalled) { xmp in
-            if case .addPersons = mutation,
+            if mutation.isPersonMutation,
                !XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil }).hasDescriptiveContent {
                 // PersonInImage makes this an authoritative descriptive XMP record. Seed from
                 // actual embedded facts, never unrelated pending JSON, before adding that field.
@@ -435,9 +435,13 @@ struct XMPSidecarService: Sendable {
             case .orientation(_, let target):
                 xmp.tiffOrientation = String(target)
                 xmp.setValue(.simple(String(target)), namespace: XMPNamespace.exif, property: "Orientation")
-            case .addPersons(let names):
-                xmp.setValue(.array(MetadataPhysicalFieldMutation.add(names, to: xmp.personInImage)),
-                    namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+            case .addPersons, .replacePersons:
+                let updated = mutation.persons(applyingTo: xmp.personInImage)
+                if updated.isEmpty {
+                    xmp.removeValue(namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                } else {
+                    xmp.setValue(.array(updated), namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                }
             }
             xmp.creatorTool = SwiftExifWriteEngine.creatorTool
         }

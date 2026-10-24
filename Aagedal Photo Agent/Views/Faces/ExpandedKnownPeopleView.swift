@@ -39,6 +39,8 @@ struct ExpandedKnownPeopleView: View {
     @State private var deletingPersonIDs: Set<UUID> = []
     @State private var isMergingPeople = false
     @State private var showMergeConfirmation = false
+    /// The person the user chose to keep in the merge sheet (nil = first by name).
+    @State private var mergeSurvivorID: UUID?
     @State private var sortMode: KnownPeopleSortMode = .name
     @State private var isLegacyImporting = false
     @State private var isLegacyExporting = false
@@ -107,16 +109,10 @@ struct ExpandedKnownPeopleView: View {
             }
             .disabled(deletingPersonIDs.contains(person.id))
         } message: { person in
-            Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.")
+            Text("Are you sure you want to delete \"\(person.name)\"? This will remove all \(person.embeddings.count) face sample(s). This cannot be undone.\n\nFace groups in your folders keep the name \"\(person.name)\", and Person Shown in your photos is not changed unless you update it.")
         }
-        .alert("Merge People?", isPresented: $showMergeConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Merge") {
-                mergeSelectedPeople()
-            }
-        } message: {
-            let targetName = people.first { selectedPersonIDs.contains($0.id) }?.name ?? ""
-            Text("Merge \(selectedPersonIDs.count) people into one? The first person (\(targetName)) will be kept and receive all embeddings from the others. The other \(selectedPersonIDs.count - 1) people will be deleted.")
+        .sheet(isPresented: $showMergeConfirmation) {
+            mergeSheet
         }
         .alert(
             "Operation Not Completed",
@@ -226,6 +222,7 @@ struct ExpandedKnownPeopleView: View {
 
             // Merge button
             Button {
+                mergeSurvivorID = nil
                 showMergeConfirmation = true
             } label: {
                 Label("Merge", systemImage: "arrow.triangle.merge")
@@ -443,16 +440,63 @@ struct ExpandedKnownPeopleView: View {
         }
     }
 
-    private func mergeSelectedPeople() {
-        guard selectedPersonIDs.count >= 2, !isMergingPeople else { return }
-
-        // Sort selected people by name to get consistent merge order
-        let sortedSelected = people
+    /// Selected people in a stable (name) order; the merge sheet lists them for the survivor pick.
+    private var mergeCandidates: [KnownPerson] {
+        people
             .filter { selectedPersonIDs.contains($0.id) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
 
-        guard let targetPerson = sortedSelected.first else { return }
-        let sourcePeople = Array(sortedSelected.dropFirst())
+    private var resolvedMergeSurvivorID: UUID? {
+        let candidates = mergeCandidates
+        if let mergeSurvivorID, candidates.contains(where: { $0.id == mergeSurvivorID }) { return mergeSurvivorID }
+        return candidates.first?.id
+    }
+
+    @ViewBuilder
+    private var mergeSheet: some View {
+        let candidates = mergeCandidates
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Merge \(candidates.count) People").font(.headline)
+            Text("Choose the person to keep. The others' face samples move to that person, and the others are deleted.")
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("Keep:", selection: Binding(
+                get: { resolvedMergeSurvivorID },
+                set: { mergeSurvivorID = $0 }
+            )) {
+                ForEach(candidates) { person in
+                    Text("\(person.name) (\(person.embeddings.count) samples)").tag(Optional(person.id))
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .accessibilityIdentifier("known-people-merge-survivor")
+            Text("Face groups in the open folder that are linked to a merged person take the kept name. Other folders keep their names until updated.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { showMergeConfirmation = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Merge") {
+                    let survivor = resolvedMergeSurvivorID
+                    showMergeConfirmation = false
+                    if let survivor { mergeSelectedPeople(into: survivor) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(resolvedMergeSurvivorID == nil || candidates.count < 2)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+
+    private func mergeSelectedPeople(into survivorID: UUID) {
+        guard selectedPersonIDs.count >= 2, !isMergingPeople else { return }
+
+        let sortedSelected = mergeCandidates
+        guard let targetPerson = sortedSelected.first(where: { $0.id == survivorID }) else { return }
+        let sourcePeople = sortedSelected.filter { $0.id != survivorID }
 
         isMergingPeople = true
         Task {

@@ -224,8 +224,20 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     /// Reversible "do not write Person Shown" choice for referees, coaches, supporters, etc.
     /// The group and its faces remain available for later correction/re-inclusion.
     var excludedFromPersonShown: Bool? = nil
+    /// The exact name this app last wrote into Person Shown for this group's photos (Apply or a
+    /// confirmed "Update Person Shown"). Corrections only ever replace or remove this string, so
+    /// names a user typed by hand are never touched. Nil for legacy data and never-applied groups.
+    var appliedPersonShownName: String? = nil
 
     var isExcludedFromPersonShown: Bool { excludedFromPersonShown ?? false }
+
+    /// A merge keeps the source's applied name when the surviving group shows the same name, so
+    /// a later rename of the merged group can still correct the photos the source applied it to.
+    mutating func inheritAppliedName(from source: FaceGroup) {
+        guard appliedPersonShownName == nil, let applied = source.appliedPersonShownName,
+              applied == name?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        appliedPersonShownName = applied
+    }
 }
 
 // MARK: - Lenses
@@ -301,6 +313,32 @@ nonisolated struct FaceLensState: Codable, Sendable {
 nonisolated struct FileSignature: Codable, Equatable, Sendable {
     let modificationDate: Date
     let fileSize: Int64
+    /// Metadata-independent content identity (see `FaceScanContentFingerprint`). A metadata-only
+    /// write changes the date and size but not this value, so faces detected in the unchanged
+    /// pixels stay valid. Nil for legacy signatures and formats without a fingerprint.
+    var contentFingerprint: String? = nil
+
+    init(modificationDate: Date, fileSize: Int64, contentFingerprint: String? = nil) {
+        self.modificationDate = modificationDate
+        self.fileSize = fileSize
+        self.contentFingerprint = contentFingerprint
+    }
+
+    /// Same file-system facts (date and size), ignoring the content fingerprint.
+    func hasSameFileFacts(as other: FileSignature) -> Bool {
+        modificationDate == other.modificationDate && fileSize == other.fileSize
+    }
+
+    /// The one staleness rule shared by incremental face scans and caption face context: the
+    /// stored face geometry is current when the file facts are unchanged, or when both sides
+    /// carry the same metadata-independent content fingerprint (a metadata-only write).
+    static func storedFacesAreCurrent(stored: FileSignature?, current: FileSignature?) -> Bool {
+        guard let stored, let current else { return false }
+        if stored.hasSameFileFacts(as: current) { return true }
+        guard let storedPrint = stored.contentFingerprint,
+              let currentPrint = current.contentFingerprint else { return false }
+        return storedPrint == currentPrint
+    }
 }
 
 /// Represents a suggestion to merge two similar face groups
@@ -404,6 +442,37 @@ nonisolated struct FolderFaceData: Codable {
         var states = lensStates ?? [:]
         states[lens.rawValue] = state
         lensStates = states
+    }
+
+    /// A moved or copied folder carries its `.face_data` with the old absolute URLs. Rebase the
+    /// folder, every face/number image URL and every scan signature key onto `folderURL` by
+    /// filename so edits, Apply and persistence target the folder actually opened.
+    /// Returns whether anything changed.
+    @discardableResult
+    mutating func rebase(toFolder folderURL: URL) -> Bool {
+        let target = folderURL.standardizedFileURL
+        // Only a genuinely different folder is rebased; symlink spellings of the same folder
+        // keep their stored URLs (the browser looks faces up by exact URL).
+        guard self.folderURL.standardizedFileURL.resolvingSymlinksInPath().path
+                != target.resolvingSymlinksInPath().path else { return false }
+        func rebased(_ url: URL) -> URL { target.appendingPathComponent(url.lastPathComponent) }
+        self.folderURL = target
+        for index in faces.indices {
+            faces[index].imageURL = rebased(faces[index].imageURL)
+        }
+        if var detections = numberDetections {
+            for index in detections.indices {
+                detections[index].imageURL = rebased(detections[index].imageURL)
+            }
+            numberDetections = detections
+        }
+        var signatures: [String: FileSignature] = [:]
+        signatures.reserveCapacity(scannedFiles.count)
+        for (path, signature) in scannedFiles {
+            signatures[rebased(URL(fileURLWithPath: path)).path] = signature
+        }
+        scannedFiles = signatures
+        return true
     }
 
     /// Replaces filename-derived image references simultaneously, so swaps and longer rename

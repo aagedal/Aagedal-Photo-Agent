@@ -20,8 +20,10 @@ nonisolated struct DescriptionAssistantFaceContext: Sendable {
 
     static func make(for imageURL: URL, data: FolderFaceData?, currentSignature: FileSignature?) -> Self {
         guard var data else { return Self(people: [], notice: "No face scan is available for this photo.") }
-        // Geometry from a replaced or physically rotated file must not enter the prompt.
-        guard let currentSignature, data.scannedFiles[imageURL.path] == currentSignature else {
+        // Geometry from a replaced or physically rotated file must not enter the prompt. A
+        // metadata-only write (Apply, Review) keeps the content fingerprint and stays current:
+        // the same rule the incremental face scan uses.
+        guard FileSignature.storedFacesAreCurrent(stored: data.scannedFiles[imageURL.path], current: currentSignature) else {
             return Self(people: [], notice: "Face data is missing or out of date. Scan this photo again to include names.")
         }
         data.groups.removeAll { $0.isExcludedFromPersonShown }

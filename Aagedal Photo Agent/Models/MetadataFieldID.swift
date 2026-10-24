@@ -474,6 +474,32 @@ nonisolated enum MetadataFieldID: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    // MARK: Review cells
+
+    /// Review edits list fields as one line of text. Person and organisation names contain
+    /// commas ("Støre, Jonas Gahr" is one person), so those lists are joined with "; " there and
+    /// split only on ";". Elsewhere (templates, editor) the existing comma syntax is unchanged.
+    static let reviewNameListSeparator = "; "
+
+    var usesReviewNameListSeparator: Bool {
+        self == .personShown || self == .organisationShownName
+    }
+
+    func reviewTextValue(in metadata: IPTCMetadata) -> String? {
+        guard usesReviewNameListSeparator else { return textValue(in: metadata) }
+        return repeatableValues(in: metadata).joined(separator: Self.reviewNameListSeparator)
+    }
+
+    func setReviewTextValue(_ value: String, in metadata: inout IPTCMetadata) {
+        guard usesReviewNameListSeparator else {
+            setTextValue(value, in: &metadata)
+            return
+        }
+        // Unchanged text keeps every stored entry exactly as it is.
+        guard value != repeatableValues(in: metadata).joined(separator: Self.reviewNameListSeparator) else { return }
+        setRepeatableValues(value.split(separator: ";").map(String.init), in: &metadata)
+    }
+
     fileprivate func setRepeatableValues(_ values: [String], in metadata: inout IPTCMetadata) {
         let trimmed = values
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

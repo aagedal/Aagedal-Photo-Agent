@@ -326,6 +326,39 @@ struct MetadataFieldMutationWriteServiceTests {
         #expect(result.installedSidecar?.pendingChanges == true)
     }
 
+    @Test("Person replacement rewrites only the exact applied name, embedded and in a RAW sidecar")
+    func exactPersonReplacement() async throws {
+        let (folder, image, embedded) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try await SwiftExifWriteEngine().addRemoveListValues(add: [.personInImage: ["Store", "Hansen, Ola", "Manual Entry"]],
+            remove: [:], to: [image])
+        let renamed = await worker().write(request(image, mutation: .replacePersons([.init(old: "Store", new: "Støre")])))
+        #expect(renamed.completed)
+        #expect(try await read(image).personShown == ["Støre", "Hansen, Ola", "Manual Entry"])
+        // A photo that no longer carries the applied name is left as it is.
+        let absent = await worker().write(request(image, mutation: .replacePersons([.init(old: "Ann", new: nil)])))
+        #expect(absent.completed)
+        #expect(try await read(image).personShown == ["Støre", "Hansen, Ola", "Manual Entry"])
+        let removed = await worker().write(request(image, mutation: .replacePersons([.init(old: "Hansen, Ola", new: nil)])))
+        #expect(removed.completed)
+        #expect(try await read(image).personShown == ["Støre", "Manual Entry"])
+
+        let raw = folder.appendingPathComponent("raw.ARW")
+        try Data("opaque RAW".utf8).write(to: raw)
+        var rawBaseline = embedded
+        rawBaseline.personShown = ["Store", "Hansen, Ola"]
+        let rawEmbedded = rawBaseline
+        let service = MetadataFieldMutationWriteService(writeEngine: SwiftExifWriteEngine(), readEmbedded: { _ in rawEmbedded })
+        let rawBefore = try Data(contentsOf: raw)
+        let rawResult = await service.write(request(raw, mode: .writeToFileAndXMPSidecar,
+            mutation: .replacePersons([.init(old: "Store", new: "Støre")])))
+        #expect(rawResult.completed)
+        #expect(!rawResult.didWriteEmbedded)
+        #expect(rawResult.didWriteXMP)
+        #expect(try Data(contentsOf: raw) == rawBefore)
+        #expect(XMPSidecarService().loadSidecar(for: raw)?.personShown == ["Støre", "Hansen, Ola"])
+    }
+
     @Test("An unchanged draft value still repairs the physical destination")
     func noDeltaRepair() async throws {
         let (folder, image, embedded) = try await fixture()

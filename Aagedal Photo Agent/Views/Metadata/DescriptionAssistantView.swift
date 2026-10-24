@@ -441,7 +441,7 @@ struct BatchDescriptionAssistantView: View {
                         continue
                     }
                     var metadata = editor.draft
-                    for (field, text) in editor.textBuffers { field.setTextValue(text, in: &metadata) }
+                    for (field, text) in editor.textBuffers { field.setReviewTextValue(text, in: &metadata) }
                     let request = DescriptionAssistantRequest(imageURL: url, editorLoadID: editor.id,
                         originalDescription: browser.metadataReviewText(for: .description, imageURL: url),
                         action: action, language: language, metadata: DescriptionAssistantMetadata(metadata), editorialPrompt: prompt)

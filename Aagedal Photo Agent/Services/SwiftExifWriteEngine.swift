@@ -276,7 +276,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     switch mutation {
                     case .rating: return .rating(MetadataPhysicalFieldMutation.normalizedRating(record.xmp?.rating.map(Int.init)))
                     case .label: return .label(MetadataPhysicalFieldMutation.normalizedLabel(record.xmp?.label))
-                    case .addPersons: return .persons(record.xmp?.personInImage ?? [])
+                    case .addPersons, .replacePersons: return .persons(record.xmp?.personInImage ?? [])
                     case .orientation: return .orientation(Int(record.exif?.orientation ?? 1))
                     }
                 }
@@ -300,12 +300,18 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     metadata.xmp?.tiffOrientation = String(target)
                     metadata.xmp?.setValue(.simple(String(target)), namespace: XMPNamespace.exif, property: "Orientation")
-                case .addPersons(let names):
+                case .addPersons, .replacePersons:
                     if metadata.xmp == nil { metadata.xmp = XMPData() }
                     let existingNames = metadata.xmp?.personInImage ?? []
-                    let updatedNames = MetadataPhysicalFieldMutation.add(names, to: existingNames)
-                    metadata.xmp?.setValue(.array(updatedNames),
-                        namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                    let updatedNames = mutation.persons(applyingTo: existingNames)
+                    if updatedNames != existingNames {
+                        if updatedNames.isEmpty {
+                            metadata.xmp?.removeValue(namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                        } else {
+                            metadata.xmp?.setValue(.array(updatedNames),
+                                namespace: XMPNamespace.iptcExt, property: "PersonInImage")
+                        }
+                    }
                 }
                 let intended = value(metadata)
                 let changed = before != intended || orientationCarriersNeedRepair

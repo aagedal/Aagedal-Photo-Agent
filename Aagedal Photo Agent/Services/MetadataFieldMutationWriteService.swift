@@ -1,17 +1,48 @@
 import Foundation
 
+/// One exact Person Shown correction. `old` is matched verbatim (after trimming whitespace) so
+/// only the name the app itself applied is ever replaced or removed; a photo without it is left
+/// untouched. A nil `old` adds `new` unconditionally (deduplicated, like `.addPersons`).
+nonisolated struct MetadataPersonReplacement: Sendable, Equatable {
+    let old: String?
+    let new: String?
+    /// Keep `old` while still adding `new` (another face in the photo still shows that person).
+    let keepsOld: Bool
+    init(old: String?, new: String?, keepsOld: Bool = false) {
+        self.old = old; self.new = new; self.keepsOld = keepsOld
+    }
+}
+
 nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
     case rating(Int?)
     case label(String?)
     case addPersons([String])
+    /// Exact-string Person Shown corrections (rename, move or removal of an app-applied name).
+    case replacePersons([MetadataPersonReplacement])
     case orientation(expected: Int, new: Int)
+
+    var isPersonMutation: Bool {
+        switch self {
+        case .addPersons, .replacePersons: true
+        case .rating, .label, .orientation: false
+        }
+    }
+
+    /// The Person Shown list this mutation produces from `existing`.
+    func persons(applyingTo existing: [String]) -> [String] {
+        switch self {
+        case .addPersons(let names): Self.add(names, to: existing)
+        case .replacePersons(let replacements): Self.replace(replacements, in: existing)
+        case .rating, .label, .orientation: existing
+        }
+    }
 
     // A label mutation always carries an explicit value, including the empty standard clear.
     func apply(to metadata: inout IPTCMetadata) {
         switch self {
         case .rating(let value): metadata.rating = Self.normalizedRating(value)
         case .label(let value): metadata.label = Self.normalizedLabel(value) ?? ""
-        case .addPersons(let names): metadata.personShown = Self.add(names, to: metadata.personShown)
+        case .addPersons, .replacePersons: metadata.personShown = persons(applyingTo: metadata.personShown)
         case .orientation(_, let new): metadata.exifOrientation = new
         }
     }
@@ -19,7 +50,7 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
         switch self {
         case .rating: return .rating(Self.normalizedRating(metadata.rating))
         case .label: return .label(Self.normalizedLabel(metadata.label))
-        case .addPersons: return .persons(metadata.personShown)
+        case .addPersons, .replacePersons: return .persons(metadata.personShown)
         case .orientation: return .orientation(metadata.exifOrientation ?? 1)
         }
     }
@@ -30,6 +61,32 @@ nonisolated enum MetadataPhysicalFieldMutation: Sendable, Equatable {
         var seen = Set(existing.map { $0.lowercased() })
         for name in names where !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if seen.insert(name.lowercased()).inserted { result.append(name) }
+        }
+        return result
+    }
+    static func replace(_ replacements: [MetadataPersonReplacement], in existing: [String]) -> [String] {
+        func clean(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        var result = existing
+        for replacement in replacements {
+            let new = clean(replacement.new)
+            guard let old = clean(replacement.old) else {
+                if let new { result = add([new], to: result) }
+                continue
+            }
+            // Exact (canonically equivalent) match only: "Store" never matches "Støre", and a
+            // name the app did not apply to this photo is never touched.
+            guard let index = result.firstIndex(where: { clean($0) == old }) else { continue }
+            var insertion = index + 1
+            if !replacement.keepsOld {
+                result.removeAll { clean($0) == old }
+                insertion = index
+            }
+            if let new, !result.contains(where: { $0.lowercased() == new.lowercased() }) {
+                result.insert(new, at: min(insertion, result.count))
+            }
         }
         return result
     }

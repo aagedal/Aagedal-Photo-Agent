@@ -407,6 +407,36 @@ struct KnownPeopleServiceTests {
         }
     }
 
+    @Test("Renames, merges and deletions publish identity changes for linked folder groups")
+    func identityChangesArePublished() async throws {
+        let directory = makeTempDir()
+        activate(directory)
+        defer { teardown(directory) }
+        let service = KnownPeopleService()
+        var renamed = try service.addPerson(name: "Store", embeddings: [embedding(91)])
+        let target = try service.addPerson(name: "Target", embeddings: [embedding(92)])
+        let source = try service.addPerson(name: "Source", embeddings: [embedding(93)])
+        let deleted = try service.addPerson(name: "Deleted", embeddings: [embedding(94)])
+        let recorded = IdentityChangeRecorder()
+        let observer = NotificationCenter.default.addObserver(forName: .knownPeopleDatabaseDidChange,
+            object: nil, queue: nil) { notification in
+            if let change = notification.userInfo?[KnownPeopleIdentityChange.userInfoKey] as? KnownPeopleIdentityChange {
+                recorded.append(change)
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        renamed.name = "Støre"
+        try await service.updatePersonDetailsInBackground(renamed)
+        try await service.mergePeople(sourceID: source.id, intoTargetID: target.id)
+        try await service.removePersonInBackground(id: deleted.id)
+        #expect(recorded.values == [
+            .renamed(personID: renamed.id, newName: "Støre"),
+            .merged(sourceID: source.id, targetID: target.id, targetName: "Target"),
+            .deleted(personID: deleted.id),
+        ])
+    }
+
     @Test("Detail editing cancellation and missing samples leave records intact and release admission")
     func personDetailEditRejectedBeforeWrite() async throws {
         let directory = makeTempDir()
@@ -3800,4 +3830,12 @@ struct KnownPeopleReadExecutorTests {
 
 private nonisolated enum KnownPeopleReadContext {
     @TaskLocal static var marker: URL?
+}
+
+
+private nonisolated final class IdentityChangeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [KnownPeopleIdentityChange] = []
+    var values: [KnownPeopleIdentityChange] { lock.withLock { stored } }
+    func append(_ change: KnownPeopleIdentityChange) { lock.withLock { stored.append(change) } }
 }

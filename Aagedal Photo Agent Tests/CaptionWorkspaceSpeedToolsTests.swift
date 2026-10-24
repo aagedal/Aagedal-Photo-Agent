@@ -2325,6 +2325,27 @@ struct DescriptionAssistantFaceContextTests {
             currentSignature: FileSignature(modificationDate: .now, fileSize: 100)).people.isEmpty)
         #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: nil).people.isEmpty)
     }
+
+    @Test("A metadata-only write keeps face context current under the same rule as the face scan")
+    func metadataOnlyWriteKeepsContext() {
+        let photo = URL(fileURLWithPath: "/photos/fingerprinted.jpg")
+        let group = FaceGroup(id: UUID(), name: "Støre, Jonas Gahr", representativeFaceID: UUID(), faceIDs: [])
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.1, y: 0.2, width: 0.1, height: 0.1),
+            featurePrintData: Data(), groupID: group.id, detectedAt: .now)
+        let stored = FileSignature(modificationDate: Date(timeIntervalSince1970: 10), fileSize: 100,
+            contentFingerprint: "jpeg-v1:same")
+        let data = FolderFaceData(folderURL: photo.deletingLastPathComponent(), faces: [face], groups: [group],
+            lastScanDate: .now, scanComplete: true, scannedFiles: [photo.path: stored])
+        let rewritten = FileSignature(modificationDate: Date(timeIntervalSince1970: 20), fileSize: 140,
+            contentFingerprint: "jpeg-v1:same")
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: rewritten)
+            .people.map(\.name) == ["Støre, Jonas Gahr"])
+        let repixelled = FileSignature(modificationDate: Date(timeIntervalSince1970: 20), fileSize: 140,
+            contentFingerprint: "jpeg-v1:other")
+        #expect(DescriptionAssistantFaceContext.make(for: photo, data: data, currentSignature: repixelled).people.isEmpty)
+        #expect(FileSignature.storedFacesAreCurrent(stored: stored, current: rewritten))
+        #expect(!FileSignature.storedFacesAreCurrent(stored: stored, current: repixelled))
+    }
 }
 
 @Suite("Borealis full-release model configuration")

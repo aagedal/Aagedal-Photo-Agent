@@ -4789,7 +4789,7 @@ struct ContentViewModifiers: ViewModifier {
                         viewModel: metadataViewModel, captionFlush: {
                             let coordinator = CaptionWorkspaceFlushCoordinator.shared
                             if coordinator.hasRegisteredHandler {
-                                try coordinator.enqueueFlush()
+                                try coordinator.enqueueFlushAll()
                             } else if mainViewMode == .metadataReview || metadataViewModel.hasUnpersistedEditorChanges {
                                 throw CaptionWorkspaceFlushError.handlerUnavailable
                             }
@@ -4895,6 +4895,9 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
+            .modifier(PersonShownUpdatePromptModifier(viewModel: faceRecognitionViewModel,
+                                                      isEnabled: !browserViewModel.isFullScreen,
+                                                      images: { browserViewModel.images }))
             .modifier(AutoRefreshModifier(
                 panes: panes,
                 metadataViewModel: metadataViewModel,

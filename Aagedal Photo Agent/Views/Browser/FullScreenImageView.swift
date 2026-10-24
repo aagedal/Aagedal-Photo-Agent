@@ -1966,6 +1966,8 @@ struct FullScreenImageView: View {
                             .frame(width: max(box.width, 12), height: max(box.height, 12))
                             .position(x: box.midX, y: box.midY)
                             .onTapGesture {
+                                // A running scan of this folder would overwrite the rename.
+                                guard !faceVM.faceEditingPausedForScan() else { return }
                                 renamingFace = RenamingFace(id: face.id, groupID: groupID, initialName: faceVM.groupName(groupID) ?? "")
                             }
                             .popover(isPresented: Binding(
@@ -1980,6 +1982,7 @@ struct FullScreenImageView: View {
                     }
                 }
             }
+            .modifier(PersonShownUpdatePromptModifier(viewModel: faceVM, images: { viewModel.images }))
         }
     }
 

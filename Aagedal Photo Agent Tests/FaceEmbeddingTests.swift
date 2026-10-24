@@ -3205,3 +3205,146 @@ struct FaceFolderScanContractTests {
         #expect(!FaceScanCompletion(folderURL: folder, outcome: .refused(.scanAlreadyRunning)).succeeded)
     }
 }
+
+/// Embedded metadata writes (Apply under Professional, Review/batch saves, Photo Mechanic) change
+/// a JPEG's date and size but not its pixels: the next incremental scan must keep its faces.
+@Suite("Face data survives metadata-only writes", .serialized)
+struct FaceDataMetadataWriteTests {
+    private func makeFolder(_ label: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("face-metadata-\(label)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func writeJPEG(to url: URL, seed: UInt8) throws {
+        let width = 48, height = 32
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for index in 0..<(width * height) {
+            pixels[index * 4] = UInt8(truncatingIfNeeded: index &* 7 &+ Int(seed))
+            pixels[index * 4 + 1] = UInt8(truncatingIfNeeded: index &* 3 &+ Int(seed) &* 5)
+            pixels[index * 4 + 2] = UInt8(truncatingIfNeeded: index &* 11)
+            pixels[index * 4 + 3] = 255
+        }
+        let context = try #require(CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(context.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    private func facts(_ url: URL) throws -> FileSignature {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return FileSignature(modificationDate: try #require(attributes[.modificationDate] as? Date),
+            fileSize: try #require((attributes[.size] as? NSNumber)?.int64Value))
+    }
+
+    @Test("The JPEG fingerprint ignores metadata writes but not rotation or new pixels")
+    func fingerprintIgnoresMetadata() async throws {
+        let folder = try makeFolder("fingerprint")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: photo, seed: 1)
+        let original = try #require(FaceScanContentFingerprint.compute(for: photo))
+        let factsBefore = try facts(photo)
+
+        try await SwiftExifWriteEngine().addRemoveListValues(add: [.personInImage: ["Støre, Jonas Gahr"]],
+            remove: [:], to: [photo])
+        #expect(try !facts(photo).hasSameFileFacts(as: factsBefore))
+        #expect(FaceScanContentFingerprint.compute(for: photo) == original)
+
+        try await SwiftExifWriteEngine().writeOrientation(6, to: [photo])
+        #expect(FaceScanContentFingerprint.compute(for: photo) != original)
+
+        let other = folder.appendingPathComponent("other.jpg")
+        try writeJPEG(to: other, seed: 2)
+        #expect(FaceScanContentFingerprint.compute(for: other) != original)
+        #expect(FaceScanContentFingerprint.compute(for: folder.appendingPathComponent("missing.jpg")) == nil)
+    }
+
+    @Test("Classification keeps a metadata-only change and backfills legacy signatures")
+    func classificationKeepsMetadataOnlyChange() async throws {
+        let folder = try makeFolder("classify")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: photo, seed: 3)
+        let service = FaceScanFileSignatureService()
+        guard case .captured(_, let stored?) = await service.signature(for: photo) else {
+            Issue.record("A readable photo must have a signature")
+            return
+        }
+        #expect(stored.contentFingerprint != nil)
+
+        try await SwiftExifWriteEngine().addRemoveListValues(add: [.personInImage: ["Hansen, Ola"]],
+            remove: [:], to: [photo])
+        let current = try facts(photo)
+        guard case .complete(let kept) = await service.classify(imageURLs: [photo],
+            existingSignatures: [photo.path: stored]) else { Issue.record("Classification must complete"); return }
+        #expect(kept.imageURLsToScan.isEmpty)
+        #expect(kept.removedOrModifiedPaths.isEmpty)
+        #expect(kept.unchangedPaths == [photo.path])
+        let refreshed = try #require(kept.refreshedSignatures[photo.path])
+        #expect(refreshed.hasSameFileFacts(as: current))
+        #expect(refreshed.contentFingerprint == stored.contentFingerprint)
+
+        // A legacy signature (no fingerprint) with matching facts gains one…
+        let legacy = FileSignature(modificationDate: current.modificationDate, fileSize: current.fileSize)
+        guard case .complete(let backfilled) = await service.classify(imageURLs: [photo],
+            existingSignatures: [photo.path: legacy]) else { Issue.record("Classification must complete"); return }
+        #expect(backfilled.unchangedPaths == [photo.path])
+        #expect(backfilled.refreshedSignatures[photo.path]?.contentFingerprint == stored.contentFingerprint)
+
+        // …but a legacy signature with different facts cannot prove the pixels are the same.
+        let stale = FileSignature(modificationDate: .distantPast, fileSize: 1)
+        guard case .complete(let rescanned) = await service.classify(imageURLs: [photo],
+            existingSignatures: [photo.path: stale]) else { Issue.record("Classification must complete"); return }
+        #expect(rescanned.imageURLsToScan == [photo])
+
+        // New pixels with the same name are rescanned even though a fingerprint was stored.
+        try writeJPEG(to: photo, seed: 9)
+        guard case .complete(let replaced) = await service.classify(imageURLs: [photo],
+            existingSignatures: [photo.path: stored]) else { Issue.record("Classification must complete"); return }
+        #expect(replaced.imageURLsToScan == [photo])
+    }
+
+    @Test("Rescanning after an embedded metadata write keeps faces, names and the group")
+    @MainActor
+    func rescanAfterMetadataWriteKeepsFaces() async throws {
+        let folder = try makeFolder("rescan")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photo = folder.appendingPathComponent("photo.jpg")
+        try writeJPEG(to: photo, seed: 4)
+        let face = DetectedFace(id: UUID(), imageURL: photo, faceRect: CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.3),
+            featurePrintData: Data(), detectedAt: Date())
+        let model = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available, scanDetector: { _, _ in .init(faces: [(face, Data([1, 2]))]) })
+        model.loadFaceData(for: folder, cleanupPolicy: .never)
+        await model.waitForCurrentFaceDataLoad()
+        let first = try #require(await model.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+        #expect(first.succeeded)
+        let groupID = try #require(model.faceData?.faces.first?.groupID)
+        model.nameGroup(groupID, name: "Støre, Jonas Gahr")
+        await model.waitForCurrentFaceDataPersistence()
+
+        try await SwiftExifWriteEngine().addRemoveListValues(add: [.personInImage: ["Støre, Jonas Gahr"]],
+            remove: [:], to: [photo])
+
+        let rescanner = FaceRecognitionViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            faceModelAvailability: .available, scanDetector: { _, _ in
+                Issue.record("A metadata-only change must not discard and re-detect the photo's faces")
+                return .init(faces: [])
+            })
+        rescanner.loadFaceData(for: folder, cleanupPolicy: .never)
+        await rescanner.waitForCurrentFaceDataLoad()
+        let second = try #require(await rescanner.scheduleFolderScan(imageURLs: [photo], folderURL: folder).completion())
+        #expect(second.processedCount == 0)
+        #expect(second.succeeded)
+        #expect(rescanner.faceData?.faces.map(\.id) == [face.id])
+        #expect(rescanner.faceData?.groups.first { $0.id == groupID }?.name == "Støre, Jonas Gahr")
+        let saved = try #require(FaceDataStorageService().loadFaceData(for: folder))
+        #expect(saved.scannedFiles[photo.path]?.hasSameFileFacts(as: try facts(photo)) == true)
+        #expect(saved.groups.first { $0.id == groupID }?.name == "Støre, Jonas Gahr")
+    }
+}

@@ -101,6 +101,16 @@ struct ExpandedFaceManagementView: View {
                     .padding(.vertical, 6)
                 }
                 Divider()
+                if editingPausedForScan {
+                    HStack {
+                        FaceScanEditingPausedNote()
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                }
+                Group {
                 if viewModel.activeLens.isPeopleLens {
                     // Lens assists augment the shared people grouping below.
                     if viewModel.activeLens == .redCarpet {
@@ -164,6 +174,10 @@ struct ExpandedFaceManagementView: View {
                         onLabelImages: onLabelImages
                     )
                 }
+                }
+                // The scan publishes its own snapshot when it finishes; edits made now would be lost.
+                .disabled(editingPausedForScan)
+                .allowsHitTesting(!editingPausedForScan)
             }
             // Review queue lives in a dedicated right-side bar in the Sports lens, so the triage
             // list is vertical, roomier, and keyboard-drivable. Confirmed players stay in the strip.
@@ -171,6 +185,7 @@ struct ExpandedFaceManagementView: View {
                 SportsReviewSidebar(viewModel: viewModel,
                                     onOpenFullScreen: onOpenFullScreen,
                                     onResizingChanged: { sidebarResizing = $0 })
+                    .disabled(editingPausedForScan)
             }
         }
         .onChange(of: selectionState.focusedFaceID) { _, newValue in
@@ -223,6 +238,10 @@ struct ExpandedFaceManagementView: View {
                 }
             }
         }
+    }
+
+    private var editingPausedForScan: Bool {
+        viewModel.faceEditingPausedForScan(folderURL: folderURL)
     }
 
     private func updateThumbnailReplacementSelection(for faceID: UUID?) {

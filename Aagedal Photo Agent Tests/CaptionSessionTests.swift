@@ -552,6 +552,39 @@ struct CaptionSessionTests {
             try await coordinator.flushAsync()
         }
     }
+
+    @Test("Each mounted editor keeps its own flush handler; quit and workspace transitions flush them all")
+    func flushHandlersAreKeyedByOwner() async throws {
+        let coordinator = CaptionWorkspaceFlushCoordinator()
+        let firstReview = UUID()
+        let secondReview = UUID()
+        var flushed: [String] = []
+        coordinator.register(owner: firstReview) { flushed.append("first") }
+        coordinator.register(owner: secondReview) { flushed.append("second") }
+
+        // Caption-style calls still address the most recent editor only.
+        try coordinator.enqueueFlush()
+        #expect(flushed == ["second"])
+
+        // A workspace transition captures both panes' drafts.
+        flushed = []
+        try await coordinator.prepareForTransition(hasLiveEditor: true, isCurrent: { true })
+        #expect(flushed == ["first", "second"])
+
+        // Termination captures every editor once, even across a retry.
+        flushed = []
+        let termination = CaptionWorkspaceTerminationFlushOperation(coordinator: coordinator)
+        try await termination.flush()
+        try await termination.flush()
+        #expect(flushed == ["first", "second"])
+
+        // Unmounting one pane leaves the other registered.
+        coordinator.unregister(owner: secondReview)
+        #expect(coordinator.hasRegisteredHandler)
+        flushed = []
+        try coordinator.enqueueFlushAll()
+        #expect(flushed == ["first"])
+    }
 }
 
 private struct FlushFailure: Error {}
