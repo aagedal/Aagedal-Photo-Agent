@@ -56,12 +56,17 @@ nonisolated struct DescriptionAssistantRequest: Identifiable, Sendable {
     let editorialPrompt: String
     let metadata: DescriptionAssistantMetadata
     let reportingNotes: String
+    /// The editor's Develop settings for the photo, used only to keep blurred people out of the
+    /// face context (`RedactedFaceFilter`). Never sent to the model.
+    let developSettings: CameraRawSettings?
 
     init(id: UUID = UUID(), imageURL: URL, editorLoadID: UUID?, originalDescription: String,
          action: DescriptionAssistantAction, language: DescriptionAssistantLanguage,
          sourceDescription: String? = nil, people: [CaptionConfirmedPerson] = [],
          metadata: DescriptionAssistantMetadata = .init(), reportingNotes: String = "",
-         editorialPrompt: String = DescriptionAssistantPresets.load().selectedPrompt) {
+         editorialPrompt: String = DescriptionAssistantPresets.load().selectedPrompt,
+         developSettings: CameraRawSettings? = nil) {
+        self.developSettings = developSettings
         self.id = id
         self.imageURL = imageURL
         self.editorLoadID = editorLoadID

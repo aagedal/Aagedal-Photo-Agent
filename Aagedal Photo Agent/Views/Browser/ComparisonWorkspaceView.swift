@@ -27,6 +27,8 @@ struct ComparisonWorkspaceView: View {
 
     @State private var coordinator: ComparisonCoordinator?
     @State private var renderedImages: [ComparisonPane: CGImage] = [:]
+    /// Whether each pane's pixels were rendered with redacting settings (Clean Feed privacy).
+    @State private var paneRendersRedaction: [ComparisonPane: Bool] = [:]
     @State private var geometries: [ComparisonPane: ComparisonPaneGeometry] = [:]
     @State private var loadError: String?
     @State private var interactionError: String?
@@ -457,6 +459,7 @@ struct ComparisonWorkspaceView: View {
         }
         coordinator = nil
         renderedImages = [:]
+        paneRendersRedaction = [:]
         geometries = [:]
         let selectedImages = images
         let cache = fullScreenImageCache
@@ -516,6 +519,10 @@ struct ComparisonWorkspaceView: View {
                 )
                 coordinator = try ComparisonCoordinator(session: session)
                 renderedImages = [.left: leftResult.image, .right: rightResult.image]
+                paneRendersRedaction = [
+                    .left: leftResult.rendersRedaction,
+                    .right: rightResult.rendersRedaction
+                ]
                 isLoading = false
                 onFocusedImageChange(selectedImages[0])
                 publishComparisonToCleanFeed()
@@ -624,6 +631,7 @@ struct ComparisonWorkspaceView: View {
 
                 mutateCoordinator { $0.replaceSource(result.source, in: pane) }
                 renderedImages[pane] = result.image
+                paneRendersRedaction[pane] = result.rendersRedaction
                 geometries[pane] = nil
                 missingReplacement[pane] = nil
                 replacingPane = nil
@@ -662,6 +670,7 @@ struct ComparisonWorkspaceView: View {
         }
         mutateCoordinator { $0.replaceSource(liveSource.source, in: .left) }
         renderedImages[.left] = liveSource.image
+        paneRendersRedaction[.left] = liveSource.rendersRedaction
         geometries[.left] = nil
         publishComparisonToCleanFeed()
     }
@@ -745,6 +754,7 @@ struct ComparisonWorkspaceView: View {
             }
             if result.missingPanes.contains(pane) {
                 renderedImages[pane] = nil
+                paneRendersRedaction[pane] = nil
                 geometries[pane] = nil
             }
         }
@@ -855,9 +865,22 @@ struct ComparisonWorkspaceView: View {
         guard let session else { return }
         CleanFeedController.shared.presentComparison(
             session: session,
-            images: renderedImages
+            images: cleanFeedSafeImages
         )
         publishedCleanFeedSessionID = session.id
+    }
+
+    /// Panes the audience display may show. A pane of a photo with Anonymizer redactions (or
+    /// whose settings are not known) is shown only when its pixels were rendered with redacting
+    /// settings — never an Original pane, a muted live edit or a version saved before the
+    /// faces were blurred. A withheld pane stays black on the feed; the main display is unchanged.
+    private var cleanFeedSafeImages: [ComparisonPane: CGImage] {
+        renderedImages.filter { pane, _ in
+            RedactionPrivacyGuard.mayPublishToCleanFeed(
+                rendersRedaction: paneRendersRedaction[pane] == true,
+                photo: imageFile(in: pane).map(RedactionPrivacyGuard.knowledge(for:)) ?? .unknown
+            )
+        }
     }
 
     private func handleCullingShortcut(_ press: KeyPress) -> KeyPress.Result {

@@ -21,6 +21,9 @@ nonisolated enum ComparisonRenderError: Error, LocalizedError, Sendable {
 nonisolated struct ComparisonRenderedSource: @unchecked Sendable {
     let source: ComparisonSource
     let image: CGImage
+    /// Whether the settings these pixels were rendered with redact (Anonymizer masks or a
+    /// global Anonymizer). Clean Feed only shows a pane of a redacting photo when this is true.
+    var rendersRedaction = false
 }
 
 /// Comparison keeps two completed panes resident, so its output budget is deliberately tighter
@@ -223,7 +226,8 @@ actor ComparisonRenderService {
                 representation: representation,
                 dynamicRange: imageFile.isNativeHDR ? .hdr : .sdr
             ),
-            image: rendered
+            image: rendered,
+            rendersRedaction: effectiveSettings?.hasActiveRedaction == true
         )
     }
 
@@ -312,7 +316,8 @@ actor ComparisonRenderService {
                 representation: representation ?? .liveEdit(renderToken: renderToken),
                 dynamicRange: imageFile.isNativeHDR ? .hdr : .sdr
             ),
-            image: image
+            image: image,
+            rendersRedaction: settings?.hasActiveRedaction == true
         )
     }
 

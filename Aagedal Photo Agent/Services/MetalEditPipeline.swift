@@ -879,6 +879,15 @@ final class MetalEditPipeline: @unchecked Sendable {
         var maskMattePreviewMaskID: UUID?
         var onParamsChanged: (() -> Void)?
         var lastLoggedDrawableWidth = 0
+        /// While set, the Clean Feed mirror keeps these settings instead of following every
+        /// `updateParams` (see `holdMirrorParams(_:)`).
+        var heldMirrorSettings: HeldMirrorSettings?
+    }
+
+    /// Settings the Clean Feed mirror is pinned to. A box so "held at no settings" differs from
+    /// "not held".
+    nonisolated struct HeldMirrorSettings {
+        let settings: CameraRawSettings?
     }
 
     /// Mutable live-preview storage with no internal synchronization. All access is routed
@@ -1316,6 +1325,26 @@ final class MetalEditPipeline: @unchecked Sendable {
             preconditionOnStateExecutor()
             mirrorState.set(newValue)
         }
+    }
+
+    /// Pins the Clean Feed mirror to `settings`: later `updateParams` calls (a press-and-hold
+    /// Before / mute projection of a photo with Anonymizer masks) still drive this editor, but
+    /// the mirror keeps the redacted render so the audience display never shows the unblurred
+    /// faces the editor is comparing against. Pushes `settings` to the mirror immediately.
+    nonisolated func holdMirrorParams(_ settings: CameraRawSettings?) {
+        updateLiveState { $0.heldMirrorSettings = HeldMirrorSettings(settings: settings) }
+        mirror?.updateParams(settings)
+        liveStateSnapshot().onParamsChanged?()
+    }
+
+    /// Resumes mirroring every `updateParams`. The caller's next `updateParams` re-syncs the
+    /// mirror with the editor.
+    nonisolated func releaseMirrorParams() {
+        updateLiveState { $0.heldMirrorSettings = nil }
+    }
+
+    nonisolated var isHoldingMirrorParams: Bool {
+        liveStateSnapshot().heldMirrorSettings != nil
     }
 
     /// Invoked at the end of every `updateParams` so the mirror's view can request a
@@ -2091,8 +2120,11 @@ final class MetalEditPipeline: @unchecked Sendable {
             ptr.pointee.viewportCenter = viewport.center
             ptr.pointee.viewportRotation = viewport.rotation
             ptr.pointee.cropHalfExtent = viewport.cropHalfExtent
-            // Mirror to the clean-feed pipeline (its own viewport is preserved).
-            mirror?.updateParams(nil)
+            // Mirror to the clean-feed pipeline (its own viewport is preserved), unless the
+            // mirror is pinned to a redacted render (`holdMirrorParams`).
+            if liveState.heldMirrorSettings == nil {
+                mirror?.updateParams(nil)
+            }
             liveState.onParamsChanged?()
             return
         }
@@ -2450,8 +2482,11 @@ final class MetalEditPipeline: @unchecked Sendable {
 
         // Mirror params to the clean-feed pipeline so the second display tracks the
         // edit live. The mirror computes against its OWN cached viewport, so its
-        // letterboxing for the secondary display is preserved.
-        mirror?.updateParams(settings)
+        // letterboxing for the secondary display is preserved. A pinned mirror
+        // (`holdMirrorParams`) keeps its redacted settings instead.
+        if liveState.heldMirrorSettings == nil {
+            mirror?.updateParams(settings)
+        }
         liveState.onParamsChanged?()
 
         let elapsed = ContinuousClock.now - start
@@ -4360,6 +4395,10 @@ final class MetalLivePreviewPipeline {
     }
 
     func updateParams(_ settings: CameraRawSettings?) { engine.updateParams(settings) }
+    /// See `MetalEditPipeline.holdMirrorParams(_:)`.
+    func holdMirrorParams(_ settings: CameraRawSettings?) { engine.holdMirrorParams(settings) }
+    func releaseMirrorParams() { engine.releaseMirrorParams() }
+    var isHoldingMirrorParams: Bool { engine.isHoldingMirrorParams }
     func updateOverlayParams(geometry: EllipseMaskGeometry?, visible: Bool) {
         engine.updateOverlayParams(geometry: geometry, visible: visible)
     }

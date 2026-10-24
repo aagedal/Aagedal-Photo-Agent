@@ -3837,16 +3837,46 @@ struct EditWorkspaceView: View {
         } else {
             proposedCrop = nil
         }
+        let redaction = cleanFeedRedactionKnowledge
+        var redactedSettings: CameraRawSettings?
+        if redaction == .redacts, transientPreview.isTransientComparisonActive {
+            var full = displayedCameraRaw
+            if let asShot = whiteBalanceSession.asShotNeutral {
+                full?.asShotNeutralTemperature = Double(asShot.temperature)
+                full?.asShotNeutralTint = Double(asShot.tint)
+            }
+            let isRawSource = selectedImageURL.map { SupportedImageFormats.isRaw(url: $0) } ?? false
+            redactedSettings = transientPreview.settingsForPipelineIgnoringTransientComparisons(
+                full, isRawSource: isRawSource, sectionMutes: sectionMutes.snapshot
+            )
+        }
         cleanFeedPublication.publish(
             fallbackImage: displayCIImage,
             isHDR: isHDREnabled,
             hasSourceTexture: metalPipeline?.hasSourceTexture == true,
             isShowingBefore: isShowingBefore,
             isMutingDevelop: isMutingDevelop,
+            isMutingLayer: transientPreview.isMutingGlobal || transientPreview.isMutingSelectedMask,
+            redaction: redaction,
+            redactedSettings: redactedSettings,
+            editorPipeline: metalPipeline,
             isCropToolActive: showCropControls,
             proposedCrop: proposedCrop,
             controller: cleanFeedController
         )
+    }
+
+    /// Whether the photo on screen redacts, for Clean Feed. Once the edit buffer is this photo's,
+    /// either copy redacting counts (never under-redact the audience display); before that only
+    /// the Browser's copy is available, and its settings may not have loaded yet.
+    private var cleanFeedRedactionKnowledge: RedactionKnowledge {
+        let browserKnowledge = selectedImage.map(RedactionPrivacyGuard.knowledge(for:)) ?? .unknown
+        guard isSelectedImageMetadataReady else { return browserKnowledge }
+        if metadataViewModel.editingMetadata.cameraRaw?.hasActiveRedaction == true
+            || browserKnowledge == .redacts {
+            return .redacts
+        }
+        return .none
     }
 
     private func renderPreview() {

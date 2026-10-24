@@ -159,6 +159,47 @@ final class DevelopTransientPreviewCoordinator {
         isRawSource: Bool,
         sectionMutes: DevelopSectionMuteState
     ) -> CameraRawSettings? {
+        Self.project(
+            settings,
+            isRawSource: isRawSource,
+            sectionMutes: sectionMutes,
+            isMutingGlobal: isMutingGlobal,
+            mutedMaskIndex: mutedMaskIndex,
+            isMutingDevelop: isMutingDevelop
+        )
+    }
+
+    /// True while any press-and-hold comparison changes what the preview renders.
+    var isTransientComparisonActive: Bool {
+        isShowingBefore || isMutingDevelop || isMutingGlobal || mutedMaskIndex != nil
+    }
+
+    /// The pipeline payload with every press-and-hold comparison ignored (sticky section mutes
+    /// still apply). Clean Feed holds this render for a photo with Anonymizer redactions while
+    /// the editor shows Before or a mute, so the audience never sees the unblurred faces.
+    func settingsForPipelineIgnoringTransientComparisons(
+        _ settings: CameraRawSettings?,
+        isRawSource: Bool,
+        sectionMutes: DevelopSectionMuteState
+    ) -> CameraRawSettings? {
+        Self.project(
+            settings,
+            isRawSource: isRawSource,
+            sectionMutes: sectionMutes,
+            isMutingGlobal: false,
+            mutedMaskIndex: nil,
+            isMutingDevelop: false
+        )
+    }
+
+    private static func project(
+        _ settings: CameraRawSettings?,
+        isRawSource: Bool,
+        sectionMutes: DevelopSectionMuteState,
+        isMutingGlobal: Bool,
+        mutedMaskIndex: Int?,
+        isMutingDevelop: Bool
+    ) -> CameraRawSettings? {
         guard var projected = settings else {
             guard isRawSource else { return nil }
             var tonemapOnly = CameraRawSettings()
