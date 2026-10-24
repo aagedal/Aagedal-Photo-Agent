@@ -449,6 +449,37 @@ final class DevelopVersionSessionCoordinator {
         saveTask = nil
     }
 
+    /// A Primary Develop save of a RAW+JPEG pair's JPEG rewrites only the file's embedded XMP
+    /// (atomic, metadata-only): its pixels and geometry are unchanged but its sha256 is not,
+    /// and catalogs are keyed by that hash. Carry the session's catalog to the new revision so
+    /// named versions stay available now and on the next open. A persisted catalog is saved
+    /// under the new hash (the repository never deletes the old file); an unsaved one moves in
+    /// memory only. No-op when the bytes didn't change or another session is active.
+    func followMetadataOnlyRewrite(of imageURL: URL) async {
+        guard sourceURL == imageURL, catalog != nil, let previous = revision else { return }
+        let session = sessionID
+        do {
+            let current = try await revisionCapture(imageURL, previous.exifOrientation ?? 1)
+            guard sessionID == session, sourceURL == imageURL, let latest = self.catalog,
+                  latest.source.sha256 != current.sha256,
+                  current.pixelWidth == previous.pixelWidth, current.pixelHeight == previous.pixelHeight else { return }
+            let reassociated = try latest.reassociated(to: current)
+            if storage != nil, let repository {
+                let saved = try await repository.save(reassociated)
+                guard sessionID == session, sourceURL == imageURL else { return }
+                storage = saved
+            }
+            self.catalog = reassociated
+            revision = current
+        } catch is CancellationError {
+            return
+        } catch {
+            guard sessionID == session, sourceURL == imageURL else { return }
+            log.error("Develop versions could not follow a metadata-only source rewrite: \(error.localizedDescription, privacy: .public)")
+            notice = "Named versions could not follow this photo's saved Develop settings: \(error.localizedDescription)"
+        }
+    }
+
     func reset() {
         loadTask?.cancel()
         saveTask?.cancel()

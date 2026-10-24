@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SwiftMediaMetadata
 
 /// Render-relevant facts about a queued upload file, resolved once the dialog opens.
 struct UploadFileInfo: Equatable {
@@ -511,9 +512,10 @@ struct FTPUploadView: View {
         for url in urls {
             // Only compare against an orientation actually read from the file; a failed
             // embedded read must not turn into a rotation render.
+            // A file with no Orientation tag displays as 1.
             if let sidecarOrientation = sidecars[url]?.exifOrientation,
-               let embeddedOrientation = metadataMap[url]?.exifOrientation,
-               sidecarOrientation != embeddedOrientation {
+               let embedded = metadataMap[url],
+               sidecarOrientation != (embedded.exifOrientation ?? 1) {
                 info[url]?.hasSidecarRotation = true
             }
         }
@@ -550,8 +552,7 @@ struct FTPUploadView: View {
         }
         // Files with Content Credentials upload as their signed original: rewriting a copy's
         // metadata would break the credential (they're the sidecar-mode files by design).
-        let reader = readService
-        overlay = await Self.excludingCredentialed(overlay) { await Self.mayCarryC2PA($0, readService: reader) }
+        overlay = await Self.excludingCredentialed(overlay) { await Self.mayCarryC2PA($0) }
         guard !Task.isCancelled,
               inspectionRequestID == requestID,
               inspectionRequestKey == requestKey else { return }
@@ -570,10 +571,14 @@ struct FTPUploadView: View {
         return result
     }
 
-    /// Conservative: an unreadable file counts as possibly credentialed.
-    static func mayCarryC2PA(_ url: URL, readService: SwiftExifReadService) async -> Bool {
-        guard FileManager.default.isReadableFile(atPath: url.path) else { return true }
-        return (try? await readService.readTechnicalMetadata(url: url, includeNativeImageInfo: false))?.hasC2PA ?? true
+    /// Conservative: a file that can't be read or parsed counts as possibly credentialed.
+    /// One container parse under the photo's I/O lock, off the main actor.
+    @concurrent
+    nonisolated static func mayCarryC2PA(_ url: URL) async -> Bool {
+        await MetadataIOCoordinator.shared.withLock(MetadataIOKey.key(for: url)) {
+            guard let metadata = try? ImageMetadata.read(from: url) else { return true }
+            return SwiftExifReadService.hasContentCredentials(metadata)
+        }
     }
 
     /// True when applying the sidecar overlay (descriptive record, rating, label, GPS) to the

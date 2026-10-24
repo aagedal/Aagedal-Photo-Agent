@@ -4176,10 +4176,18 @@ struct EditWorkspaceView: View {
         guard developVersionCatalog?.activeVersionID == nil, metadataViewModel.hasChanges,
               let url = selectedImageURL,
               let refusal = metadataViewModel.primaryDevelopRefusal(for: url) else { return false }
-        installDevelopSettings(metadataViewModel.persistedPrimaryDevelopSettings)
+        // Revert only the Develop part; keep descriptive edits and the undo history.
+        metadataViewModel.revertPrimaryDevelopToPersisted()
         metadataViewModel.saveError = refusal
+        refreshAfterPrimaryDevelopRevert()
         workspaceSession.showNotice(refusal)
         return true
+    }
+
+    private func refreshAfterPrimaryDevelopRevert() {
+        syncCameraRawToImageFile()
+        renderPreview()
+        syncViewportToMetal()
     }
 
     private func commitEditAdjustments() {
@@ -4239,16 +4247,30 @@ struct EditWorkspaceView: View {
     /// request lifetime. The metadata owner still decides whether the transaction fully committed;
     /// this snapshots that result before a later save can replace its mutable presentation state.
     private func schedulePrimaryMetadataCommit(mode: MetadataWriteMode) {
+        let committedURL = selectedImageURL
         persistenceSession.schedulePrimaryPersistence { completion in
             metadataViewModel.commitPrimaryDevelopEdits(mode: mode) { result in
                 onPendingStatusChanged?()
                 switch result {
                 case .succeeded:
                     clearResolvedPrimaryTransitionNotice()
+                    // A RAW+JPEG pair's JPEG stores its develop in its own file; keep its named
+                    // versions bound to the rewritten (metadata-only) revision.
+                    if let committedURL, !SupportedImageFormats.isRaw(url: committedURL),
+                       PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: committedURL) {
+                        Task { await developVersionSession.followMetadataOnlyRewrite(of: committedURL) }
+                    }
                     completion(.succeeded)
                 case .cancelled(let message):
                     completion(.cancelled(message: message))
                 case .failed(let message):
+                    // A write-time Content Credentials refusal reverts the buffer; keep the grid
+                    // and preview in step with it (a no-op for an ordinary retained failure).
+                    if let url = selectedImageURL,
+                       let index = browserViewModel.urlToImageIndex[url],
+                       browserViewModel.images[index].cameraRawSettings != metadataViewModel.editingMetadata.cameraRaw {
+                        refreshAfterPrimaryDevelopRevert()
+                    }
                     completion(.failed(message: message))
                 }
             }

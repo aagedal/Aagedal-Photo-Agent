@@ -108,6 +108,8 @@ struct PrimaryDevelopWriteServiceTests {
             bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        // The JPEG's own embedded caption differs from the shared sidecar record.
+        try await SwiftExifWriteEngine().writeFields([.description: "JPEG own caption"], to: [jpeg])
         var rawCRS = CameraRawSettings(); rawCRS.temperature = 5500; rawCRS.exposure2012 = 1.25
         try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(title: "Shared caption", cameraRaw: rawCRS), for: raw)
 
@@ -119,6 +121,8 @@ struct PrimaryDevelopWriteServiceTests {
 
         var jpegCRS = CameraRawSettings(); jpegCRS.exposure2012 = -0.5
         model.editingMetadata.cameraRaw = jpegCRS
+        // An unsaved panel edit rides along in the editor buffer; it must not be embedded.
+        model.editingMetadata.title = "Unsaved panel headline"
         model.markChanged()
         var outcome: MetadataCommitResult?
         model.commitPrimaryDevelopEdits(mode: .writeToXMPSidecar) { outcome = $0 }
@@ -127,6 +131,9 @@ struct PrimaryDevelopWriteServiceTests {
         #expect(!model.hasRetainedPrimaryDevelopWrites)
         let physical = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
         #expect(physical.cameraRaw?.exposure2012 == -0.5)
+        // Develop-only embed: the JPEG's own descriptive record is untouched.
+        #expect(physical.description == "JPEG own caption")
+        #expect(physical.title == nil)
         let shared = try #require(XMPSidecarService().loadSidecar(for: raw))
         #expect(shared.cameraRaw?.exposure2012 == 1.25)
         #expect(shared.cameraRaw?.temperature == 5500)
@@ -155,6 +162,55 @@ struct PrimaryDevelopWriteServiceTests {
         let unchanged = try #require(try await SwiftExifReadService().readBatchFullMetadata(urls: [jpeg])[jpeg])
         #expect(unchanged.cameraRaw?.exposure2012 == -0.5)
         #expect(XMPSidecarService().loadSidecar(for: raw)?.cameraRaw?.exposure2012 == 1.25)
+    }
+
+    @Test("Named Develop versions follow a paired JPEG's metadata-only Primary rewrite")
+    func developVersionsFollowMetadataOnlyRewrite() async throws {
+        let folder = URL(fileURLWithPath: "/private/tmp/PrimaryDevelopVersions-\(UUID().uuidString)", isDirectory: true)
+        let support = folder.appendingPathComponent("support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try Data("placeholder raw".utf8).write(to: folder.appendingPathComponent("IMG_9.ARW"))
+        let jpeg = folder.appendingPathComponent("IMG_9.jpg")
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 6, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: jpeg)
+        let factory: DevelopVersionSessionCoordinator.RepositoryFactory = {
+            DevelopVersionCatalogRepository(sourceFolderURL: $0, applicationSupportURL: support)
+        }
+
+        func openSession() async throws -> DevelopVersionSessionCoordinator {
+            let session = DevelopVersionSessionCoordinator(repositoryFactory: factory)
+            session.beginLoading(imageURL: jpeg, orientation: 1, onCatalogReady: {})
+            let deadline = ContinuousClock.now + .seconds(10)
+            while session.persistenceState == .loading, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            return session
+        }
+
+        let session = try await openSession()
+        var catalog = try #require(session.catalog)
+        var look = CameraRawSettings(); look.exposure2012 = 0.75
+        try catalog.createVersion(name: "Look", settings: look)
+        session.storage = try await DevelopVersionCatalogRepository(sourceFolderURL: folder,
+            applicationSupportURL: support).save(catalog)
+        session.catalog = catalog
+
+        // The paired JPEG's Develop save: a metadata-only rewrite of the source.
+        var crs = CameraRawSettings(); crs.exposure2012 = -1
+        try await SwiftExifWriteEngine().writeFields(crs.developWriteFields(), to: [jpeg])
+        let rewritten = try await SourceImageRevision.capture(at: jpeg)
+        #expect(rewritten.sha256 != catalog.source.sha256)
+        await session.followMetadataOnlyRewrite(of: jpeg)
+        #expect(session.revision?.sha256 == rewritten.sha256)
+        #expect(session.catalog?.source.sha256 == rewritten.sha256)
+        #expect(session.notice == nil)
+
+        let reopened = try await openSession()
+        #expect(reopened.notice == nil)
+        #expect(reopened.catalog?.versions.map(\.name) == ["Look"])
     }
 
     @Test("XMP Primary save preserves pixels and actual mask/settings receipt")

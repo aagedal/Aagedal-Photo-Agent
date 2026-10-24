@@ -1561,22 +1561,33 @@ final class MetadataViewModel {
 
     /// The JPEG (any non-RAW) half of a RAW+JPEG pair shares the stem `.xmp` whose Camera Raw
     /// block belongs to the RAW, so its Develop settings live in its own embedded XMP (Adobe
-    /// convention; an atomic metadata-only rewrite, no pixel recompression). Requests aimed at
-    /// the sidecar are routed to the embedded destination; everything else is unchanged.
-    nonisolated static func primaryDevelopMode(_ mode: MetadataWriteMode, for image: URL) -> MetadataWriteMode {
+    /// convention; an atomic metadata-only rewrite, no pixel recompression). A sidecar-bound
+    /// request becomes embedded + sidecar: the embedded half carries only Camera Raw settings
+    /// (`embedsDevelopOnly`), the sidecar half keeps receiving the descriptive record as before
+    /// and never touches the RAW's crs block.
+    nonisolated static func primaryDevelopMode(_ mode: MetadataWriteMode, pairedWithRAW: Bool) -> MetadataWriteMode {
+        guard pairedWithRAW else { return mode }
         switch mode {
-        case .writeToXMPSidecar, .writeToFileAndXMPSidecar:
-            return PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image) ? .writeToFile : mode
-        case .writeToFile, .historyOnly:
-            return mode
+        case .writeToXMPSidecar: return .writeToFileAndXMPSidecar
+        case .writeToFile, .writeToFileAndXMPSidecar, .historyOnly: return mode
         }
+    }
+
+    /// Restores only the Develop part of the editing buffer to its last persisted state, keeping
+    /// any descriptive edits; `hasChanges` follows the buffer instead of being forced off.
+    func revertPrimaryDevelopToPersisted() {
+        guard let previous = previousEditingMetadata else { return }
+        editingMetadata.cameraRaw = previous.cameraRaw
+        editingMetadata.exifOrientation = previous.exifOrientation
+        hasChanges = selectedHavePendingSidecars || editingMetadata != previous
     }
 
     /// Why the selected photo's Primary Develop edit has no destination, or nil. A paired JPEG
     /// carrying Content Credentials can't be embedded into without breaking them, and its
     /// stem sidecar's develop block belongs to the RAW.
     func primaryDevelopRefusal(for image: URL) -> String? {
-        guard selectedHasC2PA, let raw = PhotoSidecarOwnership.developOwningRawSibling(of: image) else { return nil }
+        // Simple deliberately ignores Content Credentials for every embedded write.
+        guard selectedHasC2PA, MetadataWritePreset.current != .simple, let raw = PhotoSidecarOwnership.developOwningRawSibling(of: image) else { return nil }
         return "\(image.lastPathComponent) has Content Credentials and shares its XMP sidecar with \(raw.lastPathComponent). "
             + "Develop edits can't be saved into the JPEG without breaking its credentials, and the shared sidecar's "
             + "develop settings belong to the RAW. Edit \(raw.lastPathComponent) instead."
@@ -1599,14 +1610,12 @@ final class MetadataViewModel {
         }
         // Refuse before anything is retained, so a refusal never blocks later edits.
         if let refusal = primaryDevelopRefusal(for: image) {
-            if let previous = previousEditingMetadata {
-                editingMetadata.cameraRaw = previous.cameraRaw
-                editingMetadata.exifOrientation = previous.exifOrientation
-                if editingMetadata == previous { hasChanges = false }
-            }
+            revertPrimaryDevelopToPersisted()
             saveError = refusal; onComplete(.failed(message: refusal)); return
         }
-        let mode = Self.primaryDevelopMode(requestedMode, for: image)
+        let pairedWithRAW = !SupportedImageFormats.isRaw(url: image)
+            && PhotoSidecarOwnership.stemSidecarDevelopBelongsToRawSibling(of: image)
+        let mode = Self.primaryDevelopMode(requestedMode, pairedWithRAW: pairedWithRAW)
         let edited = editingMetadata
         if let existing = retainedPrimaryDevelopWrites.last(where: {
             $0.imageURL == image && $0.folderURL == folder && $0.loadID == loadID
@@ -1639,7 +1648,8 @@ final class MetadataViewModel {
             xmpBaseline: xmpMetadata, embeddedBaseline: embeddedMetadata,
             expectedRecord: currentWriteExpectedRecord, expectedXMP: token,
             sourceRevision: source, captureFailure: captureFailure, history: sidecarHistory,
-            timestamp: Date(), predecessor: predecessor, watermarkDependencies: watermarkDependencies))
+            timestamp: Date(), predecessor: predecessor, watermarkDependencies: watermarkDependencies,
+            embedsDevelopOnly: pairedWithRAW, allowsCredentialedEmbed: MetadataWritePreset.current == .simple))
         retainedPrimaryDevelopWrites.append(request)
         schedulePrimaryDevelop(request, onComplete: onComplete)
     }
@@ -1676,9 +1686,7 @@ final class MetadataViewModel {
                     cleanupBaseline = (request.imageURL, request.folderURL, installed)
                     sidecarHistory = installed.history
                     previousEditingMetadata = request.edited
-                    if result.wroteEmbedded {
-                        embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited
-                    }
+                    if result.wroteEmbedded { adoptEmbeddedPrimaryDevelop(request) }
                     capturedCaptionWriteExpectation = nil
                     if completion.wroteXMPSidecar { xmpMetadata = completion.writtenXMPMetadata ?? request.edited }
                     editorXMPWriteBaseline = (request.imageURL, request.folderURL, request.loadID,
@@ -1694,11 +1702,25 @@ final class MetadataViewModel {
                     if let source = result.sourceRevision { primaryDevelopSourceBaseline = (request.imageURL, request.loadID, source) }
                     editingMetadata.cameraRaw = completion.writtenXMPMetadata?.cameraRaw ?? request.edited.cameraRaw
                     previousEditingMetadata = editingMetadata
-                    if result.wroteEmbedded { embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited }
+                    if result.wroteEmbedded { adoptEmbeddedPrimaryDevelop(request) }
                     else if metadataReferenceSource == .xmp { metadata = xmpMetadata; originalImageMetadata = xmpMetadata }
                     hasChanges = false; selectedHavePendingSidecars = false; saveError = nil
                 }
                 synchronizePrimaryDevelopRetention(); onComplete(.succeeded)
+            } else if result.refusedForContentCredentials {
+                // Nothing was written: drop this photo's queued edits instead of retaining work
+                // that can never be saved, and refuse further edits up front.
+                let message = result.failure ?? "This photo has Content Credentials; its Develop edit was not saved."
+                retainedPrimaryDevelopWrites.removeAll {
+                    $0.imageURL == request.imageURL && $0.folderURL == request.folderURL && $0.loadID == request.loadID
+                }
+                if metadataLoadRequestID == request.loadID, selectedURLs == [request.imageURL] {
+                    selectedHasC2PA = true
+                    revertPrimaryDevelopToPersisted()
+                    saveError = message
+                }
+                synchronizePrimaryDevelopRetention()
+                onComplete(.failed(message: message))
             } else {
                 let message = primaryDevelopFailureMessage(result)
                 if matches { saveError = message }
@@ -1707,6 +1729,18 @@ final class MetadataViewModel {
             }
         }
     }
+    /// A develop-only embed (RAW+JPEG pair's JPEG) changed only the file's Camera Raw block;
+    /// its descriptive record is untouched, so only the develop part of the baselines moves.
+    private func adoptEmbeddedPrimaryDevelop(_ request: PrimaryDevelopWriteRequest) {
+        guard request.embedsDevelopOnly else {
+            embeddedMetadata = request.edited; originalImageMetadata = request.edited; metadata = request.edited
+            return
+        }
+        embeddedMetadata?.cameraRaw = request.edited.cameraRaw
+        originalImageMetadata?.cameraRaw = request.edited.cameraRaw
+        metadata?.cameraRaw = request.edited.cameraRaw
+    }
+
     private func primaryDevelopFailureMessage(_ result: PrimaryDevelopWriteResult) -> String {
         let prefix = result.requiresRecovery
             ? "Primary Develop metadata may be partly written. Its complete captured edit remains retained; export and review it before discarding."

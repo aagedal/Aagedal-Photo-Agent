@@ -38,6 +38,12 @@ nonisolated final class PrimaryDevelopWriteRequest: Sendable {
     let structured: StructuredWriteData
     let replaceDevelop: Bool
     let replaceOrientation: Bool
+    /// The JPEG of a RAW+JPEG pair: its embedded write carries only Camera Raw settings —
+    /// descriptive metadata keeps going to its preset destination through the sidecar mirror.
+    let embedsDevelopOnly: Bool
+    /// Simple preset semantics: embedding into a credentialed file is accepted, like every
+    /// other Simple write. Otherwise a develop-only embed refuses a file with Content Credentials.
+    let allowsCredentialedEmbed: Bool
     static func ancestry(of roots: [PrimaryDevelopWriteRequest]) -> [PrimaryDevelopWriteRequest] {
         var seen = Set<UUID>()
         var result: [PrimaryDevelopWriteRequest] = []
@@ -60,7 +66,9 @@ nonisolated final class PrimaryDevelopWriteRequest: Sendable {
          expectedRecord: MetadataSidecar?, expectedXMP: XMPSidecarWriteSnapshot?, sourceRevision: SourceImageRevision?,
          captureFailure: String?, sidecar: MetadataSidecar, changes: [MetadataHistoryEntry],
          fields: [MetadataFieldKey: String], structured: StructuredWriteData,
-         replaceDevelop: Bool, replaceOrientation: Bool, predecessor: PrimaryDevelopWriteRequest? = nil, watermarkDependencies: [PrimaryDevelopWatermarkDependency] = [], embeddedBaseline: IPTCMetadata? = nil) {
+         replaceDevelop: Bool, replaceOrientation: Bool, predecessor: PrimaryDevelopWriteRequest? = nil, watermarkDependencies: [PrimaryDevelopWatermarkDependency] = [], embeddedBaseline: IPTCMetadata? = nil,
+         embedsDevelopOnly: Bool = false, allowsCredentialedEmbed: Bool = false) {
+        self.embedsDevelopOnly = embedsDevelopOnly; self.allowsCredentialedEmbed = allowsCredentialedEmbed
         self.imageURL = imageURL; self.folderURL = folderURL; self.loadID = loadID; self.mode = mode; self.predecessor = predecessor; self.watermarkDependencies = watermarkDependencies
         self.edited = edited; self.previous = previous; self.original = original; self.embeddedBaseline = embeddedBaseline
         self.expectedRecord = expectedRecord; self.expectedXMP = expectedXMP; self.sourceRevision = sourceRevision
@@ -89,6 +97,8 @@ nonisolated struct PrimaryDevelopWriteCapture: Sendable {
     let timestamp: Date
     let predecessor: PrimaryDevelopWriteRequest?
     let watermarkDependencies: [PrimaryDevelopWatermarkDependency]
+    var embedsDevelopOnly = false
+    var allowsCredentialedEmbed = false
 }
 
 nonisolated enum PrimaryDevelopWriteRequestBuilder {
@@ -128,6 +138,20 @@ nonisolated enum PrimaryDevelopWriteRequestBuilder {
             : StructuredWriteData(editorial: .init(metadata: edited))
         var fields = overwriteFields(from: edited, original: capture.original, includeCameraRaw: replaceDevelop)
         if replaceDevelop && edited.cameraRaw == nil { clearAllCameraRawFields(into: &fields) }
+        var structuredData = structured
+        if capture.embedsDevelopOnly {
+            // Develop-only embed: no descriptive field, clear or editorial structure.
+            fields = [:]
+            if replaceDevelop {
+                if let cameraRaw = edited.cameraRaw { fields = cameraRaw.developWriteFields() }
+                else { clearAllCameraRawFields(into: &fields) }
+            }
+            structuredData = replaceDevelop ? StructuredWriteData(toneCurve: edited.cameraRaw?.toneCurve,
+                masks: edited.cameraRaw?.localAdjustments, watermarkLayers: edited.cameraRaw?.watermarkLayers,
+                hslAdjustments: edited.cameraRaw?.hslAdjustments, layerOrder: edited.cameraRaw?.layerOrder,
+                anonymizer: edited.cameraRaw?.anonymizer, unparsedMaskCorrections: edited.cameraRaw?.unparsedMaskCorrections,
+                replaceCameraRawBlock: true) : .empty
+        }
         let failure = capture.captureFailure
             ?? (!identityMatches ? "The earlier captured Primary Develop edit belongs to another photo or editor load. This edit remains retained for recovery." : nil)
             ?? (capture.sourceRevision == nil ? "The loaded source revision is unavailable. This Primary Develop edit remains retained for recovery." : nil)
@@ -136,9 +160,10 @@ nonisolated enum PrimaryDevelopWriteRequestBuilder {
             loadID: capture.loadID, mode: capture.mode, edited: edited, previous: previous,
             original: capture.original, expectedRecord: capture.expectedRecord, expectedXMP: capture.expectedXMP,
             sourceRevision: capture.sourceRevision, captureFailure: failure, sidecar: sidecar, changes: changes,
-            fields: fields, structured: structured, replaceDevelop: replaceDevelop,
+            fields: fields, structured: structuredData, replaceDevelop: replaceDevelop,
             replaceOrientation: replaceOrientation, predecessor: predecessor,
-            watermarkDependencies: capture.watermarkDependencies, embeddedBaseline: embeddedBaseline)
+            watermarkDependencies: capture.watermarkDependencies, embeddedBaseline: embeddedBaseline,
+            embedsDevelopOnly: capture.embedsDevelopOnly, allowsCredentialedEmbed: capture.allowsCredentialedEmbed)
     }
 
     static func watermarkDependencyIDs(edited: IPTCMetadata, previous: IPTCMetadata?, original: IPTCMetadata?) -> Set<UUID> {
@@ -268,6 +293,7 @@ nonisolated struct PrimaryDevelopPhysicalError: LocalizedError, Sendable {
     let mayHaveWritten: Bool
     let sourceRevision: SourceImageRevision?
     let wasCancelled: Bool
+    var refusedForContentCredentials = false
     var errorDescription: String? { message }
 }
 nonisolated protocol PrimaryDevelopWriting: Sendable {
@@ -283,6 +309,8 @@ nonisolated struct PrimaryDevelopWriteResult: Sendable {
     var embeddedMayHaveBeenWritten = false
     var wasCancelled = false
     var failure: String?
+    /// The paired JPEG turned out to carry Content Credentials; nothing was written.
+    var refusedForContentCredentials = false
     var completed: Bool { completion?.completed == true && failure == nil && !wasCancelled }
     var requiresRecovery: Bool { wroteEmbedded || embeddedMayHaveBeenWritten || completion?.wroteXMPSidecar == true || completion?.committedButUnverifiedSidecarURL != nil }
 }
@@ -347,7 +375,8 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
                 throw StemSidecarDevelopOwnedByRawError(imageURL: request.imageURL, rawURL: rawURL)
             }
             try await validateAuthority()
-            if target.writesEmbedded {
+            // A develop-only embed with no develop change has nothing to put in the file.
+            if target.writesEmbedded, !(request.embedsDevelopOnly && !request.replaceDevelop) {
                 guard let engine = engine as? any PrimaryDevelopWriting else {
                     throw PrimaryDevelopWriteError(message: "This image writer cannot safely verify a retained Develop edit.")
                 }
@@ -372,6 +401,7 @@ nonisolated struct PrimaryDevelopWriteService: Sendable {
             } else { result.sourceRevision = writtenSource }
         } catch let error as PrimaryDevelopPhysicalError {
             result.embeddedMayHaveBeenWritten = error.mayHaveWritten
+            result.refusedForContentCredentials = error.refusedForContentCredentials
             result.sourceRevision = error.sourceRevision
             result.wasCancelled = error.wasCancelled; result.failure = error.localizedDescription
         } catch {

@@ -20,7 +20,7 @@ nonisolated struct FTPUploadExecutionAccess: Sendable {
     /// of an as-is upload. Never called with the user's original as the destination.
     var overlay: @MainActor @Sendable (URL, URL, any MetadataWriteEngine) async -> SidecarIPTCOverlay.Outcome = { source, staged, engine in
         await FTPUploadExecutionAccess.applyAsIsOverlay(source: source, staged: staged, engine: engine) {
-            await FTPUploadView.mayCarryC2PA($0, readService: SwiftExifReadService())
+            await FTPUploadView.mayCarryC2PA($0)
         }
     }
 

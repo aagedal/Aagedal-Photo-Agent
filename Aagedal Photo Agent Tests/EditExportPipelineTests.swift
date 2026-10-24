@@ -5802,8 +5802,8 @@ struct FTPCredentialedOverlayTests {
         #expect(try await SwiftExifReadService().readFullMetadata(url: plainStaged).title == "Sidecar headline")
 
         // An ordinary file reads as uncredentialed; an unreadable one is treated as credentialed.
-        #expect(await !FTPUploadView.mayCarryC2PA(plain, readService: SwiftExifReadService()))
-        #expect(await FTPUploadView.mayCarryC2PA(dir.appendingPathComponent("missing.jpg"), readService: SwiftExifReadService()))
+        #expect(await !FTPUploadView.mayCarryC2PA(plain))
+        #expect(await FTPUploadView.mayCarryC2PA(dir.appendingPathComponent("missing.jpg")))
     }
 
     @Test("Template reviews skip a RAW+JPEG pair's JPEG with a readable reason")

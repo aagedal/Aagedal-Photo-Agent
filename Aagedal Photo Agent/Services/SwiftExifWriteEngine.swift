@@ -22,6 +22,16 @@ nonisolated struct RawEmbeddedWriteRefusedError: LocalizedError, Equatable {
     }
 }
 
+/// The JPEG of a RAW+JPEG pair carries Content Credentials: embedding its Develop settings
+/// would break them, and the shared sidecar's crs belongs to the RAW.
+nonisolated struct PairedJPEGContentCredentialsRefusal: LocalizedError, Sendable {
+    let imageURL: URL
+    var errorDescription: String? {
+        "\(imageURL.lastPathComponent) has Content Credentials and shares its XMP sidecar with its RAW file. "
+            + "Develop edits can't be saved into it without breaking its credentials. Edit the RAW file instead."
+    }
+}
+
 nonisolated enum RenderedMetadataCopySafetyError: LocalizedError {
     case sourceAndDestinationAreSameFile(URL)
 
@@ -92,13 +102,22 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
             do {
                 try Task.checkCancellation()
                 let preparedSource = try await SourceImageRevision.capture(at: request.imageURL)
+                // Authoritative, under this photo's I/O lock: a RAW+JPEG pair's JPEG with
+                // Content Credentials is never embedded into (the editor's C2PA flag can still
+                // be unset before the batch metadata read). Simple accepts it, like every
+                // other Simple write.
+                if request.embedsDevelopOnly, !request.allowsCredentialedEmbed,
+                   SwiftExifReadService.hasContentCredentials(try readMetadata(from: request.imageURL)) {
+                    throw PairedJPEGContentCredentialsRefusal(imageURL: request.imageURL)
+                }
                 try await validatePreparedIntent()
                 var fields = request.fields
                 if request.replaceDevelop, let settings = request.edited.cameraRaw {
                     fields.merge(settings.developWriteFields(imageAspect: { ImagePixelAspect.aspect(at: request.imageURL) })) { _, new in new }
                 }
                 try self.writeFieldsToFile(fields, structuredData: request.structured,
-                    url: request.imageURL, completeEditorial: request.edited, verifyPrimaryTechnical: true,
+                    url: request.imageURL, completeEditorial: request.embedsDevelopOnly ? nil : request.edited,
+                    synchronizesIPTC: !request.embedsDevelopOnly, verifyPrimaryTechnical: true,
                     beforePublication: {
                         try Task.checkCancellation()
                         try validateCommitAuthority()
@@ -108,9 +127,13 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                     })
                 let written = try await SourceImageRevision.capture(at: request.imageURL)
                 revision = written
-                let actual = try readMetadata(from: request.imageURL)
-                try PendingMetadataWriteService.verifyEditorial(
-                    iptcMetadataFromDict(actual.asMetadataDict(fileURL: request.imageURL)), expected: request.edited)
+                // A develop-only embed is verified by `verifyPrimaryTechnical` (crs + orientation);
+                // the file's own descriptive record was deliberately left as it was.
+                if !request.embedsDevelopOnly {
+                    let actual = try readMetadata(from: request.imageURL)
+                    try PendingMetadataWriteService.verifyEditorial(
+                        iptcMetadataFromDict(actual.asMetadataDict(fileURL: request.imageURL)), expected: request.edited)
+                }
                 let checked = try await SourceImageRevision.capture(at: request.imageURL)
                 guard checked.canonicalURL == written.canonicalURL, checked.sha256 == written.sha256 else {
                     throw MetadataFieldMutationConflict()
@@ -120,7 +143,8 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
                 return .init(sourceRevision: checked)
             } catch {
                 throw PrimaryDevelopPhysicalError(message: error.localizedDescription, mayHaveWritten: attempted,
-                    sourceRevision: revision, wasCancelled: error is CancellationError)
+                    sourceRevision: revision, wasCancelled: error is CancellationError,
+                    refusedForContentCredentials: error is PairedJPEGContentCredentialsRefusal)
             }
         }
     }
@@ -575,6 +599,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         structuredData: StructuredWriteData,
         url: URL,
         completeEditorial: IPTCMetadata? = nil,
+        synchronizesIPTC: Bool = true,
         verifyPrimaryTechnical: Bool = false,
         beforePublication: (() throws -> Void)? = nil
     ) throws {
@@ -678,8 +703,9 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
         }
 
         // Version 3 preserves dc:title, scalar editorial roles, and full Date Created precision
-        // while synchronizing the legacy IIM carrier into XMP.
-        metadata.synchronizeIPTCToXMP()
+        // while synchronizing the legacy IIM carrier into XMP. A develop-only write leaves the
+        // file's descriptive carriers exactly as they were.
+        if synchronizesIPTC { metadata.synchronizeIPTCToXMP() }
 
         if let completeEditorial {
             // Canonical typed arrays avoid the comma-delimited legacy IIM transport. Preserve

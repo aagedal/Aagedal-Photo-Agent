@@ -108,30 +108,43 @@ nonisolated struct StemSidecarDevelopOwnedByRawError: LocalizedError, Sendable {
     }
 }
 
-/// Per-folder index of RAW files by lowercased stem. A cached listing is reused only while the
-/// folder's modification time (which changes whenever an entry is added, removed or renamed)
-/// is unchanged, and a listing taken within two seconds of that time is not cached, so coarse
-/// network-volume timestamps can't hide a RAW that arrived in the same tick.
+/// Per-folder index of RAW files by lowercased stem. A listing is reused while the folder's
+/// modification time (which changes whenever an entry is added, removed or renamed) is
+/// unchanged. A listing taken within two seconds of that time is reused for at most one second
+/// before being revalidated, so coarse network-volume timestamps can't hide a RAW that arrived
+/// in the same tick, while bursts of lookups (a Develop commit rewrites the photo and bumps the
+/// folder time) still list the directory only once.
 nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
     static let shared = PhotoRawStemIndex()
 
     private struct Entry {
         let modification: timespec
+        let listedAt: Date
+        let settled: Bool
         let rawByStem: [String: URL]
     }
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
     private let maximumFolders = 64
+    private let freshReuseInterval: TimeInterval = 1
+    private let settleInterval: TimeInterval = 2
+    private let now: @Sendable () -> Date
+
+    init(now: @escaping @Sendable () -> Date = { Date() }) {
+        self.now = now
+    }
 
     func rawFile(forStem stem: String, in folder: URL) -> URL? {
         let key = folder.standardizedFileURL.resolvingSymlinksInPath().path
         var status = stat()
         guard Darwin.lstat(key, &status) == 0 else { return nil }
         let modification = status.st_mtimespec
+        let currentTime = now()
         if let cached = lock.withLock({ entries[key] }),
            cached.modification.tv_sec == modification.tv_sec,
-           cached.modification.tv_nsec == modification.tv_nsec {
+           cached.modification.tv_nsec == modification.tv_nsec,
+           cached.settled || currentTime.timeIntervalSince(cached.listedAt) <= freshReuseInterval {
             return cached.rawByStem[stem.lowercased()]
         }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: key) else { return nil }
@@ -144,11 +157,12 @@ nonisolated final class PhotoRawStemIndex: @unchecked Sendable {
             if let existing = rawByStem[rawStem], existing.lastPathComponent < name { continue }
             rawByStem[rawStem] = url
         }
-        if Date().timeIntervalSince1970 - Double(modification.tv_sec) > 2 {
-            lock.withLock {
-                if entries.count >= maximumFolders { entries.removeAll() }
-                entries[key] = Entry(modification: modification, rawByStem: rawByStem)
-            }
+        let modifiedAt = Double(modification.tv_sec) + Double(modification.tv_nsec) / 1_000_000_000
+        let settled = currentTime.timeIntervalSince1970 - modifiedAt > settleInterval
+        lock.withLock {
+            if entries.count >= maximumFolders, entries[key] == nil { entries.removeAll() }
+            entries[key] = Entry(modification: modification, listedAt: currentTime,
+                                 settled: settled, rawByStem: rawByStem)
         }
         return rawByStem[stem.lowercased()]
     }
