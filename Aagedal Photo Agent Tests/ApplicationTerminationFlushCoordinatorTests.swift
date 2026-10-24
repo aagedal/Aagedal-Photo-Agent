@@ -48,6 +48,43 @@ struct ApplicationTerminationFlushCoordinatorTests {
         #expect(stages == [.caption, .analysis])
     }
 
+    @Test("Quit Without Saving after an Analysis failure still flushes Develop")
+    func quitWithoutSavingSkipsOnlyFailedStage() async {
+        var stages: [ApplicationTerminationFlushStage] = []
+        var developResult = DevelopVersionFlushOutcome.succeeded
+        let coordinator = ApplicationTerminationFlushCoordinator(
+            captionFlush: { stages.append(.caption) },
+            analysisFlush: {
+                stages.append(.analysis)
+                throw InjectedTerminationFailure.analysis
+            },
+            developFlush: {
+                stages.append(.develop)
+                return developResult
+            }
+        )
+
+        var presented: [ApplicationTerminationFlushStage] = []
+        #expect(await coordinator.resolve { failure in
+            presented.append(failure.stage)
+            return .quitWithoutSaving
+        })
+        #expect(stages == [.caption, .analysis, .develop])
+        #expect(presented == [.analysis])
+
+        // A later Develop failure still raises its own prompt, which can keep the app open.
+        stages = []
+        presented = []
+        developResult = .failed("Injected Develop failure")
+        let shouldTerminate = await coordinator.resolve { failure in
+            presented.append(failure.stage)
+            return failure.stage == .analysis ? .quitWithoutSaving : .keepOpen
+        }
+        #expect(!shouldTerminate)
+        #expect(stages == [.caption, .analysis, .develop])
+        #expect(presented == [.analysis, .develop])
+    }
+
     @Test("Caption failure stops Develop and reports the exact stage")
     func captionFailureStopsDevelop() async {
         var developCalls = 0

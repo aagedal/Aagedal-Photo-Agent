@@ -451,20 +451,183 @@ struct AnalysisCaseTests {
             Issue.record("An external close after a failed save must ask first")
             return
         }
-        model.dismissUnsavedChangesPrompt()
+        model.cancelUnsavedChangesExit()
         #expect(model.requestClose() == false)
         #expect(await model.completeUnsavedChangesExit(.close, retryingSave: false))
         #expect(transitions == 1)
 
-        // Discard runs the external transition itself instead of the workspace's Close.
+        // Discard runs the external transition itself instead of the workspace's Close, even
+        // though SwiftUI's alert binding dismisses the prompt before the async button work runs.
         model.setAnnotation(AnalysisAnnotation(
             kind: .label, geometry: .anchor(.init(x: 0.6, y: 0.6)), text: "Unsaved again"
         ))
         await model.flushPendingSaves()
         model.requestClose { transitions += 1 }
         let exit = try #require(model.pendingUnsavedChangesExit)
+        model.dismissUnsavedChangesPrompt()
         #expect(await model.completeUnsavedChangesExit(exit, retryingSave: false) == false)
         #expect(transitions == 2)
+    }
+
+    @Test("A rapid reopen still waits for an in-flight folder-map save")
+    func reopenWaitsForFolderMapSave() async throws {
+        let fixture = try AnalysisFixture(contents: "folder map chain")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        let image = ImageFile(url: fixture.fileURL)
+        model.open(image)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        await gate.arm()
+        let marker = AnalysisMapAnnotation(
+            kind: .marker,
+            geometry: .point(AnalysisGeoCoordinate(latitude: 59.91, longitude: 10.75)),
+            text: "Folder marker"
+        )
+        model.setGlobalMapAnnotation(marker)
+        await gate.waitUntilEntered()
+        model.open(image)
+        model.open(image)
+        try await Task.sleep(for: .milliseconds(100))
+        // The reload must not read the folder map before the blocked save lands.
+        #expect(model.loadState == .loading)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        #expect(model.globalMapAnnotations.map(\.id) == [marker.id])
+    }
+
+    @Test("Termination saving does not wait for a stalled photo load")
+    func terminationSaveSkipsStalledLoad() async throws {
+        let fixture = try AnalysisFixture(contents: "stalled load")
+        defer { fixture.remove() }
+        let gate = AnalysisRepositoryConstructionGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            await gate.wait()
+            return try await AnalysisCaseRepository.open(sourceFolderURL: folderURL)
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        await gate.waitUntilEntered()
+        #expect(model.loadState == .loading)
+
+        #expect(await model.savePendingChanges(waitingForLoad: false))
+        #expect(model.loadState == .loading)
+        await gate.open()
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+    }
+
+    @Test("Paste into the open photo keeps edits made while earlier saves are pending")
+    func pasteKeepsConcurrentEdits() async throws {
+        let fixture = try AnalysisFixture(contents: "paste concurrent edits")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let gate = AnalysisArmableSaveGate()
+        defer { Task { await gate.open() } }
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { await gate.passIfArmed() }
+            )
+        })
+        let image = ImageFile(url: fixture.fileURL)
+        model.open(image)
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await gate.arm()
+        let first = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.1, y: 0.1)), text: "Before")
+        model.setAnnotation(first)
+        await gate.waitUntilEntered()
+        let source = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.5, y: 0.5)), text: "Pasted")
+        let paste = Task { try await model.pastePhotoAnnotations([source], to: image) }
+        // The paste lands in the live case while the earlier save is still blocked.
+        try await waitForAnalysisState { model.annotations.count == 2 }
+        let during = AnalysisAnnotation(kind: .label, geometry: .anchor(.init(x: 0.9, y: 0.9)), text: "During")
+        model.setAnnotation(during)
+        await gate.open()
+        try await paste.value
+        await model.flushPendingSaves()
+
+        #expect(model.annotations.count == 3)
+        #expect(model.canUndoPhotoAnnotation)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Expected the pasted case on disk")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == model.annotations.map(\.id))
+        #expect(persisted.annotations.first?.id == first.id)
+        #expect(persisted.annotations.last?.id == during.id)
+    }
+
+    @Test("A previous photo's save that fails after switching is reported and retried")
+    func backgroundSaveFailureIsReported() async throws {
+        let fixture = try AnalysisFixture(contents: "background failure first")
+        defer { fixture.remove() }
+        let supportURL = fixture.directoryURL.appendingPathComponent("support", isDirectory: true)
+        let secondURL = fixture.directoryURL.appendingPathComponent("second.jpg")
+        try Data("background failure second".utf8).write(to: secondURL)
+        let failures = AnalysisSaveFailureInjector()
+        let model = AnalysisWorkspaceModel(analyzers: [], repositoryFactory: { folderURL in
+            try await AnalysisCaseRepository.open(
+                sourceFolderURL: folderURL,
+                applicationSupportURL: supportURL,
+                sourceFolderIsWritable: false,
+                didLoadFallbackIndexForWriting: { try await failures.consume() }
+            )
+        })
+        model.open(ImageFile(url: fixture.fileURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+        let revision = try #require(model.currentRevision)
+
+        await failures.failNext()
+        let annotation = AnalysisAnnotation(
+            kind: .label, geometry: .anchor(.init(x: 0.3, y: 0.7)), text: "Left behind"
+        )
+        model.setAnnotation(annotation)
+        model.open(ImageFile(url: secondURL))
+        try await waitForAnalysisState { model.loadState == .ready }
+        await model.flushPendingSaves()
+
+        let message = try #require(model.saveError)
+        #expect(message.contains("source.jpg"))
+        #expect(model.requestClose() == false)
+        model.cancelUnsavedChangesExit()
+
+        model.retryFailedSave()
+        await model.flushPendingSaves()
+        #expect(model.saveError == nil)
+        let repository = try await AnalysisCaseRepository.open(
+            sourceFolderURL: fixture.directoryURL,
+            applicationSupportURL: supportURL,
+            sourceFolderIsWritable: false
+        )
+        guard case .exact(let persisted) = await repository.loadMostRelevantCase(for: revision) else {
+            Issue.record("Retry Save must persist the previous photo's case")
+            return
+        }
+        #expect(persisted.annotations.map(\.id) == [annotation.id])
     }
 
     @Test("Browser commands that would change the hidden selection's files are ignored in Analysis")
@@ -3873,6 +4036,23 @@ struct AnalysisCaseRepositoryExecutorTests {
 
 private nonisolated enum AnalysisRepositoryExecutorContext {
     @TaskLocal static var marker: String?
+}
+
+private enum AnalysisInjectedSaveFailure: Error {
+    case failed
+}
+
+/// Fails the next fallback write after `failNext()`, then lets writes through again.
+private actor AnalysisSaveFailureInjector {
+    private var remainingFailures = 0
+
+    func failNext() { remainingFailures += 1 }
+
+    func consume() throws {
+        guard remainingFailures > 0 else { return }
+        remainingFailures -= 1
+        throw AnalysisInjectedSaveFailure.failed
+    }
 }
 
 /// Blocks fallback writes only after `arm()`, so a test can hold one specific save in flight.

@@ -23,7 +23,9 @@ nonisolated enum ApplicationTerminationFailureChoice: Equatable, Sendable {
 }
 
 /// Testable ordering and retry boundary for application termination. Caption persistence always
-/// completes first, then pending Analysis saves, then Develop; a failure stops the later stages.
+/// completes first, then pending Analysis saves, then Develop; a failure stops the later stages
+/// until the user chooses. Quit Without Saving abandons only the failed stage: later stages still
+/// flush and may raise their own prompt.
 @MainActor
 final class ApplicationTerminationFlushCoordinator {
     typealias CaptionFlush = @MainActor () async throws -> Void
@@ -44,23 +46,30 @@ final class ApplicationTerminationFlushCoordinator {
         self.developFlush = developFlush
     }
 
-    func attempt() async -> ApplicationTerminationFlushOutcome {
-        do {
-            try await captionFlush()
-        } catch {
-            return .failed(ApplicationTerminationFlushFailure(
-                stage: .caption,
-                message: error.localizedDescription
-            ))
+    /// Runs the stages in order, beginning with `firstStage`.
+    func attempt(
+        from firstStage: ApplicationTerminationFlushStage = .caption
+    ) async -> ApplicationTerminationFlushOutcome {
+        if firstStage == .caption {
+            do {
+                try await captionFlush()
+            } catch {
+                return .failed(ApplicationTerminationFlushFailure(
+                    stage: .caption,
+                    message: error.localizedDescription
+                ))
+            }
         }
 
-        do {
-            try await analysisFlush()
-        } catch {
-            return .failed(ApplicationTerminationFlushFailure(
-                stage: .analysis,
-                message: error.localizedDescription
-            ))
+        if firstStage != .develop {
+            do {
+                try await analysisFlush()
+            } catch {
+                return .failed(ApplicationTerminationFlushFailure(
+                    stage: .analysis,
+                    message: error.localizedDescription
+                ))
+            }
         }
 
         switch await developFlush() {
@@ -77,8 +86,9 @@ final class ApplicationTerminationFlushCoordinator {
     func resolve(
         chooseFailure: @MainActor (ApplicationTerminationFlushFailure) -> ApplicationTerminationFailureChoice
     ) async -> Bool {
+        var firstStage = ApplicationTerminationFlushStage.caption
         while true {
-            switch await attempt() {
+            switch await attempt(from: firstStage) {
             case .succeeded:
                 return true
             case let .failed(failure):
@@ -88,7 +98,12 @@ final class ApplicationTerminationFlushCoordinator {
                 case .keepOpen:
                     return false
                 case .quitWithoutSaving:
-                    return true
+                    // Skip only the abandoned stage; the remaining stages still get to save.
+                    switch failure.stage {
+                    case .caption: firstStage = .analysis
+                    case .analysis: firstStage = .develop
+                    case .develop: return true
+                    }
                 }
             }
         }
