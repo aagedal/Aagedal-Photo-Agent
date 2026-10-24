@@ -298,6 +298,17 @@ if [[ "$VERSION" == *-beta.* ]]; then
   CHANNEL_ITEM="            <sparkle:channel>beta</sparkle:channel>"
 fi
 BUILD="$(get CURRENT_PROJECT_VERSION)"
+# Installs older than the first 3.0 build (740 = 3.0.0-beta.1; 2.x ends at 428) get the
+# update alert with its "back up first" notes instead of a silent background install.
+# Sparkle compares this against the installed CFBundleVersion. Set the variable to an
+# empty string to omit the tag.
+MINIMUM_AUTOUPDATE_BUILD="${AAGEDAL_MINIMUM_AUTOUPDATE_BUILD-740}"
+MINIMUM_AUTOUPDATE_ITEM=""
+if [ -n "$MINIMUM_AUTOUPDATE_BUILD" ]; then
+  [[ "$MINIMUM_AUTOUPDATE_BUILD" =~ ^[0-9]+$ ]] \
+    || die "AAGEDAL_MINIMUM_AUTOUPDATE_BUILD must be a build number, got '$MINIMUM_AUTOUPDATE_BUILD'."
+  MINIMUM_AUTOUPDATE_ITEM="            <sparkle:minimumAutoupdateVersion>$MINIMUM_AUTOUPDATE_BUILD</sparkle:minimumAutoupdateVersion>"
+fi
 TEAM_ID="$(get DEVELOPMENT_TEAM)"
 MIN_OS="$(get MACOSX_DEPLOYMENT_TARGET)"
 [ -n "$VERSION" ] && [ -n "$BUILD" ] && [ -n "$TEAM_ID" ] || die "Could not read version/build/team from the project."
@@ -499,6 +510,7 @@ $CHANNEL_ITEM
             <sparkle:version>$BUILD</sparkle:version>
             <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>$MIN_OS</sparkle:minimumSystemVersion>
+$MINIMUM_AUTOUPDATE_ITEM
             <description><![CDATA[
                 <ul>
 $NOTES

@@ -374,6 +374,9 @@ The app uses [Sparkle](https://sparkle-project.org) for in-app auto-updates. Rel
    `sparkle:channel=beta`. Only beta installations opt into that channel; the eventual
    stable release remains available to them through the default channel.
 2. Add the release notes to `CHANGELOG.md`, including a concise `### Highlights` list for the Sparkle appcast.
+   Appcast items carry `sparkle:minimumAutoupdateVersion` 740 (the first 3.0 build), so 2.x
+   installs see the update alert and its notes instead of a silent background install. Override
+   with `AAGEDAL_MINIMUM_AUTOUPDATE_BUILD`, or set it empty to omit the tag.
    AuraFace is bundled for this release. The release assistant verifies the exported app contains
    `Contents/Resources/AuraFaceR100.mlmodelc` with the reviewed model weights before notarization.
 3. Commit and push the exact release source, then wait for the **macOS CI / Clean build and unfiltered tests** check to pass for that commit. The workflow performs a clean `build-for-testing`, an unfiltered `test-without-building`, generated-metadata drift checking, JSON/plist validation, conflict-marker scanning, and whitespace checks. Configure this check as required on the protected release branch in GitHub; repository files cannot enforce that remote setting.
