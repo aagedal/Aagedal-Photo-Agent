@@ -34,6 +34,63 @@ struct VideoStillFilesystemExecutorTests {
         #expect(iptc[kCGImagePropertyIPTCCaptionAbstract as String] as? String == caption)
     }
 
+    @Test("Stills carry the video's capture time (plus frame offset), GPS and descriptive fields", arguments: ["jpg", "tiff"])
+    @MainActor
+    func sourceMetadataIsCopied(format: String) async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let captureDate = Date(timeIntervalSince1970: 1_790_000_000)
+        let source = VideoStillSourceMetadata(
+            captureDate: captureDate, latitude: 59.9139, longitude: 10.7522, altitude: 12,
+            creators: ["Truls \u{C5}gedal"], copyright: "\u{A9} Aagedal", credit: "NTB",
+            city: "Troms\u{F8}", state: "Troms", country: "Norway", keywords: ["nordlys", "vinter"]
+        )
+        let output = directory.appendingPathComponent("clip.\(format)")
+        let caption = "Still from clip.mov at timecode 00:00:02:12 (relative)"
+        try await VideoStillFilesystemService().write(
+            image: try makeImage(), format: format, destination: output, description: caption,
+            sourceMetadata: source, frameOffset: 2.5
+        )
+
+        let metadata = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(metadata.description == caption)
+        #expect(metadata.creators == ["Truls \u{C5}gedal"])
+        #expect(metadata.copyright == "\u{A9} Aagedal")
+        #expect(metadata.credit == "NTB")
+        #expect(metadata.city == "Troms\u{F8}")
+        #expect(metadata.country == "Norway")
+        #expect(Set(metadata.keywords) == ["nordlys", "vinter"])
+        let latitude = try #require(metadata.latitude)
+        let longitude = try #require(metadata.longitude)
+        #expect(abs(latitude - 59.9139) < 0.0001)
+        #expect(abs(longitude - 10.7522) < 0.0001)
+
+        let imageSource = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])
+        let exif = try #require(properties[kCGImagePropertyExifDictionary as String] as? [String: Any])
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+        #expect(exif[kCGImagePropertyExifDateTimeOriginal as String] as? String
+                == formatter.string(from: captureDate.addingTimeInterval(2.5)))
+        #expect(exif[kCGImagePropertyExifSubsecTimeOriginal as String] as? String == "500")
+    }
+
+    @Test("A video without metadata still gets only the caption")
+    @MainActor
+    func emptySourceMetadataKeepsCaptionOnly() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("plain.jpg")
+        try await VideoStillFilesystemService().write(
+            image: try makeImage(), format: "jpg", destination: output, description: "caption only"
+        )
+        let metadata = try await SwiftExifReadService().readFullMetadata(url: output)
+        #expect(metadata.description == "caption only")
+        #expect(metadata.creators.isEmpty)
+        #expect(metadata.latitude == nil)
+    }
+
     @Test("A writer racing after the collision probe cannot replace a still")
     @MainActor
     func publicationRace() async throws {

@@ -16,9 +16,14 @@ actor MetadataFailureTracker: Sendable {
     /// looked stale — the image file was modified more recently and the two disagreed.
     /// A warning, not a failure: the file was still published, just from the file's metadata.
     private(set) var staleSidecarWarnings: [String] = []
+    /// Files exported without one or more enabled watermark layers because the referenced
+    /// library image was deleted or hasn't synced to this Mac. A warning, not a failure: the
+    /// file was still exported, just without that watermark.
+    private(set) var missingWatermarkWarnings: [String] = []
     func recordCopyFailure(_ filename: String) { metadataCopyFailures.append(filename) }
     func recordOverlayFailure(_ filename: String) { sidecarOverlayFailures.append(filename) }
     func recordStaleSidecar(_ filename: String) { staleSidecarWarnings.append(filename) }
+    func recordMissingWatermark(_ filename: String) { missingWatermarkWarnings.append(filename) }
 }
 
 /// Immutable input for one export Camera Raw resolution pass. Live workspace settings are
@@ -523,6 +528,11 @@ enum EditExportPipeline {
             case .applied, .noPendingEdits:
                 break
             }
+            // The renderer silently skips a watermark whose library PNG can't be read; tell
+            // the user rather than delivering an unbranded file without notice.
+            if !missingWatermarkAssetIDs(in: bakedCameraRaw).isEmpty {
+                await failureTracker.recordMissingWatermark(sourceURL.lastPathComponent)
+            }
 
             let copiesRAWArchiveSidecar: Bool
             switch kind {
@@ -550,6 +560,19 @@ enum EditExportPipeline {
         } catch {
             await reservationOwner.release()
             throw error
+        }
+    }
+
+    /// Library asset IDs referenced by enabled watermark layers whose PNG isn't readable at the
+    /// path the Metal texture loader uses (deleted from the library, or not yet downloaded
+    /// from iCloud). Those layers render as no-ops.
+    nonisolated static func missingWatermarkAssetIDs(in cameraRaw: CameraRawSettings?) -> [UUID] {
+        var seen = Set<UUID>()
+        return (cameraRaw?.watermarkLayers ?? []).filter(\.enabled).compactMap { layer in
+            let id = layer.libraryAssetID
+            guard seen.insert(id).inserted else { return nil }
+            let path = WatermarkStore.resolvedImageURL(forAssetID: id).path
+            return FileManager.default.isReadableFile(atPath: path) ? nil : id
         }
     }
 

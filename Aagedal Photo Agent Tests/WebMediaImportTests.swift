@@ -75,6 +75,94 @@ struct WebMediaImportTests {
         #expect(provenance.originalSHA256 == (try HashStream.hashFileSynchronously(at: batch.appendingPathComponent("Originals/001.jpg"))).map { String(format: "%02x", $0) }.joined())
     }
 
+    /// Runs `body` with the write-preset defaults restored afterwards.
+    private func withRestoredWriteDefaults(_ body: () async throws -> Void) async rethrows {
+        let keys = [UserDefaultsKeys.metadataWritePreset, UserDefaultsKeys.metadataWriteModeNonC2PA,
+                    UserDefaultsKeys.metadataWriteModeC2PA]
+        let defaults = AppDefaults.store
+        let originals = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, original) in zip(keys, originals) {
+                if let original { defaults.set(original, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        try await body()
+    }
+
+    @Test("Working-copy write destination follows the metadata write preset")
+    func writeModeFollowsPreset() async {
+        await withRestoredWriteDefaults {
+            let jpeg = URL(fileURLWithPath: "/w/001.jpg")
+            let video = URL(fileURLWithPath: "/w/002.mp4")
+            let defaults = AppDefaults.store
+
+            defaults.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            #expect(WebMediaImportService.metadataWriteMode(for: jpeg, hasCredential: false) == .writeToFile)
+            #expect(WebMediaImportService.metadataWriteMode(for: jpeg, hasCredential: true) == .writeToXMPSidecar)
+            #expect(WebMediaImportService.metadataWriteMode(for: video, hasCredential: false) == .writeToXMPSidecar)
+
+            defaults.set(MetadataWritePreset.simple.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            #expect(WebMediaImportService.metadataWriteMode(for: jpeg, hasCredential: true) == .writeToFile)
+            // Formats the writer can't embed into still get a sidecar.
+            #expect(WebMediaImportService.metadataWriteMode(for: video, hasCredential: false) == .writeToXMPSidecar)
+
+            defaults.set(MetadataWritePreset.custom.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            defaults.set(MetadataWriteMode.writeToXMPSidecar.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
+            #expect(WebMediaImportService.metadataWriteMode(for: jpeg, hasCredential: false) == .writeToXMPSidecar)
+            defaults.set(MetadataWriteMode.writeToFileAndXMPSidecar.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
+            #expect(WebMediaImportService.metadataWriteMode(for: jpeg, hasCredential: false) == .writeToFileAndXMPSidecar)
+            #expect(WebMediaImportService.metadataWriteMode(for: video, hasCredential: false) == .writeToXMPSidecar)
+        }
+    }
+
+    @Test("A sidecar preset leaves the JPEG working copy byte-identical and records the sidecar")
+    func sidecarPresetSkipsEmbedding() async throws {
+        try await withRestoredWriteDefaults {
+            AppDefaults.store.set(MetadataWritePreset.custom.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            AppDefaults.store.set(MetadataWriteMode.writeToXMPSidecar.rawValue, forKey: UserDefaultsKeys.metadataWriteModeNonC2PA)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
+                bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let bytes = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+            let media = item(1, kind: "image", extension: "jpg")
+            let inspection = WebPostInspection(url: "https://www.instagram.com/p/fixture/", items: [media], versions: [:])
+            let service = WebMediaImportService(download: { _, _, _, destination in
+                try bytes.write(to: destination.appendingPathComponent("001.jpg"))
+                return WebDownloadResult(files: [WebDownloadedFile(item: media, filename: "001.jpg")], versions: [:])
+            })
+            let working = try await service.importMedia(inspection: inspection, selected: [media.id], cookies: nil,
+                destination: root, caption: "Sidecar caption", progress: { _ in })
+            #expect(try Data(contentsOf: working.appendingPathComponent("001.jpg")) == bytes)
+            #expect(XMPSidecarService().loadSidecar(for: working.appendingPathComponent("001.jpg"))?.description == "Sidecar caption")
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let provenance = try decoder.decode(WebImportProvenance.self, from: Data(contentsOf:
+                working.deletingLastPathComponent().appendingPathComponent("Provenance/001.jpg.json")))
+            #expect(provenance.metadataStorage == "XMP sidecar")
+        }
+    }
+
+    @Test("Batch folders are named by date, account and post, and never merge")
+    func batchFolderNaming() async throws {
+        let media = item(1, kind: "image", extension: "jpg")
+        let inspection = WebPostInspection(url: "fixture", items: [media], versions: [:])
+        var components = DateComponents()
+        components.year = 2026; components.month = 10; components.day = 24
+        components.hour = 15; components.minute = 30; components.second = 12
+        let date = try #require(Calendar.current.date(from: components))
+        let name = WebMediaImportService.batchFolderName(inspection: inspection, selected: [media.id], date: date)
+        #expect(name == "Web Import 2026-10-24 153012 @source_account post")
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let unique = try await WebImportFilesystemService().uniqueBatchURL(in: root, baseName: name)
+        #expect(unique.lastPathComponent == "\(name) 2")
+    }
+
     @Test("Video originals and working bytes stay identical with adjacent XMP")
     func videoUsesSidecar() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

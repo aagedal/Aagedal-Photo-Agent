@@ -42,6 +42,9 @@ struct BatchOperationResult: Identifiable, Sendable {
     /// sidecar looked stale (image file newer and metadata differed). A warning, not a
     /// failure — the file was still published, just from its embedded metadata.
     var staleSidecarFilenames: [String] = []
+    /// Files exported without an enabled watermark layer whose library image was missing.
+    /// A warning, not a failure — the file was still written.
+    var missingWatermarkFilenames: [String] = []
     let sourceFolderURL: URL?
     /// Files the operation wrote, so the result banner can reveal them in Finder.
     var outputURLs: [URL] = []
@@ -54,7 +57,7 @@ struct BatchOperationResult: Identifiable, Sendable {
     }
 
     var hasWarnings: Bool {
-        !staleSidecarFilenames.isEmpty
+        !staleSidecarFilenames.isEmpty || !missingWatermarkFilenames.isEmpty
     }
 
     var summaryLine: String {
@@ -84,6 +87,10 @@ struct BatchOperationResult: Identifiable, Sendable {
             if !staleSidecarFilenames.isEmpty {
                 let n = staleSidecarFilenames.count
                 parts.append("\(n) \(n == 1 ? "image" : "images") used embedded metadata (.xmp sidecar looked stale)")
+            }
+            if !missingWatermarkFilenames.isEmpty {
+                let n = missingWatermarkFilenames.count
+                parts.append("watermark image missing for \(n) \(n == 1 ? "image" : "images") (exported without it)")
             }
             let warning = parts.isEmpty ? "" : ": \(parts.joined(separator: "; "))"
             return "\(title): \(successCount) of \(totalCount)\(warning)."

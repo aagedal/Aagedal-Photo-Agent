@@ -5,6 +5,7 @@ import MetalKit
 import os
 import QuartzCore
 import simd
+import Synchronization
 
 nonisolated private let metalPipelineLog = Logger(
     subsystem: "com.aagedal.photo-agent", category: "MetalEditPipeline"
@@ -900,6 +901,7 @@ final class MetalEditPipeline: @unchecked Sendable {
         struct Storage {
             var texture: MTLTexture?
             var lastBuiltAssetIDs: [UUID] = []
+            var lastBuiltLibraryRevision = -1
             var lastBuiltAspects: [UUID: (slice: Int, aspect: Double)] = [:]
             var activeDisplayLayers: [WatermarkLayer] = []
             var frame: UInt32 = 0
@@ -2710,8 +2712,13 @@ final class MetalEditPipeline: @unchecked Sendable {
             lastBuiltWatermarkAspects = [:]
             return [:]
         }
-        if watermarkTexture != nil, distinctIDs == lastBuiltWatermarkAssetIDs {
-            return lastBuiltWatermarkAspects
+        // The library revision invalidates the cache when an asset is deleted, replaced, or
+        // finishes syncing — otherwise the live preview keeps compositing the stale texture.
+        let libraryRevision = WatermarkStore.libraryRevision.load(ordering: .relaxed)
+        let cached = watermarkStateSnapshot()
+        if cached.texture != nil, distinctIDs == cached.lastBuiltAssetIDs,
+           cached.lastBuiltLibraryRevision == libraryRevision {
+            return cached.lastBuiltAspects
         }
 
         var decoded: [(id: UUID, image: CGImage)] = []
@@ -2772,9 +2779,12 @@ final class MetalEditPipeline: @unchecked Sendable {
             mapping[entry.id] = (slice, Double(w) / Double(h))
         }
 
-        watermarkTexture = tex
-        lastBuiltWatermarkAssetIDs = distinctIDs
-        lastBuiltWatermarkAspects = mapping
+        updateWatermarkState {
+            $0.texture = tex
+            $0.lastBuiltAssetIDs = distinctIDs
+            $0.lastBuiltLibraryRevision = libraryRevision
+            $0.lastBuiltAspects = mapping
+        }
         return mapping
     }
 

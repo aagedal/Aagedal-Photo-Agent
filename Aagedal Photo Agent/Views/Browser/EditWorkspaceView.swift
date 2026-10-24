@@ -1031,6 +1031,9 @@ struct EditWorkspaceView: View {
             // Neighbours decoded ahead of navigation used the previous decode settings.
             metalPipeline?.discardSpeculativeTextures()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .watermarkLibraryDidChange)) { _ in
+            refreshPreviewAfterWatermarkLibraryChange()
+        }
         .onChange(of: isOverlayPresented, initial: true) { _, presented in
             // The key monitor closure captured this view value at install time, so the
             // flag must live in the reference-typed input session to be read live.
@@ -5905,6 +5908,17 @@ struct EditWorkspaceView: View {
                     .shadow(color: .black.opacity(0.6), radius: 1.5)
             }
             .frame(width: 56, height: 56)
+            .overlay(alignment: .bottomTrailing) {
+                if let watermark, watermarkStore.isAssetMissing(watermark.libraryAssetID) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.yellow)
+                        .shadow(color: .black.opacity(0.7), radius: 1)
+                        .padding(3)
+                        .help("Missing watermark — its image was deleted from the library or hasn't synced yet")
+                        .accessibilityLabel("Missing watermark")
+                }
+            }
             .overlay(alignment: .topLeading) {
                 if mask?.inverted == true {
                     Image(systemName: "circle.righthalf.filled")
@@ -6469,7 +6483,16 @@ struct EditWorkspaceView: View {
                 .foregroundStyle(.secondary)
             Divider()
 
-            let library = WatermarkStore.shared.allAssets()
+            let library = watermarkStore.allAssets()
+            let assetID = layers[idx].libraryAssetID
+            let assetIsMissing = watermarkStore.isAssetMissing(assetID)
+            if assetIsMissing {
+                Label("Missing watermark — this image was deleted from the library or hasn't synced yet. It won't appear in the preview or exports until you pick another image.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if library.isEmpty {
                 Label("No watermarks in your library yet — import a PNG from Settings \u{2192} Watermarks.",
                       systemImage: "exclamationmark.triangle")
@@ -6478,8 +6501,14 @@ struct EditWorkspaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Picker("Image", selection: watermarkAssetIDBinding(idx)) {
+                    // Placeholder row so the picker has a selection to show for a layer whose
+                    // asset is gone, instead of rendering blank.
+                    if !library.contains(where: { $0.id == assetID }) {
+                        Text("Missing Watermark").tag(Optional(assetID))
+                    }
                     ForEach(library) { asset in
-                        Text(asset.name).tag(Optional(asset.id))
+                        Text(watermarkStore.isAssetMissing(asset.id) ? "\(asset.name) (missing image)" : asset.name)
+                            .tag(Optional(asset.id))
                     }
                 }
                 .labelsHidden()
@@ -6513,7 +6542,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "Size",
                 value: watermarkSizeValueBinding(idx),
-                range: sizeIsPercent ? 1...100 : 8...4000,
+                range: WatermarkGeometry.sizeRange(for: sizeIsPercent ? .percent : .pixel),
                 step: 1,
                 formatter: { sizeIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
                 settingsMutator: { settings, value in
@@ -6557,7 +6586,7 @@ struct EditWorkspaceView: View {
             sliderRow(
                 "Margin",
                 value: watermarkMarginValueBinding(idx),
-                range: marginIsPercent ? 0...45 : 0...2000,
+                range: WatermarkGeometry.marginRange(for: marginIsPercent ? .percent : .pixel),
                 step: 1,
                 formatter: { marginIsPercent ? "\(Int($0.rounded()))%" : "\(Int($0.rounded()))px" },
                 settingsMutator: { settings, value in
@@ -6691,6 +6720,21 @@ struct EditWorkspaceView: View {
         }
     }
 
+    /// The frame a watermark's px/% values are measured against — the crop frame when a crop
+    /// is in effect, else the display image — so a unit switch keeps the rendered size.
+    /// Falls back to the nominal library frame before the image size is known.
+    private var watermarkUnitReferenceSize: CGSize {
+        let projection = layerGeometryProjection
+        guard projection.displayImageSize.width > 0, projection.displayImageSize.height > 0 else {
+            let nominal = WatermarkGeometry.nominalReferenceImageSize
+            return CGSize(width: nominal.width, height: nominal.height)
+        }
+        let usesCropFrame = metadataViewModel.editingMetadata.cameraRaw?.crop?.isEffectiveCrop == true
+        return usesCropFrame
+            ? layerGeometryInteraction.watermarkCropImageSize(projection: projection)
+            : projection.displayImageSize
+    }
+
     private func watermarkSizeValueBinding(_ index: Int) -> Binding<Double> {
         Binding(
             get: {
@@ -6744,7 +6788,12 @@ struct EditWorkspaceView: View {
                 return layers[index].geometry.sizeUnit
             },
             set: { newValue in
-                updateWatermarkGeometry(index) { $0.sizeUnit = newValue }
+                let reference = watermarkUnitReferenceSize
+                updateWatermarkGeometry(index) {
+                    $0 = $0.convertingSizeUnit(
+                        to: newValue, imageWidth: reference.width, imageHeight: reference.height
+                    )
+                }
                 commitEditAdjustments()
             }
         )
@@ -6758,7 +6807,12 @@ struct EditWorkspaceView: View {
                 return layers[index].geometry.marginUnit
             },
             set: { newValue in
-                updateWatermarkGeometry(index) { $0.marginUnit = newValue }
+                let reference = watermarkUnitReferenceSize
+                updateWatermarkGeometry(index) {
+                    $0 = $0.convertingMarginUnit(
+                        to: newValue, imageWidth: reference.width, imageHeight: reference.height
+                    )
+                }
                 commitEditAdjustments()
             }
         )
@@ -7199,6 +7253,16 @@ struct EditWorkspaceView: View {
         }
         selectedLayer = .watermark(newLayer.id)
         commitEditAdjustments()
+    }
+
+    /// A library change (delete, sync arrival, storage-route switch) can change what an
+    /// existing watermark layer renders even though the layer itself is untouched; re-upload
+    /// the params so the pipeline re-resolves its (revision-keyed) watermark textures.
+    private func refreshPreviewAfterWatermarkLibraryChange() {
+        guard metadataViewModel.editingMetadata.cameraRaw?.watermarkLayers?.isEmpty == false,
+              let pipeline = metalPipeline, pipeline.hasSourceTexture else { return }
+        pipeline.updateParams(settingsForPipeline(metadataViewModel.editingMetadata.cameraRaw))
+        metalSession.requestRedraw()
     }
 
     private func deleteSelectedWatermark() {

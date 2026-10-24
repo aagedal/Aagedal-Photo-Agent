@@ -13,7 +13,11 @@ nonisolated private let cleanFeedViewLog = Logger(
 /// selected image; in edit mode the workspace pushes content into the controller.
 struct CleanFeedContentView: View {
     @Bindable var controller: CleanFeedController
-    let browserViewModel: BrowserViewModel
+    /// The panes model, not one pane: the feed window outlives pane switches, so it must
+    /// follow whichever pane is active now rather than the one active when it opened.
+    let panes: BrowserPanesModel
+
+    private var browserViewModel: BrowserViewModel { panes.active }
 
     @State private var loadTask: Task<Void, Never>?
     @State private var loadRequestID: UUID?
@@ -33,6 +37,7 @@ struct CleanFeedContentView: View {
         .background(Color.black)
         .ignoresSafeArea()
         .onAppear { reloadFromSelection() }
+        .onChange(of: ObjectIdentifier(browserViewModel)) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.url) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.cameraRawSettings) { _, _ in reloadFromSelection() }
         .onChange(of: browserViewModel.firstSelectedImage?.exifOrientation) { _, _ in reloadFromSelection() }
