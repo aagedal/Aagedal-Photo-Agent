@@ -125,9 +125,12 @@ actor ThumbnailImageRenderWorker {
         cgImage: CGImage, settings: CameraRawSettings, exifOrientation: Int
     ) async -> CGImage? {
         guard !Task.isCancelled else { return nil }
-        let edited = await access.edit(CIImage(cgImage: cgImage), settings, exifOrientation)
-        guard !Task.isCancelled else { return nil }
-        let rendered = access.materialize(edited)
+        // A failed-GPU placeholder is registered so the edited-thumbnail cache never keeps it.
+        let rendered = await RedactionPlaceholderTracking.track {
+            let edited = await access.edit(CIImage(cgImage: cgImage), settings, exifOrientation)
+            guard !Task.isCancelled else { return nil }
+            return access.materialize(edited)
+        }
         return Task.isCancelled ? nil : rendered
     }
 }
@@ -333,7 +336,10 @@ final class ThumbnailService {
                 // so a render for the old orientation can't clobber the rotated cache entry.
                 guard !Task.isCancelled else { return nil }
                 let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
-                editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+                // A failed-GPU placeholder is shown but not cached: the next request retries.
+                if !RedactionPlaceholderTracking.isPlaceholder(outputCG) {
+                    editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+                }
                 return edited
             }
 
@@ -366,7 +372,9 @@ final class ThumbnailService {
             // so a render for the old orientation can't clobber the rotated cache entry.
             guard !Task.isCancelled else { return nil }
             let edited = NSImage(cgImage: outputCG, size: NSSize(width: outputCG.width, height: outputCG.height))
-            editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+            if !RedactionPlaceholderTracking.isPlaceholder(outputCG) {
+                editedCache.setObject(edited, forKey: url as NSURL, cost: Self.decodedCost(of: edited))
+            }
             return edited
         }
 

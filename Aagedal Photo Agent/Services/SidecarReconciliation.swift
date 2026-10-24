@@ -191,21 +191,39 @@ nonisolated enum EffectiveMetadataResolver {
         return metadata
     }
 
-    /// The develop settings a photo displays from its sidecar and embedded develop blocks: a
-    /// non-empty sidecar block wins wholesale, except that embedded masks show through when the
-    /// sidecar has none; without a sidecar block the embedded one applies. Redactions are never
-    /// dropped (`RedactionUnion`): every enabled embedded Anonymizer mask the sidecar lacks is
-    /// added and the global Anonymizer is the stronger of the two. Develop paste merges onto
-    /// this so a sidecar it writes can't hide an embedded redaction.
+    /// The develop settings a photo displays (and Develop edits, and export renders) from its
+    /// ownership-filtered sidecar and embedded develop blocks. The single helper every reader
+    /// uses, so the editor buffer and export resolution can't disagree.
+    ///
+    /// - No sidecar block: the embedded block applies.
+    /// - A sidecar block marked `embeddedRedactionsReviewed` was written by this app from a
+    ///   state that already showed the embedded redactions; the sidecar is the app's develop
+    ///   destination, so it is authoritative wholesale: a blur the user disabled or deleted
+    ///   there stays off.
+    /// - An unreviewed sidecar block (written before the review existed, or by another tool)
+    ///   wins for ordinary settings, embedded masks show through when it has none, and the
+    ///   embedded redactions it has never seen are added (`RedactionUnion`: every enabled
+    ///   embedded Anonymizer mask, the stronger global Anonymizer).
+    ///
+    /// Whenever the embedded block redacts, the result is marked reviewed: it now includes
+    /// those redactions, so a sidecar written from it (Develop, paste) is authoritative.
     static func reconciledDevelopSettings(sidecar: CameraRawSettings?,
                                           embedded: CameraRawSettings?) -> CameraRawSettings? {
-        guard let sidecar, !sidecar.isEmpty else { return embedded }
+        let embeddedRedacts = embedded?.hasActiveRedaction == true
+        guard let sidecar, !sidecar.isEmpty else {
+            guard var embedded else { return nil }
+            if embeddedRedacts { embedded.embeddedRedactionsReviewed = true }
+            return embedded
+        }
+        if sidecar.embeddedRedactionsReviewed == true { return sidecar }
         var result = sidecar
         if sidecar.localAdjustments?.isEmpty ?? true,
            let masks = embedded?.localAdjustments, !masks.isEmpty {
             result.localAdjustments = masks
         }
-        return RedactionUnion.merged(result, adding: [embedded])
+        result = RedactionUnion.merged(result, adding: [embedded])
+        if embeddedRedacts { result.embeddedRedactionsReviewed = true }
+        return result
     }
 
     static func physicalMetadata(for source: MetadataReferenceSource,
@@ -222,6 +240,13 @@ nonisolated enum EffectiveMetadataResolver {
             // (BrowserViewModel.applyBatchMetadataResults); previously this was
             // gated to RAW only, which dropped develop edits for JPEG/JXL on
             // reload and left the develop view showing the unedited original.
+            if let embedded, !isRaw {
+                // Non-RAW: always through the shared develop reconciliation (also without a
+                // sidecar block, so the editor buffer carries the redaction review marker).
+                var result = embedded
+                result.cameraRaw = reconciledDevelopSettings(sidecar: xmp?.cameraRaw, embedded: embedded.cameraRaw)
+                return result
+            }
             if let embedded,
                let xmpCRS = xmp?.cameraRaw, !xmpCRS.isEmpty {
                 var result = embedded
@@ -251,8 +276,16 @@ nonisolated enum EffectiveMetadataResolver {
                         finalCRS.localAdjustments = masks
                     }
                     merged.cameraRaw = finalCRS
+                } else if !isRaw {
+                    // Same develop reconciliation as the `.embedded` path, Browser and export.
+                    merged.cameraRaw = reconciledDevelopSettings(
+                        sidecar: xmp.cameraRaw, embedded: embedded.cameraRaw)
                 }
                 return merged
+            }
+            if !isRaw, xmp == nil, var embedded {
+                embedded.cameraRaw = reconciledDevelopSettings(sidecar: nil, embedded: embedded.cameraRaw)
+                return embedded
             }
             return xmp ?? embedded
         }

@@ -148,6 +148,7 @@ extension CameraRawSettings {
         asShotNeutralTemperature = existing?.asShotNeutralTemperature
         asShotNeutralTint = existing?.asShotNeutralTint
         sourceHasHDRHeadroom = existing?.sourceHasHDRHeadroom
+        embeddedRedactionsReviewed = existing?.embeddedRedactionsReviewed
     }
 
     /// Paste layer merge onto this (target) record:

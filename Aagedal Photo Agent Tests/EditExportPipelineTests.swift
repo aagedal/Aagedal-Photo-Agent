@@ -235,7 +235,7 @@ struct EditExportPipelineTests {
         let plainRender = try await EditExportPipeline.renderItem(
             sourceURL: jpeg, cameraRaw: nil, kind: .jpeg, outputFolder: plainDir,
             folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: tracker,
-            savedRedactionAccess: ExportSavedRedactionAccess { _ in [] })
+            savedRedactionAccess: .none)
         let redactedDeviation = try centerLuminanceDeviation(of: redactedRender)
         let plainDeviation = try centerLuminanceDeviation(of: plainRender)
         #expect(plainDeviation > 60, "the unedited checkerboard should be high-contrast (\(plainDeviation))")
@@ -6450,7 +6450,7 @@ struct RedactionFailClosedTests {
                     sourceURL: source, cameraRaw: settings, kind: kind, outputFolder: output,
                     folderURL: dir, writeEngine: SwiftExifWriteEngine(),
                     failureTracker: MetadataFailureTracker(),
-                    savedRedactionAccess: ExportSavedRedactionAccess { _ in [] })
+                    savedRedactionAccess: .none)
             }
         } catch {
             refusal = error
@@ -6724,5 +6724,188 @@ struct RedactionFailClosedTests {
         SwiftExifWriteEngine.stripSourceBlobsForRendition(&metadata, renderRedacts: true)
         #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x927C) == false)
         #expect(metadata.exif?.exifIFD?.hasEntry(for: 0x829A) == true)
+    }
+
+    // MARK: Follow-ups — sidecar authority, Develop Save, placeholder caching, unreadable embed
+
+    private func embedDevelop(_ settings: CameraRawSettings, into jpeg: URL) throws {
+        var metadata = try SwiftMediaMetadata.readMetadata(from: jpeg)
+        var xmp = metadata.xmp ?? XMPData()
+        XMPDataBuilder.applyCameraRaw(settings, imageAspect: nil, into: &xmp)
+        metadata.xmp = xmp
+        _ = try metadata.write(to: jpeg)
+    }
+
+    private func readEmbedded(_ jpeg: URL) throws -> IPTCMetadata {
+        iptcMetadataFromDict(try ImageMetadata.read(from: jpeg).asMetadataDict(fileURL: jpeg))
+    }
+
+    @MainActor
+    @Test("A blur embedded in the JPEG and then disabled or deleted in Develop's sidecar stays off, in the editor and the export",
+          arguments: [false, true])
+    func sidecarRemovalOfEmbeddedBlurSticks(delete: Bool) async throws {
+        let dir = try makeFolder("embedded-blur-removed")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: jpeg)
+        // Simple preset: the blur is embedded in the file.
+        let blur = faceMask()
+        var embeddedDevelop = CameraRawSettings()
+        embeddedDevelop.localAdjustments = [blur]
+        try embedDevelop(embeddedDevelop, into: jpeg)
+        let embedded = try readEmbedded(jpeg)
+        try #require(embedded.cameraRaw?.hasActiveRedaction == true)
+
+        // The editor opens the photo (no sidecar yet) and shows the blur.
+        var buffer = try #require(EffectiveMetadataResolver.physicalMetadata(
+            for: .embedded, embedded: embedded, xmp: nil, isRaw: false)?.cameraRaw)
+        #expect(buffer.hasActiveRedaction)
+        #expect(buffer.embeddedRedactionsReviewed == true)
+
+        // Writes now go to the sidecar only (Custom / a C2PA file under Professional). The user
+        // disables or deletes the blur; Develop writes its buffer to the sidecar.
+        if delete {
+            buffer.localAdjustments = []
+        } else {
+            buffer.localAdjustments?[0].enabled = false
+        }
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: buffer), for: jpeg)
+
+        // Reopen: the sidecar (the app's develop destination) is authoritative.
+        let sidecar = try #require(XMPSidecarService().loadDevelopSettings(for: jpeg))
+        #expect(sidecar.embeddedRedactionsReviewed == true)
+        let reopenedEmbedded = try readEmbedded(jpeg)
+        #expect(reopenedEmbedded.cameraRaw?.hasActiveRedaction == true, "the file still embeds the blur")
+        let reconciled = EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: sidecar, embedded: reopenedEmbedded.cameraRaw)
+        #expect(reconciled?.hasActiveRedaction == false)
+        var xmpRecord = IPTCMetadata()
+        xmpRecord.cameraRaw = sidecar
+        for source in [MetadataReferenceSource.embedded, .xmp] {
+            let editor = EffectiveMetadataResolver.physicalMetadata(
+                for: source, embedded: reopenedEmbedded, xmp: xmpRecord, isRaw: false)?.cameraRaw
+            #expect(editor?.hasActiveRedaction == false, "editor buffer via \(source)")
+        }
+        #expect(ExportCameraRawSourcePolicy.persisted(
+            imageURL: jpeg, sidecar: sidecar, embedded: reopenedEmbedded.cameraRaw)?.hasActiveRedaction == false)
+
+        // Export resolution and Save JPEG agree with the editor and aren't refused.
+        var map = [jpeg: reopenedEmbedded]
+        let live = buffer
+        try await EditExportPipeline.resolveCameraRaw(into: &map, urls: [jpeg], inMemory: { _ in live },
+                                                      liveDevelopImageURL: jpeg)
+        #expect(map[jpeg]?.cameraRaw?.hasActiveRedaction == false)
+        let output = dir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let rendered = try await EditExportPipeline.renderItem(
+            sourceURL: jpeg, cameraRaw: buffer, kind: .jpeg, outputFolder: output,
+            folderURL: dir, writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker())
+        #expect(FileManager.default.fileExists(atPath: rendered.path))
+    }
+
+    @Test("An unreviewed sidecar still gains the embedded redactions; the result is marked reviewed and round-trips")
+    func unreviewedSidecarUnionAndMarkerRoundTrip() throws {
+        var embedded = CameraRawSettings()
+        embedded.localAdjustments = [faceMask()]
+        var legacySidecar = CameraRawSettings()
+        legacySidecar.exposure2012 = 0.3
+        let reconciled = try #require(EffectiveMetadataResolver.reconciledDevelopSettings(
+            sidecar: legacySidecar, embedded: embedded))
+        #expect(reconciled.hasActiveRedaction)
+        #expect(reconciled.embeddedRedactionsReviewed == true)
+        // No embedded redaction: nothing to review, the sidecar is returned untouched.
+        #expect(EffectiveMetadataResolver.reconciledDevelopSettings(sidecar: legacySidecar, embedded: nil) == legacySidecar)
+
+        // A reviewed record with no other edits is not empty and survives an XMP round trip.
+        var markerOnly = CameraRawSettings()
+        markerOnly.embeddedRedactionsReviewed = true
+        #expect(!markerOnly.isEmpty)
+        var xmp = XMPData()
+        XMPDataBuilder.applyCameraRaw(markerOnly, imageAspect: nil, into: &xmp)
+        let parsed = XMPMetadataReader.parseMetadata(from: xmp, imageAspect: { nil })
+        #expect(parsed.cameraRaw?.embeddedRedactionsReviewed == true)
+    }
+
+    @MainActor
+    @Test("Develop Save waits for the pending Develop write and surfaces its failure instead of a redaction refusal")
+    func developSaveAwaitsPersistence() async throws {
+        let dir = try makeFolder("develop-save")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let jpeg = dir.appendingPathComponent("photo.jpg")
+        try imageData(.jpeg).write(to: jpeg)
+        var saved = redacted()
+        saved.embeddedRedactionsReviewed = true
+        try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: saved), for: jpeg)
+
+        struct WriteFailed: LocalizedError { var errorDescription: String? { "disk full." } }
+        await #expect(throws: DevelopSaveError.developChangesNotSaved("disk full.")) {
+            _ = try await EditExportPipeline.resolveDevelopSaveSettings(
+                for: jpeg, flush: { throw WriteFailed() }, live: { nil })
+        }
+
+        // The pending write lands during the flush: the user's disabled blur is what renders.
+        var disabled = saved
+        disabled.localAdjustments?[0].enabled = false
+        var flushed = false
+        let resolved = try await EditExportPipeline.resolveDevelopSaveSettings(
+            for: jpeg,
+            flush: {
+                try XMPSidecarService().saveSidecar(metadata: IPTCMetadata(cameraRaw: disabled), for: jpeg)
+                flushed = true
+            },
+            live: { disabled })
+        #expect(flushed)
+        #expect(resolved?.hasActiveRedaction == false)
+        try await EditExportPipeline.requireSavedRedactionsCovered(sourceURL: jpeg, cameraRaw: resolved)
+
+        #expect(DevelopSaveError.redactionMissing("photo.jpg").errorDescription?.contains("face blur") == true)
+    }
+
+    @MainActor
+    @Test("A failed-GPU placeholder preview is shown but never cached")
+    func placeholderPreviewsAreNotCached() throws {
+        let source = try #require(CIImage(data: try imageData(.png)))
+        let cgSource = try #require(CameraRawApproximation.ciContext.createCGImage(source, from: source.extent))
+        let url = URL(fileURLWithPath: "/virtual/placeholder-\(UUID().uuidString).jpg")
+        let cache = FullScreenImageCache()
+
+        let placeholder = GPURenderFaultInjection.$forceFailure.withValue(true) {
+            FullScreenImageCache.applyCameraRaw(to: cgSource, settings: redacted(), fileOrientation: 1, displayOrientation: 1)
+        }
+        #expect(RedactionPlaceholderTracking.isPlaceholder(placeholder))
+        cache.store(placeholder, for: url, orientation: 1, renderToken: "t", isEdited: true)
+        cache.storeDisplayPreview(placeholder, for: url, orientation: 1, renderToken: "t", isEdited: true)
+        #expect(cache.cachedImage(for: url, orientation: 1, renderToken: "t", isEdited: true) == nil)
+        #expect(cache.cachedDisplayPreview(for: url, orientation: 1, renderToken: "t", isEdited: true) == nil)
+
+        // A successful render of the same settings is cached as usual.
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.4
+        let real = FullScreenImageCache.applyCameraRaw(to: cgSource, settings: global, fileOrientation: 1, displayOrientation: 1)
+        #expect(!RedactionPlaceholderTracking.isPlaceholder(real))
+        cache.store(real, for: url, orientation: 1, renderToken: "g", isEdited: true)
+        #expect(cache.cachedImage(for: url, orientation: 1, renderToken: "g", isEdited: true) != nil)
+    }
+
+    @Test("An unreadable embedded block refuses a redacted render but not a never-redacted one")
+    func unreadableEmbeddedBlock() async throws {
+        let url = URL(fileURLWithPath: "/virtual/unreadable.jpg")
+        let redactedSettings = redacted()
+        let failedRead = ExportSavedRedactionAccess { _ in SavedDevelopState(embeddedReadFailed: true) }
+        await #expect(throws: SavedRedactionUnreadableError.self) {
+            try await EditExportPipeline.requireSavedRedactionsCovered(
+                sourceURL: url, cameraRaw: redactedSettings, access: failedRead)
+        }
+        let sidecarRedacts = ExportSavedRedactionAccess { _ in
+            SavedDevelopState(persisted: redactedSettings, sidecar: redactedSettings, embeddedReadFailed: true)
+        }
+        await #expect(throws: SavedRedactionUnreadableError.self) {
+            try await EditExportPipeline.requireSavedRedactionsCovered(
+                sourceURL: url, cameraRaw: nil, access: sidecarRedacts)
+        }
+        var global = CameraRawSettings()
+        global.exposure2012 = 0.4
+        try await EditExportPipeline.requireSavedRedactionsCovered(
+            sourceURL: url, cameraRaw: global, access: failedRead)
     }
 }

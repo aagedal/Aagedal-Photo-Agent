@@ -102,6 +102,7 @@ nonisolated private extension CameraRawSettings {
         copy.asShotNeutralTint = nil
         copy.sourceHasHDRHeadroom = nil
         copy.unparsedMaskCorrections = nil
+        copy.embeddedRedactionsReviewed = nil
         return copy
     }
 

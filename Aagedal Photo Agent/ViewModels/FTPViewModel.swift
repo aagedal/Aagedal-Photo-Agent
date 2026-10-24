@@ -1040,9 +1040,11 @@ final class FTPViewModel {
                 do {
                     if isRender, redactedURLs.contains(url),
                        !RedactionUnion.covers(render: metadataMap[url]?.cameraRaw, saved: [
-                           SupportedImageFormats.isRaw(url: url) ? nil : embeddedMap[url]?.cameraRaw,
+                           // The same reconciled saved copy export resolution uses.
+                           ExportCameraRawSourcePolicy.persisted(
+                               imageURL: url, sidecar: sidecarDevelop[url],
+                               embedded: embeddedMap[url]?.cameraRaw),
                            inMemoryCameraRaw(url),
-                           sidecarDevelop[url],
                        ]) {
                         // A saved Anonymizer the render inputs don't carry would publish the
                         // face un-redacted. Refuse rather than guess which copy is current.

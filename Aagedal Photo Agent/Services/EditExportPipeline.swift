@@ -251,18 +251,45 @@ actor ExportArtifactFinalizationService {
     }
 }
 
-/// Reads the develop settings a photo has saved on disk, for the fail-closed redaction check
-/// every output render runs: a RAW's (ownership-filtered) sidecar; any other file's sidecar
-/// block and its embedded block.
+/// The develop settings a photo has saved on disk, as the fail-closed redaction check sees
+/// them: `persisted` is the same reconciled copy export resolution uses
+/// (`ExportCameraRawSourcePolicy.persisted`), so the check and the render can't disagree.
+nonisolated struct SavedDevelopState: Sendable, Equatable {
+    var persisted: CameraRawSettings?
+    /// The ownership-filtered sidecar block on its own.
+    var sidecar: CameraRawSettings?
+    /// The embedded block couldn't be read (an unreadable container, not "no develop block").
+    var embeddedReadFailed = false
+
+    static let none = SavedDevelopState()
+}
+
+/// Reads `SavedDevelopState` for the fail-closed redaction check every output render runs: a
+/// RAW's (ownership-filtered) sidecar; any other file's sidecar and embedded blocks.
 nonisolated struct ExportSavedRedactionAccess: Sendable {
-    let load: @Sendable (URL) -> [CameraRawSettings?]
+    let load: @Sendable (URL) -> SavedDevelopState
+
+    /// No saved state (tests rendering a deliberate baseline).
+    static let none = ExportSavedRedactionAccess { _ in .none }
 
     static let system = ExportSavedRedactionAccess { imageURL in
         let sidecar = XMPSidecarService().loadDevelopSettings(for: imageURL)
-        if SupportedImageFormats.isRaw(url: imageURL) { return [sidecar] }
-        let embedded = (try? ImageMetadata.read(from: imageURL))
-            .flatMap { iptcMetadataFromDict($0.asMetadataDict(fileURL: imageURL)).cameraRaw }
-        return [sidecar, embedded]
+        if SupportedImageFormats.isRaw(url: imageURL) {
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: nil),
+                sidecar: sidecar)
+        }
+        do {
+            let metadata = try ImageMetadata.read(from: imageURL)
+            let embedded = iptcMetadataFromDict(metadata.asMetadataDict(fileURL: imageURL)).cameraRaw
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: embedded),
+                sidecar: sidecar)
+        } catch {
+            return SavedDevelopState(
+                persisted: ExportCameraRawSourcePolicy.persisted(imageURL: imageURL, sidecar: sidecar, embedded: nil),
+                sidecar: sidecar, embeddedReadFailed: true)
+        }
     }
 }
 
@@ -273,6 +300,33 @@ nonisolated struct RedactionMissingFromRenderError: LocalizedError, Sendable, Eq
 
     var errorDescription: String? {
         "\(filename) has a saved Anonymizer redaction that its current Develop settings don't include. It wasn't exported. Open it in Develop, check the redaction, and try again."
+    }
+}
+
+/// An output render of a redacted photo refused because its saved develop settings couldn't be
+/// read to confirm every redaction is in the render. Nothing is written.
+nonisolated struct SavedRedactionUnreadableError: LocalizedError, Sendable, Equatable {
+    let filename: String
+
+    var errorDescription: String? {
+        "\(filename): its saved develop settings couldn't be read to confirm the redactions, so it wasn't exported. Try again."
+    }
+}
+
+/// Develop's Save refused before rendering. Develop-specific wording for the shared checks.
+nonisolated enum DevelopSaveError: LocalizedError, Sendable, Equatable {
+    /// The pending Develop write failed; rendering would publish settings that aren't saved.
+    case developChangesNotSaved(String)
+    /// A redaction saved with the photo is missing from what Develop would render.
+    case redactionMissing(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .developChangesNotSaved(let reason):
+            return "Your Develop changes haven't been saved: \(reason) The photo wasn't exported."
+        case .redactionMissing(let filename):
+            return "\(filename) wasn't saved: a face blur saved with this photo isn't in the current Develop settings. Check the Anonymizer layers and save again."
+        }
     }
 }
 
@@ -691,9 +745,11 @@ enum EditExportPipeline {
         }
     }
 
-    /// Throws `RedactionMissingFromRenderError` when a redaction saved with `sourceURL`
-    /// (sidecar or embedded develop block) is missing from `cameraRaw` (`RedactionUnion.covers`).
-    /// Reads off the caller's actor.
+    /// Throws `RedactionMissingFromRenderError` when a redaction saved with `sourceURL` (its
+    /// reconciled persisted develop settings) is missing from `cameraRaw` (`RedactionUnion.covers`).
+    /// When the embedded block can't be read, a photo whose render settings or sidecar redact is
+    /// refused (`SavedRedactionUnreadableError`); one never redacted proceeds (logged), so a
+    /// transient read error doesn't block every export. Reads off the caller's actor.
     @concurrent
     nonisolated static func requireSavedRedactionsCovered(
         sourceURL: URL,
@@ -701,11 +757,54 @@ enum EditExportPipeline {
         access: ExportSavedRedactionAccess = .system
     ) async throws {
         try Task.checkCancellation()
-        let saved = access.load(sourceURL)
-        guard RedactionUnion.covers(render: cameraRaw, saved: saved) else {
-            Logger(subsystem: "com.aagedal.photo-agent", category: "ExportPipeline").error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): a saved redaction is missing from the render settings")
+        let saved = await loadSavedDevelopState(sourceURL, access: access)
+        let log = Logger(subsystem: "com.aagedal.photo-agent", category: "ExportPipeline")
+        if saved.embeddedReadFailed {
+            if cameraRaw?.hasActiveRedaction == true || saved.sidecar?.hasActiveRedaction == true {
+                log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): embedded develop settings unreadable for a redacted photo")
+                throw SavedRedactionUnreadableError(filename: sourceURL.lastPathComponent)
+            }
+            log.warning("Embedded develop settings of \(sourceURL.lastPathComponent, privacy: .public) couldn't be read; no redaction known, rendering")
+        }
+        guard RedactionUnion.covers(render: cameraRaw, saved: [saved.persisted]) else {
+            log.error("Refused render of \(sourceURL.lastPathComponent, privacy: .public): a saved redaction is missing from the render settings")
             throw RedactionMissingFromRenderError(filename: sourceURL.lastPathComponent)
         }
+    }
+
+    /// The photo's saved develop state, read off the caller's actor.
+    @concurrent
+    nonisolated static func loadSavedDevelopState(
+        _ sourceURL: URL,
+        access: ExportSavedRedactionAccess = .system
+    ) async -> SavedDevelopState {
+        access.load(sourceURL)
+    }
+
+    /// Develop's Save: the settings to render for the photo open in Develop. Awaits every
+    /// accepted Primary Develop write first (a failed write surfaces as
+    /// `DevelopSaveError.developChangesNotSaved`, never as a redaction refusal), then resolves
+    /// the live copy against what is now on disk with the live copy authoritative
+    /// (`ExportCameraRawSourcePolicy`, which still adds any saved redaction the live copy lacks).
+    @MainActor
+    static func resolveDevelopSaveSettings(
+        for imageURL: URL,
+        flush: @MainActor () async throws -> Void = { try await DevelopPrimaryLifecycleCoordinator.shared.flush() },
+        live: @MainActor () -> CameraRawSettings?,
+        access: ExportSavedRedactionAccess = .system
+    ) async throws -> CameraRawSettings? {
+        do {
+            try await flush()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DevelopSaveError.developChangesNotSaved(error.localizedDescription)
+        }
+        // Read after the flush: capture may have finished an in-progress adjustment.
+        let current = live()
+        let saved = await loadSavedDevelopState(imageURL, access: access)
+        return ExportCameraRawSourcePolicy.resolve(
+            live: current, persisted: saved.persisted, liveIsAuthoritative: true)
     }
 
     /// Library asset IDs referenced by enabled watermark layers whose PNG isn't readable at the

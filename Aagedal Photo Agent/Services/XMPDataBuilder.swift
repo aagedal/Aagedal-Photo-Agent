@@ -527,6 +527,11 @@ enum XMPDataBuilder {
                         layerOrder: settings.layerOrder,
                         preserved: settings.unparsedMaskCorrections ?? [], into: &xmp)
         applyAnonymizer(settings.anonymizer, into: &xmp)
+        if settings.embeddedRedactionsReviewed == true {
+            xmp.setValue(.simple(formatBool(true)), namespace: aaphotoNamespace, property: "EmbeddedRedactionsReviewed")
+        } else {
+            xmp.removeValue(namespace: aaphotoNamespace, property: "EmbeddedRedactionsReviewed")
+        }
     }
 
     /// Clear the develop block — the same fixed field list the old NSXML `removeCameraRawSettings`
@@ -553,6 +558,7 @@ enum XMPDataBuilder {
         xmp.removeValue(namespace: aaphotoNamespace, property: "WatermarkLayers")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerAmount")
         xmp.removeValue(namespace: aaphotoNamespace, property: "AnonymizerBlackOut")
+        xmp.removeValue(namespace: aaphotoNamespace, property: "EmbeddedRedactionsReviewed")
         xmp.removeValue(namespace: aaphotoNamespace, property: "GlobalDensity")
         xmp.removeValue(namespace: aaphotoNamespace, property: "FilmGrain")
         xmp.removeValue(namespace: aaphotoNamespace, property: "FilmGrainCoarseness")

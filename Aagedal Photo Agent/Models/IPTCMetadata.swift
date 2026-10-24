@@ -1070,6 +1070,14 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
     var asShotNeutralTemperature: Double?
     var asShotNeutralTint: Double?
 
+    /// True once this develop record was built from a state that already included the file's
+    /// embedded Anonymizer redactions (see `EffectiveMetadataResolver.reconciledDevelopSettings`).
+    /// A sidecar block carrying it is authoritative for redactions: a blur the user disabled or
+    /// deleted in it stays off, instead of being re-added from the embedded block. Persisted
+    /// app-private as `aaphoto:EmbeddedRedactionsReviewed`; per-image, excluded from isEmpty,
+    /// merged() and paste/template operations.
+    var embeddedRedactionsReviewed: Bool?
+
     /// True when the source pixels are a scene-referred RAW decode with highlight data
     /// above SDR white (RAW files always decode with full EDR headroom). Tells the tone
     /// pipeline to apply the SDR output tonemap when hdrEditMode is off, so super-white
@@ -1116,6 +1124,9 @@ nonisolated struct CameraRawSettings: Codable, Sendable, Equatable {
             && (anonymizer?.isEmpty ?? true)
             && (filmEmulation?.isEmpty ?? true)
             && (unparsedMaskCorrections?.isEmpty ?? true)
+            // A reviewed record with nothing else still overrides the embedded block (the
+            // user removed its last edit, e.g. a blur), so it is not empty.
+            && embeddedRedactionsReviewed != true
     }
 
     /// True when the settings contain at least one edit the user can see. Unlike

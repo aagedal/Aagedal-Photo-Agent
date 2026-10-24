@@ -789,7 +789,7 @@ nonisolated final class SwiftExifWriteEngine: MetadataWriteEngine, MetadataField
     nonisolated static func removeDevelopRecord(from metadata: inout ImageMetadata) {
         metadata.xmp?.removeAll(namespace: crsNamespace)
         for property in ["GlobalLayerIndex", "LayerOrder", "WatermarkLayers", "AnonymizerAmount",
-                         "AnonymizerBlackOut", "GlobalDensity", "FilmGrain", "FilmGrainCoarseness",
+                         "AnonymizerBlackOut", "EmbeddedRedactionsReviewed", "GlobalDensity", "FilmGrain", "FilmGrainCoarseness",
                          "FilmHalation", "FilmBloom", "FilmVignette", "FilmEdgeBlur"] {
             metadata.xmp?.removeValue(namespace: aaphotoNamespace, property: property)
         }
