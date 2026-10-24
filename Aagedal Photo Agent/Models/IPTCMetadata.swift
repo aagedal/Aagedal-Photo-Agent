@@ -607,6 +607,58 @@ nonisolated struct WatermarkGeometry: Codable, Sendable, Equatable {
         return (minX, maxX, minY, maxY)
     }
 
+    /// Valid size range per unit — shared by the edit-view slider and the library's
+    /// default-placement field so a converted or typed value never leaves the slider's range.
+    static func sizeRange(for unit: WatermarkSizeUnit) -> ClosedRange<Double> {
+        switch unit {
+        case .percent: return 1...100
+        case .pixel: return 8...4000
+        }
+    }
+
+    /// Valid margin range per unit (see `sizeRange(for:)`).
+    static func marginRange(for unit: WatermarkMarginUnit) -> ClosedRange<Double> {
+        switch unit {
+        case .percent: return 0...45
+        case .pixel: return 0...2000
+        }
+    }
+
+    /// Stand-in frame (a 24 MP 3:2 image) for converting units where no real image exists,
+    /// i.e. a library asset's default placement.
+    static let nominalReferenceImageSize = (width: 6000.0, height: 4000.0)
+
+    /// Re-expresses the size in `unit`, keeping the same rendered size against an image of
+    /// `imageWidth` × `imageHeight`, then clamps to `sizeRange(for:)`. Switching the unit used
+    /// to keep the bare number (20% → 20px), shrinking the watermark to a speck.
+    func convertingSizeUnit(to unit: WatermarkSizeUnit, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
+        guard unit != sizeUnit else { return self }
+        var result = self
+        result.sizeUnit = unit
+        let length = sizeDimension == .width ? imageWidth : imageHeight
+        if length > 0 {
+            result.sizeValue = unit == .pixel ? sizeValue / 100 * length : sizeValue / length * 100
+        }
+        let range = Self.sizeRange(for: unit)
+        result.sizeValue = min(max(result.sizeValue.rounded(), range.lowerBound), range.upperBound)
+        return result
+    }
+
+    /// Margin counterpart of `convertingSizeUnit`. A pixel margin is uniform while a percent
+    /// margin scales per axis, so the conversion is exact on the image's shorter edge.
+    func convertingMarginUnit(to unit: WatermarkMarginUnit, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
+        guard unit != marginUnit else { return self }
+        var result = self
+        result.marginUnit = unit
+        let length = min(imageWidth, imageHeight)
+        if length > 0 {
+            result.marginValue = unit == .pixel ? marginValue / 100 * length : marginValue / length * 100
+        }
+        let range = Self.marginRange(for: unit)
+        result.marginValue = min(max(result.marginValue.rounded(), range.lowerBound), range.upperBound)
+        return result
+    }
+
     /// Clamp `centerX`/`centerY` into `safeAreaRect`, returning a corrected copy.
     func clamped(assetAspect: Double, imageWidth: Double, imageHeight: Double) -> WatermarkGeometry {
         let rect = safeAreaRect(assetAspect: assetAspect, imageWidth: imageWidth, imageHeight: imageHeight)

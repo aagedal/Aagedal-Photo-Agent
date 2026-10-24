@@ -3,6 +3,7 @@ import Foundation
 import CoreImage
 import ImageIO
 import AppKit
+import Synchronization
 @testable import Aagedal_Photo_Agent
 
 /// End-to-end GPU test for watermark compositing: builds a real watermark asset + layer,
@@ -289,6 +290,106 @@ struct WatermarkRenderingTests {
         #expect(nearTop.g < 0.3, "expected red (not green) near the top — watermark may be uploaded upside down, got \(nearTop)")
         #expect(nearBottom.g > 0.7, "expected the PNG's green BOTTOM half at the bottom of the rendered watermark, got \(nearBottom)")
         #expect(nearBottom.r < 0.3, "expected green (not red) near the bottom — watermark may be uploaded upside down, got \(nearBottom)")
+    }
+
+    @Test("a deleted library asset is flagged missing for the layer card and export, and bumps the texture-cache revision")
+    func deletedAssetIsReportedMissing() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 20, red: 1, green: 0, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Doomed")
+
+        var settings = CameraRawSettings()
+        var muted = WatermarkLayer(name: "Muted", libraryAssetID: UUID())
+        muted.enabled = false
+        settings.watermarkLayers = [WatermarkLayer(name: "Live", libraryAssetID: asset.id), muted]
+
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings).isEmpty)
+        #expect(!WatermarkStore.shared.isAssetMissing(asset.id))
+
+        let revisionBefore = WatermarkStore.libraryRevision.load(ordering: .relaxed)
+        try await WatermarkStore.shared.delete(id: asset.id)
+
+        #expect(WatermarkStore.libraryRevision.load(ordering: .relaxed) > revisionBefore)
+        #expect(WatermarkStore.shared.isAssetMissing(asset.id))
+        // Only the enabled layer counts; the muted layer's (also missing) asset is ignored.
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings) == [asset.id])
+    }
+
+    @Test("missing-watermark exports surface as a batch warning, not a failure")
+    func missingWatermarkIsABatchWarning() async throws {
+        let tracker = MetadataFailureTracker()
+        await tracker.recordMissingWatermark("IMG_0001.JPG")
+        let warnings = await tracker.missingWatermarkWarnings
+        #expect(warnings == ["IMG_0001.JPG"])
+
+        let result = BatchOperationResult(
+            title: "Export", outcome: .partial, successCount: 1, totalCount: 1,
+            failures: [], copyFailureFilenames: [], overlayFailureFilenames: [],
+            missingWatermarkFilenames: warnings, sourceFolderURL: nil
+        )
+        #expect(result.hasWarnings)
+        #expect(!result.hasFailures)
+        #expect(result.summaryLine.contains("watermark image missing for 1 image"))
+    }
+}
+
+@Suite("Watermark unit conversion")
+struct WatermarkUnitConversionTests {
+    @Test("switching size units keeps the rendered size against the image")
+    func sizeConversionPreservesRenderedSize() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 20
+        let pixels = geometry.convertingSizeUnit(to: .pixel, imageWidth: 6000, imageHeight: 4000)
+        #expect(pixels.sizeUnit == .pixel)
+        #expect(pixels.sizeValue == 1200)
+        let before = geometry.renderedHalfExtentUV(assetAspect: 2, imageWidth: 6000, imageHeight: 4000)
+        let after = pixels.renderedHalfExtentUV(assetAspect: 2, imageWidth: 6000, imageHeight: 4000)
+        #expect(abs(before.halfWidthUV - after.halfWidthUV) < 1e-9)
+
+        var tall = pixels
+        tall.sizeDimension = .height
+        tall.sizeValue = 400
+        let percent = tall.convertingSizeUnit(to: .percent, imageWidth: 6000, imageHeight: 4000)
+        #expect(percent.sizeValue == 10)
+    }
+
+    @Test("converted values clamp into the slider range")
+    func conversionClamps() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 100
+        let huge = geometry.convertingSizeUnit(to: .pixel, imageWidth: 20000, imageHeight: 10000)
+        #expect(huge.sizeValue == WatermarkGeometry.sizeRange(for: .pixel).upperBound)
+
+        var tiny = WatermarkGeometry()
+        tiny.sizeUnit = .pixel
+        tiny.sizeValue = 8
+        #expect(tiny.convertingSizeUnit(to: .percent, imageWidth: 6000, imageHeight: 4000).sizeValue == 1)
+
+        var margin = WatermarkGeometry()
+        margin.marginUnit = .percent
+        margin.marginValue = 10
+        let marginPixels = margin.convertingMarginUnit(to: .pixel, imageWidth: 6000, imageHeight: 4000)
+        #expect(marginPixels.marginValue == 400) // exact on the shorter edge
+        let wide = margin.convertingMarginUnit(to: .pixel, imageWidth: 40000, imageHeight: 30000)
+        #expect(wide.marginValue == WatermarkGeometry.marginRange(for: .pixel).upperBound)
+        #expect(marginPixels.convertingMarginUnit(to: .percent, imageWidth: 6000, imageHeight: 4000).marginValue == 10)
+    }
+
+    @Test("same-unit conversion is a no-op")
+    func sameUnitIsNoOp() {
+        var geometry = WatermarkGeometry()
+        geometry.sizeValue = 33
+        #expect(geometry.convertingSizeUnit(to: geometry.sizeUnit, imageWidth: 100, imageHeight: 100) == geometry)
+        #expect(geometry.convertingMarginUnit(to: geometry.marginUnit, imageWidth: 100, imageHeight: 100) == geometry)
     }
 }
 

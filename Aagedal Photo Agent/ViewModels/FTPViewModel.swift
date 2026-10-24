@@ -871,6 +871,7 @@ final class FTPViewModel {
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let staleWarnings = await failureTracker.staleSidecarWarnings
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             guard self.ownsUpload(generation) else { return }
             if !copyFailures.isEmpty {
                 self.errorMessages.append("Metadata copy failed for \(copyFailures.count) \(copyFailures.count == 1 ? "image" : "images") — these renders were not uploaded")
@@ -880,6 +881,9 @@ final class FTPViewModel {
             }
             if !staleWarnings.isEmpty {
                 self.errorMessages.append("\(staleWarnings.count) \(staleWarnings.count == 1 ? "image" : "images") used embedded metadata instead of the .xmp sidecar (the image file was edited more recently) — check if you expected sidecar values")
+            }
+            if !watermarkWarnings.isEmpty {
+                self.errorMessages.append("\(watermarkWarnings.count) \(watermarkWarnings.count == 1 ? "image was" : "images were") uploaded without a watermark whose library image is missing (deleted or not yet synced): \(watermarkWarnings.joined(separator: ", "))")
             }
 
             guard self.ownsUpload(generation) else { return }

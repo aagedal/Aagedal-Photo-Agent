@@ -42,6 +42,19 @@ actor WebImportFilesystemService {
         try Task.checkCancellation()
     }
 
+    /// First unused `<baseName>`, `<baseName> 2`, … in `destination`, so a readable
+    /// date/account name never merges two imports into one batch folder.
+    func uniqueBatchURL(in destination: URL, baseName: String) throws -> URL {
+        var candidate = destination.appendingPathComponent(baseName, isDirectory: true)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            try Task.checkCancellation()
+            candidate = destination.appendingPathComponent("\(baseName) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
+
     func createWorkingDirectory(_ working: URL) throws {
         try check(.workingDirectory)
         try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)

@@ -188,6 +188,7 @@ nonisolated enum UserDefaultsKeys {
     // MARK: - Import Verification & Backup
     static let importVerificationMode = "importVerificationMode"
     static let importDestinationBookmark = "importDestinationBookmark"
+    static let webImportDestinationBookmark = "webImportDestinationBookmark"
     static let importBackupBookmark = "importBackupBookmark"
     static let importBackupVerifyAfterWrite = "importBackupVerifyAfterWrite"
     static let editedFolderBackupBookmark = "editedFolderBackupBookmark"

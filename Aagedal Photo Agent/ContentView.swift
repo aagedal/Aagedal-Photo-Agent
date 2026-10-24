@@ -1102,7 +1102,7 @@ struct ContentView: View {
                     openEditWorkspace()
                 }
             )
-            .cleanFeedPresenter(controller: CleanFeedController.shared, browserViewModel: browserViewModel)
+            .cleanFeedPresenter(controller: CleanFeedController.shared, panes: panes)
             .task {
                 await sidebarViewModel.loadFavorites()
                 guard !Task.isCancelled else { return }
@@ -3359,10 +3359,11 @@ struct ContentView: View {
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let staleWarnings = await failureTracker.staleSidecarWarnings
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -3377,6 +3378,7 @@ struct ContentView: View {
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
+                missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: folderURL,
                 outputURLs: signedURLs
             )
@@ -3741,6 +3743,7 @@ struct ContentView: View {
                         bannerFailureSection(label: "IPTC overlay failed", names: result.overlayFailureFilenames, folder: result.sourceFolderURL)
                         bannerPathFailureSection(label: "Private cleanup needed", paths: result.cleanupFailurePaths)
                         bannerFailureSection(label: "Used embedded metadata (.xmp sidecar stale)", names: result.staleSidecarFilenames, folder: result.sourceFolderURL)
+                        bannerFailureSection(label: "Exported without watermark (image missing)", names: result.missingWatermarkFilenames, folder: result.sourceFolderURL)
                     }
                     .padding(.top, 4)
                 } label: {
@@ -3973,10 +3976,11 @@ struct ContentView: View {
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let staleWarnings = await failureTracker.staleSidecarWarnings
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if !saveFailures.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+            } else if !saveFailures.isEmpty || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -3991,6 +3995,7 @@ struct ContentView: View {
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
+                missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: browserViewModel.currentFolderURL,
                 outputURLs: savedURLs
             )
@@ -4207,12 +4212,13 @@ struct ContentView: View {
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let staleWarnings = await failureTracker.staleSidecarWarnings
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
             } else if !archiveFailures.isEmpty || !copyFailures.isEmpty
                         || !overlayFailures.isEmpty || !cleanupFailurePaths.isEmpty
-                        || !staleWarnings.isEmpty {
+                        || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -4228,6 +4234,7 @@ struct ContentView: View {
                 overlayFailureFilenames: overlayFailures,
                 cleanupFailurePaths: cleanupFailurePaths,
                 staleSidecarFilenames: staleWarnings,
+                missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: browserViewModel.currentFolderURL,
                 outputURLs: convertedURLs
             )
@@ -4434,10 +4441,11 @@ struct ContentView: View {
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
             let staleWarnings = await failureTracker.staleSidecarWarnings
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             let outcome: BatchOperationResult.Outcome
             if Task.isCancelled {
                 outcome = .cancelled
-            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty {
+            } else if failureCount > 0 || !copyFailures.isEmpty || !overlayFailures.isEmpty || !staleWarnings.isEmpty || !watermarkWarnings.isEmpty {
                 outcome = .partial
             } else {
                 outcome = .success
@@ -4452,6 +4460,7 @@ struct ContentView: View {
                 copyFailureFilenames: copyFailures,
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
+                missingWatermarkFilenames: watermarkWarnings,
                 sourceFolderURL: folderURL,
                 outputURLs: exportedURLs
             )
