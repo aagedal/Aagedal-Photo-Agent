@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct DetectedEditor: Identifiable, Hashable {
+nonisolated struct DetectedEditor: Identifiable, Hashable, Sendable {
     let name: String
     let path: String
     var id: String { path }
@@ -1038,6 +1038,31 @@ final class SettingsViewModel {
     }
 
     var detectedEditors: [DetectedEditor] = []
+    /// False until the off-main application lookup has published `detectedEditors`. Until then
+    /// the list is empty and the editor picker still shows the saved editor by name.
+    private(set) var hasDetectedEditors = false
+    @ObservationIgnored private var editorDetectionTask: Task<Void, Never>?
+
+    /// Awaits the launch-time editor detection (tests and callers needing the final list).
+    func waitForEditorDetection() async {
+        await editorDetectionTask?.value
+    }
+
+    /// Up to nine `NSWorkspace.urlForApplication` Launch Services lookups used to run
+    /// synchronously in `init`, i.e. on the main thread before the first window appeared.
+    private func scheduleEditorDetection() {
+        editorDetectionTask = Task(priority: .utility) { @MainActor [weak self] in
+            let editors = await Self.detectEditorsOffMain()
+            guard let self else { return }
+            self.detectedEditors = editors
+            self.hasDetectedEditors = true
+        }
+    }
+
+    @concurrent
+    nonisolated private static func detectEditorsOffMain() async -> [DetectedEditor] {
+        detectEditors()
+    }
 
     init(
         c2paPersistence: any C2PASigningConfigurationPersisting = AppC2PASigningConfigurationPersistence(),
@@ -1119,7 +1144,7 @@ final class SettingsViewModel {
         self.rawArchiveSourceRootPath = RAWArchiveService.ingestRootURL.path
         self.rawArchiveRootPath = RAWArchiveService.archiveRootURL?.path ?? ""
 
-        self.detectedEditors = Self.detectEditors()
+        scheduleEditorDetection()
 
         scheduleTemplatesFolderBookmarkLoad()
 
@@ -1418,7 +1443,8 @@ final class SettingsViewModel {
         return result
     }
 
-    static func detectEditors() -> [DetectedEditor] {
+    /// Launch Services lookups; thread-safe, so callers run this off the main actor.
+    nonisolated static func detectEditors() -> [DetectedEditor] {
         let candidates: [(name: String, bundleIDs: [String])] = [
             ("Adobe Photoshop", [
                 "com.adobe.Photoshop",

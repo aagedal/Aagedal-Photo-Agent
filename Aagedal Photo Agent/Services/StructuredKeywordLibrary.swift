@@ -51,7 +51,7 @@ final class StructuredKeywordLibrary {
         localeObserver = NotificationCenter.default.addObserver(forName: NSLocale.currentLocaleDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.refreshLanguage()
+                self.refreshLanguageInBackground()
             }
         }
         startLoad()
@@ -67,9 +67,68 @@ final class StructuredKeywordLibrary {
         }
     }
 
+    /// Identifies the vocabulary + language `bundledRoots` was built for, so re-installing a
+    /// document whose language did not change does not rebuild the IPTC tree.
+    private struct BundledTreeKey: Equatable {
+        let release: String
+        let language: IPTCMediaTopicsLanguage
+    }
+    @ObservationIgnored private var bundledTreeKey: BundledTreeKey?
+    @ObservationIgnored private var bundledTreeTask: Task<Void, Never>?
+
+    /// Synchronous refresh (document installs). Rebuilds the tree only when the vocabulary or
+    /// effective language actually changed; the launch load and locale/IPTC-update paths build
+    /// it off the main actor instead.
     func refreshLanguage() {
-        bundledRoots = vocabulary?.tree(language: effectiveLanguage) ?? []
+        let language = effectiveLanguage
+        if let vocabulary {
+            let key = BundledTreeKey(release: vocabulary.release, language: language)
+            if key != bundledTreeKey {
+                bundledRoots = vocabulary.tree(language: language)
+                bundledTreeKey = key
+            }
+        } else {
+            bundledRoots = []
+            bundledTreeKey = nil
+        }
         version &+= 1
+    }
+
+    /// Locale changes: rebuild the localized IPTC tree off the main actor and publish it.
+    private func refreshLanguageInBackground() {
+        guard let vocabulary else { return refreshLanguage() }
+        let language = effectiveLanguage
+        let key = BundledTreeKey(release: vocabulary.release, language: language)
+        guard key != bundledTreeKey else { return }
+        bundledTreeTask?.cancel()
+        bundledTreeTask = Task { [weak self] in
+            let tree = await Self.makeTree(vocabulary, language: language)
+            guard let self, !Task.isCancelled,
+                  self.vocabulary?.release == key.release,
+                  self.effectiveLanguage == key.language else { return }
+            self.installBundledTree(tree, key: key)
+        }
+    }
+
+    private func installBundledTree(_ tree: [StructuredKeyword], key: BundledTreeKey) {
+        bundledRoots = tree
+        bundledTreeKey = key
+        version &+= 1
+    }
+
+    /// The bundled IPTC Media Topics JSON is ~570 KB; decoding it on the main actor (the first
+    /// touch of `StructuredKeywordService.shared` from the metadata panel) delayed launch.
+    @concurrent
+    nonisolated static func decodeVocabulary(_ text: String) async throws -> IPTCMediaTopics {
+        try JSONDecoder().decode(IPTCMediaTopics.self, from: Data(text.utf8))
+    }
+
+    @concurrent
+    nonisolated static func makeTree(
+        _ vocabulary: IPTCMediaTopics,
+        language: IPTCMediaTopicsLanguage
+    ) async -> [StructuredKeyword] {
+        vocabulary.tree(language: language)
     }
 
     nonisolated deinit {
@@ -125,22 +184,41 @@ final class StructuredKeywordLibrary {
                     }
                     if case .loaded(_, _, let text) = try await persistence.loadText(from: url, requestID: id) {
                         guard !Task.isCancelled, loadID == id else { return }
-                        vocabulary = try JSONDecoder().decode(IPTCMediaTopics.self, from: Data(text.utf8))
+                        var decoded = try await Self.decodeVocabulary(text)
+                        guard !Task.isCancelled, loadID == id else { return }
                         if !AppPaths.isTestProcess, let cache = await iptcUpdater.cached(),
-                           cache.vocabulary.release.prefix(10) >= vocabulary!.release.prefix(10) {
-                            vocabulary = cache.vocabulary
+                           cache.vocabulary.release.prefix(10) >= decoded.release.prefix(10) {
+                            decoded = cache.vocabulary
                         }
+                        guard !Task.isCancelled, loadID == id else { return }
+                        vocabulary = decoded
                     }
                 }
                 let url = try await store.resolveURL(for: .structuredLibrary)
                 let result = try await persistence.loadText(from: url, requestID: id)
                 guard !Task.isCancelled, loadID == id else { return }
                 guard store.currentURL(for: .structuredLibrary) == url else { startLoad(); return }
+                let loadedDocument: StructuredKeywordLibraryDocument
                 switch result {
-                case .loaded(_, _, let text): install(try StructuredKeywordLibraryDocument.decode(text))
-                case .missing: install(StructuredKeywordLibraryDocument())
+                case .loaded(_, _, let text): loadedDocument = try StructuredKeywordLibraryDocument.decode(text)
+                case .missing: loadedDocument = StructuredKeywordLibraryDocument()
                 case .cancelled: return
                 }
+                // Build the localized IPTC tree off the main actor before installing, so the
+                // synchronous refresh inside `install` finds it current.
+                if let vocabulary {
+                    let language = IPTCMediaTopicsLanguage.resolve(override: loadedDocument.languageOverride)
+                    let key = BundledTreeKey(release: vocabulary.release, language: language)
+                    if key != bundledTreeKey {
+                        let tree = await Self.makeTree(vocabulary, language: language)
+                        guard !Task.isCancelled, loadID == id else { return }
+                        if self.vocabulary?.release == key.release {
+                            bundledRoots = tree
+                            bundledTreeKey = key
+                        }
+                    }
+                }
+                install(loadedDocument)
                 hasReadFailure = false
                 error = nil
             } catch {
@@ -161,8 +239,15 @@ final class StructuredKeywordLibrary {
         defer { isUpdatingIPTC = false }
         do {
             if let result = try await iptcUpdater.refresh(current: current, force: force) {
+                let language = effectiveLanguage
+                let tree = await Self.makeTree(result.vocabulary, language: language)
                 vocabulary = result.vocabulary
-                refreshLanguage()
+                if effectiveLanguage == language {
+                    installBundledTree(tree, key: BundledTreeKey(
+                        release: result.vocabulary.release, language: language))
+                } else {
+                    refreshLanguage()
+                }
                 iptcUpdateMessage = current.release == result.vocabulary.release
                     ? "IPTC Media Topics is up to date."
                     : "Updated IPTC Media Topics to \(iptcRelease)."

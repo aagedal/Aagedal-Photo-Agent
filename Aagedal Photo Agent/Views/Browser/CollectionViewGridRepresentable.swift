@@ -28,4 +28,10 @@ struct CollectionViewGridRepresentable: NSViewControllerRepresentable {
         nsViewController.onImproveDescriptions = onImproveDescriptions
         nsViewController.onExtractVideoStills = onExtractVideoStills
     }
+
+    /// Without this the replaced grid kept observing (and consuming the shared reveal
+    /// request) until ARC released it; stop its work as soon as SwiftUI removes it.
+    static func dismantleNSViewController(_ nsViewController: CollectionViewGridController, coordinator: ()) {
+        nsViewController.tearDown()
+    }
 }

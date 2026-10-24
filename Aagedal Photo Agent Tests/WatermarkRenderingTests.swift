@@ -120,6 +120,56 @@ struct WatermarkRenderingTests {
         return mutableData as Data
     }
 
+    @Test("the process-lifetime export engine releases mask, scratch and watermark textures after each render")
+    func offscreenRenderReleasesTransientTextures() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 32, red: 0, green: 1, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Green Square")
+
+        var geometry = WatermarkGeometry()
+        geometry.centerX = 0.5
+        geometry.centerY = 0.5
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 25
+        var layer = WatermarkLayer(name: "Release", libraryAssetID: asset.id, geometry: geometry)
+        layer.opacity = 1
+
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [layer]
+        settings.localAdjustments = [MaskAdjustment(
+            name: "Brush",
+            brush: BrushMaskGeometry(strokes: [BrushStroke(
+                dabs: (0..<20).map { BrushDab(x: Double($0) / 20, y: 0.5, flow: 1, hardness: 1) },
+                radius: 0.05, density: 1, erase: false
+            )]),
+            exposure: 1
+        )]
+
+        let source = CIImage(color: CIColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 160, height: 120))
+        let result = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+
+        // The returned image only references the output texture: every per-render texture of
+        // the shared engine is already gone, yet the result still renders the watermark.
+        #expect(MetalEditPipeline.offscreenRetainedTransientTextureCountForTesting() == 0)
+        let center = sampleMidRow(result, nx: 0.5)
+        #expect(center.g > 0.9, "watermark must still be in the returned image, got \(center)")
+
+        // A second render with the same settings rebuilds everything from scratch, identically.
+        let again = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        #expect(MetalEditPipeline.offscreenRetainedTransientTextureCountForTesting() == 0)
+        let againCenter = sampleMidRow(again, nx: 0.5)
+        #expect(abs(againCenter.g - center.g) < 0.001)
+        #expect(abs(againCenter.r - center.r) < 0.001)
+    }
+
     @Test("a fully-opaque watermark layer composites its own color inside its footprint and leaves the rest of the image untouched")
     func watermarkCompositesAtItsFootprint() async throws {
         let dir = makeTempDir()

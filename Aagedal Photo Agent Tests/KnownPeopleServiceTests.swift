@@ -1526,6 +1526,96 @@ struct KnownPeopleServiceTests {
         dir.appendingPathComponent("people/\(id.uuidString).json")
     }
 
+    @Test("Storage reloads assemble the database off the main actor and publish when ready")
+    func storageReloadAssemblesInBackground() async throws {
+        let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previous = AppDefaults.store.object(forKey: key)
+        let directory = makeTempDir()
+        activate(directory)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: key)
+        defer {
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
+            teardown(directory)
+        }
+        await KnownPeopleService.shared.waitForBackgroundDatabaseReload()
+
+        let person = KnownPerson(name: "Synced peer", embeddings: [embedding(5)])
+        try writePersonFile(person, into: directory)
+        let service = KnownPeopleService()
+        let counter = KnownPeopleNotificationCounter()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .knownPeopleDatabaseDidChange, object: nil, queue: nil
+        ) { _ in counter.increment() }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        let afterReloadCall = counter.value
+        await service.waitForBackgroundDatabaseReload()
+        // A second change notification announces the background snapshot.
+        #expect(counter.value > afterReloadCall)
+
+        // The snapshot was installed by the background read: the file can disappear behind
+        // the cache without changing what synchronous callers see.
+        try FileManager.default.removeItem(at: personFileURL(person.id, in: directory))
+        #expect(service.person(byID: person.id)?.name == "Synced peer")
+    }
+
+    @Test("A synchronous caller during the background read wins and the stale result is dropped")
+    func synchronousLoadSupersedesBackgroundSnapshot() async throws {
+        let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previous = AppDefaults.store.object(forKey: key)
+        let directory = makeTempDir()
+        activate(directory)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: key)
+        defer {
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
+            teardown(directory)
+        }
+        let service = KnownPeopleService()
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        // Synchronous callers right after a storage change still get correct data.
+        let added = try service.addPerson(name: "Local add", embeddings: [])
+        await service.waitForBackgroundDatabaseReload()
+        #expect(service.person(byID: added.id)?.name == "Local add")
+        #expect(service.getAllPeople().map(\.id) == [added.id])
+    }
+
+    @Test("The off-main reader refuses stores that need repair writes")
+    func snapshotReaderDefersRepairs() throws {
+        let directory = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let person = KnownPerson(name: "Clean", embeddings: [embedding(6)])
+        try writePersonFile(person, into: directory)
+        guard case .clean(let database) = KnownPeopleDatabaseSnapshotReader.readSynchronously(
+            root: directory, hasConflicts: { _ in false }
+        ) else {
+            Issue.record("A clean store must be assembled off-main")
+            return
+        }
+        #expect(database.people.map(\.id) == [person.id])
+
+        // iCloud conflict versions are merged (written) by the main-actor path.
+        guard case .needsRepair = KnownPeopleDatabaseSnapshotReader.readSynchronously(
+            root: directory, hasConflicts: { _ in true }
+        ) else { Issue.record("Conflicts need the repair path"); return }
+
+        // A tombstoned stray is removed by the main-actor path.
+        try encode(KnownPersonTombstone(id: person.id)).write(to: tombstoneURL(person.id, in: directory))
+        guard case .needsRepair = KnownPeopleDatabaseSnapshotReader.readSynchronously(
+            root: directory, hasConflicts: { _ in false }
+        ) else { Issue.record("Tombstoned strays need the repair path"); return }
+        try FileManager.default.removeItem(at: tombstoneURL(person.id, in: directory))
+
+        // Corrupt records are backed up by the main-actor path.
+        let corrupt = directory.appendingPathComponent("people/\(UUID().uuidString).json")
+        try Data("{".utf8).write(to: corrupt)
+        guard case .needsRepair = KnownPeopleDatabaseSnapshotReader.readSynchronously(
+            root: directory, hasConflicts: { _ in false }
+        ) else { Issue.record("Corrupt records need the repair path"); return }
+    }
+
     private func tombstoneURL(_ id: UUID, in dir: URL) -> URL {
         dir.appendingPathComponent("people/\(id.uuidString).deleted")
     }
@@ -2676,8 +2766,10 @@ struct KnownPeopleServiceTests {
         let legacyURL = dir.appendingPathComponent("database.json")
         try encode(legacy).write(to: legacyURL, options: .atomic)
 
-        // Trigger migration via a fresh load.
+        // Trigger migration via a fresh load. A storage reload no longer reads synchronously;
+        // repairs run on the first synchronous access.
         KnownPeopleService.shared.reloadAfterStorageChange()
+        _ = KnownPeopleService.shared.loadDatabase()
 
         #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
         #expect(FileManager.default.fileExists(atPath: personFileURL(alice.id, in: dir).path))
@@ -2965,7 +3057,9 @@ struct KnownPeopleServiceTests {
         try encode(expired).write(to: tombstoneURL(oldID, in: dir), options: .atomic)
         try encode(fresh).write(to: tombstoneURL(freshID, in: dir), options: .atomic)
 
+        // GC is a repair: it runs on the first synchronous load after a storage reload.
         KnownPeopleService.shared.reloadAfterStorageChange()
+        _ = KnownPeopleService.shared.loadDatabase()
 
         #expect(!FileManager.default.fileExists(atPath: tombstoneURL(oldID, in: dir).path))
         #expect(FileManager.default.fileExists(atPath: tombstoneURL(freshID, in: dir).path))
@@ -3838,4 +3932,11 @@ private nonisolated final class IdentityChangeRecorder: @unchecked Sendable {
     private var stored: [KnownPeopleIdentityChange] = []
     var values: [KnownPeopleIdentityChange] { lock.withLock { stored } }
     func append(_ change: KnownPeopleIdentityChange) { lock.withLock { stored.append(change) } }
+}
+
+private nonisolated final class KnownPeopleNotificationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() { lock.withLock { count += 1 } }
 }

@@ -468,6 +468,13 @@ final class FullScreenImageCache: @unchecked Sendable {
             .filter { $0 >= 0 && $0 < imageCount }
     }
 
+    /// Footprint estimate for one screen-fitted image. `screenMaxPx` bounds the long edge; photos
+    /// are typically 3:2, so estimating a square overstated each image by 50% and pushed 5K/6K
+    /// displays into the coordinator's halved/quartered-budget tiers.
+    nonisolated static func estimatedScreenImageSize(screenMaxPx: CGFloat) -> CGSize {
+        CGSize(width: screenMaxPx, height: (screenMaxPx * 2 / 3).rounded(.up))
+    }
+
     /// Prefetch adjacent images based on navigation direction.
     /// Loads 4 images ahead in travel direction and 2 behind, at medium priority.
     nonisolated func startPrefetch(currentIndex: Int, images: [URL], direction: NavigationDirection, screenMaxPx: CGFloat, isEdited: Bool = false, settingsForURL: (@Sendable (URL) -> CameraRawSettings?)? = nil, orientationForURL: (@Sendable (URL) -> Int)? = nil) {
@@ -475,7 +482,7 @@ final class FullScreenImageCache: @unchecked Sendable {
         // race the editor's concurrent NSXML sidecar write — see `_prefetchSuppressed`.
         if isPrefetchSuppressed { return }
 
-        let sourceSize = CGSize(width: screenMaxPx, height: screenMaxPx)
+        let sourceSize = Self.estimatedScreenImageSize(screenMaxPx: screenMaxPx)
         applyPrimaryLimit(memoryCoordinator.adaptiveLimit(
             for: .fullScreenPrimary,
             sourcePixelSize: sourceSize,

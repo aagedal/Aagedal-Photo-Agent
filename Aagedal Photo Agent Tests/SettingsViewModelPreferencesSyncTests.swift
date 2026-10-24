@@ -20,6 +20,18 @@ struct SettingsViewModelPreferencesSyncTests {
         UserDefaultsKeys.hiddenDevelopSliders,
     ]
 
+    @Test("External editors are detected off the main actor after init, not inside it")
+    func editorDetectionIsDeferred() async {
+        let viewModel = SettingsViewModel()
+        // init returns before any Launch Services lookup has been published.
+        #expect(!viewModel.hasDetectedEditors)
+        #expect(viewModel.detectedEditors.isEmpty)
+
+        await viewModel.waitForEditorDetection()
+        #expect(viewModel.hasDetectedEditors)
+        #expect(viewModel.detectedEditors == SettingsViewModel.detectEditors())
+    }
+
     @Test("Re-reading synced values updates the model without writing preferences back")
     func remoteChangeRefreshesWithoutWriteBack() {
         let store = AppDefaults.store
