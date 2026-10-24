@@ -355,9 +355,15 @@ nonisolated enum FFmpegWhisperHashObserver {
 ///   (and the job fails if its bytes no longer match the pin) exactly as before.
 /// The threat model is unchanged: a same-user process able to write into our temporary
 /// directory could equally have modified a per-job snapshot between verification and launch.
-/// Snapshots are removed on eviction (LRU, idle timeout), at app termination, and stale
-/// directories from crashed sessions are swept when a new one is created.
-nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
+/// Snapshots are removed on eviction (LRU, idle timeout, checked by a timer while any exist), at
+/// app termination, and directories left by crashed sessions are swept once at launch and when
+/// a new session directory is created.
+///
+/// Concurrency: jobs may run concurrently (each runner has its own queue). A snapshot file is
+/// never unlinked while a job holds a lease on it (evicted or replaced snapshots are retired and
+/// unlinked when their last lease ends), and concurrent misses for the same artifact are
+/// deduplicated: one job verifies while the others wait for its snapshot.
+nonisolated final class FFmpegWhisperVerifiedSnapshotCache: @unchecked Sendable {
     static let shared: FFmpegWhisperVerifiedSnapshotCache = {
         let cache = FFmpegWhisperVerifiedSnapshotCache()
         // AppKit's NSApplicationWillTerminateNotification, by name so this service stays AppKit-free.
@@ -401,22 +407,40 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         var lastUse: ContinuousClock.Instant
     }
 
-    private struct State {
-        var directory: String?
-        var entries: [Key: Entry] = [:]
+    private enum Claim {
+        /// A verified snapshot, leased to the caller.
+        case leased(Entry)
+        /// The caller must create the snapshot; other jobs wait for it.
+        case build
     }
 
     private static let directoryPrefix = "photo-whisper-snapshots-"
-    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    // Guarded by `condition`.
+    private let condition = NSCondition()
+    private var directory: String?
+    private var entries: [Key: Entry] = [:]
+    private var building: Set<Key> = []
+    private var leases: [String: Int] = [:]
+    private var retired: Set<String> = []
+    private var idleSweepScheduled = false
+
     private let capacity: Int
     private let idleLifetime: Duration
+    /// Per-job clone primitive (a test seam for the copy fallback).
+    private let cloneFile: @Sendable (Int32, String) -> Int32
 
     /// Two entries cover the steady state (one executable, one model); switching models evicts
     /// the older snapshot, bounding temporary disk use when the model cannot be cloned.
-    init(capacity: Int = 2, idleLifetime: Duration = .seconds(30 * 60)) {
+    init(capacity: Int = 2, idleLifetime: Duration = .seconds(30 * 60),
+         cloneFile: @escaping @Sendable (Int32, String) -> Int32 = { fclonefileat($0, AT_FDCWD, $1, 0) }) {
+        self.cloneFile = cloneFile
         self.capacity = max(1, capacity)
         self.idleLifetime = idleLifetime
     }
+
+    /// Number of live snapshots (tests).
+    var snapshotCount: Int { condition.withLock { entries.count } }
 
     /// Places a private, read-only file with exactly `input`'s pinned bytes at `destination`
     /// (which must not exist). Reuses a verified snapshot when both it and the source are
@@ -427,9 +451,103 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         let key = Key(path: input.url.path, byteCount: input.byteCount, sha256: input.sha256,
                       allowCloneFromSource: allowCloneFromSource)
         let sourceIdentity = FileIdentity(source.info)
-        if let entry = reusableEntry(for: key, source: sourceIdentity) {
-            if cloneSnapshot(entry, to: destination) { return }
-            discard(key, ifSnapshotAt: entry.snapshotPath)
+        // A leased snapshot that fails its identity check (replaced or tampered) is discarded and
+        // the claim retried once; after that this job verifies its own snapshot.
+        for _ in 0..<2 {
+            switch try claim(key, source: sourceIdentity) {
+            case .leased(let entry):
+                defer { releaseLease(entry.snapshotPath) }
+                if cloneSnapshot(entry, to: destination) { return }
+                discard(key, ifSnapshotAt: entry.snapshotPath)
+            case .build:
+                try build(key, input: input, source: source, sourceIdentity: sourceIdentity,
+                          allowCloneFromSource: allowCloneFromSource, to: destination)
+                return
+            }
+        }
+        guard case .build = try claim(key, source: sourceIdentity, forceBuild: true) else {
+            throw FFmpegWhisperJobError.unsafeInput
+        }
+        try build(key, input: input, source: source, sourceIdentity: sourceIdentity,
+                  allowCloneFromSource: allowCloneFromSource, to: destination)
+    }
+
+    /// Deletes every snapshot that no job is using, and the session directory once it is empty.
+    func removeAll() {
+        let (paths, emptyDirectory) = condition.withLock { () -> ([String], String?) in
+            var paths: [String] = []
+            for entry in entries.values {
+                if leases[entry.snapshotPath, default: 0] > 0 { retired.insert(entry.snapshotPath) }
+                else { paths.append(entry.snapshotPath) }
+            }
+            entries.removeAll()
+            guard leases.isEmpty, building.isEmpty else { return (paths, nil) }
+            let emptyDirectory = directory
+            directory = nil
+            return (paths, emptyDirectory)
+        }
+        for path in paths { _ = unlink(path) }
+        if let emptyDirectory { try? FileManager.default.removeItem(atPath: emptyDirectory) }
+    }
+
+    /// Removes snapshots unused for longer than the idle lifetime (also run by the timer).
+    func evictIdleSnapshots() {
+        let expired = condition.withLock { () -> [String] in expireIdleLocked(now: .now) }
+        for path in expired { _ = unlink(path) }
+    }
+
+    /// Sweeps snapshot directories left by crashed app sessions, off the main actor. Called once
+    /// at launch; never touches the real temporary directory from a test process.
+    static func sweepStaleSessionsAtLaunch() {
+        guard !AppPaths.isTestProcess else { return }
+        Task.detached(priority: .utility) {
+            guard let root = realpath(FileManager.default.temporaryDirectory.path, nil) else { return }
+            let rootPath = String(cString: root)
+            free(root)
+            FFmpegWhisperVerifiedSnapshotCache.sweepStaleDirectories(in: rootPath)
+        }
+    }
+
+    // MARK: - Claims and leases
+
+    private func claim(_ key: Key, source: FileIdentity, forceBuild: Bool = false) throws -> Claim {
+        var unlinkPaths: [String] = []
+        defer { for path in unlinkPaths { _ = unlink(path) } }
+        condition.lock()
+        defer { condition.unlock() }
+        while true {
+            unlinkPaths += expireIdleLocked(now: .now)
+            if !forceBuild, var entry = entries[key] {
+                if entry.source == source {
+                    entry.lastUse = .now
+                    entries[key] = entry
+                    leases[entry.snapshotPath, default: 0] += 1
+                    return .leased(entry)
+                }
+                // The source changed: its snapshot no longer describes the current file.
+                entries[key] = nil
+                unlinkPaths += retireLocked([entry.snapshotPath])
+            }
+            if !building.contains(key) {
+                building.insert(key)
+                return .build
+            }
+            // Another job is verifying this artifact; wait for its snapshot.
+            if Task.isCancelled { throw CancellationError() }
+            _ = condition.wait(until: Date().addingTimeInterval(0.1))
+        }
+    }
+
+    private func build(_ key: Key, input: FFmpegWhisperJobInput,
+                       source: (descriptor: Int32, info: stat), sourceIdentity: FileIdentity,
+                       allowCloneFromSource: Bool, to destination: URL) throws {
+        var leasedPath: String?
+        defer {
+            if let leasedPath { releaseLease(leasedPath) }
+            condition.withLock {
+                building.remove(key)
+                condition.broadcast()
+            }
         }
         try Task.checkCancellation()
         let directory = try snapshotDirectory()
@@ -445,56 +563,104 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         }
         let entry = Entry(snapshotPath: path, source: sourceIdentity, snapshot: FileIdentity(verified),
                           lastUse: .now)
-        store(entry, for: key)
+        store(entry, for: key)   // also leases it to this job
+        leasedPath = path
         if cloneSnapshot(entry, to: destination) { return }
-        // Cloning inside one temporary volume should not fail; if it does, fall back to a
-        // per-job verified copy from the snapshot just made.
-        discard(key, ifSnapshotAt: path)
-        let snapshotInput = FFmpegWhisperJobInput(url: URL(fileURLWithPath: path),
-                                                  byteCount: input.byteCount, sha256: input.sha256)
+        // Cloning inside one temporary volume should not fail; if it does, make a per-job
+        // verified copy from the snapshot while this job still holds its lease, then drop it.
+        defer { discard(key, ifSnapshotAt: path) }
         _ = unlink(destination.path)
         let fallback = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fallback >= 0 else { throw FFmpegWhisperJobError.unsafeInput }
         defer { close(fallback) }
         var info = stat()
-        guard fstat(fallback, &info) == 0 else { throw FFmpegWhisperJobError.unsafeInput }
+        guard fstat(fallback, &info) == 0, FileIdentity(info) == entry.snapshot else {
+            throw FFmpegWhisperJobError.unsafeInput
+        }
+        let snapshotInput = FFmpegWhisperJobInput(url: URL(fileURLWithPath: path),
+                                                  byteCount: input.byteCount, sha256: input.sha256)
         _ = try FFmpegWhisperJobRunner.snapshot(source: fallback, before: info, snapshotInput,
                                                 to: destination, allowClone: false)
     }
 
-    /// Deletes every snapshot and the session directory.
-    func removeAll() {
-        let (paths, directory) = state.withLock { (state: inout State) -> ([String], String?) in
-            let paths = state.entries.values.map(\.snapshotPath)
-            let directory = state.directory
-            state.entries.removeAll()
-            state.directory = nil
-            return (paths, directory)
+    private func releaseLease(_ path: String) {
+        let unlinkNow = condition.withLock { () -> Bool in
+            let remaining = leases[path, default: 1] - 1
+            leases[path] = remaining > 0 ? remaining : nil
+            return remaining <= 0 && retired.remove(path) != nil
         }
-        for path in paths { _ = unlink(path) }
-        if let directory { try? FileManager.default.removeItem(atPath: directory) }
+        if unlinkNow { _ = unlink(path) }
     }
 
-    private func reusableEntry(for key: Key, source: FileIdentity) -> Entry? {
-        let now = ContinuousClock.now
-        let (entry, expired) = state.withLock { (state: inout State) -> (Entry?, [String]) in
-            var expired: [String] = []
-            for (otherKey, other) in state.entries where now - other.lastUse > idleLifetime {
-                state.entries[otherKey] = nil
-                expired.append(other.snapshotPath)
-            }
-            guard var entry = state.entries[key] else { return (nil, expired) }
-            guard entry.source == source else {
-                state.entries[key] = nil
-                return (nil, expired + [entry.snapshotPath])
-            }
-            entry.lastUse = now
-            state.entries[key] = entry
-            return (entry, expired)
+    /// Paths with active leases are unlinked by their last `releaseLease`; returns the rest.
+    private func retireLocked(_ paths: [String]) -> [String] {
+        var unlinkNow: [String] = []
+        for path in paths {
+            if leases[path, default: 0] > 0 { retired.insert(path) } else { unlinkNow.append(path) }
         }
-        for path in expired { _ = unlink(path) }
-        return entry
+        return unlinkNow
     }
+
+    private func expireIdleLocked(now: ContinuousClock.Instant) -> [String] {
+        var expired: [String] = []
+        for (key, entry) in entries where now - entry.lastUse > idleLifetime
+            && leases[entry.snapshotPath, default: 0] == 0 {
+            entries[key] = nil
+            expired.append(entry.snapshotPath)
+        }
+        return retireLocked(expired)
+    }
+
+    private func store(_ entry: Entry, for key: Key) {
+        let evicted = condition.withLock { () -> [String] in
+            var evicted: [String] = []
+            if let previous = entries[key] { evicted.append(previous.snapshotPath) }
+            entries[key] = entry
+            leases[entry.snapshotPath, default: 0] += 1
+            while entries.count > capacity,
+                  let oldest = entries.filter({ $0.key != key })
+                    .min(by: { $0.value.lastUse < $1.value.lastUse }) {
+                entries[oldest.key] = nil
+                evicted.append(oldest.value.snapshotPath)
+            }
+            return retireLocked(evicted)
+        }
+        for path in evicted { _ = unlink(path) }
+        scheduleIdleSweep()
+    }
+
+    private func discard(_ key: Key, ifSnapshotAt path: String) {
+        let unlinkNow = condition.withLock { () -> [String] in
+            guard entries[key]?.snapshotPath == path else { return [] }
+            entries[key] = nil
+            return retireLocked([path])
+        }
+        for path in unlinkNow { _ = unlink(path) }
+    }
+
+    /// While snapshots exist, evict idle ones periodically so a multi-GB copy of a model on
+    /// another volume does not linger in the temporary directory until quit.
+    private func scheduleIdleSweep() {
+        let shouldSchedule = condition.withLock { () -> Bool in
+            guard !idleSweepScheduled, !entries.isEmpty else { return false }
+            idleSweepScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+        let interval = max(0.05, min(300, Double(idleLifetime.components.seconds)
+            + Double(idleLifetime.components.attoseconds) / 1e18) / 2)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + interval) { [weak self] in
+            guard let self else { return }
+            self.evictIdleSnapshots()
+            let remaining = self.condition.withLock { () -> Bool in
+                self.idleSweepScheduled = false
+                return !self.entries.isEmpty
+            }
+            if remaining { self.scheduleIdleSweep() }
+        }
+    }
+
+    // MARK: - Files
 
     /// APFS-clones the verified snapshot to `destination`, proving with the snapshot's stat
     /// identity before and after the clone that the cloned bytes are the verified ones.
@@ -505,7 +671,7 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         var before = stat()
         guard fstat(descriptor, &before) == 0, FileIdentity(before) == entry.snapshot,
               before.st_mode & S_IFMT == S_IFREG, before.st_nlink == 1 else { return false }
-        guard fclonefileat(descriptor, AT_FDCWD, destination.path, 0) == 0 else { return false }
+        guard cloneFile(descriptor, destination.path) == 0 else { return false }
         var after = stat()
         let clone = open(destination.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         var cloneInfo = stat()
@@ -521,40 +687,16 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         return true
     }
 
-    private func store(_ entry: Entry, for key: Key) {
-        let evicted = state.withLock { (state: inout State) -> [String] in
-            var evicted: [String] = []
-            if let previous = state.entries[key] { evicted.append(previous.snapshotPath) }
-            state.entries[key] = entry
-            while state.entries.count > capacity,
-                  let oldest = state.entries.min(by: { $0.value.lastUse < $1.value.lastUse }) {
-                state.entries[oldest.key] = nil
-                evicted.append(oldest.value.snapshotPath)
-            }
-            return evicted
-        }
-        for path in evicted where path != entry.snapshotPath { _ = unlink(path) }
-    }
-
-    private func discard(_ key: Key, ifSnapshotAt path: String) {
-        let removed = state.withLock { (state: inout State) -> Bool in
-            guard state.entries[key]?.snapshotPath == path else { return false }
-            state.entries[key] = nil
-            return true
-        }
-        if removed { _ = unlink(path) }
-    }
-
-    /// The session's private snapshot directory, recreated (and the cache reset) if it vanished
-    /// or no longer has the expected owner and permissions.
+    /// The session's private snapshot directory, recreated if it vanished or no longer has the
+    /// expected owner and permissions.
     private func snapshotDirectory() throws -> String {
-        if let existing = state.withLock({ $0.directory }) {
+        if let existing = condition.withLock({ directory }) {
             var info = stat()
             if lstat(existing, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
                info.st_uid == getuid(), info.st_mode & 0o777 == 0o700 {
                 return existing
             }
-            removeAll()
+            condition.withLock { if directory == existing { directory = nil } }
         }
         guard let root = realpath(FileManager.default.temporaryDirectory.path, nil) else {
             throw FFmpegWhisperJobError.unsafeInput
@@ -565,9 +707,9 @@ nonisolated final class FFmpegWhisperVerifiedSnapshotCache: Sendable {
         var template = Array((rootPath + "/" + Self.directoryPrefix + "\(getpid())-XXXXXXXX").utf8CString)
         guard let result = mkdtemp(&template) else { throw FFmpegWhisperJobError.unsafeInput }
         let created = String(cString: result)
-        let winner = state.withLock { (state: inout State) -> String in
-            if let directory = state.directory { return directory }
-            state.directory = created
+        let winner = condition.withLock { () -> String in
+            if let directory { return directory }
+            directory = created
             return created
         }
         if winner != created { _ = rmdir(created) }

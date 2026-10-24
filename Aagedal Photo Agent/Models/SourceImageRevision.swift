@@ -275,6 +275,56 @@ nonisolated final class SourceImageRevisionDigestCache: Sendable {
     }
 }
 
+/// Decides whether a volume's timestamps can back the digest cache. FAT and exFAT (SD cards)
+/// have no independent status-change time: macOS reports ctime equal to mtime, so a same-size
+/// rewrite that preserves mtime keeps the whole stat identity. Those volumes always re-hash.
+/// APFS, HFS+ and network volumes (smbfs, afpfs, nfs) keep caching — NAS performance depends
+/// on it. The answer is remembered per device ID for a short time, because `statfs` can cost a
+/// round trip on network volumes; the short lifetime bounds device-ID reuse after a remount.
+nonisolated final class SourceImageRevisionVolumeCachePolicy: Sendable {
+    struct Probe: Sendable {
+        let device: @Sendable (URL) -> Int32?
+        let fileSystemType: @Sendable (URL) -> String?
+
+        static let system = Probe(
+            device: { url in
+                var info = stat()
+                return stat(url.path, &info) == 0 ? info.st_dev : nil
+            },
+            fileSystemType: { url in
+                var info = statfs()
+                guard statfs(url.path, &info) == 0 else { return nil }
+                return withUnsafeBytes(of: info.f_fstypename) { bytes in
+                    String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+                }
+            }
+        )
+    }
+
+    static let shared = SourceImageRevisionVolumeCachePolicy()
+    nonisolated static let untrustedFileSystemTypes: Set<String> = ["msdos", "msdosfs", "exfat"]
+    private static let answerLifetime: Duration = .seconds(30)
+
+    private let probe: Probe
+    private let answers = OSAllocatedUnfairLock(initialState: [Int32: (allows: Bool, at: ContinuousClock.Instant)]())
+
+    init(probe: Probe = .system) {
+        self.probe = probe
+    }
+
+    func allowsDigestCache(for url: URL) -> Bool {
+        guard let device = probe.device(url) else { return false }
+        let now = ContinuousClock.now
+        if let cached = answers.withLock({ $0[device] }), now - cached.at < Self.answerLifetime {
+            return cached.allows
+        }
+        guard let type = probe.fileSystemType(url) else { return false }
+        let allows = !Self.untrustedFileSystemTypes.contains(type.lowercased())
+        answers.withLock { $0[device] = (allows, now) }
+        return allows
+    }
+}
+
 /// Owns the complete stat-hash-stat transaction. Keeping every synchronous filesystem primitive
 /// in one non-reentrant actor method prevents MainActor callers from performing the two resource
 /// probes and prevents overlapping captures from observing one another's partial transaction.
@@ -293,16 +343,19 @@ actor SourceImageRevisionCaptureService {
     /// capture the same file several times per operation; only the first capture after a
     /// content change needs to read the bytes.
     private let digestCache: SourceImageRevisionDigestCache
+    private let volumePolicy: SourceImageRevisionVolumeCachePolicy
     nonisolated private static let digestCacheSettleInterval: TimeInterval = 2.5
 
     init(io: SourceImageRevisionCaptureIO = .system,
          filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.source-revision.filesystem", qos: .utility
          ),
-         digestCacheCapacity: Int = 4_096) {
+         digestCacheCapacity: Int = 4_096,
+         volumePolicy: SourceImageRevisionVolumeCachePolicy = .shared) {
         self.io = io
         self.filesystemQueue = filesystemQueue
         self.digestCache = SourceImageRevisionDigestCache(capacity: digestCacheCapacity)
+        self.volumePolicy = volumePolicy
     }
 
     func capture(
@@ -351,7 +404,10 @@ actor SourceImageRevisionCaptureService {
             throw SourceImageRevisionError.notARegularFile
         }
 
-        let identity = SourceImageRevisionDigestCache.Identity(before)
+        // FAT/exFAT volumes report ctime == mtime, so their stat identity cannot prove unchanged
+        // bytes: never store or serve cached digests there.
+        let identity = volumePolicy.allowsDigestCache(for: canonicalURL)
+            ? SourceImageRevisionDigestCache.Identity(before) : nil
         if let identity, let cached = digestCache.digest(for: canonicalURL, identity: identity) {
             // The stat identity proves the bytes are the ones hashed earlier; no read needed.
             return SourceImageRevisionVerifiedDigest(canonicalURL: canonicalURL, snapshot: before, digest: cached)

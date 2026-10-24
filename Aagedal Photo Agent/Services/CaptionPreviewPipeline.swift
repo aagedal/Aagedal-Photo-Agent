@@ -64,9 +64,28 @@ final class CaptionPreviewPipeline {
     private let costLimit: Int
     private var entries: [Request: Entry] = [:]
     private var clock: UInt64 = 0
-    private var inFlight: [Request: Task<CGImage?, Never>] = [:]
-    /// Completion of the most recently queued decode; each new decode waits for it.
-    private var tail: Task<Void, Never>?
+    private struct InFlight {
+        let task: Task<CGImage?, Never>
+        let waiterID: UInt64
+    }
+    private var inFlight: [Request: InFlight] = [:]
+
+    /// The single decode slot. The current photo's request (foreground lane) is granted the slot
+    /// before any queued prefetch; within a lane requests run in submission order.
+    private enum Lane: Int, Comparable {
+        case foreground = 0
+        case prefetch = 1
+        static func < (lhs: Lane, rhs: Lane) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+    private struct Waiter {
+        let id: UInt64
+        var lane: Lane
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+    private var waiters: [Waiter] = []
+    private var waiterLanes: [UInt64: Lane] = [:]
+    private var isDecoding = false
+    private var nextWaiterID: UInt64 = 0
 
     init(countLimit: Int = 5, costLimit: Int = 320 * 1_024 * 1_024,
          decoder: @escaping Decoder = { url, settings, orientation, maxPixelSize in
@@ -94,45 +113,62 @@ final class CaptionPreviewPipeline {
     /// navigation window.
     func image(for request: Request, settings: CameraRawSettings?) async -> CGImage? {
         if let cached = cachedImage(for: request) { return cached }
-        let task = enqueue(request, settings: settings)
+        // A different size of the same rendering (the pane bucket changed) is superseded.
+        cancel { $0.rendersSameVariant(as: request) && $0.maxPixelSize != request.maxPixelSize }
+        let task = enqueue(request, settings: settings, lane: .foreground)
         return await task.value
     }
 
-    /// Queues a decode for a photo the user is likely to open next.
+    /// Queues a decode for a photo the user is likely to open next, behind the current photo.
     func prefetch(_ request: Request, settings: CameraRawSettings?) {
         guard cachedImage(for: request) == nil else { return }
-        _ = enqueue(request, settings: settings)
+        _ = enqueue(request, settings: settings, lane: .prefetch)
     }
 
-    /// Cancels queued or running decodes for photos outside `urls`. A cancelled decode that has
-    /// not started never touches the decoder.
-    func retain(only urls: Set<URL>) {
-        for (request, task) in inFlight where !urls.contains(request.url) {
-            task.cancel()
+    /// Cancels queued or running decodes for photos outside `urls`, and (when given) decodes at
+    /// another size. A cancelled decode that has not started never touches the decoder.
+    func retain(only urls: Set<URL>, maxPixelSize: CGFloat? = nil) {
+        cancel { request in
+            !urls.contains(request.url) || (maxPixelSize.map { request.maxPixelSize != $0 } ?? false)
+        }
+    }
+
+    /// Drops every cached rendering and cancels pending decodes, for example when the global
+    /// RAW decode profile or the watermark library changes what an edited render looks like.
+    func removeAll() {
+        cancel { _ in true }
+        entries.removeAll()
+    }
+
+    private func cancel(where shouldCancel: (Request) -> Bool) {
+        for (request, flight) in inFlight where shouldCancel(request) {
+            flight.task.cancel()
             inFlight[request] = nil
         }
     }
 
-    func removeAll() {
-        for task in inFlight.values { task.cancel() }
-        inFlight.removeAll()
-        entries.removeAll()
-    }
-
-    private func enqueue(_ request: Request, settings: CameraRawSettings?) -> Task<CGImage?, Never> {
-        if let existing = inFlight[request] { return existing }
-        let previous = tail
+    private func enqueue(_ request: Request, settings: CameraRawSettings?, lane: Lane) -> Task<CGImage?, Never> {
+        if let existing = inFlight[request] {
+            if lane == .foreground { promote(existing.waiterID) }
+            return existing.task
+        }
+        nextWaiterID &+= 1
+        let waiterID = nextWaiterID
+        waiterLanes[waiterID] = lane
         let decoder = decoder
-        let task = Task<CGImage?, Never> {
-            // One decode at a time: wait for the previous one, then check cancellation before
-            // starting, so superseded requests never start an expensive RAW decode.
-            await previous?.value
-            guard !Task.isCancelled else { return nil }
+        let task = Task<CGImage?, Never> { [weak self] in
+            // One decode at a time, and the cancellation check happens before starting, so
+            // superseded requests never start an expensive RAW decode.
+            guard let self, await self.acquireSlot(waiterID) else { return nil }
+            guard !Task.isCancelled else {
+                self.releaseSlot()
+                return nil
+            }
             let image = await decoder(request.url, settings, request.orientation, request.maxPixelSize)
+            self.releaseSlot()
             return Task.isCancelled ? nil : image
         }
-        inFlight[request] = task
-        tail = Task { _ = await task.value }
+        inFlight[request] = InFlight(task: task, waiterID: waiterID)
         Task { [weak self] in
             let image = await task.value
             self?.finish(request, task: task, image: image)
@@ -140,9 +176,49 @@ final class CaptionPreviewPipeline {
         return task
     }
 
+    /// Waits for the decode slot. Returns false when the waiting task was cancelled first.
+    private func acquireSlot(_ id: UInt64) async -> Bool {
+        let lane = waiterLanes.removeValue(forKey: id) ?? .prefetch
+        if !isDecoding {
+            isDecoding = true
+            return true
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(Waiter(id: id, lane: lane, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelWaiter(id) }
+        }
+    }
+
+    private func releaseSlot() {
+        guard let next = waiters.indices.min(by: { (waiters[$0].lane, $0) < (waiters[$1].lane, $1) }) else {
+            isDecoding = false
+            return
+        }
+        // The slot passes directly to the next waiter.
+        waiters.remove(at: next).continuation.resume(returning: true)
+    }
+
+    private func cancelWaiter(_ id: UInt64) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+
+    /// The user navigated to a photo whose prefetch is still queued: serve it next.
+    private func promote(_ id: UInt64) {
+        if waiterLanes[id] != nil { waiterLanes[id] = .foreground }
+        if let index = waiters.firstIndex(where: { $0.id == id }) { waiters[index].lane = .foreground }
+    }
+
     private func finish(_ request: Request, task: Task<CGImage?, Never>, image: CGImage?) {
         guard !task.isCancelled else { return }
-        if inFlight[request] == task { inFlight[request] = nil }
+        if inFlight[request]?.task == task { inFlight[request] = nil }
         guard let image else { return }
         clock &+= 1
         entries[request] = Entry(request: request, image: image,

@@ -111,6 +111,47 @@ struct CaptionPreviewPipelineTests {
         #expect(await log.maximumConcurrent == 1)
     }
 
+    @Test("The current photo jumps ahead of queued prefetches")
+    func foregroundJumpsQueue() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a"), settings: nil)   // takes the slot
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        await Task.yield()
+        _ = await pipeline.image(for: request("d"), settings: nil)
+        let decoded = await log.decoded
+        #expect(decoded.prefix(2) == [request("a").url, request("d").url])
+        #expect(await log.maximumConcurrent == 1)
+    }
+
+    @Test("A queued prefetch the user navigates to is promoted to the front")
+    func navigatingToPrefetchPromotesIt() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a"), settings: nil)
+        pipeline.prefetch(request("b"), settings: nil)
+        pipeline.prefetch(request("c"), settings: nil)
+        await Task.yield()
+        _ = await pipeline.image(for: request("c"), settings: nil)
+        #expect(await log.decoded.prefix(2) == [request("a").url, request("c").url])
+    }
+
+    @Test("A new pane size supersedes queued decodes of the old size")
+    func paneSizeChangeSupersedesOldSize() async {
+        let log = DecodeLog()
+        let pipeline = pipeline(log, delay: .milliseconds(30))
+        pipeline.prefetch(request("a", size: 1_536), settings: nil)   // takes the slot
+        pipeline.prefetch(request("b", size: 1_536), settings: nil)
+        await Task.yield()
+        pipeline.retain(only: [request("a").url, request("b").url], maxPixelSize: 2_560)
+        _ = await pipeline.image(for: request("b", size: 2_560), settings: nil)
+        let decoded = await log.decoded
+        // The running 1,536 px decode of "a" may finish; the queued 1,536 px "b" never starts.
+        #expect(decoded.filter { $0 == request("b").url }.count == 1)
+        #expect(decoded.last == request("b").url)
+    }
+
     @Test("Requests that left the navigation window never start decoding")
     func supersededRequestsAreSkipped() async {
         let log = DecodeLog()

@@ -503,6 +503,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private let terminationReplyLatch = ApplicationTerminationReplyLatch()
 
     @MainActor
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Off-main, and skipped in test processes.
+        FFmpegWhisperVerifiedSnapshotCache.sweepStaleSessionsAtLaunch()
+    }
+
+    @MainActor
     func applicationWillBecomeActive(_ notification: Notification) {
         AppStartupSignposts.shared.applicationWillBecomeActive()
     }

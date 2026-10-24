@@ -763,6 +763,14 @@ struct CaptionWorkspaceView: View {
                 await loadCurrentPreview(maxPixelSize: previewTargetPixels)
             }
             .onDisappear { previewPipeline.removeAll() }
+            // Cached renders used the previous global RAW decode profile/decoder version or
+            // watermark artwork; the next load of each photo decodes fresh, as before caching.
+            .onReceive(NotificationCenter.default.publisher(for: .rawDecodeSettingsDidChange)) { _ in
+                previewPipeline.removeAll()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .watermarkLibraryDidChange)) { _ in
+                previewPipeline.removeAll()
+            }
 
             Divider()
             CaptionVoiceMemoPlayerView(
@@ -1584,8 +1592,10 @@ struct CaptionWorkspaceView: View {
         }
         let neighbours = showsCurrentPhoto ? [] : previewPrefetchTargets(around: token.imageURL)
         if !showsCurrentPhoto {
-            // Superseded decodes outside the new navigation window never start.
-            previewPipeline.retain(only: Set([token.imageURL] + neighbours.map { $0.url.standardizedFileURL }))
+            // Superseded decodes outside the new navigation window, or at another pane size,
+            // never start.
+            previewPipeline.retain(only: Set([token.imageURL] + neighbours.map { $0.url.standardizedFileURL }),
+                                   maxPixelSize: maxPixelSize)
         }
         let cgImage = await previewPipeline.image(for: request, settings: settings)
         guard !Task.isCancelled, session.acceptsPreview(load: token) else { return }

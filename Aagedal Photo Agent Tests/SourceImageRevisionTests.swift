@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AVFoundation
 import SwiftMediaMetadata
 import Testing
@@ -259,6 +260,29 @@ struct SourceImageRevisionTests {
         #expect(counter.count == 2)
         #expect(after.sha256 != before.sha256)
         #expect(before.relationship(to: after) == .sameFileChanged)
+    }
+
+    @Test("FAT/exFAT volumes never store or serve cached digests; other volumes do",
+          arguments: [("exfat", 2), ("msdos", 2), ("apfs", 1), ("smbfs", 1)])
+    func volumeTypeGatesDigestCache(fileSystemType: String, expectedHashes: Int) async throws {
+        let fixture = try TemporaryFixture(contents: Data("abc".utf8), extension: "jpg")
+        defer { fixture.remove() }
+        let counter = HashCallCounter()
+        let probes = OSAllocatedUnfairLock(initialState: 0)
+        let policy = SourceImageRevisionVolumeCachePolicy(probe: .init(
+            device: { _ in 1 },
+            fileSystemType: { _ in
+                probes.withLock { $0 += 1 }
+                return fileSystemType
+            }))
+        let service = SourceImageRevisionCaptureService(io: counter.io, volumePolicy: policy)
+
+        _ = try await service.capture(at: fixture.fileURL)
+        _ = try await service.capture(at: fixture.fileURL)
+
+        #expect(counter.count == expectedHashes)
+        // The volume type is probed once per device, not per capture.
+        #expect(probes.withLock { $0 } == 1)
     }
 
     @Test("digest cache evicts least-recently-used entries beyond its bound")
