@@ -4,6 +4,7 @@ import Foundation
 nonisolated struct CaptionConfirmedPerson: Identifiable, Equatable, Sendable {
     let id: UUID
     let name: String
+    /// Vision-normalized, in the display-oriented (sidecar-first) frame of the full photo.
     let normalizedFaceRect: CGRect
 }
 
@@ -11,10 +12,15 @@ nonisolated struct CaptionConfirmedPerson: Identifiable, Equatable, Sendable {
 /// Unnamed clusters, suggestion-only matches, number-only detections, and malformed rectangles
 /// are intentionally absent: the caption UI must never imply certainty that the face system did
 /// not persist.
+///
+/// Stored face rects are in the file-tag frame; `orientation` maps them into the displayed
+/// (sidecar-first) frame *before* ordering, so "left to right" means left to right as the
+/// user sees the photo, and the returned `normalizedFaceRect`s are display-oriented.
 nonisolated enum CaptionConfirmedPersonOrdering {
     static func people(
         for imageURL: URL,
-        in faceData: FolderFaceData?
+        in faceData: FolderFaceData?,
+        orientation: FaceDisplayOrientation
     ) -> [CaptionConfirmedPerson] {
         guard let faceData else { return [] }
         let namesByGroup = Dictionary(uniqueKeysWithValues: faceData.groups.compactMap { group in
@@ -31,7 +37,7 @@ nonisolated enum CaptionConfirmedPersonOrdering {
             return CaptionConfirmedPerson(
                 id: face.id,
                 name: name,
-                normalizedFaceRect: face.faceRect
+                normalizedFaceRect: orientation.displayRect(forFileRect: face.faceRect)
             )
         }
         .sorted { lhs, rhs in

@@ -570,6 +570,60 @@ struct RejectMoveServiceTests {
         #expect(viewModel.currentFolderName == nextFolder.lastPathComponent)
     }
 
+    private func ledgerEntry(_ destination: String, hash: String) -> ImportLedger.Entry {
+        ImportLedger.Entry(name: "DSC_\(hash).JPG", size: 3, captureDate: nil, quickHash: hash,
+            destination: destination, importedAt: "2026-10-24T10:00:00Z", destinationSize: 3, finished: true)
+    }
+
+    @Test("Move Rejected reports the moved sources (for face cleanup) and the import ledger follows them")
+    func rejectMoveFollowUpUpdatesLedger() async throws {
+        let root = try makeTempFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let shoot = root.appendingPathComponent("2026-10-24", isDirectory: true)
+        try FileManager.default.createDirectory(at: shoot, withIntermediateDirectories: true)
+        let names = ["a.jpg", "b.jpg", "kept.jpg"]
+        for name in names { try Data("abc".utf8).write(to: shoot.appendingPathComponent(name)) }
+        try ImportLedger.append(names.map { ledgerEntry("2026-10-24/\($0)", hash: $0) }, root: root)
+        let rejected = [shoot.appendingPathComponent("a.jpg"), shoot.appendingPathComponent("b.jpg")]
+
+        let result = await FileSystemService().moveRejectedItems(rejected, in: shoot)
+        #expect(result.movedFiles.count == 2)
+        let moved = await BrowserViewModel.finishRejectedMove(sources: rejected, movedFiles: result.movedFiles)
+
+        #expect(moved == Set(rejected))
+        let ledger = ImportLedger.load(root: root)
+        let latest = Dictionary(ledger.map { (ImportLedger.pathKey($0.destination), $0) }, uniquingKeysWith: { _, new in new })
+        #expect(latest[ImportLedger.pathKey("2026-10-24/.Rejected/a.jpg")]?.quickHash == "a.jpg")
+        #expect(latest[ImportLedger.pathKey("2026-10-24/.Rejected/b.jpg")]?.quickHash == "b.jpg")
+        #expect(ledger.count == 5)
+    }
+
+    @Test("Renames inside a library append relocated ledger entries; moves outside any ledger are ignored")
+    func renameRelocatesLedgerEntries() throws {
+        let root = try makeTempFolder()
+        let outside = try makeTempFolder()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        let shoot = root.appendingPathComponent("shoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: shoot, withIntermediateDirectories: true)
+        try ImportLedger.append([ledgerEntry("shoot/DSC_1.JPG", hash: "one")], root: root)
+        #expect(ImportLedger.root(containing: shoot.appendingPathComponent("DSC_1.JPG"))?.standardizedFileURL.path
+            == root.standardizedFileURL.path)
+
+        let appended = ImportLedger.recordRelocations([
+            (from: shoot.appendingPathComponent("DSC_1.JPG"), to: shoot.appendingPathComponent("2026-10-24_Oslo_001.JPG")),
+            (from: shoot.appendingPathComponent("unknown.JPG"), to: shoot.appendingPathComponent("renamed.JPG")),
+            (from: outside.appendingPathComponent("x.JPG"), to: outside.appendingPathComponent("y.JPG")),
+        ])
+        #expect(appended == 1)
+        let ledger = ImportLedger.load(root: root)
+        #expect(ledger.map(\.destination) == ["shoot/DSC_1.JPG", "shoot/2026-10-24_Oslo_001.JPG"])
+        #expect(ledger.last?.quickHash == "one")
+        #expect(!FileManager.default.fileExists(atPath: ImportLedger.url(forRoot: outside).path))
+    }
+
     private func makeTempFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("reject-move-\(UUID().uuidString)", isDirectory: true)

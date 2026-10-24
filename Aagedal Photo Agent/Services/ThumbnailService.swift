@@ -526,7 +526,11 @@ final class ThumbnailService {
 
     /// Rotates the cached thumbnail in-place for instant visual feedback during rotation.
     /// Falls back to invalidation if no cached thumbnail exists.
-    func rotateThumbnailInCache(for url: URL, clockwise: Bool) {
+    /// `editedHasDisplayFrameArtwork`: the edited render carries artwork drawn upright in the
+    /// display frame (watermark layers). Turning those pixels would leave the artwork sideways,
+    /// so the edited entry is dropped and re-rendered through `decodedEditedPreview`
+    /// (`applyEditsInDisplayFrame`) at the new orientation instead.
+    func rotateThumbnailInCache(for url: URL, clockwise: Bool, editedHasDisplayFrameArtwork: Bool = false) {
         // Cancel any in-flight edited render: it captured the pre-rotation orientation and,
         // for a slow gated RAW decode, would finish *after* this rotation and overwrite the
         // freshly-rotated cache entry with a stale-orientation image — leaving the grid
@@ -539,7 +543,8 @@ final class ThumbnailService {
         } else {
             cache.removeObject(forKey: url as NSURL)
         }
-        if let existing = editedCache.object(forKey: url as NSURL),
+        if !editedHasDisplayFrameArtwork,
+           let existing = editedCache.object(forKey: url as NSURL),
            let rotated = rotateImage90(existing, clockwise: clockwise) {
             editedCache.setObject(rotated, forKey: url as NSURL, cost: Self.decodedCost(of: rotated))
         } else {

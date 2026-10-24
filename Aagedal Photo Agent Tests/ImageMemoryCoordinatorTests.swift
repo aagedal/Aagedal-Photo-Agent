@@ -849,6 +849,35 @@ struct ThumbnailRevisionInvalidationTests {
         #expect(service.thumbnail(for: changed, preferOriginal: true) === refreshed)
     }
 
+    @Test("Grid rotation turns cached edits in place, but re-renders a watermarked edit upright")
+    func rotationRerendersWatermarkedEdit() async throws {
+        let landscape = CIImage(color: CIColor(red: 0.25, green: 0.35, blue: 0.45))
+            .cropped(to: CGRect(x: 0, y: 0, width: 32, height: 16))
+        let bitmap = try #require(CIContext().createCGImage(landscape, from: landscape.extent))
+        let service = ThumbnailService(memoryCoordinator: makeMemoryCoordinator(), originalThumbnailLoader: { _ in
+            NSImage(cgImage: bitmap, size: NSSize(width: bitmap.width, height: bitmap.height))
+        })
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.5
+        let plain = URL(fileURLWithPath: "/virtual/rotate-plain-\(UUID()).jpg")
+        let watermarked = URL(fileURLWithPath: "/virtual/rotate-watermarked-\(UUID()).jpg")
+        for url in [plain, watermarked] {
+            _ = try #require(await service.renderEditedThumbnail(for: url, settings: settings, exifOrientation: 1))
+        }
+
+        service.rotateThumbnailInCache(for: plain, clockwise: true)
+        let turned = try #require(service.thumbnail(for: plain))
+        #expect(service.hasEditedThumbnail(for: plain))
+        #expect(turned.size.width < turned.size.height)
+
+        // Watermark artwork is drawn upright in the display frame: the edited entry is
+        // dropped so the grid re-renders it, while the plain original still turns in place.
+        service.rotateThumbnailInCache(for: watermarked, clockwise: true, editedHasDisplayFrameArtwork: true)
+        #expect(!service.hasEditedThumbnail(for: watermarked))
+        let original = try #require(service.thumbnail(for: watermarked, preferOriginal: true))
+        #expect(original.size.width < original.size.height)
+    }
+
     private func makeMemoryCoordinator() -> ImageMemoryCoordinator {
         ImageMemoryCoordinator(availableMemory: { 8 * 1_024 * 1_024 * 1_024 }, observesSystemPressure: false)
     }

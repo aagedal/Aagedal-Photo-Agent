@@ -230,6 +230,10 @@ nonisolated struct FaceGroup: Codable, Identifiable {
     /// these exact strings in these photos, so a name typed by hand elsewhere — including in a
     /// photo whose face joined the group later — is never touched. Nil for older data.
     var appliedPersonShownNames: [String: String]? = nil
+    /// The shown name (empty string for "no name": cleared or excluded) for which the user
+    /// answered "Leave Photos Unchanged". An unanswered offer is re-offered on folder load; a
+    /// declined one only again once the group's shown name changes. Nil for older data.
+    var declinedPersonShownName: String? = nil
 
     var isExcludedFromPersonShown: Bool { excludedFromPersonShown ?? false }
 

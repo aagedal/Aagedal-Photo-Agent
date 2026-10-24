@@ -161,4 +161,61 @@ nonisolated enum ImportLedger {
     static func captureDateString(_ date: Date?) -> String? {
         date.map { $0.ISO8601Format() }
     }
+
+    /// The nearest ancestor folder of `url` holding a ledger, if any.
+    static func root(containing url: URL) -> URL? {
+        var folder = url.standardizedFileURL.deletingLastPathComponent()
+        while true {
+            if FileManager.default.fileExists(atPath: Self.url(forRoot: folder).path) { return folder }
+            guard folder.pathComponents.count > 1 else { return nil }
+            folder = folder.deletingLastPathComponent().standardizedFileURL
+        }
+    }
+
+    /// After a rename or Move Rejected inside a library, makes the ledger follow the files: for
+    /// each move whose old path is a ledger destination, appends a copy of its latest entry
+    /// pointing at the new path (one atomic append per ledger; the latest entry for a path wins).
+    /// Without this, re-inserting the card re-imports photos that were only renamed or rejected.
+    /// Moves outside any ledger, or out of their ledger root, are ignored. Returns the number of
+    /// entries appended.
+    @discardableResult
+    static func recordRelocations(_ moves: [(from: URL, to: URL)]) -> Int {
+        var movesByRoot: [URL: [(from: URL, to: URL)]] = [:]
+        var rootByFolder: [String: URL?] = [:]
+        for move in moves {
+            let folder = move.from.standardizedFileURL.deletingLastPathComponent().path
+            let root: URL?
+            if let cached = rootByFolder[folder] { root = cached } else {
+                root = Self.root(containing: move.from)
+                rootByFolder[folder] = root
+            }
+            if let root { movesByRoot[root, default: []].append(move) }
+        }
+        var appended = 0
+        for (root, rootMoves) in movesByRoot {
+            let ledger = load(root: root)
+            var latestByPath: [String: Entry] = [:]
+            for entry in ledger { latestByPath[pathKey(entry.destination)] = entry }
+            var relocated: [Entry] = []
+            for move in rootMoves {
+                guard let old = ImportViewModel.relativePath(of: move.from, under: root),
+                      let new = ImportViewModel.relativePath(of: move.to, under: root),
+                      old != new,
+                      let entry = latestByPath[pathKey(old)] else { continue }
+                let moved = Entry(v: entry.v, name: entry.name, size: entry.size,
+                    captureDate: entry.captureDate, quickHash: entry.quickHash, destination: new,
+                    importedAt: entry.importedAt, destinationSize: entry.destinationSize,
+                    destinationQuickHash: entry.destinationQuickHash, finished: entry.finished)
+                relocated.append(moved)
+                latestByPath[pathKey(new)] = moved
+            }
+            do {
+                try append(relocated, root: root)
+                appended += relocated.count
+            } catch {
+                importLedgerLog.error("Could not record \(relocated.count) relocated import-ledger entries: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        return appended
+    }
 }

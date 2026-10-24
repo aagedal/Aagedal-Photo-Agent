@@ -499,6 +499,8 @@ struct ContentView: View {
         // that folder (or a descendant) must follow it too instead of keeping a dead path.
         let configureWithPanes: (BrowserViewModel) -> Void = { [weak panesModel] vm in
             configurePane(vm)
+            // Quit waits for (and the quit prompts list) this pane's rating/label/rotate writes.
+            BrowserFieldMutationTermination.register(vm)
             vm.onFolderRelocated = { [weak panesModel, weak vm] oldURL, newURL in
                 for pane in panesModel?.panes ?? [] where pane !== vm {
                     pane.followRelocatedFolder(from: oldURL, to: newURL)

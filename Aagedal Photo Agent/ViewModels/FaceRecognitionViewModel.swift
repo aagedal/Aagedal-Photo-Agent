@@ -883,7 +883,8 @@ final class FaceRecognitionViewModel {
                     self.errorMessage = "Failed to remove expired face data: \(message)"
                 }
 
-                guard evidence.faceData != nil else { return }
+                guard let loaded = evidence.faceData else { return }
+                self.reofferUnansweredPersonShownUpdate(for: loaded)
                 if self.deferredPostprocessingFolders.remove(folderURL.standardizedFileURL) != nil {
                     if self.folderHasJerseyData {
                         self.scheduleMatchRosterLoad(for: folderURL, resolveAfterLoad: true)
@@ -3409,8 +3410,39 @@ final class FaceRecognitionViewModel {
 
     /// "Leave Photos Unchanged": photos keep their names; the applied names stay as they were,
     /// so a later correction still targets exactly what is in the photos.
+    /// The decline is persisted per group (`declinedPersonShownName` = the name it shows now),
+    /// so an unanswered offer can be re-offered after a relaunch without re-asking this one.
     func declinePersonShownUpdate() {
+        let proposal = pendingPersonShownUpdate
         clearPendingPersonShownUpdate()
+        guard let proposal, var data = faceData,
+              Self.fieldMutationFolderIdentity(data.folderURL) == Self.fieldMutationFolderIdentity(proposal.folderURL)
+        else { return }
+        var changed = false
+        for groupID in proposal.appliedNameUpdates.keys {
+            guard let index = data.groups.firstIndex(where: { $0.id == groupID }) else { continue }
+            let token = PersonShownCorrectionPlanner.declineToken(for: data.groups[index])
+            guard data.groups[index].declinedPersonShownName != token else { continue }
+            data.groups[index].declinedPersonShownName = token
+            changed = true
+        }
+        if changed { commitFaceEdit(data, reportsScanRefusal: false) }
+    }
+
+    /// Folder load: offer again what a previous session left unanswered (the offer lived only
+    /// in memory, and the planner's "already declined" guard would otherwise never re-raise it).
+    private func reofferUnansweredPersonShownUpdate(for data: FolderFaceData) {
+        guard pendingPersonShownUpdate == nil, !isScanning(folderURL: data.folderURL) else { return }
+        let folder = Self.fieldMutationFolderIdentity(data.folderURL)
+        // Writes still queued or running land their applied names first.
+        var planningData = data
+        for entry in inFlightAppliedNameChanges where entry.folder == folder {
+            PersonShownCorrectionPlanner.applying(entry.changes, to: &planningData)
+        }
+        guard let (base, proposal) = PersonShownCorrectionPlanner.unansweredProposal(in: planningData) else { return }
+        pendingProposalBase = base
+        pendingProposalExcludedPaths = []
+        pendingPersonShownUpdate = proposal
     }
 
     private func replayDeferredFaceUpdates() {

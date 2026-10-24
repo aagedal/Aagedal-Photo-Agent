@@ -26,8 +26,11 @@ struct PersonShownUpdatePromptModifier: ViewModifier {
             .keyboardShortcut(.defaultAction)
             Button("Leave Photos Unchanged", role: .cancel) { viewModel.declinePersonShownUpdate() }
         } message: { proposal in
+            let reoffer = proposal.isReoffer
+                ? "\(proposal.photoCount) \(proposal.photoCount == 1 ? "photo still shows" : "photos still show") the previous name from an earlier face edit that was not answered.\n\n"
+                : ""
             Text("""
-            \(proposal.summary)
+            \(reoffer)\(proposal.summary)
 
             Only names this app wrote to these photos are changed, and only where they are still \
             present. Names typed by hand are left as they are.
