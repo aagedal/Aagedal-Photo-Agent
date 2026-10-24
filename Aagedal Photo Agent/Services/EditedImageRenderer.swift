@@ -31,23 +31,91 @@ nonisolated enum EditedImageRenderer {
     static let rawArchiveConversionGamut: TargetColorGamut = .rec2020
     static let rawArchiveConversionColorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
 
-    private static func loadAndProcess(
+    /// A decoded export source whose pixels are already in the frame `applyWithCrop`
+    /// maps sensor-frame crop/mask/watermark geometry into.
+    private struct ExportSource {
+        let image: CIImage
+        let settings: CameraRawSettings?
+        let pixelOrientation: Int
+    }
+
+    private static let rawExtensions: Set<String> = [
+        "raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"
+    ]
+
+    /// Decodes `sourceURL` for an export render.
+    ///
+    /// Orientation: every decode below (CIRAWFilter, `.applyOrientationProperty`) bakes
+    /// the FILE's embedded tag into the pixels, but RAW and C2PA/sidecar-only rotations
+    /// live in the sidecar, which wins (single source of truth). When
+    /// `appliesDisplayOrientation` is set the pixels are rotated file → display before any
+    /// editing, and that display orientation is reported as the pixels' frame. This is
+    /// exactly how Develop renders (`DevelopSourceDecodeService.orientedToTarget` + upload
+    /// with `exifOrientation: targetOrientation`), so crops, masks and watermarks land
+    /// where the user placed them, and watermarks stay upright. Unedited RAW archives
+    /// keep the file orientation because they carry the original sidecar alongside.
+    ///
+    /// `outputIsHDR`: only an HDR output expands adaptive (gain-map) JPEG/HEIC sources.
+    /// An SDR output decodes the container's own SDR base rendition (what the grid
+    /// thumbnail and every SDR viewer show); expanding and then encoding 8-bit hard-clipped
+    /// the gain-map highlights.
+    ///
+    /// `maximumOutputPixelSize`: when a resolution limit is set and every enabled effect
+    /// scales with image size, the source is decoded near the needed size instead of at
+    /// full resolution (see `exportDecodeMaxPixelSize`). The caller's final
+    /// `limitedForExport` still performs the exact sizing.
+    private static func prepareExportSource(
         from sourceURL: URL,
         cameraRaw: CameraRawSettings?,
-        rawDecodeProfile: RAWDecodeProfile? = nil
-    ) throws -> CIImage {
-        let input: CIImage
+        rawDecodeProfile: RAWDecodeProfile? = nil,
+        outputIsHDR: Bool,
+        appliesDisplayOrientation: Bool = true,
+        maximumOutputPixelSize: Int? = nil
+    ) throws -> ExportSource {
+        var input: CIImage
         var effectiveSettings = cameraRaw
 
-        let rawExtensions: Set<String> = ["raw", "cr2", "cr3", "nef", "nrw", "arw", "raf", "dng", "rw2", "orf", "pef", "srw"]
+        let fileOrientation = FullScreenImageCache.fileEXIFOrientation(at: sourceURL)
+        let requestedOrientation = appliesDisplayOrientation
+            ? FullScreenImageCache.displayOrientation(for: sourceURL, fallback: fileOrientation)
+            : fileOrientation
+        // `orientationCorrection` models only the four rotations; never claim a mirrored
+        // frame the pixels were not actually moved into.
+        let rotationOnly: Set<Int> = [1, 3, 6, 8]
+        let targetOrientation = rotationOnly.contains(fileOrientation)
+            && rotationOnly.contains(requestedOrientation)
+            ? requestedOrientation
+            : fileOrientation
+
+        let decodeMaxPixelSize = exportDecodeMaxPixelSize(
+            maximumOutputPixelSize: maximumOutputPixelSize,
+            settings: cameraRaw,
+            orientation: targetOrientation,
+            sourcePixelSize: maximumOutputPixelSize == nil
+                ? nil
+                : FullScreenImageCache.nativePixelSize(of: sourceURL)
+        )
+
         if rawExtensions.contains(sourceURL.pathExtension.lowercased()) {
             // Full-quality CIRAWFilter decode for export (no draft mode). Always decodes
             // with full EDR headroom; SDR output is rolled off by the tone pipeline.
-            if let rawResult = FullScreenImageCache.loadRAWImage(
+            var rawResult = FullScreenImageCache.loadRAWImage(
                 from: sourceURL,
                 draftMode: false,
+                maxPixelSize: decodeMaxPixelSize,
                 decodeProfile: rawDecodeProfile
-            ) {
+            )
+            // The scale factor is derived from header dimensions. Should the decoder hand
+            // back fewer pixels than requested, never let that shrink the export.
+            if let decodeMaxPixelSize, let decoded = rawResult,
+               max(decoded.image.extent.width, decoded.image.extent.height) < decodeMaxPixelSize * 0.98 {
+                rawResult = FullScreenImageCache.loadRAWImage(
+                    from: sourceURL,
+                    draftMode: false,
+                    decodeProfile: rawDecodeProfile
+                )
+            }
+            if let rawResult {
                 input = rawResult.image
                 // Synthesize settings for unedited RAWs so the SDR output tonemap still
                 // applies, then propagate as-shot WB so renderOffscreen uses the correct
@@ -66,27 +134,178 @@ nonisolated enum EditedImageRenderer {
                 ]) else {
                     throw RenderError.unreadableImage
                 }
-                input = ciImage
+                input = downsampledForExport(ciImage, maxPixelSize: decodeMaxPixelSize)
             }
         } else {
-            guard let ciImage = CIImage(contentsOf: sourceURL, options: [
+            var options: [CIImageOption: Any] = [
                 .applyOrientationProperty: true,
-                .expandToHDR: true,
                 .toneMapHDRtoSDR: false
-            ]) else {
+            ]
+            if outputIsHDR {
+                options[.expandToHDR] = true
+            }
+            guard let ciImage = CIImage(contentsOf: sourceURL, options: options) else {
                 throw RenderError.unreadableImage
             }
-            input = ciImage
+            input = downsampledForExport(ciImage, maxPixelSize: decodeMaxPixelSize)
         }
 
-        var exifOrientation = 1
-        if let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let orientation = props[kCGImagePropertyOrientation] as? Int {
-            exifOrientation = orientation
+        let correction = ImageFile.orientationCorrection(from: fileOrientation, to: targetOrientation)
+        if correction != .up {
+            input = input.oriented(correction)
         }
+        return ExportSource(
+            image: input,
+            settings: effectiveSettings,
+            pixelOrientation: correction == .up ? fileOrientation : targetOrientation
+        )
+    }
 
-        return CameraRawApproximation.applyWithCrop(to: input, settings: effectiveSettings, exifOrientation: exifOrientation)
+    /// Synchronous render used only by the Advanced Export loupe, whose renderer contract
+    /// is synchronous. Every other export path uses `loadAndProcessAsync`.
+    private static func loadAndProcess(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        outputIsHDR: Bool,
+        maximumOutputPixelSize: Int?
+    ) throws -> CIImage {
+        let source = try prepareExportSource(
+            from: sourceURL,
+            cameraRaw: cameraRaw,
+            outputIsHDR: outputIsHDR,
+            maximumOutputPixelSize: maximumOutputPixelSize
+        )
+        return CameraRawApproximation.applyWithCrop(
+            to: source.image,
+            settings: source.settings,
+            exifOrientation: source.pixelOrientation
+        )
+    }
+
+    /// Suspends on the offscreen render executor instead of blocking a cooperative thread
+    /// with `queue.sync`, so edited grid thumbnails are not stalled behind an export render.
+    /// Produces the same pixels as `applyWithCrop`; a cancelled render throws instead of
+    /// returning the unedited input.
+    private static func loadAndProcessAsync(
+        from sourceURL: URL,
+        cameraRaw: CameraRawSettings?,
+        rawDecodeProfile: RAWDecodeProfile? = nil,
+        outputIsHDR: Bool,
+        appliesDisplayOrientation: Bool = true,
+        maximumOutputPixelSize: Int? = nil
+    ) async throws -> CIImage {
+        let source = try prepareExportSource(
+            from: sourceURL,
+            cameraRaw: cameraRaw,
+            rawDecodeProfile: rawDecodeProfile,
+            outputIsHDR: outputIsHDR,
+            appliesDisplayOrientation: appliesDisplayOrientation,
+            maximumOutputPixelSize: maximumOutputPixelSize
+        )
+        try Task.checkCancellation()
+        let processed = await CameraRawApproximation.applyWithCropAsync(
+            to: source.image,
+            settings: source.settings,
+            exifOrientation: source.pixelOrientation
+        )
+        try Task.checkCancellation()
+        return processed
+    }
+
+    /// Margin kept above the requested output size when decoding at reduced scale, so
+    /// decoder rounding never leaves the final `limitedForExport` short of the limit.
+    private static func paddedDecodeSize(for maximumOutputPixelSize: Int) -> CGFloat {
+        CGFloat(maximumOutputPixelSize) * 1.04 + 8
+    }
+
+    /// Longest-edge size (in the oriented, pre-crop frame) at which an export with a
+    /// resolution limit may decode its source, or nil for a full-resolution decode.
+    ///
+    /// Accounts for the crop fraction so the cropped result still meets the limit, and
+    /// matches the decoders' 1.5x threshold so marginal reductions are not resampled twice.
+    /// Returns nil whenever an enabled effect is defined in source pixels and would look
+    /// different at the reduced size (see `rendersResolutionIndependently`).
+    static func exportDecodeMaxPixelSize(
+        maximumOutputPixelSize: Int?,
+        settings: CameraRawSettings?,
+        orientation: Int,
+        sourcePixelSize: CGSize?
+    ) -> CGFloat? {
+        guard let maximumOutputPixelSize, maximumOutputPixelSize > 0,
+              let sourcePixelSize,
+              sourcePixelSize.width > 0, sourcePixelSize.height > 0,
+              sourcePixelSize.width.isFinite, sourcePixelSize.height.isFinite else { return nil }
+        let nativeLongest = max(sourcePixelSize.width, sourcePixelSize.height)
+        let target = FullScreenImageCache.cropAwareSourceMaxPixelSize(
+            outputMaxPixelSize: paddedDecodeSize(for: maximumOutputPixelSize),
+            settings: settings,
+            exifOrientation: orientation,
+            sourcePixelSize: sourcePixelSize
+        )
+        guard target.isFinite, target > 0, nativeLongest > target * 1.5 else { return nil }
+        let nativeShort = min(sourcePixelSize.width, sourcePixelSize.height)
+        guard rendersResolutionIndependently(
+            settings,
+            decodedShortSide: nativeShort * target / nativeLongest,
+            fullShortSide: nativeShort
+        ) else { return nil }
+        return target
+    }
+
+    /// Whether every enabled effect in `settings` scales with the image, so rendering at
+    /// a reduced size and resizing matches rendering at full size and resizing.
+    ///
+    /// Tone, color, HSL, LUTs, white balance, dehaze, crops, ellipse/linear/brush/AI masks,
+    /// the Anonymizer and percent-sized watermarks are all pointwise or defined in
+    /// normalized/short-side-relative units. These are not, and keep the full decode:
+    /// - Sharpness: a one-source-pixel unsharp kernel.
+    /// - Film grain, halation, bloom and edge blur: fixed source-pixel grain sizes and
+    ///   absolute mip levels.
+    /// - Clarity: its radius is `clamp(shortSide * 0.008, 8, 64)` px, proportional only
+    ///   while both renders' short sides lie within 1000...8000 px.
+    /// - Watermarks sized or margined in pixels: pixel units resolve against the source.
+    static func rendersResolutionIndependently(
+        _ settings: CameraRawSettings?,
+        decodedShortSide: CGFloat,
+        fullShortSide: CGFloat
+    ) -> Bool {
+        guard let settings else { return true }
+        if let sharpness = settings.sharpness, sharpness != 0 { return false }
+        if let film = settings.filmEmulation,
+           (film.grain ?? 0) > 0 || (film.halation ?? 0) > 0
+            || (film.bloom ?? 0) > 0 || (film.edgeBlur ?? 0) > 0 {
+            return false
+        }
+        if let clarity = settings.clarity2012, clarity != 0,
+           decodedShortSide < 1000 || fullShortSide > 8000 {
+            return false
+        }
+        if settings.watermarkLayers?.contains(where: {
+            $0.enabled && ($0.geometry.sizeUnit == .pixel || $0.geometry.marginUnit == .pixel)
+        }) == true {
+            return false
+        }
+        return true
+    }
+
+    private static func downsampledForExport(_ image: CIImage, maxPixelSize: CGFloat?) -> CIImage {
+        guard let maxPixelSize else { return image }
+        let extent = image.extent
+        let longest = max(extent.width, extent.height)
+        guard longest.isFinite, longest > maxPixelSize, maxPixelSize > 0 else { return image }
+        let scale = maxPixelSize / longest
+        // Scale each axis to whole pixels so the GPU source has no partially covered
+        // edge row/column (the aspect change is far below a pixel).
+        let width = max(1, (extent.width * scale).rounded())
+        let height = max(1, (extent.height * scale).rounded())
+        return image
+            .transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+            .clampedToExtent()
+            .transformed(by: CGAffineTransform(
+                scaleX: width / extent.width,
+                y: height / extent.height
+            ))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
     }
 
     // MARK: - Unified Render
@@ -113,12 +332,15 @@ nonisolated enum EditedImageRenderer {
     ) async throws -> URL {
         let owner = reservationOwner ?? ExportOutputReservationOwner()
         defer { withExtendedLifetime(owner) {} }
-        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        let output = limitedForExport(
-            processed,
-            maximumPixelSize: (configuration?.resolutionLimit ?? currentResolutionLimit)
-                .maximumPixelSize
+        let maximumPixelSize = (configuration?.resolutionLimit ?? currentResolutionLimit)
+            .maximumPixelSize
+        let processed = try await loadAndProcessAsync(
+            from: sourceURL,
+            cameraRaw: cameraRaw,
+            outputIsHDR: isHDR,
+            maximumOutputPixelSize: maximumPixelSize
         )
+        let output = limitedForExport(processed, maximumPixelSize: maximumPixelSize)
 
         let destURL: URL
         if isHDR {
@@ -171,11 +393,14 @@ nonisolated enum EditedImageRenderer {
     ) async throws -> AdvancedExportRenderedArtifact {
         let owner = reservationOwner ?? ExportOutputReservationOwner()
         defer { withExtendedLifetime(owner) {} }
-        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        let output = limitedForExport(
-            processed,
-            maximumPixelSize: configuration.resolutionLimit.maximumPixelSize
+        let maximumPixelSize = configuration.resolutionLimit.maximumPixelSize
+        let processed = try await loadAndProcessAsync(
+            from: sourceURL,
+            cameraRaw: cameraRaw,
+            outputIsHDR: isHDR,
+            maximumOutputPixelSize: maximumPixelSize
         )
+        let output = limitedForExport(processed, maximumPixelSize: maximumPixelSize)
         let reference: CGImage
         if let cachedReferenceImage {
             reference = cachedReferenceImage
@@ -224,11 +449,14 @@ nonisolated enum EditedImageRenderer {
         normalizedPoint: CGPoint,
         pixelSize: Int
     ) throws -> CGImage {
-        let processed = try loadAndProcess(from: sourceURL, cameraRaw: cameraRaw)
-        let output = limitedForExport(
-            processed,
-            maximumPixelSize: configuration.resolutionLimit.maximumPixelSize
+        let maximumPixelSize = configuration.resolutionLimit.maximumPixelSize
+        let processed = try loadAndProcess(
+            from: sourceURL,
+            cameraRaw: cameraRaw,
+            outputIsHDR: isHDR,
+            maximumOutputPixelSize: maximumPixelSize
         )
+        let output = limitedForExport(processed, maximumPixelSize: maximumPixelSize)
         return try makeLoupeCrop(
             from: output,
             isHDR: isHDR,
@@ -469,6 +697,13 @@ nonisolated enum EditedImageRenderer {
                 if let value = sourceProps[key] {
                     properties[key] = value
                 }
+            }
+            // The rendered pixels are upright; a copied TIFF Orientation must not
+            // contradict the top-level value above.
+            if var tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
+               tiff[kCGImagePropertyTIFFOrientation] != nil {
+                tiff[kCGImagePropertyTIFFOrientation] = 1
+                properties[kCGImagePropertyTIFFDictionary] = tiff
             }
         }
 
@@ -1061,7 +1296,7 @@ nonisolated enum EditedImageRenderer {
         // rolls HDR headroom off into display range instead of clipping it.
         var sdrSettings = cameraRaw
         sdrSettings?.hdrEditMode = 0
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
+        let output = try await loadAndProcessAsync(from: sourceURL, cameraRaw: sdrSettings, outputIsHDR: false)
         let gamut = TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let quality = AppDefaults.store.object(forKey: UserDefaultsKeys.exportQualitySDR) as? Double ?? 0.92
@@ -1096,7 +1331,7 @@ nonisolated enum EditedImageRenderer {
         // Force HDR render mode so headroom passes through to the HDR encode.
         var hdrSettings = cameraRaw ?? CameraRawSettings()
         hdrSettings.hdrEditMode = 1
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: hdrSettings)
+        let output = try await loadAndProcessAsync(from: sourceURL, cameraRaw: hdrSettings, outputIsHDR: true)
         return try await renderHDRFormat(output, sourceURL: sourceURL, outputFolder: outputFolder,
                                          reservationOwner: owner)
     }
@@ -1123,10 +1358,12 @@ nonisolated enum EditedImageRenderer {
         // highlight headroom reaches the Rec. 2020 PQ encode.
         var archiveSettings = CameraRawSettings()
         archiveSettings.hdrEditMode = 1
-        let output = try loadAndProcess(
+        let output = try await loadAndProcessAsync(
             from: sourceURL,
             cameraRaw: archiveSettings,
-            rawDecodeProfile: decodeProfile
+            rawDecodeProfile: decodeProfile,
+            outputIsHDR: true,
+            appliesDisplayOrientation: false
         )
         let quality = AppDefaults.store.object(
             forKey: UserDefaultsKeys.exportQualityHDR
@@ -1175,10 +1412,12 @@ nonisolated enum EditedImageRenderer {
 
         var archiveSettings = CameraRawSettings()
         archiveSettings.hdrEditMode = 1
-        let output = try loadAndProcess(
+        let output = try await loadAndProcessAsync(
             from: sourceURL,
             cameraRaw: archiveSettings,
-            rawDecodeProfile: decodeProfile
+            rawDecodeProfile: decodeProfile,
+            outputIsHDR: true,
+            appliesDisplayOrientation: false
         )
         let destinationURL = try reserveRAWArchiveOutput(
             for: sourceURL,
@@ -1256,7 +1495,7 @@ nonisolated enum EditedImageRenderer {
         // images tonemap into display range instead of clipping.
         var sdrSettings = cameraRaw
         sdrSettings?.hdrEditMode = 0
-        let output = try loadAndProcess(from: sourceURL, cameraRaw: sdrSettings)
+        let output = try await loadAndProcessAsync(from: sourceURL, cameraRaw: sdrSettings, outputIsHDR: false)
         let gamut = TargetColorGamut(rawValue: AppDefaults.store.string(forKey: UserDefaultsKeys.exportColorGamutSDR) ?? "") ?? .sRGB
         let colorSpace = gamut.sdrColorSpace
         let ctx = CameraRawApproximation.ciContext

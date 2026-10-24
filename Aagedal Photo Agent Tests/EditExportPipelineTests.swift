@@ -2572,6 +2572,459 @@ struct FFmpegAVIFEncodingTests {
     }
 }
 
+/// Export rendering must reproduce what the grid, full screen and Develop show: the sidecar
+/// orientation (which wins over the file's tag), the SDR rendition of adaptive-HDR sources
+/// for SDR outputs, and the same pixels whether or not a resolution limit lets the source
+/// decode at reduced size.
+@Suite("Export render fidelity")
+struct ExportRenderFidelityTests {
+    private typealias RGB = (r: Int, g: Int, b: Int)
+    private static let red: RGB = (255, 0, 0)
+    private static let green: RGB = (0, 255, 0)
+    private static let blue: RGB = (0, 0, 255)
+    private static let white: RGB = (255, 255, 255)
+
+    private func pngConfiguration(_ limit: ExportResolutionLimit = .original) -> AdvancedExportConfiguration {
+        AdvancedExportConfiguration(
+            sdrFormat: .png,
+            sdrQuality: 0.92,
+            sdrGamut: .sRGB,
+            hdrFormat: .jpegGainMap,
+            hdrQuality: 0.92,
+            hdrGamut: .displayP3,
+            tiffCompression: .lzw,
+            resolutionLimit: limit,
+            locationMode: .formatSubfolder,
+            customSubfolderName: "Exports"
+        )
+    }
+
+    private func makeDirectory(_ name: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("output", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        return directory
+    }
+
+    /// 64x32 stored pixels: top-left red, top-right green, bottom-left blue, bottom-right white.
+    private func writeQuadrantJPEG(to url: URL, orientation: Int) throws {
+        let width = 64, height = 32
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ))
+        // CGContext is y-up: the top half of the stored image is y >= height / 2.
+        let quadrants: [(CGRect, RGB)] = [
+            (CGRect(x: 0, y: 16, width: 32, height: 16), Self.red),
+            (CGRect(x: 32, y: 16, width: 32, height: 16), Self.green),
+            (CGRect(x: 0, y: 0, width: 32, height: 16), Self.blue),
+            (CGRect(x: 32, y: 0, width: 32, height: 16), Self.white),
+        ]
+        for (rect, color) in quadrants {
+            context.setFillColor(CGColor(
+                srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255,
+                blue: CGFloat(color.b) / 255, alpha: 1
+            ))
+            context.fill(rect)
+        }
+        let image = try #require(context.makeImage())
+        try writeJPEG(image, to: url, orientation: orientation)
+    }
+
+    private func writeJPEG(_ image: CGImage, to url: URL, orientation: Int) throws {
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            url as CFURL, "public.jpeg" as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 1.0,
+            kCGImagePropertyOrientation: orientation,
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+    }
+
+    private func writeSidecarOrientation(_ orientation: Int, for source: URL) throws {
+        var xmp = IPTCMetadata()
+        xmp.exifOrientation = orientation
+        try XMPSidecarService().saveSidecar(metadata: xmp, for: source)
+    }
+
+    private struct Pixels {
+        let width: Int
+        let height: Int
+        let bytes: [UInt8]
+
+        func rgb(_ x: Int, _ y: Int) -> RGB {
+            let index = (y * width + x) * 4
+            return (Int(bytes[index]), Int(bytes[index + 1]), Int(bytes[index + 2]))
+        }
+    }
+
+    /// Stored pixels (no orientation applied), top row first, as 8-bit sRGB.
+    private func pixels(of image: CGImage) throws -> Pixels {
+        let width = image.width, height = image.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return Pixels(width: width, height: height, bytes: bytes)
+    }
+
+    private func pixels(at url: URL) throws -> Pixels {
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        return try pixels(of: try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)))
+    }
+
+    private func expectColor(_ pixels: Pixels, _ x: Int, _ y: Int, _ expected: RGB,
+                             _ comment: String, sourceLocation: SourceLocation = #_sourceLocation) {
+        let actual = pixels.rgb(x, y)
+        let close = abs(actual.r - expected.r) < 70
+            && abs(actual.g - expected.g) < 70
+            && abs(actual.b - expected.b) < 70
+        #expect(close, "\(comment): pixel (\(x), \(y)) is \(actual), expected \(expected)",
+                sourceLocation: sourceLocation)
+    }
+
+    private func meanAbsoluteDifference(_ lhs: Pixels, _ rhs: Pixels, border: Int = 0) -> (mean: Double, max: Int) {
+        let width = min(lhs.width, rhs.width), height = min(lhs.height, rhs.height)
+        var total = 0, count = 0, maximum = 0
+        for y in border..<(height - border) {
+            for x in border..<(width - border) {
+                let a = lhs.rgb(x, y), b = rhs.rgb(x, y)
+                for delta in [abs(a.r - b.r), abs(a.g - b.g), abs(a.b - b.b)] {
+                    total += delta
+                    maximum = max(maximum, delta)
+                }
+                count += 3
+            }
+        }
+        return (Double(total) / Double(max(count, 1)), maximum)
+    }
+
+    private func editedSettings() -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        settings.contrast2012 = 5
+        return settings
+    }
+
+    // MARK: Orientation
+
+    @Test("A sidecar-only rotation is baked into exported pixels", arguments: [6, 8], [false, true])
+    func sidecarRotationIsBakedIn(orientation: Int, edited: Bool) async throws {
+        let directory = try makeDirectory("sidecar-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(orientation, for: source)
+        #expect(FullScreenImageCache.displayOrientation(for: source, fallback: 1) == orientation)
+
+        let rendered = try await EditedImageRenderer.render(
+            from: source, cameraRaw: edited ? editedSettings() : nil, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 64)
+        // 90° CW (6): stored bottom-left lands top-left. 90° CCW (8): stored top-right does.
+        let expected: [RGB] = orientation == 6
+            ? [Self.blue, Self.red, Self.white, Self.green]
+            : [Self.green, Self.white, Self.red, Self.blue]
+        expectColor(output, 8, 16, expected[0], "top-left")
+        expectColor(output, 24, 16, expected[1], "top-right")
+        expectColor(output, 8, 48, expected[2], "bottom-left")
+        expectColor(output, 24, 48, expected[3], "bottom-right")
+    }
+
+    @Test("A sidecar rotation with a crop renders the region framed in Develop")
+    func sidecarRotationWithCrop() async throws {
+        let directory = try makeDirectory("sidecar-rotation-crop")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("photo.jpg")
+        try writeQuadrantJPEG(to: source, orientation: 1)
+        try writeSidecarOrientation(6, for: source)
+
+        // Crops are stored in the sensor (stored-pixel) frame: keep the left half, which
+        // holds the red (top) and blue (bottom) quadrants.
+        var settings = editedSettings()
+        settings.crop = CameraRawCrop(top: 0, left: 0, bottom: 1, right: 0.5, angle: 0, hasCrop: true)
+        let rendered = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        )
+        let output = try pixels(at: rendered)
+        #expect(output.width == 32)
+        #expect(output.height == 32)
+        // Rotated 90° CW for display: blue on the left, red on the right, nothing else.
+        expectColor(output, 6, 6, Self.blue, "top-left")
+        expectColor(output, 6, 26, Self.blue, "bottom-left")
+        expectColor(output, 26, 6, Self.red, "top-right")
+        expectColor(output, 26, 26, Self.red, "bottom-right")
+
+        // The narrower crop keeps only the sensor's top-left (red) quadrant: 32x16 stored,
+        // 16x32 displayed.
+        settings.crop = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 0.5, angle: 0, hasCrop: true)
+        let quadrant = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        )
+        let quadrantPixels = try pixels(at: quadrant)
+        #expect(quadrantPixels.width == 16)
+        #expect(quadrantPixels.height == 32)
+        expectColor(quadrantPixels, 8, 4, Self.red, "top")
+        expectColor(quadrantPixels, 8, 28, Self.red, "bottom")
+    }
+
+    @Test("Embedded and sidecar rotations both reach Save As JPEG upright with orientation 1")
+    func embeddedOrientationAndSaveAsJPEG() async throws {
+        let directory = try makeDirectory("embedded-rotation")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let embedded = directory.appendingPathComponent("embedded.jpg")
+        try writeQuadrantJPEG(to: embedded, orientation: 6)
+        let sidecarOnly = directory.appendingPathComponent("sidecar.jpg")
+        try writeQuadrantJPEG(to: sidecarOnly, orientation: 1)
+        try writeSidecarOrientation(6, for: sidecarOnly)
+
+        for source in [embedded, sidecarOnly] {
+            let rendered = try await EditExportPipeline.renderItem(
+                sourceURL: source, cameraRaw: editedSettings(), kind: .saveAs(.jpeg),
+                outputFolder: directory.appendingPathComponent("output"), folderURL: directory,
+                writeEngine: SwiftExifWriteEngine(), failureTracker: MetadataFailureTracker()
+            )
+            let output = try pixels(at: rendered)
+            #expect(output.width == 32, "\(source.lastPathComponent)")
+            #expect(output.height == 64, "\(source.lastPathComponent)")
+            expectColor(output, 8, 16, Self.blue, "\(source.lastPathComponent) top-left")
+            expectColor(output, 24, 16, Self.red, "\(source.lastPathComponent) top-right")
+            let imageSource = try #require(CGImageSourceCreateWithURL(rendered as CFURL, nil))
+            let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
+            #expect((properties?[kCGImagePropertyOrientation] as? Int ?? 1) == 1,
+                    "\(source.lastPathComponent) must not be rotated twice by a viewer")
+        }
+    }
+
+    // MARK: Adaptive HDR sources
+
+    @Test("SDR exports of a gain-map JPEG use its SDR rendition instead of clipping the expansion")
+    func gainMapSDRExportUsesSDRRendition() async throws {
+        let directory = try makeDirectory("gainmap-sdr")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("adaptive.jpg")
+
+        // Neutral ramp from black to 4x SDR white in extended linear sRGB.
+        let width = 256, height = 32
+        var floats = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value = Float(x) / Float(width - 1) * 4
+                let index = (y * width + x) * 4
+                floats[index] = value
+                floats[index + 1] = value
+                floats[index + 2] = value
+            }
+        }
+        let hdr = CIImage(
+            bitmapData: floats.withUnsafeBufferPointer { Data(buffer: $0) },
+            bytesPerRow: width * 16,
+            size: CGSize(width: width, height: height),
+            format: .RGBAf,
+            colorSpace: CameraRawApproximation.workingColorSpace
+        )
+        try EditedImageRenderer.writeHDRGainMapJPEG(
+            hdrImage: hdr, destURL: source, colorSpace: CameraRawApproximation.workingColorSpace,
+            quality: 0.95, ctx: CameraRawApproximation.ciContext
+        )
+
+        let context = CameraRawApproximation.ciContext
+        let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let base = try #require(CIImage(contentsOf: source, options: [.applyOrientationProperty: true]))
+        let expanded = try #require(CIImage(contentsOf: source, options: [
+            .applyOrientationProperty: true, .expandToHDR: true, .toneMapHDRtoSDR: false,
+        ]))
+        let basePixels = try pixels(of: try #require(
+            context.createCGImage(base, from: base.extent, format: .RGBA8, colorSpace: sRGB)))
+        let clippedPixels = try pixels(of: try #require(
+            context.createCGImage(expanded, from: expanded.extent, format: .RGBA8, colorSpace: sRGB)))
+        func clippedCount(_ pixels: Pixels) -> Int {
+            (0..<pixels.width).filter { pixels.rgb($0, height / 2).g >= 254 }.count
+        }
+        // The fixture must reproduce the defect: expansion clips many more highlight columns.
+        try #require(clippedCount(clippedPixels) > clippedCount(basePixels) + 20)
+
+        let exported = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: nil, isHDR: false,
+            outputFolder: directory.appendingPathComponent("output"),
+            configuration: pngConfiguration()
+        ))
+        let unedited = meanAbsoluteDifference(exported, basePixels)
+        #expect(unedited.mean < 2, "unedited SDR export differs from the SDR rendition: \(unedited)")
+        #expect(clippedCount(exported) <= clippedCount(basePixels) + 2)
+
+        // Save As forces SDR even when the photo was edited in HDR mode.
+        var hdrEdited = CameraRawSettings()
+        hdrEdited.hdrEditMode = 1
+        hdrEdited.contrast2012 = 0
+        let savedAs = try pixels(at: try await EditedImageRenderer.saveAs(
+            from: source, cameraRaw: hdrEdited, format: .png,
+            destinationFolder: directory.appendingPathComponent("output")
+        ))
+        let saved = meanAbsoluteDifference(savedAs, basePixels)
+        #expect(saved.mean < 3, "Save As SDR differs from the SDR rendition: \(saved)")
+        #expect(clippedCount(savedAs) <= clippedCount(basePixels) + 2)
+    }
+
+    // MARK: Reduced-resolution decode
+
+    @Test("Resolution-limited exports decode near the needed size and match a full-size render",
+          arguments: [false, true])
+    func reducedDecodeMatchesFullResolution(croppedAndRotated: Bool) async throws {
+        let directory = try makeDirectory("reduced-decode")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("large.jpg")
+        let width = 3600, height = 2400
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let blue = UInt8(255 * Double(y) / Double(height))
+            let wave = cos(Double(y) * 0.02)
+            for x in 0..<width {
+                let index = (y * width + x) * 4
+                bytes[index] = UInt8(255 * Double(x) / Double(width))
+                bytes[index + 1] = UInt8(127.5 + 127 * sin(Double(x) * 0.03) * wave)
+                bytes[index + 2] = blue
+            }
+        }
+        let image: CGImage = try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ))
+            return try #require(context.makeImage())
+        }
+        try writeJPEG(image, to: source, orientation: 1)
+
+        var settings = CameraRawSettings()
+        settings.exposure2012 = 0.3
+        settings.contrast2012 = 10
+        var orientation = 1
+        if croppedAndRotated {
+            settings.crop = CameraRawCrop(top: 0.1, left: 0.05, bottom: 0.8, right: 0.85, angle: 0, hasCrop: true)
+            try writeSidecarOrientation(6, for: source)
+            orientation = 6
+        }
+        // The fixture must take the reduced path: crop-aware, well below native size.
+        let decodeSize = try #require(EditedImageRenderer.exportDecodeMaxPixelSize(
+            maximumOutputPixelSize: 1600, settings: settings, orientation: orientation,
+            sourcePixelSize: CGSize(width: width, height: height)
+        ))
+        #expect(decodeSize < 2200)
+        #expect(decodeSize > 1600)
+
+        let output = directory.appendingPathComponent("output")
+        let limited = try pixels(at: try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false, outputFolder: output,
+            configuration: pngConfiguration(.pixels1600)
+        ))
+        let fullURL = try await EditedImageRenderer.render(
+            from: source, cameraRaw: settings, isHDR: false, outputFolder: output,
+            configuration: pngConfiguration(), collisionPolicy: .appendNumber
+        )
+        let fullImage = try #require(CIImage(contentsOf: fullURL))
+        let resized = EditedImageRenderer.limitedForExport(fullImage, maximumPixelSize: 1600)
+        let reference = try pixels(of: try #require(CameraRawApproximation.ciContext.createCGImage(
+            resized, from: resized.extent, format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!
+        )))
+
+        #expect(max(limited.width, limited.height) == 1600)
+        #expect(abs(limited.width - reference.width) <= 1)
+        #expect(abs(limited.height - reference.height) <= 1)
+        if croppedAndRotated {
+            #expect(limited.width < limited.height, "the sidecar rotation must survive")
+        }
+        let difference = meanAbsoluteDifference(limited, reference, border: 3)
+        #expect(difference.mean < 2.5, "reduced decode differs from full-size render: \(difference)")
+        #expect(difference.max < 40, "reduced decode differs from full-size render: \(difference)")
+    }
+
+    @Test("Resolution-dependent effects keep the full-resolution decode")
+    func resolutionDependentEffectsDisableReducedDecode() throws {
+        let native = CGSize(width: 8000, height: 6000)
+        func decodeSize(_ settings: CameraRawSettings?, limit: Int = 2048,
+                        source: CGSize = native) -> CGFloat? {
+            EditedImageRenderer.exportDecodeMaxPixelSize(
+                maximumOutputPixelSize: limit, settings: settings, orientation: 1,
+                sourcePixelSize: source
+            )
+        }
+
+        let padded = CGFloat(2048) * 1.04 + 8
+        #expect(decodeSize(nil) == padded)
+        #expect(decodeSize(CameraRawSettings()) == padded)
+        #expect(EditedImageRenderer.exportDecodeMaxPixelSize(
+            maximumOutputPixelSize: nil, settings: nil, orientation: 1, sourcePixelSize: native
+        ) == nil)
+        // Not worth a second resample when the source is barely larger.
+        #expect(decodeSize(nil, source: CGSize(width: 3000, height: 2000)) == nil)
+
+        // A quarter-frame crop (half of each side) needs twice the decode size to fill the limit.
+        var cropped = CameraRawSettings()
+        cropped.crop = CameraRawCrop(top: 0, left: 0, bottom: 0.5, right: 0.5, angle: 0, hasCrop: true)
+        let croppedSize = try #require(decodeSize(cropped))
+        #expect(abs(croppedSize - padded * 2) < 1)
+
+        var sharpened = CameraRawSettings()
+        sharpened.sharpness = 40
+        #expect(decodeSize(sharpened) == nil)
+
+        for film in [
+            FilmEmulationSettings(grain: 20), FilmEmulationSettings(halation: 20),
+            FilmEmulationSettings(bloom: 20), FilmEmulationSettings(edgeBlur: 20),
+        ] {
+            var settings = CameraRawSettings()
+            settings.filmEmulation = film
+            #expect(decodeSize(settings) == nil, "\(film)")
+        }
+        var vignette = CameraRawSettings()
+        vignette.filmEmulation = FilmEmulationSettings(vignette: -30)
+        #expect(decodeSize(vignette) == padded)
+
+        // Clarity's pixel radius is proportional only for 1000...8000 px short sides.
+        var clarity = CameraRawSettings()
+        clarity.clarity2012 = 25
+        #expect(decodeSize(clarity) == padded)
+        #expect(decodeSize(clarity, source: CGSize(width: 12000, height: 9000)) == nil)
+        #expect(decodeSize(clarity, limit: 1600, source: CGSize(width: 8000, height: 1600)) == nil)
+
+        var watermarked = CameraRawSettings()
+        var layer = WatermarkLayer(libraryAssetID: UUID())
+        layer.geometry.sizeUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == nil)
+        layer.geometry.sizeUnit = .percent
+        layer.geometry.marginUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == nil)
+        layer.geometry.marginUnit = .percent
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == padded)
+        layer.enabled = false
+        layer.geometry.sizeUnit = .pixel
+        watermarked.watermarkLayers = [layer]
+        #expect(decodeSize(watermarked) == padded)
+    }
+}
+
 @Suite("Adaptive HDR JPEG")
 struct AdaptiveHDRJPEGTests {
     private func makeSourceJPEG(in directory: URL) throws -> URL {
