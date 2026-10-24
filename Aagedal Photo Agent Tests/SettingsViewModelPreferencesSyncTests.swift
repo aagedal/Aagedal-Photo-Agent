@@ -151,3 +151,49 @@ struct PreferencesSyncEnablingTests {
         #expect(defaults.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled))
     }
 }
+
+@MainActor
+@Suite("Preferences sync re-enabling", .serialized)
+struct PreferencesSyncReEnablingTests {
+    @Test("turning sync back on where it was last written pushes this Mac's newer local values")
+    func reEnablingOnSameMacPushesLocal() throws {
+        let suiteName = "PreferencesSyncReEnablingTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let cloud = InMemoryCloudKeyValueStore()
+        defaults.set(0.8, forKey: UserDefaultsKeys.exportQualitySDR)
+
+        let service = PreferencesSyncService(kvs: cloud, defaults: defaults)
+        service.setEnabled(true)
+        service.setEnabled(false)
+        // Changed while sync was off; the cloud still holds the old copy.
+        defaults.set(0.3, forKey: UserDefaultsKeys.exportQualitySDR)
+        service.setEnabled(true)
+        defer { service.setEnabled(false) }
+
+        #expect(defaults.double(forKey: UserDefaultsKeys.exportQualitySDR) == 0.3)
+        #expect(cloud.values[UserDefaultsKeys.exportQualitySDR] as? Double == 0.3)
+    }
+
+    @Test("when another Mac wrote last, enabling pulls its values first")
+    func anotherMacWroteLastPulls() throws {
+        let suiteName = "PreferencesSyncReEnablingTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let cloud = InMemoryCloudKeyValueStore()
+        defaults.set(0.8, forKey: UserDefaultsKeys.exportQualitySDR)
+
+        let service = PreferencesSyncService(kvs: cloud, defaults: defaults)
+        service.setEnabled(true)
+        service.setEnabled(false)
+        // Another Mac pushes a newer value and becomes the last writer.
+        cloud.values[UserDefaultsKeys.exportQualitySDR] = 0.5
+        cloud.values[PreferencesSyncService.lastWriterKey] = ["device": "other-mac", "time": 1.0]
+        defaults.set(0.3, forKey: UserDefaultsKeys.exportQualitySDR)
+        service.setEnabled(true)
+        defer { service.setEnabled(false) }
+
+        #expect(defaults.double(forKey: UserDefaultsKeys.exportQualitySDR) == 0.5)
+        #expect(cloud.values[UserDefaultsKeys.exportQualitySDR] as? Double == 0.5)
+    }
+}
