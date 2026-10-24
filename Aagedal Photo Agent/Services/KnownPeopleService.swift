@@ -968,6 +968,8 @@ final class KnownPeopleService {
                   peer.cachedDirectory?.standardizedFileURL == root.standardizedFileURL else { continue }
             peer.database = nil
             peer.clearFeaturePrintCache()
+            // A peer's in-flight background read may predate this write: read again.
+            if peer.backgroundReloadID != nil { peer.scheduleBackgroundDatabaseReload() }
         }
     }
 
@@ -1146,12 +1148,19 @@ final class KnownPeopleService {
         })
     }
 
+    /// Off-main snapshot assembly used by `reloadAfterStorageChange`. Injectable so tests can
+    /// hold a read open while a remote change lands.
+    typealias SnapshotReader = @Sendable (URL) async -> KnownPeopleDatabaseSnapshotReader.Outcome
+    private let snapshotReader: SnapshotReader
+
     init(
         thumbnailLoader: KnownPeopleThumbnailLoadService = .shared,
-        archiveService: KnownPeopleArchiveService = .shared
+        archiveService: KnownPeopleArchiveService = .shared,
+        snapshotReader: @escaping SnapshotReader = { await KnownPeopleDatabaseSnapshotReader.read(root: $0) }
     ) {
         self.thumbnailLoader = thumbnailLoader
         self.archiveService = archiveService
+        self.snapshotReader = snapshotReader
         Self.instances.removeAll { $0.value == nil }
         Self.instances.append(WeakService(self))
     }
@@ -1204,6 +1213,10 @@ final class KnownPeopleService {
     /// (exactly the old behaviour), and the background result is discarded in that case.
     /// Stores that need repair writes (legacy migration, conflict merges, embedding migration,
     /// tombstone GC) are left cold and repaired by that first synchronous load.
+    ///
+    /// `.knownPeopleDatabaseDidChange` is posted when the background read lands (or fails), not
+    /// here: posting while the database is cold made every open People view run the synchronous
+    /// load on the main thread, which then also discarded the background result.
     func reloadAfterStorageChange(resolvedStorageURL: URL? = nil) {
         storageRevision &+= 1
         cachedDirectory = resolvedStorageURL
@@ -1213,56 +1226,76 @@ final class KnownPeopleService {
         personThumbnailCache.removeAllObjects()
         embeddingThumbnailCache.removeAllObjects()
         scheduleBackgroundDatabaseReload()
-        NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
     }
 
     /// In-flight off-main reload started by `reloadAfterStorageChange`.
     private var backgroundReloadTask: Task<Void, Never>?
-    /// Bumped on every `database` assignment, so a background snapshot never replaces state that
-    /// was loaded, mutated or invalidated after its read began.
+    /// Identity of the current background read; a replaced or finished read clears nothing
+    /// that belongs to its successor.
+    private var backgroundReloadID: UUID?
+    /// Bumped on every `database` assignment, and by remote record events that arrive while the
+    /// database is cold, so a background snapshot never publishes records that were loaded,
+    /// mutated, invalidated or remotely changed after its read began.
     private var databaseGeneration: UInt64 = 0
 
-    /// Awaits the in-flight background reload (tests and callers that must observe its result).
+    /// Whether an off-main reload is still pending (tests/diagnostics).
+    var isBackgroundDatabaseReloadPending: Bool { backgroundReloadID != nil }
+
+    /// Awaits the in-flight background reload, including any re-read it was replaced by.
     func waitForBackgroundDatabaseReload() async {
-        await backgroundReloadTask?.value
+        while let task = backgroundReloadTask, backgroundReloadID != nil {
+            await task.value
+            if backgroundReloadTask == task { return }
+        }
     }
 
     private func scheduleBackgroundDatabaseReload() {
         backgroundReloadTask?.cancel()
+        let id = UUID()
+        backgroundReloadID = id
         let revision = storageRevision
-        // Captured while `database` is known to be nil (just dropped by the caller).
+        // Captured while `database` is known to be nil (dropped by the caller).
         let generation = databaseGeneration
         backgroundReloadTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let root = try? await self.resolveDirectoryInBackground(),
-                  !Task.isCancelled, revision == self.storageRevision,
-                  generation == self.databaseGeneration else { return }
-            // Repairs (embedding-space migration included) stay on the existing lazy path.
-            let outcome: KnownPeopleDatabaseSnapshotReader.Outcome
-            if self.embeddingVersionNeedsMigration {
-                outcome = .needsRepair
-            } else {
-                outcome = await KnownPeopleDatabaseSnapshotReader.read(root: root)
+            var outcome: KnownPeopleDatabaseSnapshotReader.Outcome?
+            var root: URL?
+            if let resolved = try? await self.resolveDirectoryInBackground(),
+               !Task.isCancelled, revision == self.storageRevision,
+               generation == self.databaseGeneration {
+                root = resolved
+                // Repairs (embedding-space migration included) stay on the existing lazy path.
+                outcome = self.embeddingVersionNeedsMigration
+                    ? .needsRepair
+                    : await self.snapshotReader(resolved)
             }
-            guard !Task.isCancelled, revision == self.storageRevision,
-                  generation == self.databaseGeneration else { return }
-            let normalizedRoot = root.standardizedFileURL
-            // Mirror loadDatabase(): never cache a listing while an import, reset or migration
-            // owns this root.
-            guard !Self.isReservedDestination(root),
-                  Self.importCommitRoot != normalizedRoot else { return }
-            switch outcome {
-            case .clean(let loaded):
+            // Superseded by a newer reload or a re-read: that one publishes.
+            guard self.backgroundReloadID == id else { return }
+            self.backgroundReloadID = nil
+            self.backgroundReloadTask = nil
+            // A whole-store replacement moved the revision; its owner publishes.
+            guard !Task.isCancelled, revision == self.storageRevision else { return }
+            // A synchronous load or mutation already installed fresher state (and posted).
+            guard generation == self.databaseGeneration else { return }
+            if let root, case .clean(let loaded) = outcome,
+               // Mirror loadDatabase(): never cache a listing while an import, reset or
+               // migration owns this root.
+               !Self.isReservedDestination(root),
+               Self.importCommitRoot != root.standardizedFileURL {
                 self.database = loaded
-                self.backgroundReloadTask = nil
-                NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
-            case .needsRepair:
-                // Leave the database cold. Repairs (legacy migration, conflict merges, embedding
-                // migration, GC) keep running lazily on the next synchronous access, exactly as
-                // before; running them here, at an arbitrary later moment, could race an
-                // admitted background migration of the same files.
-                self.backgroundReloadTask = nil
             }
+            // Clean result, repair needed (left cold, repaired by the next synchronous load,
+            // exactly as before) or failure: observers re-read now.
+            NotificationCenter.default.post(name: .knownPeopleDatabaseDidChange, object: nil)
+        }
+    }
+
+    /// A remote record event reached this service while its database was cold. A background read
+    /// in flight may already have read the old file, so invalidate it and read again.
+    private func invalidateColdSnapshotForRemoteChange() {
+        databaseGeneration &+= 1
+        if backgroundReloadID != nil {
+            scheduleBackgroundDatabaseReload()
         }
     }
 
@@ -1789,6 +1822,8 @@ final class KnownPeopleService {
                 // since the event was queued. Invalidate images conservatively without loading
                 // records merely to recover the embedding ownership map; this also rejects
                 // reads admitted before deferred remote events replay after archive commits.
+                // A background snapshot read before this event must not publish its record.
+                invalidateColdSnapshotForRemoteChange()
                 invalidatePeerThumbnails(at: knownPeopleDirectory)
                 thumbnailContentRevision &+= 1
                 personThumbnailCache.removeObject(forKey: personID as NSUUID)

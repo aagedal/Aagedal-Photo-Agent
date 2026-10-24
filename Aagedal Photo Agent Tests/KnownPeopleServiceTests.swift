@@ -1549,16 +1549,62 @@ struct KnownPeopleServiceTests {
         ) { _ in counter.increment() }
         defer { NotificationCenter.default.removeObserver(observer) }
 
+        let beforeReload = counter.value
         service.reloadAfterStorageChange(resolvedStorageURL: directory)
-        let afterReloadCall = counter.value
+        // Nothing is announced while the database is cold: open People views would otherwise
+        // run the synchronous load on the main thread.
+        #expect(counter.value == beforeReload)
         await service.waitForBackgroundDatabaseReload()
-        // A second change notification announces the background snapshot.
-        #expect(counter.value > afterReloadCall)
+        // The notification announces the landed background snapshot.
+        #expect(counter.value > beforeReload)
 
         // The snapshot was installed by the background read: the file can disappear behind
         // the cache without changing what synchronous callers see.
         try FileManager.default.removeItem(at: personFileURL(person.id, in: directory))
         #expect(service.person(byID: person.id)?.name == "Synced peer")
+    }
+
+    @Test("A remote change landing during the background read forces a re-read of the newer record")
+    func remoteChangeDuringBackgroundReadRereads() async throws {
+        let key = UserDefaultsKeys.knownPeopleEmbeddingVersion
+        let previous = AppDefaults.store.object(forKey: key)
+        let directory = makeTempDir()
+        activate(directory)
+        AppDefaults.store.set(FaceRecognitionDefaults.embeddingVersion, forKey: key)
+        defer {
+            if let previous { AppDefaults.store.set(previous, forKey: key) }
+            else { AppDefaults.store.removeObject(forKey: key) }
+            teardown(directory)
+        }
+        await KnownPeopleService.shared.waitForBackgroundDatabaseReload()
+
+        var person = KnownPerson(name: "Before sync", embeddings: [embedding(7)])
+        try writePersonFile(person, into: directory)
+        let probe = KnownPeopleSnapshotReadProbe()
+        let service = KnownPeopleService(snapshotReader: { await probe.read($0) })
+
+        service.reloadAfterStorageChange(resolvedStorageURL: directory)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !probe.firstReadFinished, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(probe.firstReadFinished)
+
+        // Another Mac adds an embedding while the first read (holding the old record) is open.
+        person.name = "After sync"
+        person.embeddings.append(embedding(8))
+        try writePersonFile(person, into: directory)
+        service.applyRemoteChanges([(personFileURL(person.id, in: directory), nil)])
+
+        probe.releaseFirstRead()
+        await service.waitForBackgroundDatabaseReload()
+        #expect(probe.calls == 2)
+
+        // The published snapshot is the re-read one: remove the file to prove it is cached.
+        try FileManager.default.removeItem(at: personFileURL(person.id, in: directory))
+        let published = service.person(byID: person.id)
+        #expect(published?.name == "After sync")
+        #expect(published?.embeddings.count == 2)
     }
 
     @Test("A synchronous caller during the background read wins and the stale result is dropped")
@@ -3939,4 +3985,44 @@ private nonisolated final class KnownPeopleNotificationCounter: @unchecked Senda
     private var count = 0
     var value: Int { lock.withLock { count } }
     func increment() { lock.withLock { count += 1 } }
+}
+
+/// Reads the store like production, but holds the first read open (after it has read the files)
+/// until released, so a remote change can land mid-read.
+private nonisolated final class KnownPeopleSnapshotReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCount = 0
+    private var finished = false
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    var calls: Int { lock.withLock { callCount } }
+    var firstReadFinished: Bool { lock.withLock { finished } }
+
+    func read(_ root: URL) async -> KnownPeopleDatabaseSnapshotReader.Outcome {
+        let call = lock.withLock { () -> Int in callCount += 1; return callCount }
+        let outcome = KnownPeopleDatabaseSnapshotReader.readSynchronously(
+            root: root, hasConflicts: { _ in false }
+        )
+        guard call == 1 else { return outcome }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                finished = true
+                if released { return true }
+                waiter = continuation
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        return outcome
+    }
+
+    func releaseFirstRead() {
+        let pending = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
+            defer { waiter = nil }
+            return waiter
+        }
+        pending?.resume()
+    }
 }

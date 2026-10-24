@@ -162,12 +162,51 @@ struct WatermarkRenderingTests {
         let center = sampleMidRow(result, nx: 0.5)
         #expect(center.g > 0.9, "watermark must still be in the returned image, got \(center)")
 
-        // A second render with the same settings rebuilds everything from scratch, identically.
+        // The small watermark texture stays cached: this engine also renders edited thumbnails
+        // and previews, which must not re-read the PNG every time.
+        #expect(MetalEditPipeline.offscreenHasCachedWatermarkTextureForTesting())
+        #expect(!WatermarkTextureLoadFailures.lastLoadFailed(asset.id))
+
+        // A second render with the same settings rebuilds the masks, identically.
         let again = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
         #expect(MetalEditPipeline.offscreenRetainedTransientTextureCountForTesting() == 0)
         let againCenter = sampleMidRow(again, nx: 0.5)
         #expect(abs(againCenter.g - center.g) < 0.001)
         #expect(abs(againCenter.r - center.r) < 0.001)
+
+        // Memory pressure drops the watermark cache; the next render reloads it.
+        MetalEditPipeline.evictOffscreenCachesForTesting()
+        #expect(!MetalEditPipeline.offscreenHasCachedWatermarkTextureForTesting())
+        let reloaded = try #require(MetalEditPipeline.renderOffscreen(source: source, settings: settings))
+        #expect(abs(sampleMidRow(reloaded, nx: 0.5).g - center.g) < 0.001)
+    }
+
+    @Test("a watermark whose PNG cannot be read during render is reported to export, not skipped silently")
+    func unreadableWatermarkIsReportedToExport() async throws {
+        let dir = makeTempDir()
+        await activateStore(dir)
+        defer { teardownStore(dir) }
+
+        let pngData = try makeSolidColorPNGData(size: 16, red: 1, green: 1, blue: 0)
+        let pngURL = FileManager.default.temporaryDirectory.appendingPathComponent("wm-\(UUID().uuidString).png")
+        try pngData.write(to: pngURL)
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let asset = try await WatermarkStore.shared.importPNG(from: pngURL, name: "Corrupt")
+        // The file stays readable on disk but no longer decodes (a torn or mid-sync read).
+        try Data("not a png".utf8).write(to: WatermarkStore.resolvedImageURL(forAssetID: asset.id))
+
+        var geometry = WatermarkGeometry()
+        geometry.sizeDimension = .width
+        geometry.sizeUnit = .percent
+        geometry.sizeValue = 25
+        var settings = CameraRawSettings()
+        settings.watermarkLayers = [WatermarkLayer(name: "Corrupt", libraryAssetID: asset.id, geometry: geometry)]
+        let source = CIImage(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 64, height: 64))
+        _ = MetalEditPipeline.renderOffscreen(source: source, settings: settings)
+
+        #expect(WatermarkTextureLoadFailures.lastLoadFailed(asset.id))
+        #expect(EditExportPipeline.missingWatermarkAssetIDs(in: settings) == [asset.id])
     }
 
     @Test("a fully-opaque watermark layer composites its own color inside its footprint and leaves the rest of the image untouched")

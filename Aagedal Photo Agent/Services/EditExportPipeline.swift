@@ -573,14 +573,16 @@ enum EditExportPipeline {
 
     /// Library asset IDs referenced by enabled watermark layers whose PNG isn't readable at the
     /// path the Metal texture loader uses (deleted from the library, or not yet downloaded
-    /// from iCloud). Those layers render as no-ops.
+    /// from iCloud), or whose latest texture load failed even though the file exists (a
+    /// coordinated read or decode failure, e.g. mid-sync). Those layers render as no-ops.
     nonisolated static func missingWatermarkAssetIDs(in cameraRaw: CameraRawSettings?) -> [UUID] {
         var seen = Set<UUID>()
         return (cameraRaw?.watermarkLayers ?? []).filter(\.enabled).compactMap { layer in
             let id = layer.libraryAssetID
             guard seen.insert(id).inserted else { return nil }
             let path = WatermarkStore.resolvedImageURL(forAssetID: id).path
-            return FileManager.default.isReadableFile(atPath: path) ? nil : id
+            let readable = FileManager.default.isReadableFile(atPath: path)
+            return readable && !WatermarkTextureLoadFailures.lastLoadFailed(id) ? nil : id
         }
     }
 

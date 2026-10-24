@@ -126,6 +126,16 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
     private var unloadWhenIdle = false
     private var pressureRegistration: ImageMemoryCoordinator.Registration?
 
+    /// Loads a compiled model. Injectable so tests can simulate a reload failure.
+    typealias ModelLoader = @Sendable (URL) throws -> MLModel
+    private let modelLoader: ModelLoader
+
+    nonisolated static func loadCompiledModel(at url: URL) throws -> MLModel {
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        return try MLModel(contentsOf: url, configuration: config)
+    }
+
     nonisolated var availability: FaceRecognitionModelAvailability {
         lock.lock(); defer { lock.unlock() }
         if modelURL != nil { return loadError == nil ? .available : .verificationFailed }
@@ -149,12 +159,14 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
         allowsDynamicResolution: Bool = false,
         isResolutionPending: Bool = false,
         idleUnloadDelay: TimeInterval = 120,
-        memoryCoordinator: ImageMemoryCoordinator = .shared
+        memoryCoordinator: ImageMemoryCoordinator = .shared,
+        modelLoader: @escaping ModelLoader = CoreMLFaceEmbedder.loadCompiledModel
     ) {
         self.modelURL = modelURL
         self.allowsDynamicResolution = allowsDynamicResolution
         self.isResolutionPending = isResolutionPending
         self.idleUnloadDelay = idleUnloadDelay
+        self.modelLoader = modelLoader
         pressureRegistration = memoryCoordinator.registerPressureEviction(level: .critical) { [weak self] in
             self?.unloadModelForMemoryPressure()
         }
@@ -295,11 +307,19 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
             return (nil, modelURL, installationGeneration)
         }
         if let loaded = captured.0 { return loaded }
+        // A reload after an idle/pressure unload of an installation that already loaded in this
+        // process. Its failure is treated as transient (memory pressure, a busy disk): it is
+        // retried once and, if still failing, thrown without being cached, so the next request
+        // tries again instead of face recognition staying dead until relaunch.
+        let isReload = lock.withLock { verifiedGeneration == captured.2 }
         do {
             guard let url = captured.1 else { throw EmbedError.modelNotFound }
-            let config = MLModelConfiguration()
-            config.computeUnits = .all
-            let loaded = try MLModel(contentsOf: url, configuration: config)
+            let loaded: MLModel
+            if isReload {
+                loaded = try (try? modelLoader(url)) ?? modelLoader(url)
+            } else {
+                loaded = try modelLoader(url)
+            }
             return try lock.withLock {
                 guard installationGeneration == captured.2 else { throw EmbedError.modelNotFound }
                 loadedModel = loaded
@@ -308,7 +328,7 @@ nonisolated final class CoreMLFaceEmbedder: FaceEmbedder, @unchecked Sendable {
             }
         } catch {
             lock.withLock {
-                if installationGeneration == captured.2 { loadError = error }
+                if installationGeneration == captured.2, !isReload { loadError = error }
             }
             throw error
         }
