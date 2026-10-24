@@ -61,7 +61,10 @@ nonisolated struct BrowserFolderChangeImpact: OptionSet, Sendable {
             default:
                 // Ordinary content changes require the image diff. Other dotfiles are Finder,
                 // cloud-provider, or atomic-write bookkeeping with no browser-visible effect.
-                if !first.hasPrefix(".") {
+                // The importer's hidden staging files can sit in subfolders (RAW/, JPEG/);
+                // they never become visible under that name either.
+                if !first.hasPrefix("."),
+                   !ImportCopyService.isStagingFileName(path.lastPathComponent) {
                     impact.insert(.browserContent)
                 }
             }

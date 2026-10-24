@@ -30,6 +30,10 @@ final class BrowserAutoRefreshCoordinator {
     /// further event may arrive to trigger another one.
     private let localSafetyInterval: TimeInterval = 300
     private var lastFallbackScan: [ObjectIdentifier: Date] = [:]
+    /// Folder an import is copying into. Panes showing it (or a folder inside it) do not
+    /// rescan on every arriving file; they refresh once when the import ends.
+    private var importDeferralFolder: URL?
+    private var importDeferredPaneIDs: Set<ObjectIdentifier> = []
 
     init(
         panes: BrowserPanesModel,
@@ -73,11 +77,35 @@ final class BrowserAutoRefreshCoordinator {
         }
     }
 
+    /// Starts (non-nil) or ends (nil) deferring auto-refresh for an import's destination.
+    /// Ending it refreshes every pane that skipped a refresh meanwhile, once.
+    func setImportDeferralFolder(_ folderURL: URL?) {
+        let standardized = folderURL?.standardizedFileURL
+        guard standardized != importDeferralFolder else { return }
+        importDeferralFolder = standardized
+        guard standardized == nil else { return }
+        let deferred = importDeferredPaneIDs
+        importDeferredPaneIDs.removeAll()
+        for paneID in deferred {
+            guard let folderURL = monitoredURLs[paneID] else { continue }
+            scheduleRefresh(paneID: paneID, folderURL: folderURL, delay: .zero)
+        }
+    }
+
+    /// True when `folderURL` is the import destination or lies inside it.
+    func isDeferredForImport(_ folderURL: URL) -> Bool {
+        guard let importDeferralFolder else { return false }
+        let root = importDeferralFolder.pathComponents
+        let folder = folderURL.standardizedFileURL.pathComponents
+        return folder.starts(with: root)
+    }
+
     func stop() {
         fallbackTask?.cancel()
         fallbackTask = nil
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
+        importDeferredPaneIDs.removeAll()
         for task in monitorSetupTasks.values { task.cancel() }
         monitorSetupTasks.removeAll()
         monitorRequestIDs.removeAll()
@@ -205,6 +233,14 @@ final class BrowserAutoRefreshCoordinator {
               let pane = panes.panes.first(where: { ObjectIdentifier($0) == paneID }),
               pane.currentFolderURL?.standardizedFileURL == folderURL else {
             refreshTasks.removeValue(forKey: paneID)?.cancel()
+            return
+        }
+
+        // An import writes thousands of files into this folder; one diff after it finishes
+        // shows the same final state as a rescan per arriving file.
+        if isDeferredForImport(folderURL) {
+            refreshTasks[paneID] = nil
+            importDeferredPaneIDs.insert(paneID)
             return
         }
 

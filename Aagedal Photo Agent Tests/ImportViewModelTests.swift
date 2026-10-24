@@ -342,14 +342,19 @@ struct ImportPreflightServiceTests {
 
     @Test("Voice-memo bundle planning freezes one suffix across primary and backup destinations")
     func bundlePlanningUsesOneSharedSuffix() async throws {
+        let photos = URL(fileURLWithPath: "/photos", isDirectory: true)
+        let backup = URL(fileURLWithPath: "/backup", isDirectory: true)
         let request = ImportPreflightService.BundleDestinationRequest(
-            image: URL(fileURLWithPath: "/photos/TRA00001.ARW"),
-            memo: URL(fileURLWithPath: "/photos/TRA00001.WAV"),
-            imageBackup: URL(fileURLWithPath: "/backup/TRA00001.ARW"),
-            memoBackup: URL(fileURLWithPath: "/backup/TRA00001.WAV")
+            stem: "TRA00001",
+            files: [
+                .init(source: URL(fileURLWithPath: "/card/TRA00001.ARW"), role: .image,
+                      primaryFolder: photos, backupFolder: backup),
+                .init(source: URL(fileURLWithPath: "/card/TRA00001.WAV"), role: .memo,
+                      primaryFolder: photos, backupFolder: backup),
+            ]
         )
         let service = ImportPreflightService(fileExists: { path in
-            path == request.image.path
+            path == "/photos/TRA00001.ARW"
         })
 
         let result = await service.resolveBundleDestinations(
@@ -369,11 +374,10 @@ struct ImportPreflightServiceTests {
         #expect(evidence.completedBundleCount == 1)
         let destination = try #require(evidence.destinations.first)
         #expect(destination.id == request.id)
-        #expect(destination.image.path == "/photos/TRA00001-1.ARW")
-        #expect(destination.memo.path == "/photos/TRA00001-1.WAV")
-        #expect(destination.imageBackup?.path == "/backup/TRA00001-1.ARW")
-        #expect(destination.memoBackup?.path == "/backup/TRA00001-1.WAV")
-        #expect(destination.skipReason == nil)
+        #expect(destination.files.map(\.primary.path) == ["/photos/TRA00001-1.ARW", "/photos/TRA00001-1.WAV"])
+        #expect(destination.files.map(\.backup?.path) == ["/backup/TRA00001-1.ARW", "/backup/TRA00001-1.WAV"])
+        #expect(destination.files.allSatisfy { $0.skipReason == nil })
+        #expect(destination.wasRenamed)
     }
 
     @Test("Pre-cancelled voice-memo planning returns explicit immutable partial evidence")
@@ -384,10 +388,13 @@ struct ImportPreflightServiceTests {
             return false
         })
         let request = ImportPreflightService.BundleDestinationRequest(
-            image: URL(fileURLWithPath: "/photos/TRA00002.ARW"),
-            memo: URL(fileURLWithPath: "/photos/TRA00002.WAV"),
-            imageBackup: nil,
-            memoBackup: nil
+            stem: "TRA00002",
+            files: [
+                .init(source: URL(fileURLWithPath: "/card/TRA00002.ARW"), role: .image,
+                      primaryFolder: URL(fileURLWithPath: "/photos"), backupFolder: nil),
+                .init(source: URL(fileURLWithPath: "/card/TRA00002.WAV"), role: .memo,
+                      primaryFolder: URL(fileURLWithPath: "/photos"), backupFolder: nil),
+            ]
         )
         let task = Task {
             await service.resolveBundleDestinations([request], policy: .renameWithSuffix)
@@ -2187,7 +2194,9 @@ struct SafeImportPathTests {
         #expect(importSource.contains("await pathContainmentService.inspect("))
         #expect(importSource.contains("let plannedPrimaryDestinations = primaryDestinations"))
         #expect(importSource.contains("candidates: plannedPrimaryDestinations"))
-        #expect(importSource.contains("candidates: memoDestinations"))
+        // Every resolved exposure destination (images and voice memos) is re-checked after
+        // preflight chose the final shared suffix.
+        #expect(importSource.contains("candidates: resolvedDestinations"))
         #expect(!importSource.contains("SafePathComponent.isContained(primaryURL"))
         #expect(!importSource.contains("SafePathComponent.isContained(bundle.memo"))
         #expect(importSource.contains("canonicalVoiceMemoImageURLBySource[source]"))
@@ -2807,5 +2816,571 @@ struct ImportWorkflowRegressionTests {
             #expect(viewModel.dateGroups.first?.isIncluded == false)
             #expect(viewModel.dateGroups.first?.folderName == "My Folder")
         }
+    }
+}
+
+/// Lets a test hook run an action from inside a `@Sendable` probe once the view model exists.
+private nonisolated final class ImportTestActionBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () async -> Void)?
+    private var fired = false
+
+    func set(_ action: @escaping @Sendable () async -> Void) { lock.withLock { self.action = action } }
+
+    /// Runs the action the first time only.
+    func fireOnce() async {
+        let action: (@Sendable () async -> Void)? = lock.withLock {
+            guard !fired else { return nil }
+            fired = true
+            return self.action
+        }
+        await action?()
+    }
+}
+
+@Suite("Import data safety", .serialized)
+@MainActor
+struct ImportDataSafetyTests {
+    private static let preferenceKeys = [
+        UserDefaultsKeys.importFileTypeFilter,
+        UserDefaultsKeys.importConflictPolicy,
+        UserDefaultsKeys.importCreateSubFolders,
+        UserDefaultsKeys.importVerificationMode,
+        UserDefaultsKeys.importSkipPreviouslyImported,
+        UserDefaultsKeys.importSortByDate,
+        UserDefaultsKeys.metadataWritePreset,
+    ]
+
+    private func withRestoredDefaults(_ body: () async throws -> Void) async rethrows {
+        let defaults = AppDefaults.store
+        var originals: [String: Any] = [:]
+        for key in Self.preferenceKeys { originals[key] = defaults.object(forKey: key) }
+        defer {
+            for key in Self.preferenceKeys {
+                if let original = originals[key] {
+                    defaults.set(original, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+        try await body()
+    }
+
+    private func makeRoot(_ name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func folder(_ root: URL, _ name: String) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func writeJPEG(to url: URL) throws {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16, bitsPerSample: 8,
+            samplesPerPixel: 3, hasAlpha: false, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        try #require(bitmap.representation(using: .jpeg, properties: [:])).write(to: url)
+    }
+
+    private func makeViewModel(
+        card: URL,
+        photos: URL,
+        title: String,
+        policy: ImportConflictPolicy,
+        filter: ImportFileTypeFilter = .jpegOnly,
+        writeEngine: any MetadataWriteEngine = SwiftExifWriteEngine(),
+        c2paDetector: (@Sendable (URL) async -> Bool)? = nil
+    ) -> ImportViewModel {
+        let viewModel = ImportViewModel(
+            readService: SwiftExifReadService(),
+            writeEngine: writeEngine,
+            c2paDetector: c2paDetector
+        )
+        viewModel.configuration.sourceURL = card
+        viewModel.configuration.destinationBaseURL = photos
+        viewModel.configuration.importTitle = title
+        viewModel.configuration.fileTypeFilter = filter
+        viewModel.configuration.conflictPolicy = policy
+        viewModel.configuration.createSubFolders = false
+        viewModel.configuration.verificationMode = .on
+        viewModel.configuration.skipPreviouslyImported = false
+        viewModel.configuration.applyMetadata = false
+        viewModel.sortByDate = false
+        return viewModel
+    }
+
+    private func waitForCompletion(_ viewModel: ImportViewModel) async throws {
+        for _ in 0..<1000 where viewModel.isImporting || viewModel.lastCompletionEntry == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func resolve(
+        _ service: ImportPreflightService,
+        _ requests: [ImportPreflightService.BundleDestinationRequest],
+        policy: ImportConflictPolicy
+    ) async throws -> [ImportPreflightService.BundleDestination] {
+        guard case .complete(let evidence) = await service.resolveBundleDestinations(requests, policy: policy) else {
+            Issue.record("Planning must complete")
+            return []
+        }
+        return evidence.destinations
+    }
+
+    // MARK: - Exposure-level destination planning
+
+    @Test("Rename moves a whole exposure off any stem a different photo or its sidecar uses")
+    func renameMovesWholeExposure() async throws {
+        let root = try makeRoot("ExposurePlanning")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let card = try folder(root, "card")
+        let photos = try folder(root, "photos")
+        // Photo A's JPEG, an orphan sidecar, and a RAW another body left on disk.
+        try Data("A".utf8).write(to: photos.appendingPathComponent("DSC00001.JPG"))
+        try Data("xmp".utf8).write(to: photos.appendingPathComponent("DSC00002.xmp"))
+        try Data("X".utf8).write(to: photos.appendingPathComponent("DSC00003.ARW"))
+
+        func image(_ name: String) -> ImportPreflightService.BundleDestinationRequest.File {
+            .init(source: card.appendingPathComponent(name), role: .image, primaryFolder: photos, backupFolder: nil)
+        }
+        let pair = ImportPreflightService.BundleDestinationRequest(
+            stem: "DSC00001", files: [image("DSC00001.ARW"), image("DSC00001.JPG")]
+        )
+        let orphanSidecar = ImportPreflightService.BundleDestinationRequest(
+            stem: "DSC00002", files: [image("DSC00002.ARW")]
+        )
+        let first = ImportPreflightService.BundleDestinationRequest(
+            stem: "DSC00003", files: [image("DSC00003.JPG")]
+        )
+        // The batch planner already gave a same-named exposure from another card suffix 1.
+        let second = ImportPreflightService.BundleDestinationRequest(
+            stem: "DSC00003", plannedSuffix: 1, files: [image("DSC00003.JPG")]
+        )
+
+        let destinations = try await resolve(
+            ImportPreflightService(), [pair, orphanSidecar, first, second], policy: .renameWithSuffix
+        )
+
+        #expect(destinations[0].files.map(\.primary.lastPathComponent) == ["DSC00001-1.ARW", "DSC00001-1.JPG"])
+        #expect(destinations[1].files.map(\.primary.lastPathComponent) == ["DSC00002-1.ARW"])
+        // Never onto the name the later exposure was planned to use.
+        #expect(destinations[2].files.map(\.primary.lastPathComponent) == ["DSC00003-2.JPG"])
+        #expect(destinations[3].files.map(\.primary.lastPathComponent) == ["DSC00003-1.JPG"])
+        #expect(destinations.allSatisfy { !$0.renamedAwayFromDifferentPhoto })
+    }
+
+    @Test("Skip Existing skips only the photo that is already there and renames a different one")
+    func skipExistingSkipsOnlyTrueDuplicates() async throws {
+        let root = try makeRoot("SkipExistingPlanning")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let card = try folder(root, "card")
+        let photos = try folder(root, "photos")
+        for name in ["same.ARW", "same.JPG", "diff.JPG", "half.ARW", "half.JPG"] {
+            try Data("card-\(name)".utf8).write(to: card.appendingPathComponent(name))
+        }
+        try FileManager.default.copyItem(at: card.appendingPathComponent("same.ARW"), to: photos.appendingPathComponent("same.ARW"))
+        // The JPEG copy got an embedded caption after import; it is still the same photo.
+        try Data("captioned".utf8).write(to: photos.appendingPathComponent("same.JPG"))
+        try Data("another body".utf8).write(to: photos.appendingPathComponent("diff.JPG"))
+        try FileManager.default.copyItem(at: card.appendingPathComponent("half.ARW"), to: photos.appendingPathComponent("half.ARW"))
+
+        func image(_ name: String) -> ImportPreflightService.BundleDestinationRequest.File {
+            .init(source: card.appendingPathComponent(name), role: .image, primaryFolder: photos, backupFolder: nil)
+        }
+        let destinations = try await resolve(ImportPreflightService(), [
+            .init(stem: "same", files: [image("same.ARW"), image("same.JPG")]),
+            .init(stem: "diff", files: [image("diff.JPG")]),
+            .init(stem: "half", files: [image("half.ARW"), image("half.JPG")]),
+        ], policy: .skipExisting)
+
+        #expect(destinations[0].files.map(\.skipReason) == [.destinationExists, .destinationExists])
+        #expect(destinations[1].files.map(\.primary.lastPathComponent) == ["diff-1.JPG"])
+        #expect(destinations[1].files.map(\.skipReason) == [nil])
+        #expect(destinations[1].renamedAwayFromDifferentPhoto)
+        // The missing JPEG joins its RAW twin instead of landing on another stem.
+        #expect(destinations[2].files.map(\.primary.lastPathComponent) == ["half.ARW", "half.JPG"])
+        #expect(destinations[2].files.map(\.skipReason) == [.destinationExists, nil])
+    }
+
+    @Test("Unfrozen Skip Existing copies a different same-named file under a new name")
+    func copyServiceSkipExistingKeepsDifferentFiles() async throws {
+        let root = try makeRoot("CopySkipExisting")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let card = try folder(root, "card")
+        let photos = try folder(root, "photos")
+        let duplicate = card.appendingPathComponent("dup.jpg")
+        let different = card.appendingPathComponent("photo.jpg")
+        try Data("dup".utf8).write(to: duplicate)
+        try Data("card B".utf8).write(to: different)
+        try Data("dup".utf8).write(to: photos.appendingPathComponent("dup.jpg"))
+        try Data("card A".utf8).write(to: photos.appendingPathComponent("photo.jpg"))
+
+        let results = try await ImportCopyService().run(
+            jobs: [
+                .init(source: duplicate, desiredPrimaryDest: photos.appendingPathComponent("dup.jpg"), desiredBackupDest: nil),
+                .init(source: different, desiredPrimaryDest: photos.appendingPathComponent("photo.jpg"), desiredBackupDest: nil),
+            ],
+            conflictPolicy: .skipExisting,
+            verificationMode: .on,
+            verifyBackup: true,
+            progress: { _ in }
+        )
+
+        #expect(results[0].primary == .skipped(.destinationExists))
+        #expect(results[1].primaryURL?.lastPathComponent == "photo-1.jpg")
+        #expect(results[1].renamedAwayFromDifferentFile)
+        #expect(try Data(contentsOf: photos.appendingPathComponent("photo.jpg")) == Data("card A".utf8))
+        #expect(try Data(contentsOf: photos.appendingPathComponent("photo-1.jpg")) == Data("card B".utf8))
+    }
+
+    @Test("Skip Existing never drops card B's photos that share card A's names")
+    func skipExistingImportKeepsDifferentPhotos() async throws {
+        try await withRestoredDefaults {
+            let root = try makeRoot("SkipExistingImport")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card-b")
+            let photos = try folder(root, "photos")
+            let source = card.appendingPathComponent("photo.jpg")
+            try Data("card B".utf8).write(to: source)
+
+            let viewModel = makeViewModel(card: card, photos: photos, title: "Two Bodies", policy: .skipExisting)
+            viewModel.sourceFiles = [source]
+            let destination = viewModel.configuration.destinationFolderURL
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try Data("card A".utf8).write(to: destination.appendingPathComponent("photo.jpg"))
+
+            viewModel.startImport()
+            try await waitForCompletion(viewModel)
+
+            #expect(try Data(contentsOf: destination.appendingPathComponent("photo.jpg")) == Data("card A".utf8))
+            #expect(try Data(contentsOf: destination.appendingPathComponent("photo-1.jpg")) == Data("card B".utf8))
+            #expect(viewModel.copiedFiles == 1)
+            #expect(viewModel.skippedFiles == 0)
+            #expect(viewModel.conflictRenamedFiles == 1)
+            #expect(viewModel.failureRecords.map(\.kind) == [.renamedConflict])
+            #expect(viewModel.lastCompletionEntry?.isClean == true)
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    @Test("A renamed RAW+JPEG pair moves together and never inherits another photo's sidecar")
+    func pairMovesTogetherWithoutInheritingSidecar() async throws {
+        try await withRestoredDefaults {
+            let root = try makeRoot("PairCollision")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card-b")
+            let photos = try folder(root, "photos")
+            let raw = card.appendingPathComponent("DSC00001.ARW")
+            let jpeg = card.appendingPathComponent("DSC00001.JPG")
+            try Data("raw B".utf8).write(to: raw)
+            try Data("jpeg B".utf8).write(to: jpeg)
+
+            let viewModel = makeViewModel(card: card, photos: photos, title: "Pair", policy: .renameWithSuffix, filter: .both)
+            viewModel.sourceFiles = [raw, jpeg]
+            let destination = viewModel.configuration.destinationFolderURL
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            // Photo A (RAW only) and its captions are already here.
+            try Data("raw A".utf8).write(to: destination.appendingPathComponent("DSC00001.ARW"))
+            try Data("<x:xmpmeta>A</x:xmpmeta>".utf8).write(to: destination.appendingPathComponent("DSC00001.xmp"))
+
+            viewModel.startImport()
+            try await waitForCompletion(viewModel)
+
+            #expect(try Data(contentsOf: destination.appendingPathComponent("DSC00001-1.ARW")) == Data("raw B".utf8))
+            #expect(try Data(contentsOf: destination.appendingPathComponent("DSC00001-1.JPG")) == Data("jpeg B".utf8))
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC00001.JPG").path))
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC00001-1.xmp").path))
+            #expect(try String(contentsOf: destination.appendingPathComponent("DSC00001.xmp"), encoding: .utf8)
+                == "<x:xmpmeta>A</x:xmpmeta>")
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    @Test("Overwrite replaces the old sidecar with the card's, or detaches it from a different photo")
+    func overwriteNeverLeavesStaleSidecar() async throws {
+        try await withRestoredDefaults {
+            let root = try makeRoot("OverwriteSidecar")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card")
+            let photos = try folder(root, "photos")
+            let bare = card.appendingPathComponent("bare.jpg")
+            let withSidecar = card.appendingPathComponent("edited.jpg")
+            try Data("new bare".utf8).write(to: bare)
+            try Data("new edited".utf8).write(to: withSidecar)
+            try Data("<x:xmpmeta>card</x:xmpmeta>".utf8).write(to: card.appendingPathComponent("edited.xmp"))
+
+            let viewModel = makeViewModel(card: card, photos: photos, title: "Overwrite", policy: .overwrite)
+            viewModel.sourceFiles = [bare, withSidecar]
+            let destination = viewModel.configuration.destinationFolderURL
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            for name in ["bare", "edited"] {
+                try Data("old \(name)".utf8).write(to: destination.appendingPathComponent("\(name).jpg"))
+                try Data("<x:xmpmeta>old</x:xmpmeta>".utf8).write(to: destination.appendingPathComponent("\(name).xmp"))
+            }
+
+            viewModel.startImport()
+            for _ in 0..<500 where viewModel.overwritePreflight == nil {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            viewModel.confirmOverwritePreflight()
+            try await waitForCompletion(viewModel)
+
+            #expect(try Data(contentsOf: destination.appendingPathComponent("bare.jpg")) == Data("new bare".utf8))
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("bare.xmp").path))
+            let detached = try FileManager.default.contentsOfDirectory(atPath: destination.path)
+                .filter { $0.hasPrefix("bare.xmp.replaced-") }
+            #expect(detached.count == 1)
+            #expect(try String(contentsOf: destination.appendingPathComponent("edited.xmp"), encoding: .utf8)
+                == "<x:xmpmeta>card</x:xmpmeta>")
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    // MARK: - Import new only
+
+    @Test("Import new only skips copies that got an embedded caption, were renamed, or came earlier")
+    func reimportSkipsCaptionedAndRenamedCopies() async throws {
+        try await withRestoredDefaults {
+            AppDefaults.store.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            let root = try makeRoot("ReimportLedger")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card")
+            let photos = try folder(root, "photos")
+            let captioned = card.appendingPathComponent("photo.jpg")
+            let clashing = card.appendingPathComponent("clash.jpg")
+            try writeJPEG(to: captioned)
+            try writeJPEG(to: clashing)
+            try Data("x".utf8).append(to: clashing)
+
+            let first = makeViewModel(card: card, photos: photos, title: "Ledger", policy: .renameWithSuffix)
+            first.configuration.applyMetadata = true
+            first.configuration.metadata.description = "Embedded caption"
+            first.sourceFiles = [captioned, clashing]
+            let destination = first.configuration.destinationFolderURL
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try Data("someone else's clash.jpg".utf8).write(to: destination.appendingPathComponent("clash.jpg"))
+
+            first.startImport()
+            try await waitForCompletion(first)
+            #expect(first.copiedFiles == 2)
+            #expect(first.metadataFailedFiles == 0)
+            // Professional embeds into the JPEG: the copy no longer matches the card bytes.
+            #expect(try Data(contentsOf: destination.appendingPathComponent("photo.jpg")) != Data(contentsOf: captioned))
+            #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("clash-1.jpg").path))
+            #expect(FileManager.default.fileExists(atPath: ImportLedger.url(forRoot: photos).path))
+            try await Task.sleep(for: .milliseconds(300))
+
+            let second = makeViewModel(card: card, photos: photos, title: "Ledger", policy: .renameWithSuffix)
+            second.configuration.skipPreviouslyImported = true
+            second.sourceFiles = [captioned, clashing]
+            second.startImport()
+            try await waitForCompletion(second)
+
+            #expect(second.duplicateSkippedFiles == 2)
+            #expect(second.copiedFiles == 0)
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("photo-1.jpg").path))
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("clash-2.jpg").path))
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    // MARK: - Cancellation
+
+    @Test("Cancel stops copying but every copied photo still gets its sidecar and metadata")
+    func cancelFinishesCopiedFiles() async throws {
+        try await withRestoredDefaults {
+            AppDefaults.store.set(MetadataWritePreset.professional.rawValue, forKey: UserDefaultsKeys.metadataWritePreset)
+            let root = try makeRoot("ImportCancel")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let card = try folder(root, "card")
+            let photos = try folder(root, "photos")
+            let sources = ["A_1.JPG", "B_2.JPG", "C_3.JPG"].map { card.appendingPathComponent($0) }
+            for source in sources { try writeJPEG(to: source) }
+            try Data("<x:xmpmeta>card</x:xmpmeta>".utf8).write(to: card.appendingPathComponent("A_1.xmp"))
+
+            let writer = ImportRecordingWriteEngine()
+            let cancelHook = ImportTestActionBox()
+            // The C2PA probe runs while the first copied photo is being finished: cancel there.
+            let viewModel = makeViewModel(
+                card: card, photos: photos, title: "Cancel", policy: .renameWithSuffix,
+                writeEngine: writer,
+                c2paDetector: { _ in
+                    await cancelHook.fireOnce()
+                    return false
+                }
+            )
+            cancelHook.set { await MainActor.run { viewModel.cancelImport() } }
+            viewModel.configuration.applyMetadata = true
+            viewModel.configuration.metadata.jobId = "JOB-9"
+            viewModel.sourceFiles = sources
+            let destination = viewModel.configuration.destinationFolderURL
+
+            viewModel.startImport()
+            try await waitForCompletion(viewModel)
+
+            #expect(viewModel.importPhase == .cancelled)
+            #expect(viewModel.copiedFiles == 1)
+            #expect(writer.writtenURLs.map(\.lastPathComponent) == ["A_1.JPG"])
+            #expect(writer.lastFields[.transmissionReference] == "JOB-9")
+            #expect(viewModel.metadataProcessedFiles == 1)
+            #expect(viewModel.metadataFailedFiles == 0)
+            #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("A_1.xmp").path))
+            #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("B_2.JPG").path))
+            #expect(viewModel.lastCompletionEntry?.wasCancelled == true)
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    // MARK: - Counting, staging files, sequencing, splitting
+
+    @Test("A verification mismatch is counted once")
+    func mismatchCountedOnce() {
+        let viewModel = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        viewModel.applyProgress(ImportCopyService.CopyResult(
+            id: UUID(),
+            source: URL(fileURLWithPath: "/card/photo.jpg"),
+            primary: .failed("Verification mismatch — staged copy differs from source."),
+            primaryVerification: .mismatch(expected: Data([1]), got: Data([2])),
+            backup: nil,
+            backupVerification: nil
+        ))
+        #expect(viewModel.failedFiles == 0)
+        #expect(viewModel.mismatchedFiles == 1)
+        #expect(viewModel.processedFiles == 1)
+        #expect(viewModel.failureRecords.map(\.kind) == [.verificationMismatch])
+
+        let entry = ActivityEntry(
+            kind: .importJob, date: Date(), title: nil, successCount: 0, totalCount: 1,
+            verificationFailures: 1, verificationEnabled: true,
+            importResultCounts: ActivityImportResultCounts(replaced: 0, backupReplaced: 0, skipped: 0, renamed: 0),
+            files: []
+        )
+        #expect(!entry.summary.contains("failed"))
+        #expect(entry.summary.contains("1 verification issue"))
+    }
+
+    @Test("Only stale files with the exact staging name are swept")
+    func staleStagingSweep() throws {
+        let root = try makeRoot("StagingSweep")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staleName = ImportCopyService.stagingFileName(for: "DSC00001.ARW")
+        let freshName = ImportCopyService.stagingFileName(for: "DSC00002.ARW")
+        let keepNames = [
+            ".DSC00003.ARW.partial",
+            ".DSC00004.ARW.not-a-uuid.partial",
+            "DSC00005.ARW.\(UUID().uuidString).partial",
+            ".\(UUID().uuidString).partial",
+            "photo.jpg",
+        ]
+        let old = Date().addingTimeInterval(-7200)
+        for name in [staleName, freshName] + keepNames {
+            let url = root.appendingPathComponent(name)
+            try Data("bytes".utf8).write(to: url)
+            if name != freshName {
+                try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+            }
+        }
+        #expect(ImportCopyService.isStagingFileName(staleName))
+
+        let removed = ImportCopyService.sweepStaleStagingFiles(in: [root])
+
+        #expect(removed.map(\.lastPathComponent) == [staleName])
+        let remaining = Set(try FileManager.default.contentsOfDirectory(atPath: root.path))
+        #expect(remaining == Set([freshName] + keepNames))
+    }
+
+    @Test("Folder watching ignores import staging files inside subfolders")
+    func stagingFilesDoNotRefreshBrowser() {
+        let root = URL(fileURLWithPath: "/photos/2026-10-24 – Cup", isDirectory: true)
+        let staging = root.appendingPathComponent("RAW")
+            .appendingPathComponent(ImportCopyService.stagingFileName(for: "DSC00001.ARW"))
+        #expect(BrowserFolderChangeImpact.classify(
+            FolderChangeBatch(paths: [staging], requiresFullRescan: false),
+            monitoredRoot: root
+        ).isEmpty)
+        #expect(BrowserFolderChangeImpact.classify(
+            FolderChangeBatch(paths: [root.appendingPathComponent("RAW/DSC00001.ARW")], requiresFullRescan: false),
+            monitoredRoot: root
+        ) == .browserContent)
+    }
+
+    @Test("{seq} numbers exposures in capture order and a RAW+JPEG pair shares one number")
+    func sequenceNumbersPerExposure() {
+        let pairID = UUID()
+        let earlierID = UUID()
+        let skippedID = UUID()
+        func job(_ name: String) -> ImportCopyService.CopyJob {
+            .init(source: URL(fileURLWithPath: "/card/\(name)"), desiredPrimaryDest: URL(fileURLWithPath: "/p/\(name)"), desiredBackupDest: nil)
+        }
+        let pairRaw = job("A.ARW")
+        let pairJPEG = job("A.JPG")
+        let earlier = job("Z.JPG")
+        var skipped = job("M.JPG")
+        skipped.preflightSkipReason = .previouslyImported
+        let contexts: [UUID: ImportJobContext] = [
+            pairRaw.id: .init(exposureID: pairID, isImage: true, replacesDifferentPhoto: false, captureDate: nil),
+            pairJPEG.id: .init(exposureID: pairID, isImage: true, replacesDifferentPhoto: false, captureDate: nil),
+            earlier.id: .init(exposureID: earlierID, isImage: true, replacesDifferentPhoto: false, captureDate: nil),
+            skipped.id: .init(exposureID: skippedID, isImage: true, replacesDifferentPhoto: false, captureDate: nil),
+        ]
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let numbers = ImportViewModel.sequenceNumbersByExposure(
+            jobs: [pairRaw, pairJPEG, skipped, earlier],
+            contexts: contexts,
+            captureTimes: [
+                pairRaw.source: base.addingTimeInterval(60),
+                pairJPEG.source: base.addingTimeInterval(60),
+                skipped.source: base.addingTimeInterval(30),
+                earlier.source: base,
+            ]
+        )
+        #expect(numbers == [earlierID: 1, pairID: 2])
+    }
+
+    @Test("Shoot splits and moves keep both files of an exposure together")
+    func splitsKeepPairsTogether() {
+        let viewModel = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        let card = URL(fileURLWithPath: "/card/DCIM", isDirectory: true)
+        let files = ["A.ARW", "A.JPG", "B.ARW", "B.JPG", "C.JPG"].map { card.appendingPathComponent($0) }
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let times: [URL: Date] = [
+            files[0]: base, files[1]: base,
+            files[2]: base.addingTimeInterval(60), files[3]: base.addingTimeInterval(60),
+            files[4]: base.addingTimeInterval(120),
+        ]
+        func freshGroup() -> ImportDateGroup {
+            ImportDateGroup(dateString: "2026:10:24", folderName: "2026-10-24", files: files, captureTimes: times)
+        }
+
+        viewModel.dateGroups = [freshGroup()]
+        // Boundaries on A.JPG (index 1) and B.JPG (index 3) must not separate them from their
+        // RAWs: each JPEG follows its RAW's shoot, and C.JPG still starts the third shoot.
+        viewModel.splitGroup(viewModel.dateGroups[0].id, boundaries: [1, 3])
+        #expect(viewModel.dateGroups.map { Set($0.files.map(\.lastPathComponent)) } == [
+            ["A.ARW", "A.JPG"], ["B.ARW", "B.JPG"], ["C.JPG"],
+        ])
+
+        viewModel.dateGroups = [freshGroup()]
+        viewModel.splitOff(viewModel.dateGroups[0].id, fileURLs: [files[3]])
+        #expect(viewModel.dateGroups.map { Set($0.files.map(\.lastPathComponent)) } == [
+            ["A.ARW", "A.JPG", "C.JPG"], ["B.ARW", "B.JPG"],
+        ])
+        #expect(ImportViewModel.exposures(inChronologicalFiles: files).count == 3)
+    }
+}
+
+private extension Data {
+    func append(to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: self)
     }
 }

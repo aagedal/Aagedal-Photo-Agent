@@ -4813,7 +4813,11 @@ struct ContentViewModifiers: ViewModifier {
                 }
             }
         return base
-            .modifier(AutoRefreshModifier(panes: panes, metadataViewModel: metadataViewModel))
+            .modifier(AutoRefreshModifier(
+                panes: panes,
+                metadataViewModel: metadataViewModel,
+                importDeferralFolder: importViewModel.importRefreshDeferralFolder
+            ))
             .onChange(of: settingsViewModel.rawDecodeProfile) { _, _ in
                 discardRAWDecodeCaches(browserViewModel)
             }
@@ -4894,11 +4898,14 @@ struct ContentViewModifiers: ViewModifier {
 struct AutoRefreshModifier: ViewModifier {
     let panes: BrowserPanesModel
     let metadataViewModel: MetadataViewModel
+    /// The running import's destination; its auto-refresh waits until the import ends.
+    var importDeferralFolder: URL? = nil
     @State private var coordinator: BrowserAutoRefreshCoordinator
 
-    init(panes: BrowserPanesModel, metadataViewModel: MetadataViewModel) {
+    init(panes: BrowserPanesModel, metadataViewModel: MetadataViewModel, importDeferralFolder: URL? = nil) {
         self.panes = panes
         self.metadataViewModel = metadataViewModel
+        self.importDeferralFolder = importDeferralFolder
         _coordinator = State(
             initialValue: BrowserAutoRefreshCoordinator(
                 panes: panes,
@@ -4911,7 +4918,11 @@ struct AutoRefreshModifier: ViewModifier {
         let folderURLs = panes.panes.map(\.currentFolderURL)
         content
             .onAppear {
+                coordinator.setImportDeferralFolder(importDeferralFolder)
                 coordinator.start()
+            }
+            .onChange(of: importDeferralFolder) { _, folder in
+                coordinator.setImportDeferralFolder(folder)
             }
             .onChange(of: folderURLs) {
                 coordinator.synchronizeMonitors()

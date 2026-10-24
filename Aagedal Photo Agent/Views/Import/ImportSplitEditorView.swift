@@ -9,6 +9,8 @@ import SwiftUI
 ///   starts a new shoot. Produces contiguous segments via `onSplit(boundaries:)`.
 /// - **Select & move**: click to multi-select arbitrary photos and move them into a
 ///   new shoot via `onMove(fileURLs:)` — for the rare interleaved case.
+///
+/// Each cell is one exposure: a RAW+JPEG pair is shown, split and moved as one photo.
 struct ImportSplitEditorView: View {
     let group: ImportDateGroup
     let thumbnailService: ThumbnailService
@@ -23,7 +25,11 @@ struct ImportSplitEditorView: View {
         var id: String { rawValue }
     }
 
+    /// One cell per exposure, in capture order; `ordered[i]` is the exposure's first file.
+    private let exposures: [[URL]]
     private let ordered: [URL]
+    /// Index in `group.chronologicalFiles` of each exposure's first file.
+    private let fileIndexOfExposure: [Int]
     private let gapThreshold: TimeInterval
 
     @State private var mode: Mode = .byTime
@@ -44,11 +50,24 @@ struct ImportSplitEditorView: View {
         self.thumbnailService = thumbnailService
         self.onSplit = onSplit
         self.onMove = onMove
-        self.ordered = group.chronologicalFiles
+        let chronological = group.chronologicalFiles
+        let exposures = ImportViewModel.exposures(inChronologicalFiles: chronological)
+        self.exposures = exposures
+        self.ordered = exposures.compactMap(\.first)
+        var firstIndex: [URL: Int] = [:]
+        for (index, file) in chronological.enumerated() where firstIndex[file] == nil {
+            firstIndex[file] = index
+        }
+        let fileIndexOfExposure = exposures.map { $0.first.flatMap { firstIndex[$0] } ?? 0 }
+        self.fileIndexOfExposure = fileIndexOfExposure
         let threshold = ImportViewModel.defaultShootGapThreshold
         self.gapThreshold = threshold
-        let suggested = ImportViewModel.suggestedSplitBoundaries(for: group, gapThreshold: threshold)
-        self._boundaries = State(initialValue: Set(suggested))
+        // Suggested boundaries come as file indices; show them on the exposure they start.
+        let suggested = Set(ImportViewModel.suggestedSplitBoundaries(for: group, gapThreshold: threshold))
+        let suggestedExposures = fileIndexOfExposure.enumerated()
+            .filter { $0.offset > 0 && suggested.contains($0.element) }
+            .map(\.offset)
+        self._boundaries = State(initialValue: Set(suggestedExposures))
     }
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 10)]
@@ -187,14 +206,16 @@ struct ImportSplitEditorView: View {
                 .keyboardShortcut(.cancelAction)
             if mode == .byTime {
                 Button("Split into \(boundaries.count + 1) Shoots") {
-                    onSplit(boundaries.sorted())
+                    onSplit(boundaries.sorted().compactMap {
+                        fileIndexOfExposure.indices.contains($0) ? fileIndexOfExposure[$0] : nil
+                    })
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(boundaries.isEmpty)
             } else {
                 Button("Move to New Shoot") {
-                    let moved = Set(selection.compactMap { ordered.indices.contains($0) ? ordered[$0] : nil })
+                    let moved = Set(selection.flatMap { exposures.indices.contains($0) ? exposures[$0] : [] })
                     onMove(moved)
                     dismiss()
                 }

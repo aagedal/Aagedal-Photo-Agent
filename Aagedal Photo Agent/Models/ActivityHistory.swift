@@ -221,7 +221,9 @@ struct ActivityEntry: Codable, Sendable, Identifiable {
         }
         var problems: [String] = []
         if let skipped = importResultCounts?.skipped, skipped > 0 { problems.append("\(skipped) skipped") }
-        if failureCount > 0 { problems.append("\(failureCount) failed") }
+        // A verification failure is also a failed file; name it once, as a verification issue.
+        let otherFailureCount = max(0, failureCount - verificationFailures)
+        if otherFailureCount > 0 { problems.append("\(otherFailureCount) failed") }
         if verificationFailures > 0 { problems.append("\(verificationFailures) verification issue\(verificationFailures == 1 ? "" : "s")") }
         if backupFailureCount > 0 { problems.append("backup failed for \(backupFailureCount)") }
         if metadataFailureCount > 0 { problems.append("metadata failed for \(metadataFailureCount)") }

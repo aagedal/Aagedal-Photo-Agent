@@ -162,13 +162,14 @@ struct VerificationSummaryView: View {
         case .verificationMismatch: return "exclamationmark.shield.fill"
         case .backupFailed: return "externaldrive.badge.exclamationmark"
         case .metadataFailed: return "doc.badge.ellipsis"
+        case .renamedConflict: return "doc.on.doc"
         }
     }
 
     private func color(for kind: ImportFailureRecord.Kind) -> Color {
         switch kind {
         case .copyFailed, .verificationMismatch: return .red
-        case .backupFailed, .metadataFailed: return .orange
+        case .backupFailed, .metadataFailed, .renamedConflict: return .orange
         }
     }
 }
