@@ -2129,3 +2129,312 @@ private actor FTPGenerationGate {
         }
     }
 }
+
+// MARK: - Edit → FTP hand-off (redaction, pending drafts, C2PA staging)
+
+@Suite("FTP edit hand-off")
+@MainActor
+struct FTPEditHandoffTests {
+    private static func redacting(mask: Bool = false, blackOut: Bool = false) -> CameraRawSettings {
+        var settings = CameraRawSettings()
+        if mask {
+            var adjustment = MaskAdjustment()
+            adjustment.anonymizer = AnonymizerSettings(amount: 80)
+            settings.localAdjustments = [adjustment]
+        } else {
+            settings.anonymizer = AnonymizerSettings(amount: blackOut ? nil : 60, blackOut: blackOut ? true : nil)
+        }
+        return settings
+    }
+
+    @Test("Any active Anonymizer counts as redaction; empty or disabled ones do not")
+    func redactionDetection() {
+        #expect(FTPUploadRedaction.isActive(Self.redacting()))
+        #expect(FTPUploadRedaction.isActive(Self.redacting(blackOut: true)))
+        #expect(FTPUploadRedaction.isActive(Self.redacting(mask: true)))
+        var disabled = Self.redacting(mask: true)
+        disabled.localAdjustments?[0].enabled = false
+        #expect(!FTPUploadRedaction.isActive(disabled))
+        var off = CameraRawSettings()
+        off.anonymizer = AnonymizerSettings(amount: 0)
+        off.exposure2012 = 1
+        #expect(!FTPUploadRedaction.isActive(off))
+        #expect(!FTPUploadRedaction.isActive(nil))
+        // One stale carrier (e.g. the browser copy) can't hide the redaction another carries.
+        #expect(FTPUploadRedaction.isRedacted([off, nil, Self.redacting()]))
+        #expect(!FTPUploadRedaction.isRedacted([off, nil]))
+    }
+
+    @Test("A redacted photo always renders: skip-rendering, RAW-as-is and unedited JPEGs alike")
+    func redactedAlwaysRenders() {
+        var jpeg = UploadFileInfo(isRaw: false, hasDevelop: true, hasCrop: false)
+        #expect(!FTPUploadView.willRender(info: jpeg, alwaysRenderRAW: true, skipRenderingEdited: true, signsWithC2PA: false))
+        jpeg.isRedacted = true
+        #expect(FTPUploadView.willRender(info: jpeg, alwaysRenderRAW: true, skipRenderingEdited: true, signsWithC2PA: false))
+        var raw = UploadFileInfo(isRaw: true, hasDevelop: false, hasCrop: false)
+        #expect(!FTPUploadView.willRender(info: raw, alwaysRenderRAW: false, skipRenderingEdited: true, signsWithC2PA: false))
+        raw.isRedacted = true
+        #expect(FTPUploadView.willRender(info: raw, alwaysRenderRAW: false, skipRenderingEdited: true, signsWithC2PA: false))
+        // A credentialed file that needs the overlay renders only when the upload is signed.
+        var credentialed = UploadFileInfo(isRaw: false, hasDevelop: false, hasCrop: false)
+        credentialed.credentialedNeedsOverlay = true
+        #expect(!FTPUploadView.willRender(info: credentialed, alwaysRenderRAW: true, skipRenderingEdited: false, signsWithC2PA: false))
+        #expect(FTPUploadView.willRender(info: credentialed, alwaysRenderRAW: true, skipRenderingEdited: false, signsWithC2PA: true))
+    }
+
+    @Test("An anonymized photo sent with skip-rendering is rendered, never uploaded as the original")
+    func anonymizedPhotoIsRenderedEvenWhenSkipped() async throws {
+        let fixture = try HandoffFixture()
+        defer { fixture.remove() }
+        let redacted = Self.redacting(mask: true)
+        // The dialog's skip toggle left renderURLs empty; the run must still render.
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in redacted })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let uploads = await fixture.probe.uploads
+        #expect(await fixture.probe.renders == [fixture.photo])
+        #expect(await fixture.probe.renderedSettings.first.map { FTPUploadRedaction.isActive($0) } == true)
+        #expect(uploads.count == 1)
+        #expect(!uploads.contains(fixture.photo))
+        #expect(uploads.first?.deletingLastPathComponent().lastPathComponent == "Uploaded")
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("A redaction saved on disk but missing from the render inputs is refused, not published")
+    func redactionMissingFromRenderInputsIsRefused() async throws {
+        let fixture = try HandoffFixture(sidecarDevelop: Self.redacting())
+        defer { fixture.remove() }
+        var stale = CameraRawSettings()
+        stale.exposure2012 = 0.5
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in stale })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        #expect(await fixture.probe.uploads.isEmpty)
+        #expect(await fixture.probe.renders.isEmpty)
+        #expect(fixture.model.uploadFailures[fixture.photo.lastPathComponent]?.hasPrefix("Redaction couldn't be confirmed") == true)
+        #expect(fixture.model.failedSourceURLs == [fixture.photo])
+    }
+
+    @Test("Retry Failed re-checks redaction: a photo anonymized after a failed attempt renders on retry")
+    func retryRechecksRedaction() async throws {
+        let fixture = try HandoffFixture()
+        defer { fixture.remove() }
+        let live = HandoffLiveSettings()
+        await fixture.probe.failNextUpload()
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine(),
+            inMemoryCameraRaw: { _ in live.settings })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+        #expect(await fixture.probe.uploads == [fixture.photo])
+        #expect(fixture.model.canRetryFailed)
+
+        // The user anonymizes a face before pressing Retry Failed.
+        live.settings = Self.redacting(blackOut: true)
+        await fixture.probe.reset()
+        #expect(fixture.model.retryFailedUploads())
+        await fixture.model.currentUploadCompletion()()
+        let uploads = await fixture.probe.uploads
+        #expect(await fixture.probe.renders == [fixture.photo])
+        #expect(uploads.count == 1 && !uploads.contains(fixture.photo))
+        #expect(!fixture.model.canRetryFailed)
+    }
+
+    @Test("A History Only caption and Person Shown reach an as-is upload's staged copy")
+    func pendingDraftReachesAsIsUpload() async throws {
+        let fixture = try HandoffFixture(realOverlay: true)
+        defer { fixture.remove() }
+        let engine = SwiftExifWriteEngine()
+        try await engine.writeFields([.description: "Embedded caption"], to: [fixture.photo])
+        _ = try MetadataSidecarService().saveSidecar(MetadataSidecar(
+            sourceFile: fixture.photo.lastPathComponent, pendingChanges: true,
+            metadata: IPTCMetadata(description: "Draft caption", personShown: ["Kari Nordmann"])),
+            for: fixture.photo, in: fixture.root)
+        let originalBytes = try Data(contentsOf: fixture.photo)
+
+        // The dialog's loader sees the pending draft, as Export's overlay does.
+        let service = FTPUploadSidecarLoadService(access: .system)
+        let loaded = await service.load(imageURLs: [fixture.photo], requestID: UUID())
+        guard case .complete(let snapshot) = loaded,
+              let sidecar = snapshot.metadataByImageURL[fixture.photo] else {
+            Issue.record("Expected the pending draft to be loaded")
+            return
+        }
+        #expect(sidecar.description == "Draft caption")
+        #expect(sidecar.personShown == ["Kari Nordmann"])
+        let embedded = try await SwiftExifReadService().readFullMetadata(url: fixture.photo)
+        #expect(FTPUploadView.sidecarDiffersFromEmbedded(embedded: embedded, sidecar: sidecar))
+
+        let started = fixture.model.uploadFiles([fixture.photo], renderURLs: [], sidecarOverlayURLs: [fixture.photo],
+            to: fixture.connection, readService: SwiftExifReadService(), writeEngine: engine,
+            inMemoryCameraRaw: { _ in nil })
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let uploaded = try #require(await fixture.probe.uploadedMetadata.first)
+        #expect(uploaded.url != fixture.photo)
+        #expect(uploaded.metadata.description == "Draft caption")
+        #expect(uploaded.metadata.personShown == ["Kari Nordmann"])
+        #expect(try Data(contentsOf: fixture.photo) == originalBytes)
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("Signing applies the overlay, then signs a staged copy; originals are never touched")
+    func signingStagesOverlaysAndSignsCopies() async throws {
+        let fixture = try HandoffFixture(realOverlay: true, extraNames: ["plain.jpg"])
+        defer { fixture.remove() }
+        let plain = try #require(fixture.extras.first)
+        let engine = SwiftExifWriteEngine()
+        try XMPSidecarService().saveSidecar(
+            metadata: IPTCMetadata(title: "Sidecar headline", description: "Sidecar caption"), for: fixture.photo)
+        let photoBytes = try Data(contentsOf: fixture.photo)
+        let plainBytes = try Data(contentsOf: plain)
+
+        let started = fixture.model.uploadFiles([fixture.photo, plain], renderURLs: [],
+            sidecarOverlayURLs: [fixture.photo], to: fixture.connection,
+            readService: SwiftExifReadService(), writeEngine: engine, inMemoryCameraRaw: { _ in nil },
+            signingConfiguration: C2PAUploadSigningConfiguration(certificatePath: "unused",
+                privateKeyPEM: "unused", author: nil, usesTestCertificate: false))
+        #expect(started)
+        await fixture.model.currentUploadCompletion()()
+
+        let signed = await fixture.probe.signed
+        let uploads = await fixture.probe.uploads
+        #expect(signed.count == 2)
+        #expect(!signed.contains(fixture.photo) && !signed.contains(plain))
+        #expect(uploads == signed)
+        // The overlay was on the copy before it was signed, so the credential covers it.
+        #expect(await fixture.probe.titleAtSigning[fixture.photo.lastPathComponent] == "Sidecar headline")
+        #expect(await fixture.probe.renders.isEmpty)
+        #expect(try Data(contentsOf: fixture.photo) == photoBytes)
+        #expect(try Data(contentsOf: plain) == plainBytes)
+        #expect(fixture.model.errorMessages.isEmpty)
+    }
+
+    @Test("Upload Selected and Upload All commit Caption and the metadata panel first")
+    func uploadCommandsFlushMetadata() throws {
+        let workspace = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: workspace.appendingPathComponent(
+            "Aagedal Photo Agent/ContentView.swift"), encoding: .utf8)
+        for command in ["case .uploadSelected:", "case .uploadAll:"] {
+            let start = try #require(source.range(of: command))
+            let body = source[start.upperBound...].prefix(400)
+            let flush = try #require(body.range(of: "performAfterMetadataFileOperation {"))
+            let open = try #require(body.range(of: "ftpUploadItem = FTPUploadItem"))
+            #expect(flush.lowerBound < open.lowerBound)
+        }
+    }
+}
+
+@MainActor
+private final class HandoffLiveSettings {
+    var settings: CameraRawSettings?
+}
+
+@MainActor
+private final class HandoffFixture {
+    let root: URL
+    let photo: URL
+    let extras: [URL]
+    let probe: HandoffProbe
+    let model: FTPViewModel
+    let connection = FTPConnection(name: "Isolated fixture", host: "fixture.invalid", port: 21, useTLS: true)
+    private let defaults: UserDefaults
+    private let suite: String
+
+    init(sidecarDevelop: CameraRawSettings? = nil, realOverlay: Bool = false, extraNames: [String] = []) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("ftp-handoff-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let jpeg = try #require(bitmap.representation(using: .jpeg, properties: [:]))
+        photo = root.appendingPathComponent("photo.jpg")
+        try jpeg.write(to: photo)
+        let folder = root
+        extras = try extraNames.map { name in
+            let url = folder.appendingPathComponent(name)
+            try jpeg.write(to: url)
+            return url
+        }
+        suite = "FTPHandoffTests.\(UUID())"
+        defaults = try #require(UserDefaults(suiteName: suite))
+        let probe = HandoffProbe()
+        self.probe = probe
+        var execution = FTPUploadExecutionAccess()
+        execution.password = { _ in "fixture-only" }
+        execution.upload = { url, _, _, _ in
+            let metadata = try await SwiftExifReadService().readFullMetadata(url: url)
+            try await probe.recordUpload(url, metadata: metadata)
+            return FTPUploadOutcome()
+        }
+        execution.render = { source, settings, folder, _, _, _ in
+            await probe.recordRender(source, settings: settings)
+            let output = folder.appendingPathComponent(source.deletingPathExtension().lastPathComponent)
+                .appendingPathExtension("jpg")
+            if FileManager.default.fileExists(atPath: output.path) {
+                try FileManager.default.removeItem(at: output)
+            }
+            try FileManager.default.copyItem(at: source, to: output)
+            return output
+        }
+        execution.sign = { _, url in
+            let title = try await SwiftExifReadService().readFullMetadata(url: url).title
+            await probe.recordSign(url, title: title)
+        }
+        // Never read the real sidecars of the fixture through the production loader here.
+        execution.loadSidecarDevelop = { urls in
+            guard let sidecarDevelop else { return [:] }
+            return Dictionary(uniqueKeysWithValues: urls.map { ($0, sidecarDevelop) })
+        }
+        if !realOverlay {
+            execution.overlay = { _, _, _ in .noPendingEdits }
+        }
+        model = FTPViewModel(fileSystem: FTPUploadFileSystemBoundary(temporaryRoot: root),
+                             defaults: defaults, execution: execution)
+    }
+
+    func remove() {
+        model.cancelUpload()
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private actor HandoffProbe {
+    private(set) var uploads: [URL] = []
+    private(set) var uploadedMetadata: [(url: URL, metadata: IPTCMetadata)] = []
+    private(set) var renders: [URL] = []
+    private(set) var renderedSettings: [CameraRawSettings?] = []
+    private(set) var signed: [URL] = []
+    private(set) var titleAtSigning: [String: String] = [:]
+    private var failsNextUpload = false
+
+    func failNextUpload() { failsNextUpload = true }
+    func reset() {
+        uploads = []; uploadedMetadata = []; renders = []; renderedSettings = []
+        signed = []; titleAtSigning = [:]
+    }
+    func recordUpload(_ url: URL, metadata: IPTCMetadata) throws {
+        uploads.append(url)
+        uploadedMetadata.append((url, metadata))
+        if failsNextUpload {
+            failsNextUpload = false
+            throw FTPService.FTPError.uploadFailed(25, "curl: (25) 553 Not allowed")
+        }
+    }
+    func recordRender(_ url: URL, settings: CameraRawSettings?) {
+        renders.append(url)
+        renderedSettings.append(settings)
+    }
+    func recordSign(_ url: URL, title: String?) {
+        signed.append(url)
+        if let title { titleAtSigning[url.lastPathComponent] = title }
+    }
+}

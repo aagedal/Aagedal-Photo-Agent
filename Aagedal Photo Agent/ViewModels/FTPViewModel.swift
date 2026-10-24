@@ -19,6 +19,11 @@ nonisolated struct FTPUploadExecutionAccess: Sendable {
     var sign: @Sendable (C2PAUploadSigningConfiguration, URL) async throws -> Void = { configuration, url in
         try await configuration.sign(url)
     }
+    /// Develop settings stored in each file's own `.xmp` sidecar (pair ownership applied), read
+    /// fresh at upload time for the redaction check — independent of the browser's copy.
+    var loadSidecarDevelop: @Sendable ([URL]) async -> [URL: CameraRawSettings] = { urls in
+        await FTPUploadRedaction.loadSidecarDevelop(urls)
+    }
     /// Applies the source's sidecar metadata (the export overlay) onto a staged private copy
     /// of an as-is upload. Never called with the user's original as the destination.
     var overlay: @MainActor @Sendable (URL, URL, any MetadataWriteEngine) async -> SidecarIPTCOverlay.Outcome = { source, staged, engine in
@@ -35,6 +40,39 @@ nonisolated struct FTPUploadExecutionAccess: Sendable {
         guard await !isCredentialed(source) else { return .noPendingEdits }
         return await SidecarIPTCOverlay.apply(sourceURL: source, renderedURL: staged,
             folderURL: source.deletingLastPathComponent(), writeEngine: engine)
+    }
+}
+
+/// Anonymizer facts for the FTP render decision. An as-is upload sends the original pixels, so
+/// a photo with an active Anonymizer (a redaction mask, the global Anonymizer, or Black Out) must
+/// always be rendered — whatever "Skip automatic rendering" or "Always render RAW" say.
+nonisolated enum FTPUploadRedaction {
+    static func isActive(_ settings: CameraRawSettings?) -> Bool {
+        guard let settings else { return false }
+        if settings.anonymizer?.isEmpty == false { return true }
+        return settings.localAdjustments?.contains {
+            $0.enabled && $0.anonymizer?.isEmpty == false
+        } ?? false
+    }
+
+    /// Any carrier counts: the settings the renderer will use, the browser's live copy, the
+    /// file's embedded Develop record and its `.xmp` sidecar. A stale or partially parsed copy
+    /// in one place must not turn a redacted photo into an as-is upload.
+    static func isRedacted(_ carriers: [CameraRawSettings?]) -> Bool {
+        carriers.contains(where: isActive)
+    }
+
+    @concurrent
+    static func loadSidecarDevelop(_ urls: [URL]) async -> [URL: CameraRawSettings] {
+        var result: [URL: CameraRawSettings] = [:]
+        for url in urls {
+            if Task.isCancelled { break }
+            if let settings = PhotoSidecarOwnership.applyingDevelopOwnership(
+                XMPSidecarService().loadSidecar(for: url), for: url)?.cameraRaw {
+                result[url] = settings
+            }
+        }
+        return result
     }
 }
 
@@ -200,7 +238,8 @@ actor FTPUploadFileSystemBoundary {
     }
 
     /// Always a real copy (an APFS clone where available), never a hard link: the staged file
-    /// receives a metadata write, which must not reach the user's original through a shared inode.
+    /// receives a metadata write and/or a C2PA signature, which must not reach the user's original
+    /// through a shared inode.
     func stageCopyForMetadataOverlay(
         _ sourceURL: URL,
         as fileName: String,
@@ -781,13 +820,15 @@ final class FTPViewModel {
         return true
     }
 
-    /// Uploads `urls`, rendering to JPEG only the files in `renderURLs` and sending every other
-    /// file as its original. Non-rendered originals upload in place unless a name collision
-    /// forces staging a safe hard-link/copy (the user's real files are never moved or renamed).
-    /// Falls back to the plain `uploadFiles(_:to:)` fast path when nothing needs rendering.
-    /// `sidecarOverlayURLs` are as-is files whose `.xmp` sidecar carries descriptive metadata
-    /// the embedded copy lacks: they upload as a private staged copy with the export overlay
-    /// applied, so the server receives what the metadata panel shows (originals are untouched).
+    /// Uploads `urls`, rendering to JPEG the files in `renderURLs` — plus every file with an
+    /// active Anonymizer, which the run re-checks itself from freshly read Develop settings — and
+    /// sending every other file as its original. Non-rendered originals upload in place unless a
+    /// name collision, a metadata overlay or C2PA signing forces staging a private copy (the
+    /// user's real files are never moved, renamed, rewritten or signed).
+    /// `sidecarOverlayURLs` are as-is files whose sidecar (or pending draft) carries descriptive
+    /// metadata the embedded copy lacks: they upload as a private staged copy with the export
+    /// overlay applied, so the server receives what the metadata panel shows. With signing on,
+    /// that staged copy is signed after the overlay.
     ///
     /// Renders are named deterministically — `Uploaded/<source basename>.jpg`, replacing the
     /// app's own earlier render — so re-sending a photo replaces it on the server instead of
@@ -807,16 +848,11 @@ final class FTPViewModel {
         inMemoryCameraRaw: @escaping @MainActor (URL) -> CameraRawSettings?,
         signingConfiguration: C2PAUploadSigningConfiguration? = nil
     ) -> Bool {
-        let renderTargets = urls.filter { renderURLs.contains($0) }
-        // As-is originals were already signed in place; rewriting a copy's metadata would
-        // invalidate that credential, so signed uploads keep the signed original.
-        let overlayTargets = signingConfiguration == nil
-            ? Set(urls.filter { sidecarOverlayURLs.contains($0) && !renderURLs.contains($0)
-                && !SupportedImageFormats.isRaw(url: $0) })
-            : []
-        guard !renderTargets.isEmpty || !overlayTargets.isEmpty else {
-            return uploadFiles(urls, to: connection)
-        }
+        let overlayTargets = Set(urls.filter { sidecarOverlayURLs.contains($0) && !renderURLs.contains($0)
+            && !SupportedImageFormats.isRaw(url: $0) })
+        // No as-is fast path: whether a file may leave as its original depends on the redaction
+        // check below, which needs file reads. Retry Failed replays this request, so a photo
+        // anonymized after the first attempt is rendered on retry too.
         guard let password = admitUpload(to: connection) else { return false }
 
         let historyID = UUID()
@@ -845,7 +881,7 @@ final class FTPViewModel {
         resetRunState(totalCount: urls.count, includesRendering: true)
         isRendering = true
         isUploading = false
-        renderTotalCount = renderTargets.count
+        renderTotalCount = urls.filter { renderURLs.contains($0) }.count
 
         uploadTask?.cancel()
         inFlightTransfer?.cancel()
@@ -853,6 +889,50 @@ final class FTPViewModel {
         uploadGeneration = generation
         uploadTask = Task { [weak self] in
             guard let self else { return }
+
+            // Read every file's Develop settings the way the local export paths do (live
+            // in-memory CameraRaw first, the XMP sidecar for RAW files): they are the render
+            // inputs, and they decide which files are redacted and must not go out as-is.
+            var metadataMap: [URL: IPTCMetadata] = [:]
+            do {
+                metadataMap = try await readService.readBatchFullMetadata(urls: urls)
+            } catch {
+                guard self.ownsUpload(generation) else { return }
+                // Continue without embedded metadata; live and sidecar settings still apply.
+            }
+            guard self.ownsUpload(generation) else { return }
+            let embeddedMap = metadataMap
+            do {
+                try await EditExportPipeline.resolveCameraRaw(
+                    into: &metadataMap,
+                    urls: urls,
+                    inMemory: inMemoryCameraRaw
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.ownsUpload(generation) else { return }
+                // The production sidecar boundary is best-effort and does not throw read errors.
+            }
+            guard self.ownsUpload(generation) else { return }
+            let sidecarDevelop = await self.execution.loadSidecarDevelop(urls)
+            guard self.ownsUpload(generation) else { return }
+            let redactedURLs = Set(urls.filter { url in
+                FTPUploadRedaction.isRedacted([
+                    metadataMap[url]?.cameraRaw,
+                    embeddedMap[url]?.cameraRaw,
+                    inMemoryCameraRaw(url),
+                    sidecarDevelop[url],
+                ])
+            })
+            let effectiveRenderURLs = renderURLs.union(redactedURLs)
+            let renderTargets = urls.filter { effectiveRenderURLs.contains($0) }
+            self.renderTotalCount = renderTargets.count
+            if renderTargets.isEmpty {
+                self.progressIncludesRendering = false
+                self.isRendering = false
+            }
+
             do {
                 let inventory = try await fileSystem.inventory(
                     for: urls,
@@ -891,32 +971,6 @@ final class FTPViewModel {
 
             defer {
                 fileSystem.removeEventually(tempDir)
-            }
-
-            guard self.ownsUpload(generation) else { return }
-
-            // Read batch metadata + resolve edit settings only for the files we'll render,
-            // the same way the local export paths do: prefer the live in-memory CameraRaw,
-            // falling back to the XMP sidecar for RAW files.
-            var metadataMap: [URL: IPTCMetadata] = [:]
-            do {
-                metadataMap = try await readService.readBatchFullMetadata(urls: renderTargets)
-            } catch {
-                guard self.ownsUpload(generation) else { return }
-                // Continue without camera raw — renders will use defaults
-            }
-            guard self.ownsUpload(generation) else { return }
-            do {
-                try await EditExportPipeline.resolveCameraRaw(
-                    into: &metadataMap,
-                    urls: renderTargets,
-                    inMemory: inMemoryCameraRaw
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                guard self.ownsUpload(generation) else { return }
-                // The production sidecar boundary is best-effort and does not throw read errors.
             }
 
             guard self.ownsUpload(generation) else { return }
@@ -976,40 +1030,57 @@ final class FTPViewModel {
                 if serverStopped || signingStopped {
                     notPrepared(url, reason: serverStopped
                         ? "Not sent — stopped after the server error above."
-                        : "Not sent — upload stopped because a rendered file couldn't be signed.")
+                        : "Not sent — upload stopped because a file couldn't be signed.")
                     continue
                 }
 
                 // Prepare file N (render/stage/sign) while file N-1 uploads.
                 var prepared: URL?
-                let isRender = renderURLs.contains(url)
+                let isRender = effectiveRenderURLs.contains(url)
                 do {
-                    if isRender {
+                    if isRender, redactedURLs.contains(url),
+                       !FTPUploadRedaction.isActive(metadataMap[url]?.cameraRaw) {
+                        // A saved Anonymizer the render inputs don't carry would publish the
+                        // face un-redacted. Refuse rather than guess which copy is current.
+                        self.errorMessages.append("\(url.lastPathComponent) has a saved Anonymizer that its current Develop settings don't include. It was not uploaded — open it in Develop, check the redaction, and upload again.")
+                        notPrepared(url, reason: "Redaction couldn't be confirmed — not uploaded.")
+                    } else if isRender {
                         prepared = try await self.renderForUpload(
                             url, index: index, tempDir: tempDir,
                             cameraRaw: metadataMap[url]?.cameraRaw,
                             writeEngine: writeEngine, failureTracker: failureTracker,
                             usedNames: &usedNames, claimedRenderTargets: &claimedRenderTargets,
                             signingConfiguration: signingConfiguration, generation: generation)
-                    } else if overlayTargets.contains(url) {
-                        // Upload a private copy carrying the sidecar's metadata.
+                    } else if overlayTargets.contains(url) || signingConfiguration != nil {
+                        // Upload a private copy: it receives the sidecar's metadata and/or the
+                        // C2PA signature (overlay first, so the credential covers it). The
+                        // user's original is never rewritten or signed.
                         let stagedName = usedNames.insert(url.lastPathComponent).inserted
                             ? url.lastPathComponent
                             : self.reserveUploadName(for: url, avoiding: &usedNames)
                         let staged = try await fileSystem.stageCopyForMetadataOverlay(
                             url, as: stagedName, in: tempDir, index: index)
                         guard self.ownsUpload(generation) else { return }
-                        switch await execution.overlay(url, staged.url, writeEngine) {
-                        case .applied, .noPendingEdits:
-                            prepared = staged.url
-                        case .staleSidecarSkipped:
-                            await failureTracker.recordStaleSidecar(url.lastPathComponent)
-                            prepared = staged.url
-                        case .failed:
-                            await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                        var overlayed: URL? = staged.url
+                        if overlayTargets.contains(url) {
+                            switch await execution.overlay(url, staged.url, writeEngine) {
+                            case .applied, .noPendingEdits:
+                                break
+                            case .staleSidecarSkipped:
+                                await failureTracker.recordStaleSidecar(url.lastPathComponent)
+                            case .failed:
+                                await failureTracker.recordOverlayFailure(url.lastPathComponent)
+                                guard self.ownsUpload(generation) else { return }
+                                notPrepared(url, reason: "Sidecar metadata couldn't be applied — not uploaded.")
+                                overlayed = nil
+                            }
                             guard self.ownsUpload(generation) else { return }
-                            notPrepared(url, reason: "Sidecar metadata couldn't be applied — not uploaded.")
                         }
+                        if let overlayed, let signingConfiguration {
+                            try await self.signForUpload(overlayed, configuration: signingConfiguration,
+                                                         generation: generation)
+                        }
+                        prepared = overlayed
                     } else if usedNames.insert(url.lastPathComponent).inserted {
                         // Upload the untouched original in place.
                         prepared = url
@@ -1044,7 +1115,7 @@ final class FTPViewModel {
                 if serverStopped || signingStopped {
                     notPrepared(url, reason: serverStopped
                         ? "Not sent — stopped after the server error above."
-                        : "Not sent — upload stopped because a rendered file couldn't be signed.")
+                        : "Not sent — upload stopped because a file couldn't be signed.")
                     continue
                 }
                 self.isUploading = true
@@ -1084,7 +1155,7 @@ final class FTPViewModel {
                 self.appendBatchAbortNotice(remaining: self.notSentCount())
             }
             if signingStopped {
-                self.errorMessages.append("Upload stopped because every rendered file must be signed successfully.")
+                self.errorMessages.append("Upload stopped because every file must be signed successfully.")
                 self.uploadStopped = true
             }
 
@@ -1151,15 +1222,7 @@ final class FTPViewModel {
         }
 
         if let signingConfiguration {
-            try Task.checkCancellation()
-            do {
-                try await execution.sign(signingConfiguration, outputURL)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                throw FTPUploadSigningFailure(fileName: outputURL.lastPathComponent, underlying: error)
-            }
-            guard ownsUpload(generation) else { throw CancellationError() }
+            try await signForUpload(outputURL, configuration: signingConfiguration, generation: generation)
         }
 
         if !collidesLocally, !usedNames.insert(outputURL.lastPathComponent).inserted {
@@ -1169,6 +1232,23 @@ final class FTPViewModel {
             outputURL = try await fileSystem.stageOriginal(outputURL, as: name, in: tempDir, index: index).url
         }
         return outputURL
+    }
+
+    /// Signs an app-owned upload file (a render or a staged copy — never the user's original).
+    private func signForUpload(
+        _ url: URL,
+        configuration: C2PAUploadSigningConfiguration,
+        generation: UUID
+    ) async throws {
+        try Task.checkCancellation()
+        do {
+            try await execution.sign(configuration, url)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw FTPUploadSigningFailure(fileName: url.lastPathComponent, underlying: error)
+        }
+        guard ownsUpload(generation) else { throw CancellationError() }
     }
 
     private nonisolated static func renderTargetKey(folder: URL, base: String) -> String {

@@ -10,6 +10,13 @@ struct UploadFileInfo: Equatable {
     /// The `.xmp` sidecar rotates the photo (its orientation differs from the embedded one).
     /// The sidecar doesn't travel with an as-is upload, so the original would arrive sideways.
     var hasSidecarRotation: Bool = false
+    /// An active Anonymizer (redaction mask, global Anonymizer or Black Out) in any Develop
+    /// carrier. The original holds the un-redacted pixels, so the file always renders.
+    var isRedacted: Bool = false
+    /// The file needs the sidecar overlay but carries Content Credentials, so its metadata
+    /// can't be rewritten as-is without breaking them. Renders when C2PA signing is on (the
+    /// render is re-signed with the app credential); otherwise uploads the signed original.
+    var credentialedNeedsOverlay: Bool = false
     /// Any visible edit (develop adjustment, effective crop or sidecar-only rotation) that
     /// warrants a JPEG render.
     var hasAnyEdit: Bool { hasDevelop || hasCrop || hasSidecarRotation }
@@ -39,6 +46,7 @@ private struct FTPUploadInspectionRequestKey: Equatable {
     let files: [URL]
     let alwaysRenderRAW: Bool
     let skipRenderingEdited: Bool
+    let signsWithC2PA: Bool
     let revision: UUID
 }
 
@@ -67,9 +75,7 @@ struct FTPUploadView: View {
     @State private var processVariablesBeforeUpload = false
     @State private var signWithC2PABeforeUpload = false
     @State private var isProcessingVariables = false
-    @State private var isSigningC2PA = false
     @State private var variablesProcessProgress = ""
-    @State private var c2paSignProgress = ""
     @State private var expandedHistoryID: UUID?
     @State private var historyAvailabilityByEntryID: [UUID: FTPUploadHistoryAvailabilitySnapshot] = [:]
     @State private var preprocessErrors: [String] = []
@@ -254,7 +260,7 @@ struct FTPUploadView: View {
             Toggle("Skip automatic rendering of edited files", isOn: $skipRenderingEdited)
                 .font(.caption)
                 .toggleStyle(.checkbox)
-                .help("When on, edited files upload as their originals instead of being rendered to JPEG. RAW files still render unless changed in Settings ▸ FTP.")
+                .help("When on, edited files upload as their originals instead of being rendered to JPEG. RAW files still render unless changed in Settings ▸ FTP. Photos with an Anonymizer always render.")
         }
         .frame(width: 300)
     }
@@ -313,9 +319,7 @@ struct FTPUploadView: View {
         if hasC2PASigningCertificate {
             Toggle("Sign with C2PA before upload", isOn: $signWithC2PABeforeUpload)
                 .font(.subheadline)
-            if isSigningC2PA {
-                progressRow("Signing... \(c2paSignProgress)")
-            }
+                .help("Signs each uploaded file — a render, or a private copy of the original. Your original files are not changed.")
         }
 
         // Metadata-requirement rules are configured globally; the file list shows per-image
@@ -420,22 +424,30 @@ struct FTPUploadView: View {
             files: activeFiles,
             alwaysRenderRAW: alwaysRenderRAW,
             skipRenderingEdited: skipRenderingEdited,
+            signsWithC2PA: hasC2PASigningCertificate && signWithC2PABeforeUpload,
             revision: inspectionRevision
         )
     }
 
-    /// A file is rendered to JPEG before upload when it's a RAW (and the always-render-RAW
-    /// setting is on) or when it carries visible develop/crop edits (unless the user opted to
+    /// A file is rendered to JPEG before upload when it's redacted (always), a RAW (and the
+    /// always-render-RAW setting is on), a credentialed file that needs the sidecar overlay
+    /// while signing, or when it carries visible develop/crop edits (unless the user opted to
     /// skip rendering edited files). Already-finished JPEGs with no edits upload untouched.
     private func needsRender(_ url: URL) -> Bool {
         let info = fileInfo[url] ?? UploadFileInfo(isRaw: SupportedImageFormats.isRaw(url: url), hasDevelop: false, hasCrop: false)
-        return Self.willRender(info: info, alwaysRenderRAW: alwaysRenderRAW, skipRenderingEdited: skipRenderingEdited)
+        return Self.willRender(info: info, alwaysRenderRAW: alwaysRenderRAW,
+                               skipRenderingEdited: skipRenderingEdited,
+                               signsWithC2PA: inspectionRequestKey.signsWithC2PA)
     }
 
     /// Pure render-decision rule, shared by `needsRender` (view) and `detectFileInfo`
     /// (metadata evaluation) so the warning logic and the badges can't disagree.
-    private static func willRender(info: UploadFileInfo, alwaysRenderRAW: Bool, skipRenderingEdited: Bool) -> Bool {
+    static func willRender(info: UploadFileInfo, alwaysRenderRAW: Bool,
+                           skipRenderingEdited: Bool, signsWithC2PA: Bool) -> Bool {
+        // Never upload an anonymized photo's original pixels, whatever the skip settings say.
+        if info.isRedacted { return true }
         if info.isRaw && alwaysRenderRAW { return true }
+        if signsWithC2PA && info.credentialedNeedsOverlay { return true }
         return info.hasAnyEdit && !skipRenderingEdited
     }
 
@@ -461,6 +473,9 @@ struct FTPUploadView: View {
         let urls = requestKey.files
         // Per-file read failures only drop that file from the map (evaluated as missing metadata).
         var metadataMap = (try? await readService.readBatchFullMetadata(urls: urls)) ?? [:]
+        // The file's own Develop record, before live/sidecar resolution: one of the carriers
+        // the redaction check consults (see FTPUploadRedaction.isRedacted).
+        let embeddedMap = metadataMap
         do {
             try await EditExportPipeline.resolveCameraRaw(
                 into: &metadataMap,
@@ -518,6 +533,16 @@ struct FTPUploadView: View {
                sidecarOrientation != (embedded.exifOrientation ?? 1) {
                 info[url]?.hasSidecarRotation = true
             }
+            // Same carriers the upload run re-checks: rendered settings, live copy, embedded
+            // record and the freshly read sidecar.
+            if FTPUploadRedaction.isRedacted([
+                metadataMap[url]?.cameraRaw,
+                embeddedMap[url]?.cameraRaw,
+                inMemoryCameraRaw(url),
+                sidecars[url]?.cameraRaw,
+            ]) {
+                info[url]?.isRedacted = true
+            }
         }
         var status: [URL: UploadMetadataStatus] = [:]
         status.reserveCapacity(urls.count)
@@ -537,7 +562,8 @@ struct FTPUploadView: View {
                     hasCrop: false
                 ),
                 alwaysRenderRAW: requestKey.alwaysRenderRAW,
-                skipRenderingEdited: requestKey.skipRenderingEdited
+                skipRenderingEdited: requestKey.skipRenderingEdited,
+                signsWithC2PA: requestKey.signsWithC2PA
             )
             status[url] = Self.evaluateRequirements(url: url, embedded: embedded, sidecar: sidecar, willRender: renders, levels: levels, face: faceInfo[url])
             // Offer a sidecar→file sync for as-is files whose sidecar holds non-optional
@@ -552,10 +578,20 @@ struct FTPUploadView: View {
         }
         // Files with Content Credentials upload as their signed original: rewriting a copy's
         // metadata would break the credential (they're the sidecar-mode files by design).
+        let overlayCandidates = overlay
         overlay = await Self.excludingCredentialed(overlay) { await Self.mayCarryC2PA($0) }
         guard !Task.isCancelled,
               inspectionRequestID == requestID,
               inspectionRequestKey == requestKey else { return }
+        // With C2PA signing on, a credentialed file that needs the overlay renders instead: the
+        // render carries the sidecar metadata and is signed with the app credential.
+        for url in overlayCandidates.subtracting(overlay) {
+            info[url]?.credentialedNeedsOverlay = true
+            guard requestKey.signsWithC2PA else { continue }
+            status[url] = Self.evaluateRequirements(url: url, embedded: metadataMap[url], sidecar: sidecars[url],
+                                                    willRender: true, levels: levels, face: faceInfo[url])
+            mergeable.remove(url)
+        }
         fileInfo = info
         metadataStatus = status
         sidecarMergeableURLs = mergeable
@@ -860,7 +896,7 @@ struct FTPUploadView: View {
 
     private var uploadDisabled: Bool {
         selectedServerID == nil || viewModel.isUploading || viewModel.isRendering
-            || isProcessingVariables || isSigningC2PA || activeFiles.isEmpty
+            || isProcessingVariables || activeFiles.isEmpty
             || isInspectingFiles || inspectionFailure != nil
             || metadataViolationCount(.error) > 0
             || selectedConnection?.useSFTP == true
@@ -952,15 +988,11 @@ struct FTPUploadView: View {
         }
 
         var signingConfiguration: C2PAUploadSigningConfiguration?
-        if signWithC2PABeforeUpload {
+        if hasC2PASigningCertificate && signWithC2PABeforeUpload {
             guard let configuration = makeC2PAUploadSigningConfiguration() else { return }
+            // The upload run signs what it sends — each render, or a staged copy of an as-is
+            // file after its metadata overlay. The user's originals are never signed in place.
             signingConfiguration = configuration
-            // Originals can be signed now. Rendered JPEGs do not exist yet and must
-            // be signed by the render pipeline after it creates the actual upload files.
-            let asIsFiles = activeFiles.filter { !renderURLs.contains($0) }
-            if !asIsFiles.isEmpty {
-                guard await signFilesWithC2PA(asIsFiles, configuration: configuration) else { return }
-            }
         }
 
         guard !Task.isCancelled else { return }
@@ -1000,38 +1032,6 @@ struct FTPUploadView: View {
             author: author,
             usesTestCertificate: usesTestCertificate
         )
-    }
-
-    private func signFilesWithC2PA(
-        _ files: [URL],
-        configuration: C2PAUploadSigningConfiguration
-    ) async -> Bool {
-        isSigningC2PA = true
-        c2paSignProgress = "0/\(files.count)"
-        var signed = 0
-        var allSucceeded = true
-
-        for url in files {
-            guard !Task.isCancelled else {
-                allSucceeded = false
-                break
-            }
-            do {
-                try await configuration.sign(url)
-            } catch {
-                allSucceeded = false
-                preprocessErrors.append("C2PA signing failed for \(url.lastPathComponent): \(error.localizedDescription)")
-            }
-            signed += 1
-            c2paSignProgress = "\(signed)/\(files.count)"
-        }
-
-        isSigningC2PA = false
-        c2paSignProgress = ""
-        if !allSucceeded {
-            preprocessErrors.append("Upload stopped because every selected file must be signed successfully.")
-        }
-        return allSucceeded
     }
 
     private func beginUpload(
@@ -1284,7 +1284,15 @@ private struct UploadFileRow: View {
                     .foregroundStyle(.blue)
                     .help("Rotated in the XMP sidecar")
             }
-            if willRender {
+            if info?.isRedacted == true {
+                Text("Redacted — will be rendered")
+                    .font(.system(size: 8, weight: .semibold))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(.purple.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.purple)
+                    .help("This photo has an Anonymizer. It is always rendered, so the original's un-redacted pixels are never uploaded.")
+            } else if willRender {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 9))
                     .foregroundStyle(.green)

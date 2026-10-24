@@ -1149,14 +1149,16 @@ struct ContentView: View {
                 case .openInInternalEditor:
                     openEditWorkspace()
                 case .uploadSelected:
-                    let urls = browserViewModel.selectedImages.map(\.url)
-                    if !urls.isEmpty {
-                        ftpUploadItem = FTPUploadItem(urls: urls)
+                    // Like the export commands: commit Caption and the metadata panel first so
+                    // the upload dialog inspects (and publishes) what the user just typed.
+                    performAfterMetadataFileOperation {
+                        let urls = browserViewModel.selectedImages.map(\.url)
+                        if !urls.isEmpty { ftpUploadItem = FTPUploadItem(urls: urls) }
                     }
                 case .uploadAll:
-                    let urls = browserViewModel.images.map(\.url)
-                    if !urls.isEmpty {
-                        ftpUploadItem = FTPUploadItem(urls: urls)
+                    performAfterMetadataFileOperation {
+                        let urls = browserViewModel.images.map(\.url)
+                        if !urls.isEmpty { ftpUploadItem = FTPUploadItem(urls: urls) }
                     }
                 case .openFolder, .openRecentFolder, .setRating, .setLabel,
                      .selectPreviousImage, .selectNextImage,
