@@ -1254,6 +1254,66 @@ struct FieldMutationCallerTests {
         #expect(model.urlToImageIndex == index)
     }
 
+    @Test("Overlapping pending-status refreshes coalesce and never drop queued photos")
+    @MainActor
+    func pendingStatusRefreshesCoalesce() async throws {
+        let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        for url in urls { try Data("x".utf8).write(to: url) }
+        let service = MetadataSidecarService()
+        let model = BrowserViewModel()
+        model.currentFolderURL = folder
+        model.images = urls.map { ImageFile(url: $0) }
+        model.batchUpdate {}
+
+        func markPending(_ index: Int) throws {
+            _ = try service.saveSidecar(MetadataSidecar(sourceFile: urls[index].lastPathComponent,
+                pendingChanges: true, metadata: IPTCMetadata(title: "New \(index)"),
+                imageMetadataSnapshot: IPTCMetadata(title: "Old"), history: []), for: urls[index], in: folder)
+        }
+        func settle(until condition: () -> Bool) async {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while (!condition() || model.isPendingStatusRefreshInFlight), ContinuousClock.now < deadline {
+                await Task.yield()
+            }
+        }
+        func isPending(_ index: Int) -> Bool {
+            model.images.first { $0.url == urls[index] }?.hasPendingMetadataChanges == true
+        }
+
+        // A burst of whole-folder requests (one per save) collapses into a single read.
+        try markPending(0)
+        for _ in 0..<8 { model.refreshPendingStatus() }
+        await settle { isPending(0) }
+        #expect(isPending(0))
+        #expect(model.pendingStatusFullRefreshCount == 1)
+
+        // Requests landing while a pass is in flight are served by exactly one follow-up.
+        model.refreshPendingStatus()
+        #expect(model.isPendingStatusRefreshInFlight)
+        try markPending(1)
+        for _ in 0..<5 { model.refreshPendingStatus() }
+        await settle { isPending(1) }
+        #expect(isPending(1))
+        #expect(model.pendingStatusFullRefreshCount == 2)
+
+        // Successive targeted refreshes for different photos are both applied: a later
+        // batch no longer cancels an earlier in-flight one.
+        let fullCount = model.pendingStatusFullRefreshCount
+        try markPending(2)
+        try service.deleteSidecar(for: urls[0], in: folder)
+        model.refreshPendingStatusBatch(for: [urls[2]])
+        for _ in 0..<3 { await Task.yield() }
+        model.refreshPendingStatusBatch(for: [urls[0]])
+        await settle { isPending(2) && !isPending(0) }
+        #expect(isPending(2))
+        #expect(!isPending(0))
+        #expect(model.pendingStatusFullRefreshCount == fullCount)
+    }
+
     @Test("A folder refresh keeps unchanged rows' metadata and derived search text")
     @MainActor
     func folderRefreshReusesUnchangedRows() async throws {

@@ -130,6 +130,9 @@ struct MetadataPanel: View {
     var onApplyTemplate: (() -> Void)?
     var onSaveTemplate: (() -> Void)?
     var onPendingStatusChanged: (() -> Void)?
+    /// Targeted variant used by commits whose photos are known, so a save re-reads only
+    /// those photos' sidecars instead of the whole folder. Falls back to the full refresh.
+    var onPendingStatusChangedForURLs: (([URL]) -> Void)?
     /// Captioning always commits drafts to the app sidecar. Embedding remains an explicit action.
     var commitsToHistorySidecarOnly = false
     var captionFlushCoordinator: CaptionWorkspaceFlushCoordinator?
@@ -1193,8 +1196,9 @@ struct MetadataPanel: View {
             return
         }
         if commitsToHistorySidecarOnly {
+            let savedURLs = viewModel.selectedURLs
             viewModel.saveToSidecar()
-            onPendingStatusChanged?()
+            notifyPendingStatusChanged(for: savedURLs)
             return
         }
         // A delayed focus-loss save can fire after the browser moved on. The selection-change
@@ -1211,8 +1215,16 @@ struct MetadataPanel: View {
         let mode = MetadataWriteMode.current(forSelection: editorImages)
         viewModel.commitEdits(
             mode: mode,
-            onComplete: onPendingStatusChanged
+            onComplete: { notifyPendingStatusChanged(for: editorURLs) }
         )
+    }
+
+    private func notifyPendingStatusChanged(for urls: [URL]) {
+        if let onPendingStatusChangedForURLs {
+            onPendingStatusChangedForURLs(urls)
+        } else {
+            onPendingStatusChanged?()
+        }
     }
 
     var body: some View {

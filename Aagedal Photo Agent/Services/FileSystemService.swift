@@ -147,6 +147,9 @@ actor FileSystemService {
     private let classifyDropSource: @Sendable (URL) -> DropSourceKind
     private let sidecarExists: @Sendable (URL) -> Bool
     private let displayOrientation: @Sendable (URL) -> Int?
+    /// Embedded-only orientation, used when the folder scan already proved the photo has
+    /// no `.xmp` sidecar, so the sidecar existence probe would be wasted I/O.
+    private let embeddedDisplayOrientation: @Sendable (URL) -> Int?
     /// Measures volume-facing reads without recording paths or filenames. The interval names and
     /// aggregate counts are intentionally stable so the same Instruments template can compare
     /// local, network, cloud-placeholder, and large-folder runs.
@@ -185,6 +188,9 @@ actor FileSystemService {
         displayOrientation: @escaping @Sendable (URL) -> Int? = { url in
             FileSystemService.systemDisplayOrientation(for: url)
         },
+        embeddedDisplayOrientation: @escaping @Sendable (URL) -> Int? = { url in
+            FileSystemService.systemEmbeddedDisplayOrientation(for: url)
+        },
         filesystemQueue: DispatchSerialQueue = DispatchSerialQueue(
             label: "com.aagedal.photo-agent.filesystem", qos: .utility
         )
@@ -197,6 +203,7 @@ actor FileSystemService {
         self.classifyDropSource = classifyDropSource
         self.sidecarExists = sidecarExists
         self.displayOrientation = displayOrientation
+        self.embeddedDisplayOrientation = embeddedDisplayOrientation
     }
 
     /// Scans a folder for image files on this service's serialized actor executor. Directory
@@ -417,9 +424,14 @@ actor FileSystemService {
     /// its folder scan. XMP and ImageIO access are synchronous and cannot be preempted,
     /// so cancellation is sampled on both sides of every file and the exact completed
     /// prefix is returned instead of allowing a partial snapshot to look complete.
+    ///
+    /// `urlsWithoutSidecar` lists photos the folder scan's directory listing showed have no
+    /// `.xmp` sidecar; those skip the sidecar probe and read only the embedded header.
+    /// Sidecar orientation still wins for every other photo.
     func displayOrientationSnapshot(
         for urls: [URL],
-        requestID: UUID
+        requestID: UUID,
+        urlsWithoutSidecar: Set<URL> = []
     ) -> DisplayOrientationSnapshot {
         let interval = signposter.beginInterval(
             "DisplayOrientationSnapshot",
@@ -444,7 +456,10 @@ actor FileSystemService {
                 )
             }
 
-            if let orientation = displayOrientation(url), orientation != 1 {
+            let orientation = urlsWithoutSidecar.contains(url)
+                ? embeddedDisplayOrientation(url)
+                : displayOrientation(url)
+            if let orientation, orientation != 1 {
                 orientations[url] = orientation
             }
             processedFileCount += 1
@@ -484,6 +499,10 @@ actor FileSystemService {
         if let sidecarOrientation = XMPSidecarService().sidecarOrientation(for: url) {
             return sidecarOrientation
         }
+        return systemEmbeddedDisplayOrientation(for: url)
+    }
+
+    private nonisolated static func systemEmbeddedDisplayOrientation(for url: URL) -> Int? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else {

@@ -2166,6 +2166,9 @@ struct ContentView: View {
                     onSaveTemplate: { isShowingSaveTemplateName = true },
                     onPendingStatusChanged: {
                         browserViewModel.refreshPendingStatus()
+                    },
+                    onPendingStatusChangedForURLs: { urls in
+                        browserViewModel.refreshPendingStatusBatch(for: urls)
                     }
                 )
             }
@@ -4758,7 +4761,12 @@ struct ContentViewModifiers: ViewModifier {
                     folderURL: browserViewModel.currentFolderURL)
             }
             .onReceive(NotificationCenter.default.publisher(for: .faceMetadataDidChange)) { notification in
-                browserViewModel.refreshPendingStatus()
+                // The writer names the photos it changed; re-read only those sidecars.
+                if let written = notification.userInfo?["imageURLs"] as? [URL] {
+                    browserViewModel.refreshPendingStatusBatch(for: written)
+                } else {
+                    browserViewModel.refreshPendingStatus()
+                }
                 // A loaded pending draft sets `hasChanges` but is not an unsaved edit; the face
                 // write lands in that draft, so the editor must reload to show the names.
                 guard !metadataViewModel.hasUnpersistedEditorChanges else { return }

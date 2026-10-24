@@ -302,6 +302,7 @@ final class BrowserViewModel {
     @ObservationIgnored private var pendingMetadataDrainTask: Task<Void, Never>?
     @ObservationIgnored private var autoRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var folderOrientationLoadRequestID: UUID?
+    @ObservationIgnored private var folderOrientationTask: Task<Void, Never>?
     @ObservationIgnored private var refreshOrientationLoadRequestID: UUID?
     @ObservationIgnored private var metadataWriteTask: Task<Void, Never>?
     @ObservationIgnored private var fieldMutationTask: Task<Void, Never>?
@@ -433,6 +434,7 @@ final class BrowserViewModel {
         favoriteLoadTask?.cancel()
         subfolderLoadTask?.cancel()
         subfolderRefreshTask?.cancel()
+        folderOrientationTask?.cancel()
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         imageMutationTask?.cancel()
@@ -984,6 +986,8 @@ final class BrowserViewModel {
         isAutoRefreshing = false
         metadataWriteTask?.cancel()
         batchReadTask?.cancel()
+        folderOrientationTask?.cancel()
+        folderOrientationTask = nil
         folderOrientationLoadRequestID = nil
         refreshOrientationLoadRequestID = nil
         // Reset in case the cancelled task's metadata loop left this true,
@@ -1078,41 +1082,10 @@ final class BrowserViewModel {
                 self.isLoading = false
                 AppStartupSignposts.shared.firstFolderLoadReady(itemCount: files.count)
 
-                // Phase 1.5: Read EXIF orientations in background (deferred).
-                // Thumbnails don't need this (QL/CGImageSource apply transforms internally).
-                // Phase 5 (metadata read) also sets it; this provides it sooner for full-screen entry.
-                var orientedFiles = files
-                guard await self.readOrientationsEagerly(
-                    for: &orientedFiles,
-                    owner: .folderLoad
-                ) else { return }
-                guard !Task.isCancelled, self.currentFolderURL == url else { return }
-                let nonDefault = orientedFiles.filter { $0.exifOrientation != 1 }
-                if !nonDefault.isEmpty {
-                    // Resolve each file by URL via urlToImageIndex rather than by the
-                    // positional index from `orientedFiles`: `self.images` may have been
-                    // replaced or reordered (auto-refresh merge, delete, sort) during the
-                    // `await` above, so a stale positional index could write to the wrong
-                    // image or crash out-of-bounds. urlToImageIndex always matches the
-                    // current `self.images`. We only mutate a field (set unchanged), so the
-                    // index stays valid across the loop even with the cascade suppressed.
-                    self.suppressImagesCascade = true
-                    for file in nonDefault {
-                        guard let index = self.urlToImageIndex[file.url] else { continue }
-                        if self.images[index].exifOrientation != file.exifOrientation {
-                            self.logger.info("[\(file.url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (loadFolder) \(self.images[index].exifOrientation) → \(file.exifOrientation)")
-                            // See applyBatchMetadataResults: drop model-orientation-derived
-                            // renders produced under the old value.
-                            self.thumbnailService.invalidateEditedThumbnail(for: file.url)
-                            self.fullScreenImageCache.invalidateImage(for: file.url)
-                        }
-                        self.images[index].exifOrientation = file.exifOrientation
-                    }
-                    self.suppressImagesCascade = false
-                }
-
                 // Phase 2: The filesystem actor retains a Dispatch worker for directory I/O.
                 // Await it directly so replacing the folder propagates cancellation to the scan.
+                // It runs before the eager orientation pass below, which shares that actor:
+                // one directory listing should not queue behind thousands of header reads.
                 let discoveredSubfolders = try? await subfolderLoader(url)
                 guard !Task.isCancelled, self.currentFolderURL == url else { return }
                 if let discoveredSubfolders {
@@ -1122,6 +1095,13 @@ final class BrowserViewModel {
                     }
                     self.prefetchGrandchildren(of: url)
                 }
+
+                // Phase 1.5: Read display orientations in the background, in grid order. Not
+                // awaited: the JSON sidecar and metadata passes below set the authoritative
+                // orientation themselves, and base thumbnails apply sidecar orientation at
+                // generation time. This only gets the model value in place sooner for
+                // full-screen/edit entry, so it must not hold up the rest of folder open.
+                self.startEagerFolderOrientationLoad(folderURL: url)
 
                 // Phase 3: Load sidecars and apply pending overrides
                 let allSidecars = await sidecarService.loadAllSidecars(in: url)
@@ -1310,9 +1290,14 @@ final class BrowserViewModel {
             // initial-load eager read) so new thumbnails render upright immediately without
             // blocking the UI on per-file CGImageSource I/O.
             if !newURLs.isEmpty {
+                let newURLSet = Set(newURLs)
+                let newURLsWithoutSidecar = Set(merged.lazy
+                    .filter { newURLSet.contains($0.url) && $0.sidecarModified == nil }
+                    .map(\.url))
                 guard let orientationSnapshot = await loadOrientationSnapshot(
                     for: newURLs,
-                    owner: .refresh
+                    owner: .refresh,
+                    urlsWithoutSidecar: newURLsWithoutSidecar
                 ) else {
                     return
                 }
@@ -1392,24 +1377,98 @@ final class BrowserViewModel {
         isRenameQuiesced = false
     }
 
-    /// Read EXIF orientation via CGImageSource (metadata-only, ~0.1ms/file).
-    /// Called eagerly after folder scan so exifOrientation is correct before
-    /// the full batch metadata read.
-    private func readOrientationsEagerly(
-        for images: inout [ImageFile],
-        owner: OrientationLoadOwner
-    ) async -> Bool {
-        let urls = images.compactMap { $0.isImageFile && !$0.isICloudDownloadPending ? $0.url : nil }
-        guard !urls.isEmpty else { return true }
-        guard let snapshot = await loadOrientationSnapshot(for: urls, owner: owner) else { return false }
-        let orientations = snapshot.orientations
-        guard !orientations.isEmpty else { return true }
-        for index in images.indices where images[index].isImageFile {
-            if let orientation = orientations[images[index].url] {
-                images[index].exifOrientation = orientation
+    /// Files per eager-orientation actor hop. Small enough that other work on the
+    /// filesystem actor (grandchild listings) interleaves and results land progressively.
+    private static let eagerOrientationChunkSize = 200
+
+    /// Reads display orientations (sidecar first, then the embedded header) right after the
+    /// folder scan, in grid order and in chunks, publishing each chunk as it lands. Runs
+    /// alongside the JSON sidecar and metadata passes instead of gating them.
+    ///
+    /// Photos the scan's directory listing showed have no `.xmp` skip the sidecar probe.
+    /// A chunk result only fills in a row whose orientation is still the value it had when
+    /// the pass started: a metadata batch, a pending orientation draft or a user rotation
+    /// that landed meanwhile is authoritative and is never overwritten by this early read.
+    private func startEagerFolderOrientationLoad(folderURL: URL) {
+        folderOrientationTask?.cancel()
+        folderOrientationTask = nil
+        let eligible = images.filter { $0.isImageFile && !$0.isICloudDownloadPending }
+        guard !eligible.isEmpty else { return }
+        let urlsWithoutSidecar = Set(eligible.lazy.filter { $0.sidecarModified == nil }.map(\.url))
+        var baseline: [URL: Int] = [:]
+        baseline.reserveCapacity(eligible.count)
+        for file in eligible { baseline[file.url] = file.exifOrientation }
+        let orderedURLs = gridPrioritizedURLs(eligible.map(\.url))
+
+        folderOrientationTask = Task { [weak self] in
+            let chunkSize = Self.eagerOrientationChunkSize
+            for chunkStart in stride(from: 0, to: orderedURLs.count, by: chunkSize) {
+                // Checked before `loadOrientationSnapshot` claims the folder-load request
+                // identity, so a superseded pass can never steal it from its replacement.
+                guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
+                let chunk = Array(orderedURLs[chunkStart..<min(chunkStart + chunkSize, orderedURLs.count)])
+                guard let snapshot = await self.loadOrientationSnapshot(
+                    for: chunk,
+                    owner: .folderLoad,
+                    urlsWithoutSidecar: urlsWithoutSidecar
+                ) else { return }
+                guard !Task.isCancelled, self.currentFolderURL == folderURL else { return }
+                self.applyEagerOrientations(snapshot.orientations, baseline: baseline)
             }
         }
-        return true
+    }
+
+    private func applyEagerOrientations(_ orientations: [URL: Int], baseline: [URL: Int]) {
+        guard !orientations.isEmpty else { return }
+        // A metadata load can hold the cascade suppressed across awaits; restore its state.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        var changedURLs: [URL] = []
+        for (url, orientation) in orientations {
+            guard let index = validImageIndex(for: url),
+                  let original = baseline[url],
+                  images[index].exifOrientation == original,
+                  orientation != original,
+                  !images[index].pendingFieldNames.contains("Orientation"),
+                  !hasActiveOrientationMutation(for: url)
+            else { continue }
+            logger.info("[\(url.lastPathComponent, privacy: .private(mask: .hash))] eager orientation (loadFolder) \(original) → \(orientation)")
+            // See applyBatchMetadataResults: drop model-orientation-derived
+            // renders produced under the old value.
+            thumbnailService.invalidateEditedThumbnail(for: url)
+            fullScreenImageCache.invalidateImage(for: url)
+            images[index].exifOrientation = orientation
+            changedURLs.append(url)
+        }
+        suppressImagesCascade = wasSuppressed
+        guard !changedURLs.isEmpty else { return }
+        publishMetadataBatch(for: changedURLs, sortKeyChanged: false)
+    }
+
+    /// Orders `urls` the way the grid shows them (visible rows first, then the rest of
+    /// the sorted folder, then anything else) so background passes reach what the user
+    /// is looking at first. Pure in-memory reordering; the set of URLs is unchanged.
+    private func gridPrioritizedURLs(_ urls: [URL]) -> [URL] {
+        guard urls.count > 1 else { return urls }
+        let requested = Set(urls)
+        var seen = Set<URL>()
+        seen.reserveCapacity(urls.count)
+        var ordered: [URL] = []
+        ordered.reserveCapacity(urls.count)
+        for image in visibleImages where requested.contains(image.url) && seen.insert(image.url).inserted {
+            ordered.append(image.url)
+        }
+        if ordered.count < requested.count {
+            for image in sortedImages where requested.contains(image.url) && seen.insert(image.url).inserted {
+                ordered.append(image.url)
+            }
+        }
+        if ordered.count < urls.count {
+            for url in urls where seen.insert(url).inserted {
+                ordered.append(url)
+            }
+        }
+        return ordered
     }
 
     private enum OrientationLoadOwner {
@@ -1423,7 +1482,8 @@ final class BrowserViewModel {
     /// ordinary task cancellation.
     private func loadOrientationSnapshot(
         for urls: [URL],
-        owner: OrientationLoadOwner
+        owner: OrientationLoadOwner,
+        urlsWithoutSidecar: Set<URL> = []
     ) async -> FileSystemService.DisplayOrientationSnapshot? {
         let requestID = UUID()
         switch owner {
@@ -1434,7 +1494,8 @@ final class BrowserViewModel {
         }
         let snapshot = await fileSystemService.displayOrientationSnapshot(
             for: urls,
-            requestID: requestID
+            requestID: requestID,
+            urlsWithoutSidecar: urlsWithoutSidecar
         )
         guard !Task.isCancelled,
               isCurrentOrientationRequest(requestID, owner: owner),
@@ -1460,20 +1521,25 @@ final class BrowserViewModel {
     }
 
     /// Reads IPTC/XMP basic metadata for the given URLs in batches of 50 and merges
-    /// each batch into `self.images`. Pass `cachedSidecars` when the caller has already
-    /// loaded all sidecars for the folder (initial-load path); the incremental path
-    /// leaves it empty and relies on `applyPendingSidecarOverrides`'s per-file fallback.
+    /// each batch into `self.images`, in grid order so visible rows fill in first.
+    ///
+    /// Each batch's JSON sidecars are resolved off-main alongside its XMP read, from one
+    /// listing of `.photo_metadata`; the result is authoritative for the batch, so a photo
+    /// without a sidecar costs no filesystem probe on the MainActor. Pass `cachedSidecars`
+    /// when the caller already loaded the folder's sidecars (initial-load path): carriers
+    /// still present are reused instead of re-read, and sidecars created since are read.
     private func loadBasicMetadata(
-        for urls: [URL],
+        for requestedURLs: [URL],
         cachedSidecars: [URL: MetadataSidecar] = [:],
         showsProgress: Bool = false
     ) async {
         guard metadataReadService.isAvailable else { return }
-        guard !urls.isEmpty else { return }
+        guard !requestedURLs.isEmpty else { return }
         if isMetadataLoading {
-            pendingMetadataURLs.formUnion(urls)
+            pendingMetadataURLs.formUnion(requestedURLs)
             return
         }
+        let urls = gridPrioritizedURLs(requestedURLs)
         let requestID = UUID()
         metadataLoadRequestID = requestID
         isMetadataLoading = true
@@ -1535,9 +1601,20 @@ final class BrowserViewModel {
                     imageURLs: batchURLs,
                     requestID: requestID
                 )
+                var reusableSidecars: [URL: MetadataSidecar] = [:]
+                for url in batchURLs {
+                    if let cached = cachedSidecars[url] { reusableSidecars[url] = cached }
+                }
+                async let jsonSidecarLoad = Self.loadBatchJSONSidecars(
+                    sidecarService,
+                    for: batchURLs,
+                    in: folderURL,
+                    reusing: reusableSidecars
+                )
                 let results = try await metadataReadService.readBatchBasicMetadata(urls: batchURLs)
                 let xmpLoadResult = await xmpDataLoad
                 let hdrClassificationResult = await hdrClassification
+                let batchSidecars = await jsonSidecarLoad
                 guard !Task.isCancelled,
                       currentFolderURL == folderURL,
                       metadataLoadRequestID == requestID,
@@ -1571,7 +1648,8 @@ final class BrowserViewModel {
                     results,
                     to: &images,
                     localIndex: urlToImageIndex,
-                    cachedSidecars: cachedSidecars,
+                    cachedSidecars: batchSidecars ?? [:],
+                    sidecarsAreAuthoritative: batchSidecars != nil,
                     xmpMetadataMap: xmpMetadataMap,
                     nativeHDRByURL: hdrSnapshot.isHDRByImageURL,
                     tagRevisionsAtRead: tagRevisions
@@ -1629,6 +1707,18 @@ final class BrowserViewModel {
         }
     }
 
+    /// Resolves one metadata batch's JSON sidecars on the sidecar filesystem actor. Returns
+    /// nil (non-authoritative) only when there is no folder to resolve against.
+    private nonisolated static func loadBatchJSONSidecars(
+        _ service: MetadataSidecarService,
+        for urls: [URL],
+        in folderURL: URL?,
+        reusing cached: [URL: MetadataSidecar]
+    ) async -> [URL: MetadataSidecar]? {
+        guard let folderURL else { return nil }
+        return await service.loadSidecarsForBrowserBatch(urls, in: folderURL, reusing: cached)
+    }
+
     private func drainPendingMetadataIfNeeded() {
         guard !isMetadataLoading else { return }
         guard !pendingMetadataURLs.isEmpty else { return }
@@ -1647,6 +1737,7 @@ final class BrowserViewModel {
         to updated: inout [ImageFile],
         localIndex: [URL: Int],
         cachedSidecars: [URL: MetadataSidecar] = [:],
+        sidecarsAreAuthoritative: Bool = false,
         xmpMetadataMap: [URL: IPTCMetadata] = [:],
         nativeHDRByURL: [URL: Bool],
         tagRevisionsAtRead: [URL: UUID]? = nil
@@ -1782,7 +1873,13 @@ final class BrowserViewModel {
                 }
                 updated[index].metadata = descriptive
 
-                applyPendingSidecarOverrides(to: &updated, for: sourceURL, index: index, cachedSidecar: cachedSidecars[sourceURL])
+                applyPendingSidecarOverrides(
+                    to: &updated,
+                    for: sourceURL,
+                    index: index,
+                    cachedSidecar: cachedSidecars[sourceURL],
+                    cacheIsAuthoritative: sidecarsAreAuthoritative
+                )
                 // Background reads can finish while a field write is suspended. Keep the
                 // accepted optimistic value until its own verified completion or rollback.
                 if let pendingRating { updated[index].starRating = pendingRating }
@@ -2614,11 +2711,20 @@ final class BrowserViewModel {
         applyPendingSidecarOverrides(to: &images, for: url, index: index, cachedSidecar: cachedSidecar)
     }
 
-    private func applyPendingSidecarOverrides(to array: inout [ImageFile], for url: URL, index: Int, cachedSidecar: MetadataSidecar? = nil) {
+    /// `cacheIsAuthoritative` means `cachedSidecar` came from a read that covered this
+    /// photo, so nil means "no sidecar" and the synchronous per-file fallback is skipped.
+    private func applyPendingSidecarOverrides(
+        to array: inout [ImageFile],
+        for url: URL,
+        index: Int,
+        cachedSidecar: MetadataSidecar? = nil,
+        cacheIsAuthoritative: Bool = false
+    ) {
         let sidecar: MetadataSidecar
         if let cached = cachedSidecar {
             sidecar = cached
-        } else if let folderURL = currentFolderURL,
+        } else if !cacheIsAuthoritative,
+                  let folderURL = currentFolderURL,
                   let loaded = sidecarService.loadSidecar(for: url, in: folderURL) {
             sidecar = loaded
         } else {
@@ -3591,24 +3697,93 @@ final class BrowserViewModel {
         return names
     }
 
+    /// Re-reads every JSON sidecar in the folder. Use only when the changed photos are
+    /// genuinely unknown; prefer `refreshPendingStatusBatch(for:)`. Requests that arrive
+    /// while a refresh is in flight coalesce into a single follow-up pass instead of
+    /// stacking one whole-folder read per save.
     func refreshPendingStatus() {
         guard let folderURL = currentFolderURL else { return }
-        Task {
-            let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
-            guard self.currentFolderURL == folderURL else { return }
-            self.applyPendingSidecarStatus(allSidecars, at: self.images.enumerated().map { ($1.url, $0) })
+        preparePendingStatusQueue(for: folderURL)
+        pendingStatusNeedsFullRefresh = true
+        startPendingStatusRefreshIfNeeded()
+    }
+
+    /// Re-reads only the given photos' JSON sidecars. Calls that arrive while a refresh is in
+    /// flight are accumulated (never dropped) and served by the next pass.
+    func refreshPendingStatusBatch(for urls: [URL]) {
+        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
+        preparePendingStatusQueue(for: folderURL)
+        pendingStatusQueuedURLs.formUnion(urls)
+        startPendingStatusRefreshIfNeeded()
+    }
+
+    /// Number of whole-folder pending-status reads actually performed (test observability).
+    @ObservationIgnored private(set) var pendingStatusFullRefreshCount = 0
+    var isPendingStatusRefreshInFlight: Bool { pendingStatusRefreshTask != nil }
+    @ObservationIgnored private var pendingStatusQueueFolderURL: URL?
+    @ObservationIgnored private var pendingStatusNeedsFullRefresh = false
+    @ObservationIgnored private var pendingStatusQueuedURLs: Set<URL> = []
+
+    /// Maps caller-supplied URLs onto the rows' own URL spelling. Callers outside the
+    /// browser (face writes, notifications) may build `/var` vs `/private/var` or other
+    /// non-identical forms; an exact index hit is O(1), and the path scan runs only on a miss.
+    private func rowURLs(matching urls: Set<URL>) -> [URL] {
+        var resolved: [URL] = []
+        resolved.reserveCapacity(urls.count)
+        var byPath: [String: URL]?
+        for url in urls {
+            if validImageIndex(for: url) != nil {
+                resolved.append(url)
+                continue
+            }
+            if byPath == nil {
+                var map: [String: URL] = [:]
+                map.reserveCapacity(images.count)
+                for image in images { map[image.url.standardizedFileURL.path] = image.url }
+                byPath = map
+            }
+            resolved.append(byPath?[url.standardizedFileURL.path] ?? url)
+        }
+        return resolved
+    }
+
+    private func preparePendingStatusQueue(for folderURL: URL) {
+        guard pendingStatusQueueFolderURL != folderURL else { return }
+        // Requests queued for a folder that is no longer current are moot.
+        pendingStatusQueueFolderURL = folderURL
+        pendingStatusNeedsFullRefresh = false
+        pendingStatusQueuedURLs.removeAll()
+    }
+
+    private func startPendingStatusRefreshIfNeeded() {
+        guard pendingStatusRefreshTask == nil else { return }
+        pendingStatusRefreshTask = Task { @MainActor [weak self] in
+            await self?.drainPendingStatusRefreshes()
         }
     }
 
-    func refreshPendingStatusBatch(for urls: [URL]) {
-        guard let folderURL = currentFolderURL, !urls.isEmpty else { return }
-        pendingStatusRefreshTask?.cancel()
-        pendingStatusRefreshTask = Task { @MainActor [weak self] in
-            guard let service = self?.sidecarService else { return }
-            let sidecars = await service.loadSidecars(for: urls, in: folderURL)
-            guard let self, !Task.isCancelled, self.currentFolderURL == folderURL else { return }
-            let targets = Set(urls).compactMap { url in self.urlToImageIndex[url].map { (url, $0) } }
-            self.applyPendingSidecarStatus(sidecars, at: targets)
+    private func drainPendingStatusRefreshes() async {
+        defer { pendingStatusRefreshTask = nil }
+        while !Task.isCancelled,
+              let folderURL = pendingStatusQueueFolderURL,
+              currentFolderURL == folderURL,
+              pendingStatusNeedsFullRefresh || !pendingStatusQueuedURLs.isEmpty {
+            if pendingStatusNeedsFullRefresh {
+                // A full pass covers every queued photo too.
+                pendingStatusNeedsFullRefresh = false
+                pendingStatusQueuedURLs.removeAll()
+                pendingStatusFullRefreshCount += 1
+                let allSidecars = await sidecarService.loadAllSidecars(in: folderURL)
+                guard !Task.isCancelled, currentFolderURL == folderURL else { continue }
+                applyPendingSidecarStatus(allSidecars, at: images.enumerated().map { ($1.url, $0) })
+            } else {
+                let urls = rowURLs(matching: pendingStatusQueuedURLs)
+                pendingStatusQueuedURLs.removeAll()
+                let sidecars = await sidecarService.loadSidecars(for: urls, in: folderURL)
+                guard !Task.isCancelled, currentFolderURL == folderURL else { continue }
+                let targets = urls.compactMap { url in urlToImageIndex[url].map { (url, $0) } }
+                applyPendingSidecarStatus(sidecars, at: targets)
+            }
         }
     }
 
@@ -3809,7 +3984,7 @@ final class BrowserViewModel {
                 baselineSidecar: editor.sidecar, imageURL: editor.imageURL, folderURL: editor.folderURL,
                 creationEvidence: editor.creationEvidence) else { return }
         guard currentFolderURL.map(Self.metadataReviewKey) != Self.metadataReviewKey(editor.folderURL)
-            || images.contains(where: { Self.metadataReviewKey($0.url) == key }) else {
+            || metadataReviewImageIndex(for: editor.imageURL) != nil else {
             throw CaptionWorkspaceFlushError.persistenceFailed("This photo is no longer in the current folder. Its unsaved Review draft was retained.")
         }
         let editorID = editor.id
@@ -3859,16 +4034,31 @@ final class BrowserViewModel {
         publishMetadataReviewEditor(editor)
     }
 
+    /// Resolves a Review row's photo to its `images` index. An exact URL hit through
+    /// `urlToImageIndex` is O(1); the symlink-resolving scan (filesystem calls per row) only
+    /// runs when the editor holds a different spelling of the photo's path.
+    private func metadataReviewImageIndex(for url: URL) -> Int? {
+        if let index = validImageIndex(for: url) { return index }
+        let key = Self.metadataReviewKey(url)
+        return images.firstIndex(where: { Self.metadataReviewKey($0.url) == key })
+    }
+
     private func publishMetadataReviewEditor(_ editor: MetadataReviewEditorState) {
         guard currentFolderURL.map(Self.metadataReviewKey) == Self.metadataReviewKey(editor.folderURL),
-              let index = images.firstIndex(where: { Self.metadataReviewKey($0.url) == Self.metadataReviewKey(editor.imageURL) }) else { return }
-        var updated = images
-        updated[index].metadata = editor.draft
-        updated[index].keywords = editor.draft.keywords
-        updated[index].personShown = editor.draft.personShown
-        updated[index].hasPendingMetadataChanges = editor.sidecar?.pendingChanges == true || editor.draft != editor.previous
-        updated[index].pendingFieldNames = extractPendingFieldNames(from: editor.sidecar)
-        images = updated
+              let index = metadataReviewImageIndex(for: editor.imageURL) else { return }
+        // Edit the row in place and publish just that row, rather than replacing the whole
+        // array (which re-indexes, re-sorts and re-filters the folder). Review never changes
+        // sort keys (rating/label); a metadata-dependent filter is re-evaluated by the publish.
+        let wasSuppressed = suppressImagesCascade
+        suppressImagesCascade = true
+        images[index].metadata = editor.draft
+        images[index].keywords = editor.draft.keywords
+        images[index].personShown = editor.draft.personShown
+        images[index].hasPendingMetadataChanges = editor.sidecar?.pendingChanges == true || editor.draft != editor.previous
+        images[index].pendingFieldNames = extractPendingFieldNames(from: editor.sidecar)
+        suppressImagesCascade = wasSuppressed
+        guard !wasSuppressed else { return }
+        publishMetadataBatch(for: [images[index].url], sortKeyChanged: false)
     }
 
     func finishMetadataReviewDiscard(for photo: URL, editorID: UUID?) async {
@@ -3877,8 +4067,8 @@ final class BrowserViewModel {
         metadataReviewEditors[key] = nil
         metadataReviewLoadIDs[key] = nil
         metadataReviewLoadErrors[key] = nil
-        if selectedImageIDs.contains(where: { Self.metadataReviewKey($0) == key }),
-           images.contains(where: { Self.metadataReviewKey($0.url) == key }) {
+        if selectedImageIDs.contains(photo) || selectedImageIDs.contains(where: { Self.metadataReviewKey($0) == key }),
+           metadataReviewImageIndex(for: photo) != nil {
             await prepareMetadataReviewEditor(for: photo)
             if let editor = metadataReviewEditors[key] { publishMetadataReviewEditor(editor) }
         }
