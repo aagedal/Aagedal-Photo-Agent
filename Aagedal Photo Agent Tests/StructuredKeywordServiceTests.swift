@@ -839,3 +839,81 @@ struct IPTCMediaTopicsUpdateTests {
         #expect(await failing.cached()?.vocabulary.release == current.release)
     }
 }
+
+// MARK: - Typeahead resolution order and disambiguation (3.0)
+
+@MainActor
+@Suite("Structured keyword typeahead resolution", .serialized)
+struct StructuredKeywordTypeaheadResolutionTests {
+    @Test("a name shared by several paths is offered once per path and expands the chosen one")
+    func duplicateNamesAreDisambiguated() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("typeahead-dup-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService()
+            try await service.saveTree([
+                StructuredKeyword(name: "sport", kind: .keyword, children: [
+                    StructuredKeyword(name: "fotball", kind: .keyword, children: [
+                        StructuredKeyword(name: "Brann", kind: .keyword, synonyms: ["SK Brann"]),
+                    ]),
+                    StructuredKeyword(name: "tennis", kind: .keyword),
+                ]),
+                StructuredKeyword(name: "ulykker", kind: .keyword, children: [
+                    StructuredKeyword(name: "brann", kind: .keyword, synonyms: ["brannvesen"]),
+                ]),
+            ])
+
+            let names = service.allDisambiguatedSearchableNames()
+            #expect(names.contains("Brann — sport > fotball"))
+            #expect(names.contains("brann — ulykker"))
+            #expect(!names.contains("Brann") && !names.contains("brann"))
+            #expect(names.contains("tennis"))
+            #expect(names.contains("SK Brann"))
+
+            #expect(service.activation(forName: "Brann — sport > fotball")?.values
+                == ["sport", "fotball", "Brann", "SK Brann"])
+            #expect(service.activation(forName: "brann — ulykker")?.values == ["ulykker", "brann", "brannvesen"])
+            // Typed bare name: first path in tree order, as before.
+            #expect(service.activation(forName: "brann")?.values == ["sport", "fotball", "Brann", "SK Brann"])
+            // Plain searchable names (face naming, person pickers) stay undecorated.
+            #expect(service.allSearchableNames().contains("Brann"))
+        }
+    }
+
+    @Test("the user's own keyword trees win over IPTC Media Topics for the same name")
+    func userTreesResolveBeforeIPTC() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("typeahead-iptc-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let library = StructuredKeywordLibrary()
+            await library.reload()
+            #expect(!library.hasReadFailure)
+            _ = try await library.update { $0.languageOverride = IPTCMediaTopicsLanguage.englishUS.rawValue }
+            let legacy = StructuredKeywordService()
+            _ = try await legacy.saveTree([
+                StructuredKeyword(name: "sport", kind: .keyword, children: [
+                    StructuredKeyword(name: "tennis", kind: .keyword, synonyms: ["tennisturnering"]),
+                ]),
+            ])
+            let service = StructuredKeywordService(library: library)
+            await service.reload()
+
+            let groups = library.roots(including: legacy.roots).map(\.name)
+            #expect(groups == ["My Keywords", "IPTC Media Topics"])
+            // The user's own synonyms come along: the user's path wins the name lookup.
+            #expect(service.activation(forName: "tennis")?.values == ["sport", "tennis", "tennisturnering"])
+
+            let tennisPaths = service.search("tennis").filter { $0.node.name.lowercased() == "tennis" }
+            if tennisPaths.count > 1 {
+                let userValues = ["sport", "tennis", "tennisturnering"]
+                let labels = service.allDisambiguatedSearchableNames().filter { $0.lowercased().hasPrefix("tennis — ") }
+                let userLabel = try #require(labels.first { service.activation(forName: $0)?.values == userValues })
+                let iptcLabel = try #require(labels.first { $0 != userLabel })
+                #expect(userLabel.hasSuffix("sport"))
+                // The IPTC entry stays reachable explicitly, and user labels are listed first.
+                #expect(service.activation(forName: iptcLabel)?.values != userValues)
+                #expect(labels.firstIndex(of: userLabel)! < labels.firstIndex(of: iptcLabel)!)
+            }
+        }
+    }
+}

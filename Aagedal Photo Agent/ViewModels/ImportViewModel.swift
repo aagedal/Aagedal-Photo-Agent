@@ -1373,7 +1373,7 @@ final class ImportViewModel {
             case "digitalImageGUID": configuration.metadata.digitalImageGUID = value
             case "imageSupplierImageID": configuration.metadata.imageSupplierImageID = value
             case "imageSupplier":
-                if let values = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
+                if let values = EditorialImageSupplier.values(fromTemplateValue: value) {
                     configuration.metadata.imageSuppliers = values
                 }
             case "jobId": configuration.metadata.jobId = value

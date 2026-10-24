@@ -85,14 +85,19 @@ final class StructuredKeywordLibrary {
             guard active.contains(id), !roots.isEmpty else { return }
             groups.append(StructuredKeyword(id: Self.groupID(id), name: name, kind: .container, children: roots))
         }
-        append(StructuredKeywordLibraryDocument.iptcID, "IPTC Media Topics", bundledRoots)
+        // The user's own trees come first: name lookups and typeahead resolve in tree order, and
+        // the shared IPTC vocabulary must never shadow a user's own path for the same name.
         append(StructuredKeywordLibraryDocument.legacyID, "My Keywords", legacy)
         for list in document.lists { append(list.id, list.name, customRoots[list.id] ?? []) }
+        append(StructuredKeywordLibraryDocument.iptcID, "IPTC Media Topics", bundledRoots)
         return groups
     }
 
+    /// Group container ID of the IPTC Media Topics tree in `roots(including:)`.
+    nonisolated static let iptcGroupID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
     private static func groupID(_ id: String) -> UUID {
-        if id == StructuredKeywordLibraryDocument.iptcID { return UUID(uuidString: "00000000-0000-0000-0000-000000000001")! }
+        if id == StructuredKeywordLibraryDocument.iptcID { return iptcGroupID }
         if id == StructuredKeywordLibraryDocument.legacyID { return UUID(uuidString: "00000000-0000-0000-0000-000000000002")! }
         return UUID(uuidString: id) ?? UUID()
     }
@@ -187,6 +192,7 @@ final class StructuredKeywordLibrary {
         let generation = loadID
         let url = try await store.resolveURL(for: .structuredLibrary)
         guard !Task.isCancelled, loadID == generation else { return false }
+        guard store.isSettledRoute(url) else { throw ICloudStorageUnavailableError() }
         let requestID = UUID()
         let result = try await persistence.saveText(text, to: url, requestID: requestID)
         guard case .committed = result else { return false }

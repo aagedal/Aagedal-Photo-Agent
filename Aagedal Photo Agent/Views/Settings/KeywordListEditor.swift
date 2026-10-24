@@ -27,6 +27,10 @@ struct KeywordListEditor: View {
     @State private var importRequestID: UUID?
     @State private var exportTask: Task<Void, Never>?
     @State private var exportRequestID: UUID?
+    /// The list as loaded or last durably saved. Each instant save is refused if the file no
+    /// longer matches, so an edit made elsewhere (another Mac, MCP) is never silently replaced.
+    @State private var persistedEntries: [String]?
+    @State private var showingSaveConflict = false
 
     /// Indices to highlight from the filtered view back to `entries`. Computed
     /// lazily — recomputed when search text changes.
@@ -63,6 +67,12 @@ struct KeywordListEditor: View {
         .frame(minWidth: 460, idealWidth: 520, minHeight: 460, idealHeight: 560)
         .onAppear {
             loadEntries()
+        }
+        .alert("List Changed Elsewhere", isPresented: $showingSaveConflict) {
+            Button("Reload") { loadEntries() }
+            Button("Overwrite", role: .destructive) { persist(overwriting: true) }
+        } message: {
+            Text("This list was changed elsewhere after you opened it (for example on another Mac), so your last edit wasn't saved. Reload to see the current list, or Overwrite to replace it with the list shown here.")
         }
         .onDisappear {
             loadedDestinationURL = nil
@@ -193,9 +203,11 @@ struct KeywordListEditor: View {
                 switch result {
                 case .loaded(let snapshot):
                     entries = snapshot.entries
+                    persistedEntries = snapshot.entries
                     loadedDestinationURL = sourceURL
                 case .missing:
                     entries = []
+                    persistedEntries = []
                     loadedDestinationURL = sourceURL
                 case .cancelledBeforeAccess, .cancelledBeforeRead, .cancelledAfterRead:
                     break
@@ -245,11 +257,12 @@ struct KeywordListEditor: View {
 
     /// Persists the current entries through the serialized filesystem owner. Called after every
     /// mutation so the editor saves instantly — there is no explicit Save step.
-    private func persist() {
+    private func persist(overwriting: Bool = false) {
         guard admitMutation() else { return }
         loadRequestID = nil
         loadTask?.cancel()
         loadTask = nil
+        let previousSave = persistenceTask
         persistenceTask?.cancel()
         // Each save replaces the previous outcome, so an old "Save failed" never lingers.
         feedback = nil
@@ -259,6 +272,9 @@ struct KeywordListEditor: View {
         let destinationURL = KeywordListsStore.shared.currentURL(for: storeKey)
         persistenceRequestID = requestID
         persistenceTask = Task {
+            // The baseline is whatever the previous instant save left durable.
+            await previousSave?.value
+            let expectedEntries = overwriting ? nil : persistedEntries
             do {
                 let activeDestination = try await KeywordListsStore.shared.resolveURL(for: storeKey)
                 guard persistenceRequestID == requestID, !Task.isCancelled else { return }
@@ -272,10 +288,12 @@ struct KeywordListEditor: View {
                 let result = try await KeywordListEditorPersistenceService.shared.saveEntries(
                     snapshot,
                     to: destinationURL,
+                    expectedEntries: expectedEntries,
                     requestID: requestID
                 )
                 switch result {
                 case .committed(let commit):
+                    persistedEntries = commit.entries
                     // Durable effects are published even after dismissal invalidates this view's
                     // request. The approved-list cache can install the exact committed payload
                     // without reading the file again; only UI callbacks remain request-gated.
@@ -294,6 +312,12 @@ struct KeywordListEditor: View {
                     persistenceRequestID = nil
                     feedback = "Save cancelled"
                 }
+            } catch is KeywordListBaselineConflictError {
+                guard persistenceRequestID == requestID else { return }
+                persistenceTask = nil
+                persistenceRequestID = nil
+                feedback = "Not saved: the list changed elsewhere"
+                showingSaveConflict = true
             } catch {
                 guard persistenceRequestID == requestID else { return }
                 persistenceTask = nil

@@ -51,6 +51,17 @@ nonisolated struct EditorialImageSupplier: Codable, Sendable, Equatable, Hashabl
         return normalizedValues(decoded)
     }
 
+    /// Template and import values: the typed JSON when present; otherwise text typed in the
+    /// template editor is one supplier name, and an empty value clears the field. Malformed
+    /// JSON (text that starts like a JSON array/object) stays rejected (`nil`) rather than
+    /// becoming a supplier literally named after the broken payload.
+    static func values(fromTemplateValue value: String) -> [Self]? {
+        if let decoded = values(fromCanonicalJSONString: value) { return decoded }
+        guard let name = normalizedText(value) else { return [] }
+        if name.hasPrefix("[") || name.hasPrefix("{") { return nil }
+        return [Self(name: name)]
+    }
+
     private static func normalizedText(_ value: String?) -> String? {
         guard let value else { return nil }
         let normalized = value

@@ -233,7 +233,6 @@ struct ContentView: View {
     @State private var migrationRecoveryNotices = MigrationRecoveryNoticeCenter.shared
 
     @State private var isShowingTemplateEditor = false
-    @State private var isShowingTemplatePicker = false
     @State private var isShowingTemplatePalette = false
     @State private var captionTemplateAppendOverride: Bool?
     @State private var isShowingDevelopTemplatePalette = false
@@ -548,7 +547,6 @@ struct ContentView: View {
                     }
                 )
             }
-            .sheet(isPresented: $isShowingTemplatePicker) { templatePickerSheet }
             .sheet(isPresented: $isShowingPrimaryDevelopRecovery) {
                 PrimaryDevelopRecoveryHost(viewModel: metadataViewModel)
             }
@@ -3143,60 +3141,6 @@ struct ContentView: View {
                 browserViewModel.refreshExpandedSubfolders()
             }
         }
-    }
-
-    // MARK: - Template Picker Sheet
-
-    @ViewBuilder
-    private var templatePickerSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Apply Template")
-                .font(.headline)
-
-            if templateViewModel.templates.isEmpty {
-                Text("No templates available. Create one first.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(templateViewModel.templates) { template in
-                    HStack {
-                        Button {
-                            applyTemplate(template)
-                            isShowingTemplatePicker = false
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(template.name)
-                                Text("\(template.fields.count) fields")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        Button(role: .destructive) {
-                            templateViewModel.deleteTemplate(template)
-                        } label: {
-                            Image(systemName: "trash")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Delete template")
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    isShowingTemplatePicker = false
-                }
-            }
-        }
-        .padding()
-        .frame(minWidth: 300)
     }
 
     // MARK: - Save Template Sheet

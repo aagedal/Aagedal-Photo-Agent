@@ -2748,6 +2748,18 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
 
+            if templateViewModel.isCloudStorageUnavailable {
+                Label(
+                    "iCloud Drive is unavailable — changes can't be saved until it's back. The templates shown are this Mac's local copy and are read-only for now.",
+                    systemImage: "icloud.slash"
+                )
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+                .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+            }
+
             if selectedTemplateKind == .metadata {
                 TemplateListView(viewModel: templateViewModel)
 

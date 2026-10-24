@@ -441,6 +441,27 @@ nonisolated enum MetadataTemplatePlaceholderDetector {
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         return expression.firstMatch(in: value, range: range) != nil
     }
+
+    private static let anyToken = try! NSRegularExpression(pattern: #"\{[^{}\s]*\}"#)
+    /// Tokens the resolver expands that are handled outside the date/field placeholder grammar.
+    private static let additionalVariableTokens: Set<String> = ["{voiceMemoTranscript}", "{number}"]
+
+    /// `{…}` tokens in `value` that no metadata variable expands (typos such as `{flename}`),
+    /// in first-appearance order. Such tokens would be written literally.
+    static func unrecognizedTokens(in value: String) -> [String] {
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        var seen = Set<String>()
+        return anyToken.matches(in: value, range: range).compactMap { match in
+            guard let tokenRange = Range(match.range, in: value) else { return nil }
+            let token = String(value[tokenRange])
+            guard !additionalVariableTokens.contains(token) else { return nil }
+            let tokenNSRange = NSRange(token.startIndex..<token.endIndex, in: token)
+            if let full = expression.firstMatch(in: token, range: tokenNSRange), full.range == tokenNSRange {
+                return nil
+            }
+            return seen.insert(token).inserted ? token : nil
+        }
+    }
 }
 
 extension MetadataValidationProfile {

@@ -1142,3 +1142,27 @@ private nonisolated final class ApprovedListManagedAccessGate: @unchecked Sendab
         )
     }
 }
+
+@MainActor
+@Suite("Approved list typeahead in large vocabularies")
+struct ApprovedListLargeVocabularySuggestionTests {
+    @Test("many early substring hits never hide later prefix matches, which rank first")
+    func prefixMatchesSurviveSubstringFlood() {
+        let substringHits = (0..<500).map { "xx-tennis-\($0)" }
+        let entries = substringHits + ["tennis", "Tennisbane", "bordtennis"]
+        let suggestions = ApprovedListService.suggestions(prefix: "tennis", in: entries, limit: 12)
+
+        #expect(suggestions.count == 12)
+        #expect(suggestions.prefix(2).map(\.canonical) == ["tennis", "Tennisbane"])
+        #expect(suggestions.prefix(2).allSatisfy { $0.matchKind == .prefix })
+        #expect(suggestions.dropFirst(2).allSatisfy { $0.matchKind == .substring })
+    }
+
+    @Test("substring matches still fill the list when there are few prefix matches")
+    func substringFillsRemainingSlots() {
+        let suggestions = ApprovedListService.suggestions(
+            prefix: "ball", in: ["fotball", "håndball", "ballett", "basket"], limit: 12
+        )
+        #expect(suggestions.map(\.canonical) == ["ballett", "fotball", "håndball"])
+    }
+}

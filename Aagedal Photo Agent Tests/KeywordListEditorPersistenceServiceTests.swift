@@ -866,7 +866,7 @@ struct KeywordListEditorPersistenceServiceTests {
         #expect(source.contains("entries: commit.entries"))
         #expect(source.contains("persistenceRequestID = nil\n            persistenceTask = nil"))
 
-        let persistStart = try #require(source.range(of: "private func persist()"))
+        let persistStart = try #require(source.range(of: "private func persist(overwriting: Bool = false)"))
         let persistSource = source[persistStart.lowerBound...]
         let durablePublication = try #require(persistSource.range(of:
             "KeywordListsStore.shared.recordExternalWrite("
@@ -884,7 +884,7 @@ struct KeywordListEditorPersistenceServiceTests {
         let exportStart = try #require(source.range(of: "private func exportToFile() {"))
         #expect(source[exportStart.upperBound...].hasPrefix("\n        guard canEdit else { return }"))
         // Each save replaces the previous outcome so a stale "Save failed" never lingers.
-        let persistBody = try #require(source.range(of: "private func persist() {"))
+        let persistBody = try #require(source.range(of: "private func persist(overwriting: Bool = false) {"))
         let firstLaunch = try #require(source[persistBody.upperBound...].range(of: "persistenceTask = Task"))
         #expect(source[persistBody.upperBound..<firstLaunch.lowerBound].contains("feedback = nil"))
 
@@ -1078,4 +1078,144 @@ private nonisolated final class KeywordFilesystemTransactionProbe: @unchecked Se
     func recordBackupRead() { lock.withLock { reads += 1 } }
     var routingCount: Int { lock.withLock { routes } }
     var backupReadCount: Int { lock.withLock { reads } }
+}
+
+@Suite("Keyword-list editor save baselines", .serialized)
+struct KeywordListEditorSaveBaselineTests {
+    private func tempList(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("baseline-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(name)
+    }
+
+    @Test("a flat list changed elsewhere since it was loaded refuses the save and keeps the file")
+    func entriesBaselineConflict() async throws {
+        let list = try tempList("keywords.txt")
+        defer { try? FileManager.default.removeItem(at: list.deletingLastPathComponent()) }
+        try Data("Oslo\nBergen\n".utf8).write(to: list)
+        let service = KeywordListEditorPersistenceService()
+
+        // Another Mac adds an entry after the editor loaded ["Oslo", "Bergen"].
+        try Data("Oslo\nBergen\nTromsø\n".utf8).write(to: list)
+        await #expect(throws: KeywordListBaselineConflictError()) {
+            try await service.saveEntries(["Oslo"], to: list, expectedEntries: ["Oslo", "Bergen"], requestID: UUID())
+        }
+        #expect(try String(contentsOf: list, encoding: .utf8) == "Oslo\nBergen\nTromsø\n")
+
+        // A matching baseline saves; Overwrite (no baseline) saves regardless.
+        let matching = try await service.saveEntries(
+            ["Oslo", "Bergen", "Tromsø", "Bodø"], to: list,
+            expectedEntries: ["Oslo", "Bergen", "Tromsø"], requestID: UUID()
+        )
+        guard case .committed = matching else { Issue.record("Expected a commit"); return }
+        _ = try await service.saveEntries(["Only"], to: list, requestID: UUID())
+        #expect(try String(contentsOf: list, encoding: .utf8) == "Only\n")
+    }
+
+    @Test("a missing list file matches an empty baseline")
+    func missingFileMatchesEmptyBaseline() async throws {
+        let list = try tempList("new.txt")
+        defer { try? FileManager.default.removeItem(at: list.deletingLastPathComponent()) }
+        let service = KeywordListEditorPersistenceService()
+        _ = try await service.saveEntries(["First"], to: list, expectedEntries: [], requestID: UUID())
+        #expect(try String(contentsOf: list, encoding: .utf8) == "First\n")
+        _ = try await service.saveText("a\n", to: list.deletingLastPathComponent().appendingPathComponent("tree.txt"),
+                                        expectedText: "", requestID: UUID())
+    }
+
+    @MainActor
+    @Test("the keyword-hierarchy editor's save is refused when the tree file changed since it loaded")
+    func structuredTreeBaselineConflict() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tree-baseline-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await KeywordListsStoreStorageOverride.$current.withValue(root) {
+            let service = StructuredKeywordService()
+            try await service.saveTree([StructuredKeyword(name: "sport", kind: .keyword)])
+            let baseline = try #require(service.loadedText)
+
+            // Another writer replaces the file behind the open editor.
+            let file = root.appendingPathComponent(KeywordListKey.structured.relativePath)
+            try Data("sport\n\ttennis\n".utf8).write(to: file)
+
+            await #expect(throws: KeywordListBaselineConflictError()) {
+                try await service.saveTree([StructuredKeyword(name: "mine", kind: .keyword)], expectedText: baseline)
+            }
+            #expect(try String(contentsOf: file, encoding: .utf8) == "sport\n\ttennis\n")
+            // Overwrite is an explicit choice.
+            try await service.saveTree([StructuredKeyword(name: "mine", kind: .keyword)])
+            #expect(try String(contentsOf: file, encoding: .utf8) == "mine\n")
+            #expect(service.loadedText == "mine\n")
+        }
+    }
+
+    @MainActor
+    @Test("keyword trees refuse to save to an unsettled local fallback while list sync is on")
+    func unsettledRouteRefusesSave() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("unsettled-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("keywords.txt")
+        let service = StructuredKeywordService(
+            storageURL: { _ in file },
+            resolveStorageURL: { _ in file },
+            isSettledRoute: { _ in false }
+        )
+        await #expect(throws: ICloudStorageUnavailableError()) {
+            try await service.saveTree([StructuredKeyword(name: "stranded", kind: .keyword)])
+        }
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+}
+
+@Suite("Template storage while iCloud is unavailable", .serialized)
+struct TemplateStorageICloudUnavailableTests {
+    @Test("Templates sync on with no iCloud container resolves read-only and refuses writes")
+    func refusesWritesWhileICloudUnavailable() throws {
+        let defaults = AppDefaults.store
+        let saved = defaults.object(forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defaults.set(true, forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defer {
+            if let saved { defaults.set(saved, forKey: UserDefaultsKeys.templatesICloudEnabled) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.templatesICloudEnabled) }
+        }
+        try AppPathsICloudOverride.$documents.withValue(.some(nil)) {
+            let resolution = AppPaths.templatesDirectoryResolution()
+            resolution.release()
+            #expect(resolution.cloudUnavailable)
+            #expect(AppPaths.templatesCloudUnavailable)
+            #expect(AppPaths.developTemplatesDirectoryResolution().cloudUnavailable)
+        }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("templates-ro-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let readOnly = TemplateStorageService(directoryURL: folder, refusesWrites: true)
+        #expect(throws: ICloudStorageUnavailableError()) {
+            try readOnly.save(MetadataTemplate(name: "Stranded"))
+        }
+        #expect(try readOnly.loadAll().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        let developReadOnly = DevelopTemplateStorageService(directoryURL: folder, refusesWrites: true)
+        #expect(throws: ICloudStorageUnavailableError()) {
+            try developReadOnly.save(DevelopTemplate(name: "Stranded"))
+        }
+    }
+
+    @Test("a reachable container is used for templates when sync is on")
+    func reachableContainerIsUsed() throws {
+        let defaults = AppDefaults.store
+        let saved = defaults.object(forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defaults.set(true, forKey: UserDefaultsKeys.templatesICloudEnabled)
+        defer {
+            if let saved { defaults.set(saved, forKey: UserDefaultsKeys.templatesICloudEnabled) }
+            else { defaults.removeObject(forKey: UserDefaultsKeys.templatesICloudEnabled) }
+        }
+        let documents = FileManager.default.temporaryDirectory.appendingPathComponent("fake-icloud-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        AppPathsICloudOverride.$documents.withValue(.some(documents)) {
+            let resolution = AppPaths.templatesDirectoryResolution()
+            resolution.release()
+            #expect(!resolution.cloudUnavailable)
+            #expect(resolution.url == documents.appendingPathComponent("Templates", isDirectory: true))
+        }
+    }
 }

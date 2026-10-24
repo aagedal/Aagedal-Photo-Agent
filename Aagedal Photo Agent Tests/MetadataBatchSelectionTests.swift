@@ -1286,3 +1286,183 @@ extension MetadataBatchSelectionTests {
         #expect(MetadataSidecarService().loadSidecar(for: url, in: folder)?.metadata.description == "Drafted")
     }
 }
+
+// MARK: - Batch template text intent (3.0)
+
+extension MetadataBatchSelectionTests {
+    private func threeCaptionFixture(in folder: URL) async throws -> [URL] {
+        let urls = [try makeJPEG(in: folder, name: "a.jpg"), try makeJPEG(in: folder, name: "b.jpg"),
+                    try makeJPEG(in: folder, name: "c.jpg")]
+        for (url, caption) in zip(urls, ["First caption", "Second caption", "Third caption"]) {
+            try await write(IPTCMetadata(description: caption, credit: "Desk"), to: url)
+        }
+        return urls
+    }
+
+    private func loadedBatch(_ urls: [URL], in folder: URL) async throws -> MetadataViewModel {
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.loadMetadata(for: urls.map { ImageFile(url: $0) }, folderURL: folder)
+        try await waitForBatchLoad(model)
+        try #require(model.selectedCount == 3)
+        try #require(model.batchDifferingFields.contains("description"))
+        return model
+    }
+
+    @Test("template append on a mixed selection keeps each photo's own caption plus the template text")
+    func templateAppendKeepsEachPhotosText() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": "Photo: NTB", "credit": "Agency"], append: true)
+        // No common caption to preview: the field keeps its mixed state and says what will happen.
+        #expect((model.editingMetadata.description ?? "").isEmpty)
+        #expect(model.batchPlaceholder(for: "description").contains("append"))
+        #expect(model.batchFieldMutations[.description] == .appendText("Photo: NTB"))
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for (url, caption) in zip(urls, ["First caption", "Second caption", "Third caption"]) {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.description == caption + " Photo: NTB")
+            // Credit was common, so appending to it yields the same text on every photo.
+            #expect(read.credit == "Desk Agency")
+        }
+    }
+
+    @Test("template append to JSON sidecar drafts is applied per photo")
+    func templateAppendToSidecarDrafts() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": "(NTB)"], append: true)
+        model.applyTemplateFields(["description": "Oslo"], append: true)
+        model.saveToSidecar()
+        try await waitForSave(model)
+
+        for (url, caption) in zip(urls, ["First caption", "Second caption", "Third caption"]) {
+            let sidecar = try #require(MetadataSidecarService().loadSidecar(for: url, in: folder))
+            #expect(sidecar.metadata.description == caption + " (NTB) Oslo")
+        }
+    }
+
+    @Test("an empty template field in replace mode clears a mixed field on every photo")
+    func templateClearClearsMixedField() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": ""])
+        #expect(model.batchFieldMutations[.description] == .clear)
+        #expect(model.batchPlaceholder(for: "description") == "Will be cleared on all 3 photos")
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for url in urls {
+            let read = try await SwiftExifReadService().readFullMetadata(url: url)
+            #expect(read.description == nil)
+            #expect(read.credit == "Desk")
+        }
+    }
+
+    @Test("template replace overwrites a mixed field on every photo")
+    func templateOverwriteOverwritesAll() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": "Shared caption"])
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).description == "Shared caption")
+        }
+    }
+
+    @Test("typing into a field after a template append replaces the template's intent")
+    func typedValueSupersedesTemplateIntent() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let urls = try await threeCaptionFixture(in: folder)
+        let model = try await loadedBatch(urls, in: folder)
+
+        model.applyTemplateFields(["description": "Photo: NTB"], append: true)
+        model.editingMetadata.description = "Typed for all"
+        model.markChanged()
+        #expect(model.batchTextIntent(for: "description") == nil)
+        model.writeMetadata()
+        try await waitForSave(model)
+
+        for url in urls {
+            #expect(try await SwiftExifReadService().readFullMetadata(url: url).description == "Typed for all")
+        }
+    }
+
+    @Test("per-photo text append matches the single-photo append rule")
+    func appendTextMutationMatchesSinglePhotoRule() throws {
+        var metadata = IPTCMetadata(description: "Existing")
+        try metadata.apply(.appendText("Added"), to: .description)
+        #expect(metadata.description == MetadataTemplateText.appending("Existing", "Added"))
+        #expect(metadata.description == "Existing Added")
+        var empty = IPTCMetadata()
+        try empty.apply(.appendText("Added"), to: .city)
+        #expect(empty.city == "Added")
+        #expect(throws: MetadataFieldMutationError.repeatableValueRequired(.keywords)) {
+            try empty.apply(.appendText("x"), to: .keywords)
+        }
+    }
+
+    @Test("plain-text template Image Supplier becomes a supplier name; empty clears it")
+    func plainTextImageSupplierTemplate() {
+        #expect(EditorialImageSupplier.values(fromTemplateValue: "NTB Scanpix") == [EditorialImageSupplier(name: "NTB Scanpix")])
+        #expect(EditorialImageSupplier.values(fromTemplateValue: "  ") == [])
+        #expect(EditorialImageSupplier.values(fromTemplateValue: #"[{"name":"Agency"}]"#) == [EditorialImageSupplier(name: "Agency")])
+        #expect(EditorialImageSupplier.values(fromTemplateValue: #"[{"identifier":false}]"#) == nil)
+
+        let model = MetadataViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        model.editingMetadata.imageSuppliers = [EditorialImageSupplier(name: "Old")]
+        model.applyTemplateFields(["imageSupplier": "NTB Scanpix"])
+        #expect(model.editingMetadata.imageSuppliers == [EditorialImageSupplier(name: "NTB Scanpix")])
+        model.applyTemplateFields(["imageSupplier": "Second"], append: true)
+        #expect(model.editingMetadata.imageSuppliers.map(\.name) == ["NTB Scanpix", "Second"])
+        model.applyTemplateFields(["imageSupplier": ""])
+        #expect(model.editingMetadata.imageSuppliers.isEmpty)
+
+        let importer = ImportViewModel(readService: SwiftExifReadService(), writeEngine: SwiftExifWriteEngine())
+        importer.applyTemplate(MetadataTemplate(name: "Supplier",
+            fields: [TemplateField(fieldKey: "imageSupplier", templateValue: "NTB Scanpix")]))
+        #expect(importer.configuration.metadata.imageSuppliers == [EditorialImageSupplier(name: "NTB Scanpix")])
+    }
+
+    @Test("Process Variables sees a placeholder in every field the resolver expands")
+    func hasVariablesCoversResolverFields() {
+        for path in VariableMetadataResolver.scalarVariableFields {
+            var metadata = IPTCMetadata()
+            metadata[keyPath: path] = "Taken {date:yyyy}"
+            #expect(MetadataViewModel.containsVariables(metadata), "Missing variable detection for \(path)")
+        }
+        let resolverPaths: [PartialKeyPath<IPTCMetadata>] = VariableMetadataResolver.scalarVariableFields.map { $0 }
+        let previouslyMissed: [PartialKeyPath<IPTCMetadata>] = [\IPTCMetadata.sublocation, \IPTCMetadata.provinceState,
+                                                               \IPTCMetadata.instructions, \IPTCMetadata.source]
+        for path in previouslyMissed {
+            #expect(resolverPaths.contains(path))
+        }
+        #expect(!MetadataViewModel.containsVariables(IPTCMetadata(description: "No tokens here")))
+    }
+
+    @Test("template editor flags only {…} tokens no variable expands")
+    func unknownTemplateTokens() {
+        #expect(MetadataTemplatePlaceholderDetector.unrecognizedTokens(
+            in: "{flename} {date:yyyy} {seq:3} {voiceMemoTranscript} {number} {field:city} {flename}"
+        ) == ["{flename}"])
+        #expect(MetadataTemplatePlaceholderDetector.unrecognizedTokens(in: "Plain text").isEmpty)
+        #expect(TemplateEditorView.unrecognizedVariableTokens(in: #"[{"name":"Agency"}]"#).isEmpty)
+        #expect(TemplateEditorView.unrecognizedVariableTokens(in: "By {initals}") == ["{initals}"])
+    }
+}

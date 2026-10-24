@@ -59,14 +59,27 @@ struct CaptionCodeReplacementCoordinatorTests {
         #expect(result.fields[1].unresolvedOccurrences.count == 1)
     }
 
-    @Test("Invalid source rows and configuration never return mutable metadata")
+    @Test("A malformed row is skipped; undecodable sources and invalid configuration never mutate")
     func invalidInputRefusesMutation() {
         let malformed = CodeReplacementParser().parse(Data("ok\tSafe\nbad-row".utf8))
         let metadata = IPTCMetadata(title: "\\ok\\")
 
-        let invalidSource = coordinator.plan(
+        // One bad line no longer disables the whole list.
+        let partial = coordinator.plan(
             metadata: metadata,
             list: malformed,
+            configuration: configuration(),
+            compositionState: .committed
+        )
+        #expect(partial.status == .completed)
+        #expect(partial.metadata?.title == "Safe")
+
+        let undecodable = CodeReplacementList(diagnostics: [
+            CodeReplacementDiagnostic(severity: .error, kind: .invalidUTF8, line: nil),
+        ])
+        let invalidSource = coordinator.plan(
+            metadata: metadata,
+            list: undecodable,
             configuration: configuration(),
             compositionState: .committed
         )

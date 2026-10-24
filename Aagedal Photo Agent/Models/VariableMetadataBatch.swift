@@ -107,6 +107,16 @@ struct VoiceMemoVariableBatchPreview: Identifiable, Equatable, Sendable {
 /// Local transformation shared by the displayed editor and folder processing. It never reads
 /// selection or changes a live editor while geocoding/roster work is suspended.
 enum VariableMetadataResolver {
+    /// Every scalar text field variable resolution expands. `MetadataViewModel.hasVariables`
+    /// reads the same list, so a field the resolver handles can never be skipped by the
+    /// "has variables" gate (and its literal `{token}` auto-committed).
+    nonisolated static let scalarVariableFields: [WritableKeyPath<IPTCMetadata, String?> & Sendable] = [
+        \.title, \.description, \.extendedDescription, \.creatorJobTitle, \.descriptionWriter,
+        \.credit, \.copyright, \.rightsUsageTerms, \.webStatementOfRights,
+        \.digitalImageGUID, \.imageSupplierImageID, \.jobId, \.dateCreated,
+        \.city, \.sublocation, \.provinceState, \.country, \.event, \.instructions, \.source
+    ]
+
     static func resolve(_ input: VariableMetadataResolutionInput) async throws -> IPTCMetadata {
         try Task.checkCancellation()
         if requiresVoiceMemoTranscript(input.metadata) {
@@ -167,13 +177,7 @@ enum VariableMetadataResolver {
             return result
         }
         var result = reference
-        let fields: [WritableKeyPath<IPTCMetadata, String?>] = [
-            \.title, \.description, \.extendedDescription, \.creatorJobTitle, \.descriptionWriter,
-            \.credit, \.copyright, \.rightsUsageTerms, \.webStatementOfRights,
-            \.digitalImageGUID, \.imageSupplierImageID, \.jobId, \.dateCreated,
-            \.city, \.sublocation, \.provinceState, \.country, \.event, \.instructions, \.source
-        ]
-        for field in fields { result[keyPath: field] = scalar(reference[keyPath: field]) }
+        for field in scalarVariableFields { result[keyPath: field] = scalar(reference[keyPath: field]) }
         if let localizedTitles = reference.localizedTitles {
             result.localizedTitles = localizedTitles.map { title in
                 LocalizedMetadataText(

@@ -30,6 +30,9 @@ final class TemplateViewModel {
     var editingTemplate = MetadataTemplate()
     var errorMessage: String?
     private(set) var saveError: TemplateSaveError?
+    /// Templates sync is on but iCloud Drive is unreachable: the list shows the local fallback
+    /// read-only and saves are refused. Refreshed on every inventory load.
+    private(set) var isCloudStorageUnavailable = false
 
     @ObservationIgnored private var editingBaseline: MetadataTemplate?
     @ObservationIgnored private var inventoryAuthorities: [UUID: TemplateFileAuthority] = [:]
@@ -96,6 +99,10 @@ final class TemplateViewModel {
         let requestID = UUID()
         loadRequestID = requestID
         loadTask = Task { [weak self, crudService] in
+            let cloudUnavailable = await Self.probeTemplatesCloudUnavailable()
+            if let self, self.loadRequestID == requestID {
+                self.isCloudStorageUnavailable = cloudUnavailable
+            }
             do {
                 let result = try await crudService.load(requestID: requestID)
                 guard let self,
@@ -123,6 +130,11 @@ final class TemplateViewModel {
                 self.finishLoadCompletions(nil)
             }
         }
+    }
+
+    /// The ubiquity lookup can block, so it never runs on the main actor.
+    @concurrent nonisolated static func probeTemplatesCloudUnavailable() async -> Bool {
+        AppPaths.templatesCloudUnavailable
     }
 
     @discardableResult

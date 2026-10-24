@@ -3,6 +3,18 @@ import os
 
 private let prefsSyncLog = Logger(subsystem: "com.aagedal.photo-agent", category: "PreferencesSyncService")
 
+/// The cloud key-value store preferences mirror into. `NSUbiquitousKeyValueStore` in the app;
+/// tests inject an in-memory store so they never touch real iCloud.
+@MainActor
+protocol PreferencesCloudKeyValueStore: AnyObject {
+    func object(forKey key: String) -> Any?
+    func set(_ value: Any?, forKey key: String)
+    func removeObject(forKey key: String)
+    @discardableResult func synchronize() -> Bool
+}
+
+extension NSUbiquitousKeyValueStore: PreferencesCloudKeyValueStore {}
+
 /// Mirrors a curated set of portable app preferences between `UserDefaults` and
 /// `NSUbiquitousKeyValueStore` so they follow the user across Macs.
 ///
@@ -13,7 +25,8 @@ private let prefsSyncLog = Logger(subsystem: "com.aagedal.photo-agent", category
 final class PreferencesSyncService {
     static let shared = PreferencesSyncService()
 
-    private let kvs = NSUbiquitousKeyValueStore.default
+    private let kvs: any PreferencesCloudKeyValueStore
+    private let defaults: UserDefaults
     private var observersInstalled = false
     /// Tokens for the block-based notification observers so they can be removed.
     private var observerTokens: [NSObjectProtocol] = []
@@ -80,8 +93,16 @@ final class PreferencesSyncService {
         UserDefaultsKeys.c2paDefaultAuthor,
     ]
 
+    init(
+        kvs: any PreferencesCloudKeyValueStore = NSUbiquitousKeyValueStore.default,
+        defaults: UserDefaults = AppDefaults.store
+    ) {
+        self.kvs = kvs
+        self.defaults = defaults
+    }
+
     var isEnabled: Bool {
-        AppDefaults.store.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled)
+        defaults.bool(forKey: UserDefaultsKeys.preferencesICloudEnabled)
     }
 
     /// Posted after remote preference values are written into `UserDefaults` so
@@ -97,15 +118,23 @@ final class PreferencesSyncService {
         applyRemoteToLocal(keys: Self.syncedKeys)
     }
 
-    /// Turns preference sync on or off. On enable, seeds the cloud store with the
-    /// current local values so other devices converge on this Mac's settings.
+    /// Turns preference sync on or off. On enable, settings already in iCloud win: they are
+    /// applied to this Mac first, and only keys the cloud doesn't have yet are seeded from local
+    /// values. Turning sync on for a second Mac therefore adopts the first Mac's settings
+    /// instead of overwriting them (or removing keys this Mac never set).
     @discardableResult
     func setEnabled(_ enabled: Bool) -> Bool {
-        AppDefaults.store.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
+        defaults.set(enabled, forKey: UserDefaultsKeys.preferencesICloudEnabled)
         if enabled {
-            installObservers()
-            pushLocalToRemote(keys: Self.syncedKeys)
             kvs.synchronize()
+            let cloudKeys = Self.syncedKeys.filter { kvs.object(forKey: $0) != nil }
+            if !cloudKeys.isEmpty {
+                applyRemoteToLocal(keys: cloudKeys)
+            }
+            let missingInCloud = Self.syncedKeys.filter { kvs.object(forKey: $0) == nil }
+            seedRemote(keys: missingInCloud)
+            kvs.synchronize()
+            installObservers()
         } else {
             removeObservers()
         }
@@ -126,7 +155,7 @@ final class PreferencesSyncService {
         // local notifications from echoing a remote preference update.
         observerTokens.append(center.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: kvs,
+            object: kvs as AnyObject,
             queue: nil
         ) { [weak self] note in
             // Extract the Sendable key list before hopping — `Notification`
@@ -182,8 +211,16 @@ final class PreferencesSyncService {
 
     // MARK: - Mirroring
 
+    /// Writes local values for keys the cloud lacks; never removes anything from the cloud.
+    private func seedRemote(keys: [String]) {
+        for key in keys {
+            if let value = defaults.object(forKey: key) {
+                kvs.set(value, forKey: key)
+            }
+        }
+    }
+
     private func pushLocalToRemote(keys: [String]) {
-        let defaults = AppDefaults.store
         for key in keys {
             if let value = defaults.object(forKey: key) {
                 kvs.set(value, forKey: key)
@@ -194,7 +231,6 @@ final class PreferencesSyncService {
     }
 
     private func applyRemoteToLocal(keys: [String]) {
-        let defaults = AppDefaults.store
         isApplyingRemote = true
         defer { isApplyingRemote = false }
         for key in keys {

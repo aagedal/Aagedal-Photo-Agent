@@ -395,7 +395,7 @@ nonisolated enum MCPMetadataTemplatePreview {
                     guard let existing = try? JSONDecoder().decode([EditorialImageSupplier].self, from: beforeData) else {
                         throw Failure.invalidArguments
                     }
-                    if let incoming = EditorialImageSupplier.values(fromCanonicalJSONString: value) {
+                    if let incoming = EditorialImageSupplier.values(fromTemplateValue: value) {
                         let combined = request.mode == "append"
                             ? EditorialImageSupplier.normalizedValues(existing + incoming) : incoming
                         afterData = try JSONEncoder().encode(combined)

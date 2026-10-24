@@ -279,7 +279,7 @@ struct MetadataPanel: View {
             // keyword tree.
             let candidates = keywordSuggestionMemo.merged([
                 quickList,
-                StructuredKeywordService.shared.allSearchableNames()
+                StructuredKeywordService.shared.allDisambiguatedSearchableNames()
             ], using: Self.mergeSuggestionCandidates)
             guard !candidates.isEmpty else { return nil }
             return { prefix in ApprovedListService.suggestions(prefix: prefix, in: candidates) }
@@ -796,7 +796,7 @@ struct MetadataPanel: View {
         }
 
         if field == .keywords {
-            seeds += StructuredKeywordService.shared.allSearchableNames().map { name in
+            seeds += StructuredKeywordService.shared.allDisambiguatedSearchableNames().map { name in
                 let insertion = StructuredKeywordService.shared.activation(forName: name)?.values ?? [name]
                 return CaptionAutocompleteSeed(
                     field: field,
