@@ -6003,7 +6003,9 @@ struct EditWorkspaceView: View {
                 addLayerTile(kind: .colorTransform, tint: .green, help: "Add LUT or CST layer", atMaskLimit: atLimit) {
                     addNewColorTransformLayer()
                 }
-                addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer") {
+                addLayerTile(kind: .watermark, tint: .yellow, help: "Add watermark layer",
+                             atMaskLimit: !canAddWatermarkLayer,
+                             limitMessage: DevelopLayerLimits.watermarkLimitReachedMessage) {
                     addNewWatermarkLayer()
                 }
             }
@@ -6065,6 +6067,7 @@ struct EditWorkspaceView: View {
         tint: Color,
         help: String,
         atMaskLimit: Bool = false,
+        limitMessage: String = DevelopLayerLimits.limitReachedMessage,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -6087,7 +6090,7 @@ struct EditWorkspaceView: View {
         .buttonStyle(.plain)
         .disabled(atMaskLimit)
         .onHover { hoveredAddLayerKind = $0 ? kind : nil }
-        .help(atMaskLimit ? DevelopLayerLimits.limitReachedMessage : help)
+        .help(atMaskLimit ? limitMessage : help)
     }
 
     private func addGlobalLayerTile(atMaskLimit: Bool) -> some View {
@@ -7477,7 +7480,16 @@ struct EditWorkspaceView: View {
     /// to the bottom-right corner of the margin-inset safe area per spec. If the library is
     /// empty, prompts the user to import one from Settings instead of adding a layer with no
     /// image to show.
+    /// The pipeline composites at most `DevelopLayerLimits.maxEnabledWatermarks` watermarks.
+    private var canAddWatermarkLayer: Bool {
+        DevelopLayerLimits.canAddWatermark(to: metadataViewModel.editingMetadata.cameraRaw)
+    }
+
     private func addNewWatermarkLayer() {
+        guard canAddWatermarkLayer else {
+            workspaceSession.showNotice(DevelopLayerLimits.watermarkLimitReachedMessage)
+            return
+        }
         guard let defaultAsset = WatermarkStore.shared.allAssets().first else {
             showWatermarkLibraryEmptyAlert = true
             return

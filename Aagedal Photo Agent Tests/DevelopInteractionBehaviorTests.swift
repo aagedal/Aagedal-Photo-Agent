@@ -1355,6 +1355,22 @@ struct DevelopStraightenPivotAndLimitTests {
         #expect(DevelopLayerLimits.exceedsMaskLimit(settings(enabled: limit + 1, disabled: 0)))
     }
 
+    @Test("watermark creation is gated at the pipeline's enabled-watermark limit")
+    func watermarkLayerLimitGate() {
+        func settings(enabled: Int, disabled: Int) -> CameraRawSettings {
+            var cameraRaw = CameraRawSettings()
+            cameraRaw.watermarkLayers = (0..<enabled).map { _ in WatermarkLayer(libraryAssetID: UUID()) }
+                + (0..<disabled).map { _ in WatermarkLayer(enabled: false, libraryAssetID: UUID()) }
+            return cameraRaw
+        }
+        let limit = DevelopLayerLimits.maxEnabledWatermarks
+        #expect(limit == 4)
+        #expect(DevelopLayerLimits.canAddWatermark(to: nil))
+        #expect(DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit - 1, disabled: 3)))
+        #expect(!DevelopLayerLimits.canAddWatermark(to: settings(enabled: limit, disabled: 0)))
+        #expect(DevelopLayerLimits.enabledWatermarkCount(in: settings(enabled: 2, disabled: 5)) == 2)
+    }
+
     @Test("oversized LUT files report a size error, not an encoding error")
     func oversizedLUTReportsSize() async {
         let oversized = Data(repeating: 0x20, count: CubeLUTParser.maxFileSize + 1)

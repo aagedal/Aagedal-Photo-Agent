@@ -68,8 +68,8 @@ features work, see the [3.0 feature guide](feature-help-3.0.md).
 ## Develop and export
 
 - At most **8 local layers** (masks, extra Global, LUT layers) and **4 watermark layers** render per
-  photo, in preview and export alike. Files from Camera Raw with more layers show a warning; only the
-  first 8 render.
+  photo, in preview and export alike. The add-layer buttons are disabled at the limit. Files from Camera
+  Raw with more layers show a warning; only the first 8 render.
 - The **Output Resolution** limit applies to Export, Develop Save and signed renders. Save As and FTP
   uploads render at full size.
 - Very large images, two RAW files side by side in Compare, and HDR on external displays can be slow
