@@ -732,11 +732,32 @@ final class BrowserViewModel {
             return
         }
         selectedImagesCache = selectedImageIDs.compactMap { url in
-            guard let index = urlToImageIndex[url] else { return nil }
+            guard let index = validImageIndex(for: url) else { return nil }
             return images[index]
         }
         urlToSelectedIndex = Dictionary(uniqueKeysWithValues: selectedImagesCache.enumerated().map { ($1.url, $0) })
         preCacheSelectedRetinaImage()
+    }
+
+    /// `urlToImageIndex[url]`, but only while it still points at that photo. The index is
+    /// not rebuilt while `suppressImagesCascade` is held, so never trust it blindly.
+    private func validImageIndex(for url: URL) -> Int? {
+        guard let index = urlToImageIndex[url], images.indices.contains(index),
+              images[index].url == url else { return nil }
+        return index
+    }
+
+    /// Moves, duplicates and trash change the file inventory, and can land while
+    /// `loadBasicMetadata` holds `suppressImagesCascade` across an await — then the
+    /// `images` didSet skips the index rebuild. Rebuild identity, sorted/visible caches and
+    /// the selection explicitly so later index readers never target a neighbour.
+    private func reindexAfterInventoryChange() {
+        imagesCascadeURLs = images.map(\.url)
+        urlToImageIndex = Dictionary(
+            uniqueKeysWithValues: imagesCascadeURLs.enumerated().map { ($1, $0) }
+        )
+        setNeedsSortRebuild(forceSort: true)
+        rebuildNow()
     }
 
     private func preCacheSelectedRetinaImage() {
@@ -1543,7 +1564,7 @@ final class BrowserViewModel {
                 let batchMs = batchTimer.elapsedMilliseconds()
                 perfLog.info("[BrowserVM] batch \(batchIndex)/\(totalBatches) DONE — \(batchURLs.count) files in \(batchMs)ms")
                 let previousSortValues = batchURLs.compactMap { url -> (URL, StarRating, ColorLabel)? in
-                    guard let index = urlToImageIndex[url] else { return nil }
+                    guard let index = validImageIndex(for: url) else { return nil }
                     return (url, images[index].starRating, images[index].colorLabel)
                 }
                 applyBatchMetadataResults(
@@ -1556,7 +1577,7 @@ final class BrowserViewModel {
                     tagRevisionsAtRead: tagRevisions
                 )
                 let sortKeyChanged = previousSortValues.contains { url, rating, label in
-                    guard let index = urlToImageIndex[url] else { return false }
+                    guard let index = validImageIndex(for: url) else { return false }
                     return (sortOrder == .rating && rating != images[index].starRating)
                         || (sortOrder == .label && label != images[index].colorLabel)
                 }
@@ -1636,7 +1657,9 @@ final class BrowserViewModel {
 
             // Bounds-check: localIndex can become stale when images are modified during
             // an async metadata await (e.g. user switches folder while batch is in-flight).
-            if let index = localIndex[sourceURL], index < updated.count {
+            // The URL check also rejects an index left behind by a move/duplicate that
+            // landed while the cascade (and so the index rebuild) was suppressed.
+            if let index = localIndex[sourceURL], index < updated.count, updated[index].url == sourceURL {
                 let changedDuringRead = tagRevisionsAtRead.map { $0[sourceURL] != tagReadRevisions[sourceURL] } ?? false
                 let pendingRating = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["rating"] != nil ? updated[index].starRating : nil
                 let pendingLabel = changedDuringRead || fieldMutationRequestIDs[sourceURL]?["label"] != nil ? updated[index].colorLabel : nil
@@ -2332,7 +2355,7 @@ final class BrowserViewModel {
         }
         var selectedRenderChanged = false
         for url in urls {
-            guard let imageIndex = urlToImageIndex[url] else { continue }
+            guard let imageIndex = validImageIndex(for: url) else { continue }
             let image = images[imageIndex]
             if let index = urlToSortedIndex[url] { sortedImages[index] = image }
             if !isFilteringActive {
@@ -2419,12 +2442,18 @@ final class BrowserViewModel {
         }
     }
 
-    func rotateClockwise() { rotateSelection(clockwise: true) }
+    func rotateClockwise() { rotate(selectedImages, clockwise: true) }
 
-    func rotateCounterclockwise() { rotateSelection(clockwise: false) }
+    func rotateCounterclockwise() { rotate(selectedImages, clockwise: false) }
 
-    private func rotateSelection(clockwise: Bool) {
-        let captured = selectedImages
+    /// Full screen shows one photo, so (like rating) rotating touches only that photo even
+    /// when a multi-selection is kept behind the viewer.
+    func rotateFullScreenImage(clockwise: Bool) {
+        guard let image = fullScreenImage else { return }
+        rotate([image], clockwise: clockwise)
+    }
+
+    private func rotate(_ captured: [ImageFile], clockwise: Bool) {
         guard !captured.isEmpty else { return }
         let targets = Dictionary(uniqueKeysWithValues: captured.map { image in
             (image.url, clockwise ? ImageFile.orientationAfterClockwiseRotation(image.exifOrientation)
@@ -3178,10 +3207,8 @@ final class BrowserViewModel {
         } else if let firstOpen = openFolders.first(where: { !isFolder($0, atOrBelow: oldURL) }) {
             loadFolder(url: firstOpen)
         } else {
-            currentFolderURL = nil
-            currentFolderName = nil
-            images = []
-            selectedImageIDs.removeAll()
+            // The full reset also cancels an in-flight scan and clears "Loading images…".
+            resetToNoFolder()
         }
     }
 
@@ -3912,10 +3939,34 @@ final class BrowserViewModel {
     // MARK: - Delete
 
     var showDeleteConfirmation = false
+    /// Set while the pending confirmation targets only the photo shown in full screen,
+    /// not the (possibly larger) selection kept behind the viewer.
+    private(set) var deleteConfirmationFullScreenURL: URL?
 
     func confirmDeleteSelectedImages() {
         guard !selectedImageIDs.isEmpty else { return }
+        deleteConfirmationFullScreenURL = nil
         showDeleteConfirmation = true
+    }
+
+    func confirmDeleteFullScreenImage() {
+        guard let url = fullScreenImage?.url else { return }
+        deleteConfirmationFullScreenURL = url
+        showDeleteConfirmation = true
+    }
+
+    var deleteConfirmationCount: Int {
+        deleteConfirmationFullScreenURL == nil ? selectedImageIDs.count : 1
+    }
+
+    /// Runs the delete the confirmation was raised for.
+    func deleteConfirmedImages() {
+        if let url = deleteConfirmationFullScreenURL {
+            deleteConfirmationFullScreenURL = nil
+            deleteImages([url])
+        } else {
+            deleteSelectedImages()
+        }
     }
 
     /// Finds the nearest item to the active image in the pre-deletion filmstrip order. The next
@@ -3949,8 +4000,11 @@ final class BrowserViewModel {
     }
 
     func deleteSelectedImages() {
-        guard prepareMetadataReviewBeforeMutation({ self.deleteSelectedImages() }) else { return }
-        let urlsToDelete = selectedImageIDs
+        deleteImages(selectedImageIDs)
+    }
+
+    private func deleteImages(_ urlsToDelete: Set<URL>) {
+        guard prepareMetadataReviewBeforeMutation({ self.deleteImages(urlsToDelete) }) else { return }
         guard !urlsToDelete.isEmpty else { return }
         let orderedURLs = visibleImages.map(\.url)
         let anchorURL = lastClickedImageURL.flatMap { urlsToDelete.contains($0) ? $0 : nil }
@@ -3975,11 +4029,7 @@ final class BrowserViewModel {
                 // while their embedded manifests are parsed. A deletion during the window must
                 // therefore rebuild identity/sort/visible caches explicitly; otherwise the file
                 // is in the Trash but its stale thumbnail remains visible and appears undeletable.
-                imagesCascadeURLs = images.map(\.url)
-                urlToImageIndex = Dictionary(
-                    uniqueKeysWithValues: imagesCascadeURLs.enumerated().map { ($1, $0) }
-                )
-                rebuildSortedCache(forceSort: true)
+                reindexAfterInventoryChange()
 
                 // A queued delete can finish after the user navigated away or after an
                 // earlier move removed neighbours; only reselect among files still shown.
@@ -4016,6 +4066,12 @@ final class BrowserViewModel {
     func waitForPendingImageMutation() async {
         await metadataReviewMutationPreparationTask?.value
         await imageMutationTask?.value
+    }
+
+    /// Test seam: reproduces the window where `loadBasicMetadata` holds the `images`
+    /// cascade suppressed across an await.
+    func setImagesCascadeSuppressedForTesting(_ suppressed: Bool) {
+        suppressImagesCascade = suppressed
     }
 
     /// Test/UI coordination seam for the serialized folder trash/rename/create/move chain.
@@ -4093,6 +4149,7 @@ final class BrowserViewModel {
             if !moved.isEmpty {
                 images.removeAll { moved.contains($0.url) }
                 manualOrder.removeAll { moved.contains($0) }
+                reindexAfterInventoryChange()
                 selectedImageIDs.subtract(moved)
                 if let last = lastClickedImageURL, moved.contains(last) {
                     lastClickedImageURL = nil
@@ -4182,6 +4239,7 @@ final class BrowserViewModel {
                 if !result.movedSourceURLs.isEmpty {
                     images.removeAll { result.movedSourceURLs.contains($0.url) }
                     manualOrder.removeAll { result.movedSourceURLs.contains($0) }
+                    reindexAfterInventoryChange()
                     selectedImageIDs.subtract(result.movedSourceURLs)
                     if let last = lastClickedImageURL, result.movedSourceURLs.contains(last) {
                         lastClickedImageURL = nil
@@ -4468,6 +4526,7 @@ final class BrowserViewModel {
                 }
                 manualOrder = newManualOrder
             }
+            reindexAfterInventoryChange()
 
             selectedImageIDs = newSelectionURLs
             lastClickedImageURL = newSelectionURLs.first

@@ -655,6 +655,23 @@ struct FileSystemExecutorTests {
         #expect(viewModel.currentFolderURL?.standardizedFileURL.path == root.standardizedFileURL.path)
     }
 
+    @Test("Trashing the only open root while it scans returns to the no-folder state")
+    @MainActor
+    func trashingOnlyRootWhileLoadingClearsLoading() {
+        let root = URL(fileURLWithPath: "/virtual/only-open-root", isDirectory: true)
+        let viewModel = BrowserViewModel(fileSystemService: FileSystemService())
+        viewModel.openFolders = [root]
+        viewModel.currentFolderURL = root
+        viewModel.currentFolderName = root.lastPathComponent
+        viewModel.isLoading = true
+
+        viewModel.followRelocatedFolder(from: root, to: nil)
+
+        #expect(viewModel.currentFolderURL == nil)
+        #expect(viewModel.currentFolderName == nil)
+        #expect(!viewModel.isLoading)
+    }
+
     @Test("Moving a RAW+JPEG pair moves both and keeps one shared .xmp at the destination")
     func movePairKeepsSharedXMPSidecar() async throws {
         let root = try trashTestRoot()

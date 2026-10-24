@@ -661,6 +661,28 @@ struct FieldMutationCallerTests {
         #expect(protectedRequest.requestedMode == .writeToXMPSidecar)
     }
 
+    @Test("Full Screen rotation touches only the shown photo, not the hidden multi-selection")
+    @MainActor
+    func fullScreenRotationTargetsShownPhoto() async throws {
+        let recorder = FieldMutationCallerRecorder()
+        let model = BrowserViewModel(fieldMutationWriter: { await recorder.write($0) },
+            fieldMutationModeResolver: { _, _ in .historyOnly })
+        let folder = URL(fileURLWithPath: "/virtual/full-screen-rotation")
+        let photos = ["a.jpg", "b.jpg", "c.jpg"].map { folder.appendingPathComponent($0) }
+        model.currentFolderURL = folder
+        model.images = photos.map { ImageFile(url: $0) }
+        model.selectedImageIDs = Set(photos)
+        model.lastClickedImageURL = photos[1]
+        model.isFullScreen = true
+
+        model.rotateFullScreenImage(clockwise: true)
+        await model.waitForPendingFieldMutationWrites()
+
+        let requests = await recorder.captured
+        #expect(requests.map(\.imageURL) == [photos[1]])
+        #expect(model.images.map(\.exifOrientation) == [1, 6, 1])
+    }
+
     @Test("Failed rapid rotations restore their verified orientation without clearing a pending caption", arguments: [false, true])
     @MainActor
     func browserRotationDefiniteFailure(firstSucceeds: Bool) async throws {

@@ -3897,6 +3897,12 @@ struct ContentView: View {
             askedFolder = chosen
         }
 
+        // Capture the pane and its folder now: `browserViewModel` follows the active
+        // pane, so switching pane/folder mid-batch must not redirect the remaining
+        // outputs, sidecar overlays or Reveal links to another folder.
+        let browser = browserViewModel
+        let sourceFolderURL = browser.currentFolderURL
+
         isRenderingEditedFolder = true
         renderExportCurrent = 0
         renderExportTotal = urls.count
@@ -3908,11 +3914,11 @@ struct ContentView: View {
 
             var metadataByURL: [URL: IPTCMetadata]
             do {
-                metadataByURL = try await browserViewModel.metadataReadService.readBatchFullMetadata(urls: urls)
+                metadataByURL = try await browser.metadataReadService.readBatchFullMetadata(urls: urls)
                 try await EditExportPipeline.resolveCameraRaw(
                     into: &metadataByURL,
                     urls: urls,
-                    inMemory: browserViewModel.currentCameraRawSettings
+                    inMemory: browser.currentCameraRawSettings
                 )
             } catch is CancellationError {
                 // Release the export gate, or every later Export/Save As/Sign is a no-op.
@@ -3920,7 +3926,7 @@ struct ContentView: View {
                 return
             } catch {
                 isRenderingEditedFolder = false
-                browserViewModel.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
+                browser.errorMessage = "Failed to read metadata: \(error.localizedDescription)"
                 return
             }
 
@@ -3935,7 +3941,7 @@ struct ContentView: View {
                     // Save As always renders SDR (JPEG/PNG), so use isHDR: false for naming,
                     // and name the format sub-folder after the Save As format rather than
                     // the configured Export format.
-                    let rootFolder = browserViewModel.currentFolderURL ?? url.deletingLastPathComponent()
+                    let rootFolder = sourceFolderURL ?? url.deletingLastPathComponent()
                     let destinationFolder = EditedImageRenderer.resolveOutputFolder(
                         sourceURL: url, rootFolder: rootFolder,
                         isHDR: false, formatPrefix: "Edited", askedFolder: askedFolder,
@@ -3947,8 +3953,8 @@ struct ContentView: View {
 
                     let outputURL = try await EditExportPipeline.renderItem(
                         sourceURL: url, cameraRaw: cameraRaw, kind: .saveAs(format),
-                        outputFolder: destinationFolder, folderURL: browserViewModel.currentFolderURL,
-                        writeEngine: browserViewModel.writeEngine, failureTracker: failureTracker)
+                        outputFolder: destinationFolder, folderURL: sourceFolderURL,
+                        writeEngine: browser.writeEngine, failureTracker: failureTracker)
                     savedURLs.append(outputURL)
                 } catch {
                     saveFailures.append(.init(filename: url.lastPathComponent, error: error))
@@ -3960,16 +3966,16 @@ struct ContentView: View {
             // Add saved files to browser if they're in the same folder; otherwise
             // surface the sub-folder(s) they landed in within the sidebar tree.
             let destinationFolders = Set(savedURLs.map { $0.deletingLastPathComponent() })
-            if let folderURL = browserViewModel.currentFolderURL {
-                if destinationFolders.contains(folderURL) {
-                    browserViewModel.refreshCurrentFolderIfNeeded()
+            if let folderURL = sourceFolderURL {
+                if destinationFolders.contains(folderURL), browser.currentFolderURL == folderURL {
+                    browser.refreshCurrentFolderIfNeeded()
                 }
                 for subfolder in destinationFolders where subfolder != folderURL {
-                    browserViewModel.revealExportedSubfolder(subfolder)
+                    browser.revealExportedSubfolder(subfolder)
                 }
             } else {
                 for subfolder in destinationFolders {
-                    browserViewModel.revealExportedSubfolder(subfolder)
+                    browser.revealExportedSubfolder(subfolder)
                 }
             }
 
@@ -3996,7 +4002,7 @@ struct ContentView: View {
                 overlayFailureFilenames: overlayFailures,
                 staleSidecarFilenames: staleWarnings,
                 missingWatermarkFilenames: watermarkWarnings,
-                sourceFolderURL: browserViewModel.currentFolderURL,
+                sourceFolderURL: sourceFolderURL,
                 outputURLs: savedURLs
             )
         }
@@ -4063,6 +4069,11 @@ struct ContentView: View {
             return
         }
 
+        // Capture the pane and its folder now (see Save As): the active pane can change
+        // while the batch runs.
+        let browser = browserViewModel
+        let sourceFolderURL = browser.currentFolderURL
+
         isRenderingEditedFolder = true
         renderExportCurrent = 0
         renderExportTotal = urls.count
@@ -4078,7 +4089,7 @@ struct ContentView: View {
                 }
                 guard case .complete(let installedURL?) = discovery else {
                     isRenderingEditedFolder = false
-                    browserViewModel.errorMessage = "Adobe DNG Converter is required for DNG archiving. Install the free converter from Adobe, then try again."
+                    browser.errorMessage = "Adobe DNG Converter is required for DNG archiving. Install the free converter from Adobe, then try again."
                     return
                 }
                 dngConverterURL = installedURL
@@ -4149,8 +4160,8 @@ struct ContentView: View {
                         )
                     }
 
-                    let currentFolderURL = browserViewModel.currentFolderURL
-                    let writeEngine = browserViewModel.writeEngine
+                    let currentFolderURL = sourceFolderURL
+                    let writeEngine = browser.writeEngine
                     let signer: RAWArchiveTransactionRequest.Sign?
                     if c2paRAWURLs.contains(url), let archiveSigningConfiguration {
                         signer = { archiveURL, parentURL in
@@ -4196,16 +4207,16 @@ struct ContentView: View {
             isRenderingEditedFolder = false
 
             let destinationFolders = Set(convertedURLs.map { $0.deletingLastPathComponent() })
-            if let folderURL = browserViewModel.currentFolderURL {
-                if destinationFolders.contains(folderURL) {
-                    browserViewModel.refreshCurrentFolderIfNeeded()
+            if let folderURL = sourceFolderURL {
+                if destinationFolders.contains(folderURL), browser.currentFolderURL == folderURL {
+                    browser.refreshCurrentFolderIfNeeded()
                 }
                 for subfolder in destinationFolders where subfolder != folderURL {
-                    browserViewModel.revealExportedSubfolder(subfolder)
+                    browser.revealExportedSubfolder(subfolder)
                 }
             } else {
                 for subfolder in destinationFolders {
-                    browserViewModel.revealExportedSubfolder(subfolder)
+                    browser.revealExportedSubfolder(subfolder)
                 }
             }
 
@@ -4235,7 +4246,7 @@ struct ContentView: View {
                 cleanupFailurePaths: cleanupFailurePaths,
                 staleSidecarFilenames: staleWarnings,
                 missingWatermarkFilenames: watermarkWarnings,
-                sourceFolderURL: browserViewModel.currentFolderURL,
+                sourceFolderURL: sourceFolderURL,
                 outputURLs: convertedURLs
             )
         }
@@ -4579,13 +4590,27 @@ struct ContentViewModifiers: ViewModifier {
                         browserViewModel.selectNext()
                     }
                 case .rotateClockwise:
-                    browserViewModel.rotateClockwise()
+                    if browserViewModel.isFullScreen {
+                        browserViewModel.rotateFullScreenImage(clockwise: true)
+                    } else {
+                        browserViewModel.rotateClockwise()
+                    }
                 case .rotateCounterclockwise:
-                    browserViewModel.rotateCounterclockwise()
+                    if browserViewModel.isFullScreen {
+                        browserViewModel.rotateFullScreenImage(clockwise: false)
+                    } else {
+                        browserViewModel.rotateCounterclockwise()
+                    }
                 case .openInExternalEditor:
                     openSelectedInExternalEditor()
                 case .deleteSelected:
-                    performAfterMetadataFlush { browserViewModel.confirmDeleteSelectedImages() }
+                    performAfterMetadataFlush {
+                        if browserViewModel.isFullScreen {
+                            browserViewModel.confirmDeleteFullScreenImage()
+                        } else {
+                            browserViewModel.confirmDeleteSelectedImages()
+                        }
+                    }
                 case .renderSelected, .advancedExportSelected, .renderAll,
                      .saveAsJPEG, .saveAsPNG, .archiveRAW,
                      .renameSelected, .duplicateSelected,

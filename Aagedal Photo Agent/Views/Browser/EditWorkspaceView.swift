@@ -7710,15 +7710,21 @@ struct EditWorkspaceView: View {
             )
             let copyFailures = await failureTracker.metadataCopyFailures
             let overlayFailures = await failureTracker.sidecarOverlayFailures
+            let watermarkWarnings = await failureTracker.missingWatermarkWarnings
             browserViewModel.thumbnailService.invalidateThumbnail(for: outputURL)
             return DevelopExportPersistenceResult(
                 outputURL: outputURL,
-                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty
+                metadataWasCopied: copyFailures.isEmpty && overlayFailures.isEmpty,
+                watermarkWasMissing: !watermarkWarnings.isEmpty
             )
         } onPersisted: { result in
             let url = result.outputURL
+            // Same warning the batch export paths surface (BatchOperationResult).
+            let watermarkWarning = result.watermarkWasMissing
+                ? " — watermark image missing (saved without it)"
+                : ""
             workspaceSession.showNotice(
-                "Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)",
+                "Saved \(url.lastPathComponent) to \(url.deletingLastPathComponent().lastPathComponent)\(watermarkWarning)",
                 revealURL: url
             )
         }

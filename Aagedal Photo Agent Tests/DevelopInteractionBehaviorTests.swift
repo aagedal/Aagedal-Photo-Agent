@@ -430,6 +430,73 @@ struct DevelopInteractionBehaviorTests {
         #expect(!pane.isLoading)
     }
 
+    @Test("Moves and duplicates during a suppressed metadata load keep the image index and selection consistent")
+    @MainActor
+    func inventoryChangeDuringSuppressedMetadataLoadReindexes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("apa-reindex-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let destination = root.appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = ["a.jpg", "b.jpg", "c.jpg"].map { root.appendingPathComponent($0) }
+        for file in files { try Data(file.lastPathComponent.utf8).write(to: file) }
+
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.currentFolderURL = root
+        viewModel.images = files.map { ImageFile(url: $0) }
+        await Task.yield()
+
+        // `loadBasicMetadata` holds the cascade suppressed across its awaits.
+        viewModel.setImagesCascadeSuppressedForTesting(true)
+        viewModel.moveImages([files[0]], into: destination)
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [files[1], files[2]])
+        #expect(viewModel.urlToImageIndex == [files[1]: 0, files[2]: 1])
+        #expect(viewModel.visibleImages.map(\.url) == [files[1], files[2]])
+        // A stale index (c → 2) would read out of range or a neighbour here.
+        viewModel.applySelection(ids: [files[2]], active: files[2])
+        #expect(viewModel.selectedImages.map(\.url) == [files[2]])
+
+        viewModel.duplicateSelectedImages()
+        await viewModel.waitForPendingImageMutation()
+        let duplicate = try #require(viewModel.selectedImageIDs.first)
+        #expect(viewModel.images.map(\.url) == [files[1], files[2], duplicate])
+        #expect(viewModel.urlToImageIndex == [files[1]: 0, files[2]: 1, duplicate: 2])
+        #expect(viewModel.selectedImages.map(\.url) == [duplicate])
+        viewModel.setImagesCascadeSuppressedForTesting(false)
+    }
+
+    @Test("Full Screen delete trashes only the shown photo, not the hidden multi-selection")
+    @MainActor
+    func fullScreenDeleteTargetsShownPhoto() async {
+        let images = urls.prefix(3).map { ImageFile(url: $0) }
+        let viewModel = BrowserViewModel(imageTrashHandler: TrashStub())
+        viewModel.images = images
+        await Task.yield()
+        viewModel.applySelection(ids: Set(images.map(\.url)), active: images[1].url)
+        viewModel.isFullScreen = true
+        #expect(viewModel.fullScreenImage?.url == images[1].url)
+
+        viewModel.confirmDeleteFullScreenImage()
+        #expect(viewModel.showDeleteConfirmation)
+        #expect(viewModel.deleteConfirmationCount == 1)
+        viewModel.deleteConfirmedImages()
+        await viewModel.waitForPendingImageMutation()
+
+        #expect(viewModel.images.map(\.url) == [images[0].url, images[2].url])
+
+        // The grid path still confirms and deletes the whole selection.
+        viewModel.isFullScreen = false
+        viewModel.applySelection(ids: [images[0].url, images[2].url], active: images[0].url)
+        viewModel.confirmDeleteSelectedImages()
+        #expect(viewModel.deleteConfirmationCount == 2)
+        viewModel.deleteConfirmedImages()
+        await viewModel.waitForPendingImageMutation()
+        #expect(viewModel.images.isEmpty)
+    }
+
     @Test("A second file operation waits for the running one instead of cancelling it")
     @MainActor
     func fileOperationsAreSerialized() async {
@@ -1129,6 +1196,9 @@ struct DevelopExportSessionCoordinatorTests {
         #expect(source.contains("exportSession.requestExport {"))
         #expect(source.contains("exportSession.endWorkspaceSession()"))
         #expect(source.contains("DevelopExportPersistenceResult("))
+        // Develop Save must surface a missing watermark like the batch export paths.
+        #expect(source.contains("watermarkWasMissing: !watermarkWarnings.isEmpty"))
+        #expect(source.contains("result.watermarkWasMissing"))
         #expect(!source.contains("@State private var isSavingRenderedJPEG"))
         #expect(!source.contains("@State private var saveError"))
     }

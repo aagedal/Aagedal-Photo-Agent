@@ -356,6 +356,10 @@ struct FolderChangeMonitorServiceTests {
         #expect(source.contains("monitoredURLs[paneID] == folderURL"))
         #expect(source.contains("monitorSetupTasks.removeValue(forKey: paneID)?.cancel()"))
         #expect(!source.contains("FolderChangeMonitor(url: folderURL)"))
+        // A loaded pending draft sets `hasChanges`; only unpersisted editor edits can be
+        // disturbed by a refresh, so they alone may defer showing new files.
+        #expect(source.contains("|| metadataViewModel.hasUnpersistedEditorChanges"))
+        #expect(!source.contains("metadataViewModel.hasChanges"))
     }
 }
 

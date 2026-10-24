@@ -46,10 +46,10 @@ private struct ImageDeletionConfirmationModifier: ViewModifier {
             .alert("Move to Trash", isPresented: isPresented) {
                 Button("Cancel", role: .cancel) { }
                 Button("Move to Trash", role: .destructive) {
-                    viewModel.deleteSelectedImages()
+                    viewModel.deleteConfirmedImages()
                 }
             } message: {
-                let count = viewModel.selectedImageIDs.count
+                let count = viewModel.deleteConfirmationCount
                 Text("Are you sure you want to move \(count) \(count == 1 ? "image" : "images") to the Trash?\n\n\(TrashOperationFeedback.recoveryGuidance)")
             }
     }

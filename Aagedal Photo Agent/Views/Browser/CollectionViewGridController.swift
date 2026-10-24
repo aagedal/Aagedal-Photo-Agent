@@ -20,6 +20,9 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
     /// Rows as last handed to the data source, in snapshot order.
     private var lastImages: [ImageFile] = []
     private var hasAppliedSnapshot = false
+    /// `showOriginalThumbnails` as of the last data apply. Flipping it changes no row, so
+    /// the row diff alone would leave every visible thumbnail in the old mode.
+    private var lastShowOriginalThumbnails: Bool?
     private var lastDataApply: ContinuousClock.Instant?
     /// A grid rebuilt after leaving Develop inherits the active selection, but observation
     /// only reports future changes. Keep this pending until the first laid-out snapshot can
@@ -236,8 +239,29 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
             }
         })
 
+        // A new RAW decode profile drops the edited-thumbnail cache without changing any
+        // row; re-render what is on screen instead of waiting for it to scroll back in.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(rawDecodeSettingsDidChange(_:)),
+            name: .rawDecodeSettingsDidChange, object: nil
+        )
+
         // Trigger initial data load
         applyDataUpdate(images: viewModel.visibleImages)
+    }
+
+    @objc private func rawDecodeSettingsDidChange(_ notification: Notification) {
+        reconfigureVisibleItems()
+    }
+
+    /// Re-runs cell configuration for every on-screen item (thumbnail mode or decode
+    /// settings changed for all rows at once).
+    private func reconfigureVisibleItems() {
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            guard let item = collectionView.item(at: indexPath) as? ThumbnailCollectionViewItem,
+                  viewModel.visibleImages.indices.contains(indexPath.item) else { continue }
+            configureItem(item, url: viewModel.visibleImages[indexPath.item].url)
+        }
     }
 
     /// Lightweight observation for selection changes from external sources (menus, notifications).
@@ -262,7 +286,13 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
 
     private func applyDataUpdate(images: [ImageFile]) {
         lastDataApply = .now
-        if hasAppliedSnapshot, reconfigureInPlaceIfOrderUnchanged(images) { return }
+        let showOriginals = viewModel.showOriginalThumbnails
+        let showOriginalsChanged = lastShowOriginalThumbnails.map { $0 != showOriginals } ?? false
+        lastShowOriginalThumbnails = showOriginals
+        if hasAppliedSnapshot, reconfigureInPlaceIfOrderUnchanged(images) {
+            if showOriginalsChanged { reconfigureVisibleItems() }
+            return
+        }
 
         let newURLs = images.map(\.url)
         let oldStates = Dictionary(lastImages.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
@@ -300,6 +330,7 @@ final class CollectionViewGridController: NSViewController, NSCollectionViewDele
                     selectedIDs: self.viewModel.selectedImageIDs,
                     activeURL: self.viewModel.lastClickedImageURL
                 )
+                if showOriginalsChanged { self.reconfigureVisibleItems() }
                 self.restoreInitialSelectionIfPossible()
             }
         }

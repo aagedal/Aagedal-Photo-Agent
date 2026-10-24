@@ -9,6 +9,8 @@ import Observation
 nonisolated struct DevelopExportPersistenceResult: Equatable, Sendable {
     let outputURL: URL
     let metadataWasCopied: Bool
+    /// A watermark layer's library image was missing, so the file was saved without it.
+    var watermarkWasMissing = false
 }
 
 /// Owns the one-at-a-time export lifecycle for a Develop workspace.

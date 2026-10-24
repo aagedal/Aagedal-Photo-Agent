@@ -3391,6 +3391,32 @@ struct AdvancedExportTests {
         #expect(source.contains(".onChange(of: browserViewModel.selectedImageIDs)"))
         #expect(source.contains("cancelAdvancedExportPreparation()"))
     }
+
+    @Test("Save As and Archive RAW capture the pane and folder before their batch task")
+    func saveAsAndArchiveCaptureSourcePane() throws {
+        let workspace = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: workspace.appendingPathComponent("Aagedal Photo Agent/ContentView.swift"),
+            encoding: .utf8
+        )
+        for (startMarker, endMarker) in [
+            ("private func saveSelectedAsAfterMetadataFlush(", "private func archiveSelectedRAW(as format"),
+            ("private func archiveSelectedRAWAfterMetadataFlush(", "private func makeC2PAArchiveSigningConfiguration()"),
+        ] {
+            let start = try #require(source.range(of: startMarker))
+            let end = try #require(source.range(of: endMarker, range: start.upperBound..<source.endIndex))
+            let functionSource = source[start.lowerBound..<end.lowerBound]
+            let task = try #require(functionSource.range(of: "renderExportTask = Task {"))
+            let beforeTask = functionSource[..<task.lowerBound]
+            let taskBody = functionSource[task.lowerBound...]
+            // `browserViewModel` is `panes.active`; reading it per item follows a pane switch.
+            #expect(beforeTask.contains("let browser = browserViewModel"))
+            #expect(beforeTask.contains("let sourceFolderURL = browser.currentFolderURL"))
+            #expect(!taskBody.contains("browserViewModel"))
+        }
+    }
 }
 
 private nonisolated final class AdvancedExportPreparationProbe: @unchecked Sendable {
